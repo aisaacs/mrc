@@ -144,6 +144,23 @@ docker build "${BUILD_FLAGS[@]}" \
 
 echo "  ✓ Radar locked."
 
+# Warn if the image is more than 4 days old (Claude Code auto-update is disabled)
+IMAGE_CREATED="$(docker image inspect --format '{{.Created}}' "$IMAGE_NAME" 2>/dev/null || true)"
+if [[ -n "$IMAGE_CREATED" ]]; then
+  IMAGE_EPOCH="$(date -d "$IMAGE_CREATED" +%s 2>/dev/null || date -jf "%Y-%m-%dT%H:%M:%S" "${IMAGE_CREATED%%.*}" +%s 2>/dev/null || true)"
+  if [[ -n "$IMAGE_EPOCH" ]]; then
+    NOW_EPOCH="$(date +%s)"
+    AGE_DAYS=$(( (NOW_EPOCH - IMAGE_EPOCH) / 86400 ))
+    if [[ "$AGE_DAYS" -ge 4 ]]; then
+      echo ""
+      echo "  ⚠ Your Claude Code image is ${AGE_DAYS} days old. Auto-update is disabled in the container."
+      echo "    Rebuild to get the latest version:"
+      echo "      docker rmi $IMAGE_NAME && mrc $REPO_PATH"
+      echo ""
+    fi
+  fi
+fi
+
 # Build volume flags
 VOLUMES=(-v "$REPO_PATH:/workspace")
 
