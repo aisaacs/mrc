@@ -38,6 +38,10 @@ RUN chmod +x /usr/local/bin/init-firewall.sh \
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
+# Disable auto-update — the version is pinned at build time
+# and the firewall may block npm CDN hosts needed for updates.
+ENV DISABLE_AUTOUPDATER=1
+
 USER coder
 WORKDIR /workspace
 

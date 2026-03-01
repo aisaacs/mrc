@@ -128,14 +128,17 @@ if $STARTED_COLIMA; then
   trap "echo ''; echo '🎩 Goodbye, Lone Starr.'; colima stop 2>\"$QUIET\"" EXIT
 fi
 
-# Build image if needed
+# Build image if needed (--no-cache when image is missing so npm pulls fresh)
 echo "  ◎ Mr. Radar is scanning the environment..."
 USER_UID="$(id -u)"
 USER_GID="$(id -g)"
 
-docker build -q \
-  --build-arg USER_UID="$USER_UID" \
-  --build-arg USER_GID="$USER_GID" \
+BUILD_FLAGS=(-q --build-arg "USER_UID=$USER_UID" --build-arg "USER_GID=$USER_GID")
+if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
+  BUILD_FLAGS+=(--no-cache)
+fi
+
+docker build "${BUILD_FLAGS[@]}" \
   -t "$IMAGE_NAME" \
   "$SCRIPT_DIR" > /dev/null 2>"$QUIET"
 

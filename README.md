@@ -247,4 +247,13 @@ ENTRYPOINT ["claude", "--dangerously-skip-permissions"]
 
 **Permission errors on mounted files** — The Docker image builds with your UID/GID. If you see permission issues, rebuild: `docker rmi mister-claude` and run `mrc` again.
 
+**`✗ Auto-update failed`** — Claude Code's version is baked into the Docker image at build time and auto-update is disabled inside the container. If you see this error, your image is stale. Rebuild it:
+
+```bash
+docker rmi mister-claude
+mrc ~/projects/my-app
+```
+
+This pulls the latest Claude Code from npm and builds a fresh image.
+
 **Slow file access** — Make sure you started Colima with `--mount-type virtiofs`. If you started it without that flag, stop and restart with the full flags.
