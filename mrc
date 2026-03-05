@@ -7,6 +7,7 @@
 #   mrc [options] [path-to-repo] [-- claude-code-args...]
 #
 # Options:
+#   -r, --rebuild  Force a full image rebuild (no cache)
 #   -v, --verbose  Show Colima and Docker output (useful for debugging)
 #   -w, --web      Allow outbound HTTPS to any host (for web search/fetch)
 #
@@ -66,9 +67,11 @@ IMAGE_NAME="mister-claude"
 # Parse flags
 VERBOSE=false
 ALLOW_WEB=false
+REBUILD=false
 args=()
 for arg in "$@"; do
   case "$arg" in
+    --rebuild|-r) REBUILD=true ;;
     --verbose|-v) VERBOSE=true ;;
     --web|-w)     ALLOW_WEB=true ;;
     *) args+=("$arg") ;;
@@ -118,7 +121,8 @@ if command -v colima &>/dev/null; then
   fi
   if ! colima status &>/dev/null 2>&1; then
     echo "🎩 Preparing ship for Ludicrous Speed..."
-    colima start --vm-type vz --mount-type virtiofs --cpu 4 --memory 8 2>"$QUIET" &
+    COLIMA_FLAGS=(--vm-type vz --mount-type virtiofs --cpu 4 --memory 8)
+    colima start "${COLIMA_FLAGS[@]}" 2>"$QUIET" &
     spinner $!
     wait $!
     echo "  ✓ Ship ready. All bleeps, sweeps, and creeps accounted for."
@@ -130,10 +134,16 @@ elif ! docker info &>/dev/null 2>&1; then
   exit 1
 fi
 
-# Stop Colima on exit if we started it
-if $STARTED_COLIMA; then
-  trap "echo ''; echo '🎩 Goodbye, Lone Starr.'; colima stop 2>\"$QUIET\"" EXIT
-fi
+# Cleanup on exit: stop clipboard proxy, optionally stop Colima
+cleanup() {
+  [[ -n "${CLIP_PID:-}" ]] && kill "$CLIP_PID" 2>/dev/null || true
+  if ${STARTED_COLIMA:-false}; then
+    echo ""
+    echo "🎩 Goodbye, Lone Starr."
+    colima stop 2>"$QUIET"
+  fi
+}
+trap cleanup EXIT
 
 # Build image if needed (--no-cache when image is missing so npm pulls fresh)
 echo "  ◎ Mr. Radar is scanning the environment..."
@@ -141,7 +151,10 @@ USER_UID="$(id -u)"
 USER_GID="$(id -g)"
 
 BUILD_FLAGS=(-q --build-arg "USER_UID=$USER_UID" --build-arg "USER_GID=$USER_GID")
-if ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
+if $REBUILD; then
+  docker rmi -f "$IMAGE_NAME" 2>/dev/null || true
+  BUILD_FLAGS+=(--no-cache)
+elif ! docker image inspect "$IMAGE_NAME" &>/dev/null; then
   BUILD_FLAGS+=(--no-cache)
 fi
 
@@ -169,7 +182,7 @@ if [[ -n "$IMAGE_CREATED" ]]; then
       echo ""
       echo "  ⚠ Your Claude Code image is ${AGE_DAYS} days old. Auto-update is disabled in the container."
       echo "    Rebuild to get the latest version:"
-      echo "      docker rmi $IMAGE_NAME && mrc $REPO_PATH"
+      echo "      mrc --rebuild $REPO_PATH"
       echo ""
     fi
   fi
@@ -217,6 +230,29 @@ fi
 # Persist Claude config between runs
 VOLUMES+=(-v "mister-claude-config:/home/coder/.claude")
 
+# Start clipboard proxy if socat is available
+CLIP_PORT="7722"
+CLIP_PID=""
+if command -v socat &>/dev/null; then
+  bash "$SCRIPT_DIR/clipboard-proxy.sh" "$CLIP_PORT" &
+  CLIP_PID=$!
+  # Wait briefly for the proxy to start listening
+  for _ in $(seq 1 10); do
+    if lsof -i :"$CLIP_PORT" &>/dev/null 2>&1 || nc -z 127.0.0.1 "$CLIP_PORT" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+  done
+  if kill -0 "$CLIP_PID" 2>/dev/null; then
+    ENV_FLAGS+=(-e "MRC_CLIPBOARD_PORT=$CLIP_PORT")
+  else
+    echo "  ! Clipboard proxy failed to start (image paste won't work)"
+    CLIP_PID=""
+  fi
+else
+  echo "  ! socat not found — install it for clipboard/image paste support"
+fi
+
 cat << 'BANNER'
       __  __ ____     ____  _                 _
      |  \/  |  _ \ . / ___|| | __ _ _   _  __| | ___
@@ -234,6 +270,11 @@ if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
 else
   echo "  → Schwartz:  I see your Schwartz is as big as mine... you DO have a subscription, right?"
 fi
+if [[ -n "$CLIP_PID" ]]; then
+  echo "  → Clipboard: the Schwartz can see your clipboard"
+else
+  echo "  → Clipboard: disabled (install socat for image paste)"
+fi
 if $ALLOW_WEB; then
   echo "  → Firewall:  jammed, but he can see the web (--web)"
 else
@@ -244,6 +285,7 @@ echo ""
 docker run --rm -it --init \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
+  --add-host=host.docker.internal:host-gateway \
   ${ENV_FLAGS[@]+"${ENV_FLAGS[@]}"} \
   "${VOLUMES[@]}" \
   "$IMAGE_NAME" \

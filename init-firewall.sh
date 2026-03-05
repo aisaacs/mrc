@@ -92,6 +92,15 @@ echo "Host network detected as: $HOST_NETWORK"
 iptables -A INPUT -s "$HOST_NETWORK" -j ACCEPT
 iptables -A OUTPUT -d "$HOST_NETWORK" -j ACCEPT
 
+# Allow traffic to host.docker.internal (may be outside the Docker bridge subnet,
+# e.g. Colima's VM host IP). Needed for clipboard proxy.
+HDINT_IP=$(getent hosts host.docker.internal 2>/dev/null | awk '{print $1}')
+if [ -n "$HDINT_IP" ] && [ "$HDINT_IP" != "$HOST_IP" ]; then
+    echo "Allowing host.docker.internal ($HDINT_IP)"
+    iptables -A OUTPUT -d "$HDINT_IP" -j ACCEPT
+    iptables -A INPUT -s "$HDINT_IP" -j ACCEPT
+fi
+
 # Allow established connections for already-approved traffic
 iptables -A INPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT

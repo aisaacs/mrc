@@ -32,6 +32,8 @@ mrc                  # the command — builds, mounts, launches
 Dockerfile           # his room — node:22-slim + Claude Code + firewall tools
 entrypoint.sh        # waits for network, runs firewall, starts claude
 init-firewall.sh     # iptables + ipset whitelist — the lock on the door
+clipboard-proxy.sh   # host-side clipboard server (TCP, socat)
+clipboard-shim.sh    # container-side xclip replacement
 .env                 # your API key (not checked in)
 ```
 
@@ -216,6 +218,63 @@ colima start --vm-type vz --mount-type virtiofs --cpu 6 --memory 16
 ```dockerfile
 ENTRYPOINT ["claude", "--dangerously-skip-permissions"]
 ```
+
+## Clipboard (image paste)
+
+Text paste works out of the box (it travels through the terminal as stdin), but pasting images requires a clipboard bridge between the host and the container. Mister Claude ships one — a small TCP proxy that lets the container read your host clipboard.
+
+### Prerequisites
+
+Install `socat` on the host:
+
+```bash
+# macOS
+brew install socat
+
+# Linux (Debian/Ubuntu)
+sudo apt-get install socat
+```
+
+### How it works
+
+1. `mrc` starts `clipboard-proxy.sh` on the host, listening on `127.0.0.1:7722`
+2. Inside the container, a shim installed at `/usr/local/bin/xclip` intercepts Claude Code's clipboard reads
+3. The shim connects to the proxy via `host.docker.internal:7722` and fetches clipboard data over TCP
+
+The banner will show `Clipboard: the Schwartz can see your clipboard` when the proxy is running.
+
+### Usage
+
+Just copy an image to your clipboard on the host and press **Ctrl+V** inside Claude Code. That's it.
+
+### Troubleshooting clipboard
+
+**Banner doesn't show the clipboard line** — Make sure `socat` is installed on the host. The proxy won't start without it.
+
+**"No image found in clipboard"** — Try these steps:
+
+1. From the host (separate terminal), verify the proxy is responding:
+
+   ```bash
+   echo "GET TARGETS" | socat - TCP:127.0.0.1:7722
+   # Should print "text/plain" (and "image/png" if an image is copied)
+   ```
+
+2. From inside the container, verify connectivity:
+
+   ```bash
+   printf 'GET TARGETS\n' | socat -,ignoreeof TCP:host.docker.internal:7722
+   ```
+
+3. Check the shim logs inside the container:
+
+   ```bash
+   cat /tmp/mrc-xclip-shim.log
+   ```
+
+4. Host-side proxy logs appear in the terminal where `mrc` is running (stderr).
+
+**"No route to host" in shim logs** — The firewall may be blocking traffic to `host.docker.internal`. Rebuild the image (`docker rmi mister-claude`) to pick up the latest firewall rules that allow this route.
 
 ## Troubleshooting
 

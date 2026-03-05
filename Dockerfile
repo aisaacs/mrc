@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ipset \
     iproute2 \
     dnsutils \
+    socat \
     && rm -rf /var/lib/apt/lists/*
 
 # Install Claude Code globally
@@ -34,6 +35,9 @@ COPY init-firewall.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/init-firewall.sh \
     && echo 'coder ALL=(root) NOPASSWD: SETENV: /usr/local/bin/init-firewall.sh' > /etc/sudoers.d/coder-firewall \
     && chmod 0440 /etc/sudoers.d/coder-firewall
+
+COPY clipboard-shim.sh /usr/local/bin/xclip
+RUN chmod +x /usr/local/bin/xclip
 
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
