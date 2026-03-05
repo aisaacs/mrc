@@ -1,5 +1,6 @@
 #!/bin/bash
 set -euo pipefail
+trap 'echo "FAILED at line $LINENO (exit code $?)" >&2' ERR
 
 # Wait for network to be ready (Colima can be slow to warm up)
 echo "Waiting for network..."
