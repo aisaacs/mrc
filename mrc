@@ -112,6 +112,19 @@ if $ALLOW_WEB; then
 fi
 ENV_FLAGS+=(-e CLAUDE_CODE_MAX_OUTPUT_TOKENS="${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-128000}")
 
+# S3 session sync
+if [[ -n "${MRC_S3_BUCKET:-}" ]]; then
+  S3_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+  ENV_FLAGS+=(-e MRC_S3_BUCKET)
+  ENV_FLAGS+=(-e "MRC_S3_PREFIX=${MRC_S3_PREFIX:-sessions}")
+  ENV_FLAGS+=(-e "AWS_DEFAULT_REGION=${S3_REGION}")
+  ENV_FLAGS+=(-e "MRC_S3_DOMAIN=${MRC_S3_BUCKET}.s3.${S3_REGION}.amazonaws.com")
+  [[ -n "${AWS_ACCESS_KEY_ID:-}" ]]     && ENV_FLAGS+=(-e AWS_ACCESS_KEY_ID)
+  [[ -n "${AWS_SECRET_ACCESS_KEY:-}" ]] && ENV_FLAGS+=(-e AWS_SECRET_ACCESS_KEY)
+  [[ -n "${AWS_SESSION_TOKEN:-}" ]]     && ENV_FLAGS+=(-e AWS_SESSION_TOKEN)
+  [[ -n "${MRC_SYNC_INTERVAL:-}" ]]     && ENV_FLAGS+=(-e MRC_SYNC_INTERVAL)
+fi
+
 # Ensure Colima is running
 STARTED_COLIMA=false
 if command -v colima &>/dev/null; then
@@ -274,6 +287,11 @@ if [[ -n "$CLIP_PID" ]]; then
   echo "  → Clipboard: the Schwartz can see your clipboard"
 else
   echo "  → Clipboard: disabled (install socat for image paste)"
+fi
+if [[ -n "${MRC_S3_BUCKET:-}" ]]; then
+  echo "  → Sessions:  syncing to s3://${MRC_S3_BUCKET}/${MRC_S3_PREFIX:-sessions}/"
+else
+  echo "  → Sessions:  local only (set MRC_S3_BUCKET to sync)"
 fi
 if $ALLOW_WEB; then
   echo "  → Firewall:  jammed, but he can see the web (--web)"
