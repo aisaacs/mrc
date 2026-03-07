@@ -22,6 +22,32 @@ done
 
 sudo ALLOW_WEB="${ALLOW_WEB:-}" /usr/local/bin/init-firewall.sh
 
+# Seed plugins and config from build-time defaults into the persistent volume.
+# Copies marketplace data and merges plugin settings without overwriting user changes.
+DEFAULTS="$HOME/.claude-defaults"
+if [ -d "$DEFAULTS" ]; then
+  # Copy marketplace repo if not already present
+  if [ -d "$DEFAULTS/plugins/marketplaces" ] && [ ! -d "$HOME/.claude/plugins/marketplaces" ]; then
+    cp -a "$DEFAULTS/plugins" "$HOME/.claude/"
+  fi
+
+  # Merge enabledPlugins into settings.json (add defaults, keep user overrides)
+  if [ -f "$DEFAULTS/settings.json" ]; then
+    if [ ! -f "$HOME/.claude/settings.json" ]; then
+      cp "$DEFAULTS/settings.json" "$HOME/.claude/settings.json"
+    else
+      # Merge: default plugins go in first, user overrides win
+      node -e "
+        const fs = require('fs');
+        const d = JSON.parse(fs.readFileSync('$DEFAULTS/settings.json', 'utf8'));
+        const c = JSON.parse(fs.readFileSync('$HOME/.claude/settings.json', 'utf8'));
+        c.enabledPlugins = { ...d.enabledPlugins, ...c.enabledPlugins };
+        fs.writeFileSync('$HOME/.claude/settings.json', JSON.stringify(c, null, 2) + '\n');
+      "
+    fi
+  fi
+fi
+
 # Ensure the symlink target for .claude.json exists in the persistent volume
 CONFIG_TARGET="$HOME/.claude/claude.json"
 if [ ! -f "$CONFIG_TARGET" ]; then
@@ -46,7 +72,6 @@ if [ $EXIT_CODE -ne 0 ]; then
   echo ""
   echo "Claude exited with code $EXIT_CODE"
   echo "Debug info:"
-  echo "  Node: $(node --version 2>&1 || echo 'not found')"
   echo "  Claude: $(claude --version 2>&1 || echo 'not found')"
   echo "  TERM: ${TERM:-unset}"
   echo "  TTY: $(tty 2>&1 || echo 'not a tty')"
