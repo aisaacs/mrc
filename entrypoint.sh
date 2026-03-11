@@ -20,7 +20,7 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-sudo ALLOW_WEB="${ALLOW_WEB:-}" /usr/local/bin/init-firewall.sh
+sudo ALLOW_WEB="${ALLOW_WEB:-}" MRC_S3_DOMAIN="${MRC_S3_DOMAIN:-}" /usr/local/bin/init-firewall.sh
 
 # Seed plugins and config from build-time defaults into the persistent volume.
 # Copies marketplace data and merges plugin settings without overwriting user changes.
@@ -64,6 +64,9 @@ if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
     echo '{"hasCompletedOnboarding":true}' > "$HOME/.claude/claude.json"
   fi
 fi
+
+# Start S3 session sync in the background (exits silently if not configured)
+/usr/local/bin/sync-sessions.sh &
 
 echo "Launching Claude Code..."
 claude --dangerously-skip-permissions "$@"

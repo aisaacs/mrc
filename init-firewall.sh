@@ -78,6 +78,25 @@ for domain in \
     done < <(echo "$ips")
 done
 
+# If S3 sync is configured, allow the S3 endpoint
+if [ -n "${MRC_S3_DOMAIN:-}" ]; then
+    echo "Resolving S3 endpoint $MRC_S3_DOMAIN..."
+    s3_ips=$(dig +noall +answer A "$MRC_S3_DOMAIN" | awk '$4 == "A" {print $5}')
+    if [ -n "$s3_ips" ]; then
+        while read -r ip; do
+            echo "Adding $ip for $MRC_S3_DOMAIN"
+            ipset add allowed-domains "$ip" -exist
+        done < <(echo "$s3_ips")
+        # S3 uses many IPs; add the /16 range since S3 IPs rotate frequently
+        first_ip=$(echo "$s3_ips" | head -1)
+        s3_prefix=$(echo "$first_ip" | cut -d. -f1-2)
+        echo "Adding ${s3_prefix}.0.0/16 for S3 IP rotation"
+        ipset add allowed-domains "${s3_prefix}.0.0/16" -exist
+    else
+        echo "WARNING: Failed to resolve $MRC_S3_DOMAIN — S3 sync will not work"
+    fi
+fi
+
 # Get host IP from default route
 HOST_IP=$(ip route | grep default | cut -d" " -f3)
 if [ -z "$HOST_IP" ]; then

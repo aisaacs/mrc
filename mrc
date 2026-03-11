@@ -9,6 +9,7 @@
 # Options:
 #   -r, --rebuild  Force a full image rebuild (no cache)
 #   -v, --verbose  Show Colima and Docker output (useful for debugging)
+#   -s, --sessions Pick a session from S3 to resume
 #   -w, --web      Allow outbound HTTPS to any host (for web search/fetch)
 #
 # Examples:
@@ -68,12 +69,14 @@ IMAGE_NAME="mister-claude"
 VERBOSE=false
 ALLOW_WEB=false
 REBUILD=false
+PICK_SESSION=false
 args=()
 for arg in "$@"; do
   case "$arg" in
-    --rebuild|-r) REBUILD=true ;;
-    --verbose|-v) VERBOSE=true ;;
-    --web|-w)     ALLOW_WEB=true ;;
+    --rebuild|-r)  REBUILD=true ;;
+    --verbose|-v)  VERBOSE=true ;;
+    --web|-w)      ALLOW_WEB=true ;;
+    --sessions|-s) PICK_SESSION=true ;;
     *) args+=("$arg") ;;
   esac
 done
@@ -111,6 +114,19 @@ if $ALLOW_WEB; then
   ENV_FLAGS+=(-e ALLOW_WEB=1)
 fi
 ENV_FLAGS+=(-e CLAUDE_CODE_MAX_OUTPUT_TOKENS="${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-128000}")
+
+# S3 session sync
+if [[ -n "${MRC_S3_BUCKET:-}" ]]; then
+  S3_REGION="${AWS_DEFAULT_REGION:-us-east-1}"
+  ENV_FLAGS+=(-e MRC_S3_BUCKET)
+  ENV_FLAGS+=(-e "MRC_S3_PREFIX=${MRC_S3_PREFIX:-sessions}")
+  ENV_FLAGS+=(-e "AWS_DEFAULT_REGION=${S3_REGION}")
+  ENV_FLAGS+=(-e "MRC_S3_DOMAIN=${MRC_S3_BUCKET}.s3.${S3_REGION}.amazonaws.com")
+  [[ -n "${AWS_ACCESS_KEY_ID:-}" ]]     && ENV_FLAGS+=(-e AWS_ACCESS_KEY_ID)
+  [[ -n "${AWS_SECRET_ACCESS_KEY:-}" ]] && ENV_FLAGS+=(-e AWS_SECRET_ACCESS_KEY)
+  [[ -n "${AWS_SESSION_TOKEN:-}" ]]     && ENV_FLAGS+=(-e AWS_SESSION_TOKEN)
+  [[ -n "${MRC_SYNC_INTERVAL:-}" ]]     && ENV_FLAGS+=(-e MRC_SYNC_INTERVAL)
+fi
 
 # Ensure Colima is running
 STARTED_COLIMA=false
@@ -275,12 +291,39 @@ if [[ -n "$CLIP_PID" ]]; then
 else
   echo "  → Clipboard: disabled (install socat for image paste)"
 fi
+if [[ -n "${MRC_S3_BUCKET:-}" ]]; then
+  echo "  → Sessions:  syncing to s3://${MRC_S3_BUCKET}/${MRC_S3_PREFIX:-sessions}/"
+else
+  echo "  → Sessions:  local only (set MRC_S3_BUCKET to sync)"
+fi
 if $ALLOW_WEB; then
   echo "  → Firewall:  jammed, but he can see the web (--web)"
 else
   echo "  → Firewall:  jammed (just like their radar)"
 fi
 echo ""
+
+# If --sessions flag, run the picker on the host to select a session from S3
+if $PICK_SESSION; then
+  if [[ -z "${MRC_S3_BUCKET:-}" ]]; then
+    echo "  ! MRC_S3_BUCKET is not set — can't list remote sessions" >&2
+    exit 1
+  fi
+  echo ""
+  PICK_RESULT=$(node "$SCRIPT_DIR/pick-session.js")
+  if [[ -z "$PICK_RESULT" ]]; then
+    echo "No session selected."
+    exit 0
+  fi
+  RESUME_ID="${PICK_RESULT%%:*}"
+  SESSION_FILE="${PICK_RESULT#*:}"
+  echo ""
+  echo "  Resuming session: $RESUME_ID"
+  echo ""
+  # Mount the downloaded session file into the container's project dir
+  VOLUMES+=(-v "$SESSION_FILE:/home/coder/.claude/projects/-workspace/${RESUME_ID}.jsonl:ro")
+  set -- "--resume" "$RESUME_ID" "$@"
+fi
 
 docker run --rm -it --init \
   --cap-add=NET_ADMIN \
