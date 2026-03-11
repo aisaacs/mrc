@@ -16,6 +16,49 @@ set -euo pipefail
 
 log() { echo "[clipboard-proxy] $(date +%H:%M:%S) $*" >&2; }
 
+_darwin_get_image() {
+  # Try to extract a clipboard image as PNG to the given file path.
+  # Strategy:
+  #   1. pngpaste (Homebrew) — most reliable, handles all image types
+  #   2. osascript NSBitmapImageRep — reads any image type (PNG, TIFF, etc.)
+  #      and converts to PNG output
+  #   3. osascript raw PNG data — legacy approach (direct PNG pasteboard type)
+  local outfile="$1"
+
+  # Method 1: pngpaste (brew install pngpaste)
+  if command -v pngpaste &>/dev/null; then
+    if pngpaste "$outfile" 2>/dev/null && [ -s "$outfile" ]; then
+      return 0
+    fi
+    rm -f "$outfile"
+  fi
+
+  # Method 2: osascript with NSBitmapImageRep (handles TIFF, PNG, JPEG, etc.)
+  if osascript -e '
+    use framework "AppKit"
+    use framework "Foundation"
+    set pb to current application'"'"'s NSPasteboard'"'"'s generalPasteboard()
+    -- Try to create an image from whatever is on the clipboard
+    set imgTypes to {current application'"'"'s NSPasteboardTypePNG, current application'"'"'s NSPasteboardTypeTIFF}
+    set rawData to missing value
+    repeat with t in imgTypes
+      set rawData to (pb'"'"'s dataForType:t)
+      if rawData is not missing value then exit repeat
+    end repeat
+    if rawData is missing value then error "no image"
+    -- Convert to PNG via NSBitmapImageRep
+    set imgRep to current application'"'"'s NSBitmapImageRep'"'"'s imageRepWithData:rawData
+    if imgRep is missing value then error "bad image data"
+    set pngData to imgRep'"'"'s representationUsingType:(current application'"'"'s NSBitmapImageFileTypePNG) |properties|:(missing value)
+    pngData'"'"'s writeToFile:"'"$outfile"'" atomically:true
+  ' >/dev/null 2>/dev/null && [ -s "$outfile" ]; then
+    return 0
+  fi
+  rm -f "$outfile"
+
+  return 1
+}
+
 read_clipboard() {
   local mime="$1"
   case "$(uname -s)" in
@@ -26,29 +69,17 @@ read_clipboard() {
           # Always report text; verify image is actually readable before advertising
           echo "text/plain"
           local tmpcheck="/tmp/mrc-clip-check.$$"
-          if osascript -e '
-            use framework "AppKit"
-            use framework "Foundation"
-            set pb to current application'"'"'s NSPasteboard'"'"'s generalPasteboard()
-            set imgData to pb'"'"'s dataForType:(current application'"'"'s NSPasteboardTypePNG)
-            if imgData is missing value then error "no image"
-            imgData'"'"'s writeToFile:"'"$tmpcheck"'" atomically:true
-          ' >/dev/null 2>/dev/null && [ -s "$tmpcheck" ]; then
+          if _darwin_get_image "$tmpcheck" && [ -s "$tmpcheck" ]; then
             echo "image/png"
           fi
           rm -f "$tmpcheck"
           ;;
         image/png)
-          # Use osascript to write clipboard PNG to a temp file, then stream it
+          # Extract clipboard image as PNG via helper, stream to stdout
           local tmpfile="/tmp/mrc-clip-img.$$"
-          osascript -e '
-            use framework "AppKit"
-            use framework "Foundation"
-            set pb to current application'"'"'s NSPasteboard'"'"'s generalPasteboard()
-            set imgData to pb'"'"'s dataForType:(current application'"'"'s NSPasteboardTypePNG)
-            if imgData is missing value then error "no image"
-            imgData'"'"'s writeToFile:"'"$tmpfile"'" atomically:true
-          ' >/dev/null 2>/dev/null && cat "$tmpfile" || true
+          if _darwin_get_image "$tmpfile" && [ -s "$tmpfile" ]; then
+            cat "$tmpfile"
+          fi
           rm -f "$tmpfile"
           ;;
         text/plain)
