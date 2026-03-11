@@ -44,10 +44,35 @@ if [[ "$DIRECTION" != "out" ]]; then
 fi
 
 log "connecting to $PROXY_HOST:$PROXY_PORT for GET $TARGET"
-# Stream directly to stdout — never capture binary data in a bash variable
-# (bash strips null bytes from variables, which corrupts PNG data)
-printf 'GET %s\n' "$TARGET" | socat -,ignoreeof TCP:"$PROXY_HOST":"$PROXY_PORT" 2>/dev/null || {
-  log "socat failed (exit $?)"
-  exit 1
-}
-log "request complete"
+
+# For image types, buffer to a temp file and verify non-empty before outputting.
+# This prevents Claude Code from sending an empty base64 image to the API
+# (which causes a 400 error). For text, stream directly.
+case "$TARGET" in
+  image/*)
+    TMPFILE=$(mktemp /tmp/mrc-xclip-img.XXXXXX)
+    trap 'rm -f "$TMPFILE"' EXIT
+    printf 'GET %s\n' "$TARGET" | socat -,ignoreeof TCP:"$PROXY_HOST":"$PROXY_PORT" > "$TMPFILE" 2>/dev/null || {
+      log "socat failed (exit $?)"
+      rm -f "$TMPFILE"
+      exit 1
+    }
+    if [ -s "$TMPFILE" ]; then
+      cat "$TMPFILE"
+      log "request complete ($(wc -c < "$TMPFILE") bytes)"
+    else
+      log "empty image data — reporting no image"
+      rm -f "$TMPFILE"
+      exit 1
+    fi
+    ;;
+  *)
+    # Stream directly to stdout — never capture binary data in a bash variable
+    # (bash strips null bytes from variables, which corrupts PNG data)
+    printf 'GET %s\n' "$TARGET" | socat -,ignoreeof TCP:"$PROXY_HOST":"$PROXY_PORT" 2>/dev/null || {
+      log "socat failed (exit $?)"
+      exit 1
+    }
+    log "request complete"
+    ;;
+esac

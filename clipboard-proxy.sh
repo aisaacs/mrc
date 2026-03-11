@@ -23,11 +23,20 @@ read_clipboard() {
       case "$mime" in
         TARGETS)
           # Report which types are available on the clipboard
-          # Always report text; check for image
+          # Always report text; verify image is actually readable before advertising
           echo "text/plain"
-          if osascript -e 'the clipboard as «class PNGf»' &>/dev/null; then
+          local tmpcheck="/tmp/mrc-clip-check.$$"
+          if osascript -e '
+            use framework "AppKit"
+            use framework "Foundation"
+            set pb to current application'"'"'s NSPasteboard'"'"'s generalPasteboard()
+            set imgData to pb'"'"'s dataForType:(current application'"'"'s NSPasteboardTypePNG)
+            if imgData is missing value then error "no image"
+            imgData'"'"'s writeToFile:"'"$tmpcheck"'" atomically:true
+          ' >/dev/null 2>/dev/null && [ -s "$tmpcheck" ]; then
             echo "image/png"
           fi
+          rm -f "$tmpcheck"
           ;;
         image/png)
           # Use osascript to write clipboard PNG to a temp file, then stream it
@@ -50,7 +59,20 @@ read_clipboard() {
     Linux)
       case "$mime" in
         TARGETS)
-          xclip -selection clipboard -t TARGETS -o 2>/dev/null || true
+          # Only report image types if we can actually read non-empty data
+          local targets
+          targets=$(xclip -selection clipboard -t TARGETS -o 2>/dev/null || true)
+          echo "$targets" | while IFS= read -r t; do
+            case "$t" in
+              image/*)
+                # Verify we can actually read this image type
+                if xclip -selection clipboard -t "$t" -o 2>/dev/null | head -c 1 | grep -qc .; then
+                  echo "$t"
+                fi
+                ;;
+              *) echo "$t" ;;
+            esac
+          done
           ;;
         image/png|image/bmp|image/jpeg|image/jpg|image/gif|image/webp)
           xclip -selection clipboard -t "$mime" -o 2>/dev/null || true
