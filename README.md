@@ -132,7 +132,26 @@ When you quit Claude, the container disappears. Your files are safe on the host 
 
 Claude's global config (auth, settings, plugins) is persisted in a per-repo Docker volume (`mrc-config-<hash>`) between runs. Project-specific data (memory, conversation history, project settings) is stored in `.mrc/` inside the repo itself — it survives volume resets and travels with the project.
 
-Sessions auto-resume: when you re-open the same repo, Claude picks up where you left off. To start fresh, pass `-- --no-continue` or delete `.mrc/`.
+Sessions auto-resume: when you re-open the same repo, Claude picks up where you left off. To start a new conversation instead, use `mrc --new`.
+
+## Sessions
+
+Each conversation is saved in `.mrc/` and can be listed, named, and resumed.
+
+```bash
+# List sessions
+mrc sessions ls
+
+# Name the most recent session
+mrc sessions name "auth-refactor"
+
+# Name a specific session by number
+mrc sessions name "clipboard-fix" 2
+
+# Resume a session by name or number
+mrc sessions resume auth-refactor
+mrc sessions resume 2
+```
 
 ## Keeping secrets from Mister Claude
 

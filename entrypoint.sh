@@ -88,9 +88,14 @@ if [ -d "/workspace/.git" ]; then
   fi
 fi
 
-# Auto-resume if a prior conversation exists in .mrc/
+# Session resume logic:
+#   RESUME_SESSION=<uuid>  → resume that specific session
+#   NEW_SESSION=1          → start fresh
+#   otherwise              → continue most recent session if one exists
 RESUME_FLAG=""
-if ls /workspace/.mrc/*.jsonl >/dev/null 2>&1; then
+if [ -n "${RESUME_SESSION:-}" ]; then
+  RESUME_FLAG="--resume $RESUME_SESSION"
+elif [ "${NEW_SESSION:-}" != "1" ] && ls /workspace/.mrc/*.jsonl >/dev/null 2>&1; then
   RESUME_FLAG="--continue"
 fi
 

@@ -9,7 +9,13 @@
 # Options:
 #   -r, --rebuild  Force a full image rebuild (no cache)
 #   -v, --verbose  Show Colima and Docker output (useful for debugging)
-#   -w, --web      Allow outbound HTTPS to any host (for web search/fetch)
+#   -n, --new            Start a new conversation (don't resume the previous one)
+#   -w, --web            Allow outbound HTTPS to any host (for web search/fetch)
+#
+# Session management:
+#   mrc sessions ls [path]                List saved sessions
+#   mrc sessions name <name> [#] [path]   Name a session (default: most recent)
+#   mrc sessions resume <name-or-#> [path] Resume a specific session
 #
 # Examples:
 #   mrc ~/projects/myapp
@@ -67,17 +73,69 @@ IMAGE_NAME="mister-claude"
 # Parse flags
 VERBOSE=false
 ALLOW_WEB=false
+NEW_SESSION=false
 REBUILD=false
+RESUME_SESSION=""
 args=()
-for arg in "$@"; do
-  case "$arg" in
-    --rebuild|-r) REBUILD=true ;;
-    --verbose|-v) VERBOSE=true ;;
-    --web|-w)     ALLOW_WEB=true ;;
-    *) args+=("$arg") ;;
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --help|-h)     sed -n '2,/^$/{s/^# //;s/^#//;p;}' "$0"; exit 0 ;;
+    --new|-n)      NEW_SESSION=true ;;
+    --rebuild|-r)  REBUILD=true ;;
+    --verbose|-v)  VERBOSE=true ;;
+    --web|-w)      ALLOW_WEB=true ;;
+    *)             args+=("$1") ;;
   esac
+  shift
 done
 set -- "${args[@]+"${args[@]}"}"
+
+# --- Subcommand: mrc sessions <ls|name|resume> ---
+if [[ "${1:-}" == "sessions" ]]; then
+  SUBCMD="${2:-ls}"
+  shift 2 || shift $#
+  SESSIONS="$SCRIPT_DIR/mrc-sessions"
+
+  case "$SUBCMD" in
+    ls)
+      REPO_PATH="${1:-.}"
+      REPO_PATH="$(cd "$REPO_PATH" && pwd)"
+      python3 "$SESSIONS" list "$REPO_PATH/.mrc"
+      ;;
+    name)
+      NAME="${1:-}"
+      NUMBER="${2:-1}"
+      REPO_PATH="${3:-.}"
+      REPO_PATH="$(cd "$REPO_PATH" && pwd)"
+      if [[ -z "$NAME" ]]; then
+        echo "Usage: mrc sessions name <name> [#] [path]" >&2
+        exit 1
+      fi
+      python3 "$SESSIONS" name "$REPO_PATH/.mrc" "$NAME" "$NUMBER"
+      ;;
+    resume)
+      QUERY="${1:-}"
+      REPO_PATH="${2:-.}"
+      REPO_PATH="$(cd "$REPO_PATH" && pwd)"
+      if [[ -z "$QUERY" ]]; then
+        echo "Usage: mrc sessions resume <name-or-#> [path]" >&2
+        exit 1
+      fi
+      RESUME_SESSION="$(python3 "$SESSIONS" resolve "$REPO_PATH/.mrc" "$QUERY")"
+      # Fall through to normal launch with RESUME_SESSION set
+      ;;
+    *)
+      echo "Unknown sessions command: $SUBCMD" >&2
+      echo "Usage: mrc sessions <ls|name|resume>" >&2
+      exit 1
+      ;;
+  esac
+
+  # ls and name exit here; resume falls through to launch
+  if [[ "$SUBCMD" != "resume" ]]; then
+    exit 0
+  fi
+fi
 
 # Redirect target for noisy commands
 if $VERBOSE; then
@@ -94,6 +152,7 @@ shift || true
 # Strip optional "--" separator
 [[ "${1:-}" == "--" ]] && shift
 
+
 # Load .env file if present (for dedicated API key)
 ENV_FILE="$SCRIPT_DIR/.env"
 if [[ -f "$ENV_FILE" ]]; then
@@ -109,6 +168,12 @@ if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
 fi
 if $ALLOW_WEB; then
   ENV_FLAGS+=(-e ALLOW_WEB=1)
+fi
+if $NEW_SESSION; then
+  ENV_FLAGS+=(-e NEW_SESSION=1)
+fi
+if [[ -n "$RESUME_SESSION" ]]; then
+  ENV_FLAGS+=(-e "RESUME_SESSION=$RESUME_SESSION")
 fi
 ENV_FLAGS+=(-e CLAUDE_CODE_MAX_OUTPUT_TOKENS="${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-128000}")
 

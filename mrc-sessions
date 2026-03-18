@@ -1,0 +1,147 @@
+#!/usr/bin/env python3
+"""
+mrc-sessions — Session manager for Mister Claude.
+
+Usage:
+  mrc-sessions list   <mrc-dir>
+  mrc-sessions name   <mrc-dir> <name> [number]
+  mrc-sessions resolve <mrc-dir> <name-or-number>
+"""
+
+import json
+import os
+import sys
+from pathlib import Path
+
+
+def get_sessions(mrc_dir):
+    """Return sessions sorted newest-first as [(uuid, date, preview), ...]."""
+    sessions = []
+    for f in Path(mrc_dir).glob("*.jsonl"):
+        uuid = f.stem
+        try:
+            with open(f) as fh:
+                for line in fh:
+                    obj = json.loads(line)
+                    if obj.get("type") == "user":
+                        content = obj.get("message", {}).get("content", "")
+                        if isinstance(content, list):
+                            content = next(
+                                (c.get("text", "") for c in content if c.get("type") == "text"),
+                                "",
+                            )
+                        ts = obj.get("timestamp", "")[:10]
+                        preview = content[:60].replace("\n", " ")
+                        if len(content) > 60:
+                            preview += "..."
+                        sessions.append((uuid, ts, preview))
+                        break
+        except (json.JSONDecodeError, OSError):
+            continue
+    sessions.sort(key=lambda s: s[1], reverse=True)
+    return sessions
+
+
+def load_names(mrc_dir):
+    """Load session-names file into a dict."""
+    names_file = Path(mrc_dir) / "session-names"
+    names = {}
+    if names_file.exists():
+        for line in names_file.read_text().splitlines():
+            if "=" in line:
+                uuid, name = line.split("=", 1)
+                if uuid and name:
+                    names[uuid] = name
+    return names
+
+
+def save_names(mrc_dir, names):
+    """Write session-names file."""
+    names_file = Path(mrc_dir) / "session-names"
+    names_file.parent.mkdir(parents=True, exist_ok=True)
+    names_file.write_text(
+        "\n".join(f"{uuid}={name}" for uuid, name in names.items()) + "\n"
+    )
+
+
+def resolve(mrc_dir, query):
+    """Resolve a name or list number to a UUID. Returns UUID or None."""
+    sessions = get_sessions(mrc_dir)
+    names = load_names(mrc_dir)
+
+    # Try as a number
+    try:
+        idx = int(query)
+        if 1 <= idx <= len(sessions):
+            return sessions[idx - 1][0]
+    except ValueError:
+        pass
+
+    # Try as a name
+    for uuid, _, _ in sessions:
+        if names.get(uuid) == query:
+            return uuid
+
+    return None
+
+
+def cmd_list(mrc_dir):
+    sessions = get_sessions(mrc_dir)
+    if not sessions:
+        print(f"No sessions found in {mrc_dir}")
+        return
+
+    names = load_names(mrc_dir)
+    print(f"  {'#':<4} {'Name':<20} {'Date':<12} Preview")
+    print(f"  {'—':<4} {'————':<20} {'————':<12} ———————")
+    for i, (uuid, ts, preview) in enumerate(sessions, 1):
+        name = names.get(uuid, "(unnamed)")
+        print(f"  {i:<4} {name:<20} {ts:<12} {preview}")
+
+
+def cmd_name(mrc_dir, name, target="1"):
+    uuid = resolve(mrc_dir, target)
+    if not uuid:
+        print(f"Session not found: {target}", file=sys.stderr)
+        print(f"Run 'mrc --sessions' to list available sessions.", file=sys.stderr)
+        sys.exit(1)
+
+    names = load_names(mrc_dir)
+    names[uuid] = name
+    save_names(mrc_dir, names)
+    print(f'Named session {uuid} → "{name}"')
+
+
+def cmd_resolve(mrc_dir, query):
+    uuid = resolve(mrc_dir, query)
+    if not uuid:
+        print(f"Session not found: {query}", file=sys.stderr)
+        print(f"Run 'mrc --sessions' to list available sessions.", file=sys.stderr)
+        sys.exit(1)
+    print(uuid)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) < 3:
+        print(__doc__.strip(), file=sys.stderr)
+        sys.exit(1)
+
+    cmd = sys.argv[1]
+    mrc_dir = sys.argv[2]
+
+    if cmd == "list":
+        cmd_list(mrc_dir)
+    elif cmd == "name":
+        if len(sys.argv) < 4:
+            print("Usage: mrc-sessions name <mrc-dir> <name> [number]", file=sys.stderr)
+            sys.exit(1)
+        target = sys.argv[4] if len(sys.argv) > 4 else "1"
+        cmd_name(mrc_dir, sys.argv[3], target)
+    elif cmd == "resolve":
+        if len(sys.argv) < 4:
+            print("Usage: mrc-sessions resolve <mrc-dir> <name-or-number>", file=sys.stderr)
+            sys.exit(1)
+        cmd_resolve(mrc_dir, sys.argv[3])
+    else:
+        print(f"Unknown command: {cmd}", file=sys.stderr)
+        sys.exit(1)
