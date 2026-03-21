@@ -61,6 +61,9 @@ RUN chmod +x /usr/local/bin/init-firewall.sh \
 COPY clipboard-shim.sh /usr/local/bin/xclip
 RUN chmod +x /usr/local/bin/xclip
 
+COPY mrc-notify-hook.sh /usr/local/bin/
+RUN chmod +x /usr/local/bin/mrc-notify-hook.sh
+
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
 

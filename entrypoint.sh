@@ -99,6 +99,25 @@ elif [ "${NEW_SESSION:-}" != "1" ] && ls /workspace/.mrc/*.jsonl >/dev/null 2>&1
   RESUME_FLAG="--continue"
 fi
 
+# Configure notification hook if the proxy is running on the host
+if [ -n "${MRC_NOTIFY_PORT:-}" ]; then
+  SETTINGS_FILE="$HOME/.claude/settings.json"
+  [ -f "$SETTINGS_FILE" ] || echo '{}' > "$SETTINGS_FILE"
+  node -e "
+    const fs = require('fs');
+    const s = JSON.parse(fs.readFileSync('$SETTINGS_FILE', 'utf8'));
+    s.hooks = s.hooks || {};
+    s.hooks.Stop = [{
+      matcher: '',
+      hooks: [{
+        type: 'command',
+        command: '/usr/local/bin/mrc-notify-hook.sh'
+      }]
+    }];
+    fs.writeFileSync('$SETTINGS_FILE', JSON.stringify(s, null, 2) + '\n');
+  "
+fi
+
 echo "Launching Claude Code..."
 claude --dangerously-skip-permissions $RESUME_FLAG "$@"
 EXIT_CODE=$?

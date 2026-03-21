@@ -182,6 +182,7 @@ if [[ -n "$RESUME_SESSION" ]]; then
   ENV_FLAGS+=(-e "RESUME_SESSION=$RESUME_SESSION")
 fi
 ENV_FLAGS+=(-e CLAUDE_CODE_MAX_OUTPUT_TOKENS="${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-128000}")
+ENV_FLAGS+=(-e "MRC_REPO_NAME=$(basename "$REPO_PATH")")
 
 # Ensure Colima is running
 STARTED_COLIMA=false
@@ -208,6 +209,7 @@ fi
 # Cleanup on exit: stop clipboard proxy, optionally stop Colima
 cleanup() {
   [[ -n "${CLIP_PID:-}" ]] && kill "$CLIP_PID" 2>/dev/null || true
+  [[ -n "${NOTIFY_PID:-}" ]] && kill "$NOTIFY_PID" 2>/dev/null || true
   if ${STARTED_COLIMA:-false}; then
     echo ""
     echo "🎩 Goodbye, Lone Starr."
@@ -325,6 +327,26 @@ else
   echo "  ! socat not found — install it for clipboard/image paste support"
 fi
 
+# Start notification proxy (fires macOS/Linux desktop notifications)
+NOTIFY_PORT="7723"
+NOTIFY_PID=""
+if command -v socat &>/dev/null; then
+  bash "$SCRIPT_DIR/notify-proxy.sh" "$NOTIFY_PORT" &
+  NOTIFY_PID=$!
+  for _ in $(seq 1 10); do
+    if lsof -i :"$NOTIFY_PORT" &>/dev/null 2>&1 || nc -z 127.0.0.1 "$NOTIFY_PORT" 2>/dev/null; then
+      break
+    fi
+    sleep 0.1
+  done
+  if kill -0 "$NOTIFY_PID" 2>/dev/null; then
+    ENV_FLAGS+=(-e "MRC_NOTIFY_PORT=$NOTIFY_PORT")
+  else
+    echo "  ! Notification proxy failed to start"
+    NOTIFY_PID=""
+  fi
+fi
+
 cat << 'BANNER'
       __  __ ____     ____  _                 _
      |  \/  |  _ \ . / ___|| | __ _ _   _  __| | ___
@@ -347,6 +369,11 @@ if [[ -n "$CLIP_PID" ]]; then
   echo "  → Clipboard: the Schwartz can see your clipboard"
 else
   echo "  → Clipboard: disabled (install socat for image paste)"
+fi
+if [[ -n "$NOTIFY_PID" ]]; then
+  echo "  → Notify:    the Schwartz will alert you when ready"
+else
+  echo "  → Notify:    disabled (install socat for desktop notifications)"
 fi
 if $ALLOW_WEB; then
   echo "  → Firewall:  jammed, but he can see the web (--web)"
