@@ -88,17 +88,24 @@ fi
 HOST_NETWORK=$(echo "$HOST_IP" | sed "s/\.[0-9]*$/.0\/24/")
 echo "Host network detected as: $HOST_NETWORK"
 
-# Allow host network communication (Docker bridge)
-iptables -A INPUT -s "$HOST_NETWORK" -j ACCEPT
-iptables -A OUTPUT -d "$HOST_NETWORK" -j ACCEPT
+# Allow host network communication — only specific proxy ports, not full access.
+# This prevents the container from reaching services like Postgres on the host.
+CLIP_PORT="${MRC_CLIPBOARD_PORT:-7722}"
+NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}"
+for port in $CLIP_PORT $NOTIFY_PORT; do
+    iptables -A OUTPUT -d "$HOST_NETWORK" -p tcp --dport "$port" -j ACCEPT
+    iptables -A INPUT -s "$HOST_NETWORK" -p tcp --sport "$port" -j ACCEPT
+done
 
 # Allow traffic to host.docker.internal (may be outside the Docker bridge subnet,
-# e.g. Colima's VM host IP). Needed for clipboard proxy.
+# e.g. Colima's VM host IP). Needed for clipboard and notification proxies.
 HDINT_IP=$(getent hosts host.docker.internal 2>/dev/null | awk '{print $1}')
 if [ -n "$HDINT_IP" ] && [ "$HDINT_IP" != "$HOST_IP" ]; then
-    echo "Allowing host.docker.internal ($HDINT_IP)"
-    iptables -A OUTPUT -d "$HDINT_IP" -j ACCEPT
-    iptables -A INPUT -s "$HDINT_IP" -j ACCEPT
+    echo "Allowing host.docker.internal ($HDINT_IP) on proxy ports only"
+    for port in $CLIP_PORT $NOTIFY_PORT; do
+        iptables -A OUTPUT -d "$HDINT_IP" -p tcp --dport "$port" -j ACCEPT
+        iptables -A INPUT -s "$HDINT_IP" -p tcp --sport "$port" -j ACCEPT
+    done
 fi
 
 # Allow established connections for already-approved traffic

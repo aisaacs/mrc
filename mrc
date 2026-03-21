@@ -12,6 +12,11 @@
 #   -n, --new [name]     Start a new conversation (optionally named)
 #   -w, --web            Allow outbound HTTPS to any host (for web search/fetch)
 #   --no-summary         Skip AI session summary on exit
+#   --no-notify          Disable desktop notifications on response complete
+#   --no-sound           Disable notification sound (still shows notification)
+#
+# Commands:
+#   mrc status                            Show active containers across repos
 #
 # Session management:
 #   mrc sessions ls [path]                List saved sessions
@@ -24,13 +29,19 @@
 #   mrc .                 -- -p "fix the failing tests"
 #   mrc -v ~/projects/myapp
 #
-# Hidden directories:
-#   Create a .sandboxignore file in your repo root listing paths to hide
-#   from the container (one per line, relative to repo root):
+# Hidden paths:
+#   Create .sandboxignore files anywhere in your repo tree listing paths
+#   to hide from the container (one per line, relative to the directory
+#   containing the .sandboxignore file — works like .gitignore):
 #
 #     .env
 #     secrets/
 #     infrastructure/
+#
+# Config files (one flag per line, comments with #):
+#   ~/.mrcrc              Global defaults
+#   <repo>/.mrcrc         Per-repo overrides (merged on top of global)
+#   CLI flags always take precedence over config files.
 #
 # Environment:
 #   ANTHROPIC_API_KEY  — optional; loaded from .env next to this script if present
@@ -71,10 +82,43 @@ done
 SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
 IMAGE_NAME="mister-claude"
 
+# Load config files: ~/.mrcrc (global), then .mrcrc (repo-local).
+# Lines are treated as flags, merged with CLI args (CLI wins by virtue of being last).
+read_mrcrc() {
+  local file="$1"
+  [[ -f "$file" ]] || return 0
+  while IFS= read -r line; do
+    line="${line%%#*}"          # strip comments
+    line="${line#"${line%%[![:space:]]*}"}"  # trim leading
+    line="${line%"${line##*[![:space:]]}"}"  # trim trailing
+    [[ -z "$line" ]] && continue
+    config_args+=("$line")
+  done < "$file"
+}
+
+config_args=()
+read_mrcrc "$HOME/.mrcrc"
+
+# Sniff repo path from CLI args for per-repo config (before full parsing).
+# We need this early to find .mrcrc in the repo root.
+_repo_hint=""
+for _arg in "$@"; do
+  [[ "$_arg" == -* || "$_arg" == "--" ]] && continue
+  [[ "$_arg" == "status" || "$_arg" == "sessions" ]] && break
+  if [[ -d "$_arg" ]]; then _repo_hint="$(cd "$_arg" && pwd)"; break; fi
+done
+: "${_repo_hint:=$(pwd)}"
+read_mrcrc "$_repo_hint/.mrcrc"
+
+# Merge: config flags first, then CLI args (CLI overrides)
+set -- "${config_args[@]+"${config_args[@]}"}" "$@"
+
 # Parse flags
 VERBOSE=false
 ALLOW_WEB=false
 NEW_SESSION=false
+NO_NOTIFY=false
+NO_SOUND=false
 NO_SUMMARY=false
 REBUILD=false
 RESUME_SESSION=""
@@ -85,6 +129,8 @@ while [[ $# -gt 0 ]]; do
     --new|-n)      NEW_SESSION=true; NEW_SESSION_NAME="${2:-}";
                    if [[ -n "$NEW_SESSION_NAME" && "$NEW_SESSION_NAME" != -* ]]; then shift; fi
                    ;;
+    --no-notify)   NO_NOTIFY=true ;;
+    --no-sound)    NO_SOUND=true ;;
     --no-summary)  NO_SUMMARY=true ;;
     --rebuild|-r)  REBUILD=true ;;
     --verbose|-v)  VERBOSE=true ;;
@@ -94,6 +140,61 @@ while [[ $# -gt 0 ]]; do
   shift
 done
 set -- "${args[@]+"${args[@]}"}"
+
+# --- Subcommand: mrc status ---
+if [[ "${1:-}" == "status" ]]; then
+  # Ensure Docker is reachable
+  if command -v colima &>/dev/null && [[ -z "${DOCKER_HOST:-}" ]]; then
+    export DOCKER_HOST="unix://${HOME}/.colima/default/docker.sock"
+  fi
+  if ! docker info &>/dev/null 2>&1; then
+    echo "Docker is not running." >&2
+    exit 1
+  fi
+
+  CONTAINERS="$(docker ps --filter label=mrc=1 --format '{{.ID}}' 2>/dev/null)"
+  if [[ -z "$CONTAINERS" ]]; then
+    echo "  No Mr. Claude containers running."
+    exit 0
+  fi
+
+  echo ""
+  echo "  🎩 Active Mr. Claude Sessions"
+  echo "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+  while IFS= read -r cid; do
+    REPO_NAME="$(docker inspect --format '{{index .Config.Labels "mrc.repo.name"}}' "$cid" 2>/dev/null)"
+    REPO_PATH_LABEL="$(docker inspect --format '{{index .Config.Labels "mrc.repo"}}' "$cid" 2>/dev/null)"
+    WEB="$(docker inspect --format '{{index .Config.Labels "mrc.web"}}' "$cid" 2>/dev/null)"
+    STARTED="$(docker inspect --format '{{.State.StartedAt}}' "$cid" 2>/dev/null)"
+    STATUS="$(docker inspect --format '{{.State.Status}}' "$cid" 2>/dev/null)"
+
+    # Calculate uptime
+    if [[ -n "$STARTED" ]]; then
+      START_EPOCH="$(date -d "$STARTED" +%s 2>/dev/null || date -jf "%Y-%m-%dT%H:%M:%S" "${STARTED%%.*}" +%s 2>/dev/null || echo 0)"
+      NOW_EPOCH="$(date +%s)"
+      UPTIME_SECS=$(( NOW_EPOCH - START_EPOCH ))
+      if [[ "$UPTIME_SECS" -ge 3600 ]]; then
+        UPTIME="$((UPTIME_SECS / 3600))h $((UPTIME_SECS % 3600 / 60))m"
+      elif [[ "$UPTIME_SECS" -ge 60 ]]; then
+        UPTIME="$((UPTIME_SECS / 60))m"
+      else
+        UPTIME="${UPTIME_SECS}s"
+      fi
+    else
+      UPTIME="unknown"
+    fi
+
+    WEB_TAG=""
+    if [[ "$WEB" == "true" ]]; then
+      WEB_TAG=" (--web)"
+    fi
+
+    echo "  → ${REPO_NAME:-unknown}  ·  up ${UPTIME}${WEB_TAG}"
+    echo "    ${REPO_PATH_LABEL:-?}  [${cid:0:12}]"
+  done <<< "$CONTAINERS"
+  echo ""
+  exit 0
+fi
 
 # --- Subcommand: mrc sessions <ls|name|resume> ---
 if [[ "${1:-}" == "sessions" ]]; then
@@ -264,9 +365,14 @@ fi
 # Build volume flags
 VOLUMES=(-v "$REPO_PATH:/workspace")
 
-# Read .sandboxignore and create volume overlays for each entry
-IGNORE_FILE="$REPO_PATH/.sandboxignore"
-if [[ -f "$IGNORE_FILE" ]]; then
+# Read .sandboxignore files recursively (like .gitignore — each applies relative
+# to the directory it lives in).
+process_sandboxignore() {
+  local ignore_file="$1"
+  local ignore_dir="$(dirname "$ignore_file")"
+  local rel_dir="${ignore_dir#"$REPO_PATH"}"
+  rel_dir="${rel_dir#/}"  # strip leading slash
+
   while IFS= read -r line; do
     # Skip blank lines and comments
     line="${line%%#*}"          # strip inline comments
@@ -283,22 +389,32 @@ if [[ -f "$IGNORE_FILE" ]]; then
       continue
     fi
 
-    HOST_PATH="$REPO_PATH/$line"
-    CONTAINER_PATH="/workspace/$line"
+    # Resolve relative to the directory containing this .sandboxignore
+    if [[ -n "$rel_dir" ]]; then
+      REL_PATH="$rel_dir/$line"
+    else
+      REL_PATH="$line"
+    fi
+    HOST_PATH="$REPO_PATH/$REL_PATH"
+    CONTAINER_PATH="/workspace/$REL_PATH"
 
     if [[ -f "$HOST_PATH" ]]; then
       # Files: mount /dev/null over them (appears as empty file)
       VOLUMES+=(-v "/dev/null:$CONTAINER_PATH:ro")
-      echo "  → Cloaked:   $line (file)"
+      echo "  → Cloaked:   $REL_PATH (file)"
     elif [[ -d "$HOST_PATH" ]]; then
       # Directories: anonymous volume overlay (appears as empty dir)
       VOLUMES+=(-v "$CONTAINER_PATH")
-      echo "  → Cloaked:   $line (dir)"
+      echo "  → Cloaked:   $REL_PATH (dir)"
     else
-      echo "  → Not found: $line (we ain't found shit)"
+      echo "  → Not found: $REL_PATH (we ain't found shit)"
     fi
-  done < "$IGNORE_FILE"
-fi
+  done < "$ignore_file"
+}
+
+while IFS= read -r -d '' ignore_file; do
+  process_sandboxignore "$ignore_file"
+done < <(find "$REPO_PATH" -name .sandboxignore -not -path '*/.git/*' -not -path '*/.mrc/*' -not -path '*/node_modules/*' -print0 | sort -z)
 
 # Persist Claude config between runs (per-repo to avoid cross-project contamination)
 REPO_HASH="$(printf '%s' "$REPO_PATH" | md5sum | cut -c1-12)"
@@ -330,8 +446,12 @@ fi
 # Start notification proxy (fires macOS/Linux desktop notifications)
 NOTIFY_PORT="7723"
 NOTIFY_PID=""
-if command -v socat &>/dev/null; then
-  bash "$SCRIPT_DIR/notify-proxy.sh" "$NOTIFY_PORT" &
+if ! $NO_NOTIFY && command -v socat &>/dev/null; then
+  NOTIFY_PROXY_ARGS=("$NOTIFY_PORT")
+  if $NO_SOUND; then
+    NOTIFY_PROXY_ARGS+=(--no-sound)
+  fi
+  bash "$SCRIPT_DIR/notify-proxy.sh" "${NOTIFY_PROXY_ARGS[@]}" &
   NOTIFY_PID=$!
   for _ in $(seq 1 10); do
     if lsof -i :"$NOTIFY_PORT" &>/dev/null 2>&1 || nc -z 127.0.0.1 "$NOTIFY_PORT" 2>/dev/null; then
@@ -393,6 +513,10 @@ docker run --rm -it --init \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
   --add-host=host.docker.internal:host-gateway \
+  --label mrc=1 \
+  --label "mrc.repo=$REPO_PATH" \
+  --label "mrc.repo.name=$(basename "$REPO_PATH")" \
+  --label "mrc.web=$ALLOW_WEB" \
   ${ENV_FLAGS[@]+"${ENV_FLAGS[@]}"} \
   "${VOLUMES[@]}" \
   "$IMAGE_NAME" \
