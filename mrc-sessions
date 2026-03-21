@@ -3,14 +3,20 @@
 mrc-sessions — Session manager for Mister Claude.
 
 Usage:
-  mrc-sessions list   <mrc-dir>
-  mrc-sessions name   <mrc-dir> <name> [number]
-  mrc-sessions resolve <mrc-dir> <name-or-number>
+  mrc-sessions list       <mrc-dir>
+  mrc-sessions name       <mrc-dir> <name> [number]
+  mrc-sessions resolve    <mrc-dir> <name-or-number>
+  mrc-sessions summarize  <mrc-dir> <uuid>
+  mrc-sessions tool-misses <mrc-dir> <uuid>
 """
 
 import json
 import os
+import re
 import sys
+import urllib.request
+import urllib.error
+from datetime import datetime
 from pathlib import Path
 
 
@@ -90,6 +96,177 @@ def resolve(mrc_dir, query):
     return None
 
 
+def extract_transcript(mrc_dir, uuid):
+    """Extract a condensed transcript from a session JSONL, suitable for summarization."""
+    jsonl_file = Path(mrc_dir) / f"{uuid}.jsonl"
+    if not jsonl_file.exists():
+        return ""
+
+    lines = []
+    with open(jsonl_file) as fh:
+        for raw in fh:
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            msg_type = obj.get("type")
+            if msg_type == "user":
+                content = obj.get("message", {}).get("content", "")
+                if isinstance(content, list):
+                    content = " ".join(
+                        c.get("text", "") for c in content if c.get("type") == "text"
+                    )
+                if content.strip():
+                    lines.append(f"USER: {content.strip()}")
+
+            elif msg_type == "assistant":
+                content = obj.get("message", {}).get("content", [])
+                if isinstance(content, str):
+                    lines.append(f"ASSISTANT: {content.strip()}")
+                elif isinstance(content, list):
+                    for block in content:
+                        if block.get("type") == "text" and block.get("text", "").strip():
+                            lines.append(f"ASSISTANT: {block['text'].strip()}")
+                        elif block.get("type") == "tool_use":
+                            name = block.get("name", "?")
+                            inp = block.get("input", {})
+                            # Compact tool summary
+                            if name == "Bash":
+                                detail = inp.get("command", "")[:80]
+                            elif name in ("Grep", "Glob"):
+                                detail = inp.get("pattern", "")[:80]
+                            elif name in ("Read", "Write", "Edit"):
+                                detail = inp.get("file_path", "")[:80]
+                            else:
+                                detail = str(inp)[:80]
+                            lines.append(f"TOOL: {name}({detail})")
+
+    transcript = "\n".join(lines)
+
+    # Cap at ~16K chars: first 8K + last 8K
+    if len(transcript) > 16000:
+        transcript = transcript[:8000] + "\n\n[... middle truncated ...]\n\n" + transcript[-8000:]
+
+    return transcript
+
+
+def cmd_summarize(mrc_dir, uuid):
+    """Generate a session summary using Claude Haiku."""
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return
+
+    transcript = extract_transcript(mrc_dir, uuid)
+    if not transcript:
+        return
+
+    prompt = (
+        "Summarize this Claude Code session transcript concisely. Include:\n"
+        "1. What was accomplished (1-2 sentences)\n"
+        "2. Key files changed (bulleted list, if any)\n"
+        "3. Notable decisions or tradeoffs (if any)\n\n"
+        "Keep the entire summary under 5 lines. Use markdown.\n\n"
+        f"Transcript:\n{transcript}"
+    )
+
+    body = json.dumps({
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 512,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+    except (urllib.error.URLError, OSError, json.JSONDecodeError):
+        return
+
+    text = ""
+    for block in result.get("content", []):
+        if block.get("type") == "text":
+            text += block["text"]
+
+    if text.strip():
+        summaries_dir = Path(mrc_dir) / "session-summaries"
+        summaries_dir.mkdir(parents=True, exist_ok=True)
+        (summaries_dir / f"{uuid}.md").write_text(text.strip() + "\n")
+
+
+def get_summary_preview(mrc_dir, uuid):
+    """Return first line of a session summary, or None."""
+    summary_file = Path(mrc_dir) / "session-summaries" / f"{uuid}.md"
+    if summary_file.exists():
+        first_line = summary_file.read_text().split("\n", 1)[0].strip()
+        # Strip markdown header prefix
+        first_line = re.sub(r"^#+\s*", "", first_line)
+        if first_line:
+            return first_line[:60] + ("..." if len(first_line) > 60 else "")
+    return None
+
+
+# Patterns for tool-miss detection
+TOOL_MISS_PATTERNS = [
+    (re.compile(r"(\S+): command not found"), "command not found"),
+    (re.compile(r"bash: (\S+): No such file or directory"), "not on PATH"),
+    (re.compile(r"(?:illegal|invalid|unrecognized) option"), "option incompatibility"),
+]
+
+
+def cmd_tool_misses(mrc_dir, uuid):
+    """Detect missing tools from a session transcript."""
+    jsonl_file = Path(mrc_dir) / f"{uuid}.jsonl"
+    if not jsonl_file.exists():
+        return
+
+    misses = {}  # command -> error description
+
+    with open(jsonl_file) as fh:
+        for raw in fh:
+            try:
+                obj = json.loads(raw)
+            except json.JSONDecodeError:
+                continue
+
+            # Look at all content blocks for error patterns
+            content = obj.get("message", {}).get("content", "")
+            if isinstance(content, list):
+                texts = [c.get("text", "") for c in content if isinstance(c, dict)]
+                content = "\n".join(texts)
+
+            for pattern, desc in TOOL_MISS_PATTERNS:
+                for match in pattern.finditer(content):
+                    cmd = match.group(1) if match.lastindex else match.group(0)
+                    # Skip common false positives
+                    if cmd in (".", "..", ""):
+                        continue
+                    misses[cmd] = desc
+
+    if not misses:
+        return
+
+    # Append to log
+    log_file = Path(mrc_dir) / "tool-misses.log"
+    date = datetime.now().strftime("%Y-%m-%d")
+    with open(log_file, "a") as f:
+        for cmd, desc in misses.items():
+            f.write(f"{date} session:{uuid[:8]} {cmd}: {desc}\n")
+
+    # Print to stdout for mrc to display
+    for cmd, desc in misses.items():
+        print(f"{cmd}: {desc}")
+
+
 def cmd_list(mrc_dir):
     sessions = get_sessions(mrc_dir)
     if not sessions:
@@ -101,7 +278,9 @@ def cmd_list(mrc_dir):
     print(f"  {'—':<4} {'————':<20} {'————':<12} ———————")
     for i, (uuid, ts, preview) in enumerate(sessions, 1):
         name = names.get(uuid, "(unnamed)")
-        print(f"  {i:<4} {name:<20} {ts:<12} {preview}")
+        summary = get_summary_preview(mrc_dir, uuid)
+        display = summary if summary else preview
+        print(f"  {i:<4} {name:<20} {ts:<12} {display}")
 
 
 def cmd_name(mrc_dir, name, target="1"):
@@ -147,6 +326,16 @@ if __name__ == "__main__":
             print("Usage: mrc-sessions resolve <mrc-dir> <name-or-number>", file=sys.stderr)
             sys.exit(1)
         cmd_resolve(mrc_dir, sys.argv[3])
+    elif cmd == "summarize":
+        if len(sys.argv) < 4:
+            print("Usage: mrc-sessions summarize <mrc-dir> <uuid>", file=sys.stderr)
+            sys.exit(1)
+        cmd_summarize(mrc_dir, sys.argv[3])
+    elif cmd == "tool-misses":
+        if len(sys.argv) < 4:
+            print("Usage: mrc-sessions tool-misses <mrc-dir> <uuid>", file=sys.stderr)
+            sys.exit(1)
+        cmd_tool_misses(mrc_dir, sys.argv[3])
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)
         sys.exit(1)

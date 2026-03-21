@@ -11,6 +11,7 @@
 #   -v, --verbose  Show Colima and Docker output (useful for debugging)
 #   -n, --new [name]     Start a new conversation (optionally named)
 #   -w, --web            Allow outbound HTTPS to any host (for web search/fetch)
+#   --no-summary         Skip AI session summary on exit
 #
 # Session management:
 #   mrc sessions ls [path]                List saved sessions
@@ -74,6 +75,7 @@ IMAGE_NAME="mister-claude"
 VERBOSE=false
 ALLOW_WEB=false
 NEW_SESSION=false
+NO_SUMMARY=false
 REBUILD=false
 RESUME_SESSION=""
 args=()
@@ -83,6 +85,7 @@ while [[ $# -gt 0 ]]; do
     --new|-n)      NEW_SESSION=true; NEW_SESSION_NAME="${2:-}";
                    if [[ -n "$NEW_SESSION_NAME" && "$NEW_SESSION_NAME" != -* ]]; then shift; fi
                    ;;
+    --no-summary)  NO_SUMMARY=true ;;
     --rebuild|-r)  REBUILD=true ;;
     --verbose|-v)  VERBOSE=true ;;
     --web|-w)      ALLOW_WEB=true ;;
@@ -369,13 +372,43 @@ docker run --rm -it --init \
   "$@"
 EXIT_CODE=$?
 
-# Name the new session if --new was given with a name
-if [[ -n "${NEW_SESSION_NAME:-}" && -d "$MRC_DIR" ]]; then
+# --- Post-session processing ---
+
+# 1. Detect the new session file
+NEW_FILE=""
+if [[ -d "$MRC_DIR" ]]; then
   AFTER_SESSIONS="$(ls "$MRC_DIR"/*.jsonl 2>/dev/null || true)"
   NEW_FILE="$(comm -13 <(echo "$BEFORE_SESSIONS") <(echo "$AFTER_SESSIONS") | head -1)"
-  if [[ -n "$NEW_FILE" ]]; then
-    NEW_UUID="$(basename "$NEW_FILE" .jsonl)"
-    python3 "$SCRIPT_DIR/mrc-sessions" name "$MRC_DIR" "$NEW_SESSION_NAME" "$NEW_UUID" 2>/dev/null
+fi
+
+if [[ -n "$NEW_FILE" ]]; then
+  NEW_UUID="$(basename "$NEW_FILE" .jsonl)"
+  SESSIONS="$SCRIPT_DIR/mrc-sessions"
+
+  # 2. Name it if --new was given with a name
+  if [[ -n "${NEW_SESSION_NAME:-}" ]]; then
+    python3 "$SESSIONS" name "$MRC_DIR" "$NEW_SESSION_NAME" "$NEW_UUID" 2>/dev/null
+  fi
+
+  # 3. Tool-miss detection (sync — fast, pure parsing)
+  TOOL_MISSES="$(python3 "$SESSIONS" tool-misses "$MRC_DIR" "$NEW_UUID" 2>/dev/null || true)"
+  if [[ -n "$TOOL_MISSES" ]]; then
+    echo ""
+    echo "  ⚠ We ain't found these tools:"
+    MRC_REPO_URL="$(cd "$SCRIPT_DIR" && git remote get-url origin 2>/dev/null | sed 's/\.git$//' || true)"
+    MRC_REPO_URL="${MRC_REPO_URL:-https://github.com/aisaacs/mrc}"
+    while IFS= read -r miss; do
+      CMD_NAME="${miss%%:*}"
+      echo "    - $miss"
+      ISSUE_TITLE="$(python3 -c "import urllib.parse; print(urllib.parse.quote('Add $CMD_NAME to Dockerfile'))")"
+      ISSUE_BODY="$(python3 -c "import urllib.parse; print(urllib.parse.quote('Session reported: $miss\n\nConsider adding \`$CMD_NAME\` to the apt-get install line in the Dockerfile.'))")"
+      echo "      → ${MRC_REPO_URL}/issues/new?title=${ISSUE_TITLE}&body=${ISSUE_BODY}"
+    done <<< "$TOOL_MISSES"
+  fi
+
+  # 4. Session summary (async background — uses Haiku API)
+  if ! $NO_SUMMARY && [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+    ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" python3 "$SESSIONS" summarize "$MRC_DIR" "$NEW_UUID" &
   fi
 fi
 
