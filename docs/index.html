@@ -1,0 +1,794 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Mr. Claude — Sandboxed Claude Code</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,600;0,700;1,400&family=Silkscreen:wght@400;700&display=swap');
+
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+:root {
+  --phosphor: #33ff99;
+  --phosphor-dim: #1a9956;
+  --phosphor-glow: #33ff9940;
+  --phosphor-bright: #88ffcc;
+  --amber: #ffaa33;
+  --amber-dim: #996622;
+  --red: #ff4444;
+  --bg: #0a0e0a;
+  --bg-panel: #0d120d;
+  --bg-code: #060906;
+  --border: #1a2e1a;
+  --text: #b0c8b0;
+  --text-dim: #5a7a5a;
+  --scanline: rgba(0,0,0,0.12);
+}
+
+html { scroll-behavior: smooth; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'JetBrains Mono', 'Courier New', monospace;
+  font-size: 14px;
+  line-height: 1.7;
+  overflow-x: hidden;
+}
+
+/* CRT scanline overlay */
+body::after {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: repeating-linear-gradient(
+    0deg,
+    var(--scanline) 0px,
+    var(--scanline) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* CRT vignette */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background: radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.6) 100%);
+  pointer-events: none;
+  z-index: 9998;
+}
+
+a { color: var(--phosphor); text-decoration: none; }
+a:hover { color: var(--phosphor-bright); text-shadow: 0 0 8px var(--phosphor-glow); }
+
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 0 24px;
+}
+
+/* ─── HERO ─── */
+.hero {
+  padding: 80px 0 60px;
+  text-align: center;
+  position: relative;
+}
+
+.hero::before {
+  content: '';
+  position: absolute;
+  top: 20%;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 600px;
+  height: 400px;
+  background: radial-gradient(ellipse, var(--phosphor-glow) 0%, transparent 70%);
+  pointer-events: none;
+  opacity: 0.3;
+}
+
+.ascii-logo {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  line-height: 1.15;
+  color: var(--phosphor);
+  text-shadow: 0 0 20px var(--phosphor-glow), 0 0 40px rgba(51,255,153,0.15);
+  white-space: pre;
+  display: inline-block;
+  position: relative;
+  animation: flicker 4s infinite;
+  letter-spacing: 0.5px;
+}
+
+@keyframes flicker {
+  0%, 97%, 100% { opacity: 1; }
+  98% { opacity: 0.85; }
+  99% { opacity: 0.92; }
+}
+
+.tagline {
+  font-family: 'Silkscreen', monospace;
+  font-size: 12px;
+  color: var(--amber);
+  margin-top: 24px;
+  text-transform: uppercase;
+  letter-spacing: 3px;
+  text-shadow: 0 0 10px rgba(255,170,51,0.3);
+}
+
+.subtitle {
+  font-size: 15px;
+  color: var(--text-dim);
+  margin-top: 16px;
+  max-width: 560px;
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.subtitle em {
+  color: var(--text);
+  font-style: normal;
+}
+
+.hero-cta {
+  margin-top: 40px;
+  display: flex;
+  gap: 16px;
+  justify-content: center;
+  flex-wrap: wrap;
+}
+
+.btn {
+  display: inline-block;
+  padding: 10px 28px;
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 13px;
+  font-weight: 600;
+  border: 1px solid;
+  cursor: pointer;
+  transition: all 0.2s;
+  text-decoration: none;
+}
+
+.btn-primary {
+  color: var(--bg);
+  background: var(--phosphor);
+  border-color: var(--phosphor);
+  box-shadow: 0 0 15px var(--phosphor-glow), inset 0 0 15px rgba(255,255,255,0.1);
+}
+.btn-primary:hover {
+  background: var(--phosphor-bright);
+  color: var(--bg);
+  box-shadow: 0 0 30px var(--phosphor-glow);
+  text-shadow: none;
+}
+
+.btn-ghost {
+  color: var(--phosphor);
+  background: transparent;
+  border-color: var(--border);
+}
+.btn-ghost:hover {
+  border-color: var(--phosphor-dim);
+  box-shadow: 0 0 15px var(--phosphor-glow);
+}
+
+/* ─── TERMINAL BLOCK ─── */
+.terminal {
+  background: var(--bg-code);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  margin: 20px 0;
+  box-shadow: 0 4px 30px rgba(0,0,0,0.5), inset 0 1px 0 rgba(51,255,153,0.05);
+}
+
+.terminal-bar {
+  background: var(--bg-panel);
+  padding: 8px 14px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  border-bottom: 1px solid var(--border);
+}
+
+.terminal-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.terminal-dot:nth-child(1) { background: #ff5f57; }
+.terminal-dot:nth-child(2) { background: #ffbd2e; }
+.terminal-dot:nth-child(3) { background: #28c840; }
+
+.terminal-title {
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-left: 8px;
+}
+
+.terminal-body {
+  padding: 18px 20px;
+  font-size: 13px;
+  line-height: 1.6;
+  overflow-x: auto;
+}
+
+.terminal-body .prompt { color: var(--phosphor); }
+.terminal-body .cmd { color: #eee; }
+.terminal-body .output { color: var(--text-dim); }
+.terminal-body .highlight { color: var(--amber); }
+.terminal-body .comment { color: var(--text-dim); font-style: italic; }
+
+/* ─── SECTIONS ─── */
+section {
+  padding: 70px 0;
+  border-top: 1px solid var(--border);
+}
+
+.section-label {
+  font-family: 'Silkscreen', monospace;
+  font-size: 10px;
+  color: var(--amber);
+  text-transform: uppercase;
+  letter-spacing: 4px;
+  margin-bottom: 8px;
+}
+
+h2 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 22px;
+  font-weight: 700;
+  color: var(--phosphor);
+  margin-bottom: 24px;
+  text-shadow: 0 0 15px var(--phosphor-glow);
+}
+
+h3 {
+  font-family: 'JetBrains Mono', monospace;
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--phosphor-bright);
+  margin-bottom: 8px;
+}
+
+p { margin-bottom: 16px; }
+
+/* ─── HOW IT WORKS ─── */
+.how-it-works {
+  display: grid;
+  grid-template-columns: 40px 1fr;
+  gap: 0 20px;
+  position: relative;
+}
+
+.how-step-num {
+  font-family: 'Silkscreen', monospace;
+  font-size: 16px;
+  color: var(--phosphor);
+  text-align: center;
+  padding-top: 2px;
+  position: relative;
+}
+
+.how-step-num::after {
+  content: '';
+  position: absolute;
+  top: 28px;
+  left: 50%;
+  bottom: -20px;
+  width: 1px;
+  background: var(--border);
+}
+
+.how-step:last-child .how-step-num::after { display: none; }
+
+.how-step-content {
+  padding-bottom: 32px;
+}
+
+.how-step-content h3 { margin-bottom: 6px; }
+.how-step-content p { color: var(--text-dim); margin-bottom: 0; font-size: 13px; }
+
+/* ─── FEATURES GRID ─── */
+.features-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 16px;
+}
+
+.feature-card {
+  background: var(--bg-panel);
+  border: 1px solid var(--border);
+  padding: 22px;
+  border-radius: 4px;
+  transition: all 0.25s;
+  position: relative;
+  overflow: hidden;
+}
+
+.feature-card::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 1px;
+  background: linear-gradient(90deg, transparent, var(--phosphor-dim), transparent);
+  opacity: 0;
+  transition: opacity 0.25s;
+}
+
+.feature-card:hover {
+  border-color: var(--phosphor-dim);
+  box-shadow: 0 0 20px rgba(51,255,153,0.05);
+}
+
+.feature-card:hover::before { opacity: 1; }
+
+.feature-icon {
+  font-size: 18px;
+  margin-bottom: 12px;
+  display: block;
+}
+
+.feature-card h3 {
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+
+.feature-card p {
+  font-size: 12px;
+  color: var(--text-dim);
+  margin-bottom: 0;
+  line-height: 1.6;
+}
+
+/* ─── CLI REF ─── */
+.cli-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.cli-table th {
+  text-align: left;
+  color: var(--phosphor);
+  font-weight: 600;
+  padding: 8px 0;
+  border-bottom: 1px solid var(--border);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+.cli-table td {
+  padding: 8px 0;
+  border-bottom: 1px solid rgba(26,46,26,0.5);
+  vertical-align: top;
+}
+
+.cli-table td:first-child {
+  color: var(--phosphor-bright);
+  white-space: nowrap;
+  padding-right: 24px;
+  font-weight: 600;
+}
+
+.cli-table td:last-child { color: var(--text-dim); }
+
+.cli-section-label {
+  color: var(--amber);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+  padding-top: 20px !important;
+  padding-bottom: 10px !important;
+  border-bottom: none !important;
+}
+
+/* ─── CHANGELOG ─── */
+.changelog-section {
+  margin-bottom: 32px;
+}
+
+.changelog-section h3 {
+  font-size: 14px;
+  color: var(--amber);
+  margin-bottom: 12px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--border);
+}
+
+.changelog-section ul {
+  list-style: none;
+  padding: 0;
+}
+
+.changelog-section li {
+  padding: 4px 0 4px 20px;
+  position: relative;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.changelog-section li::before {
+  content: '>';
+  position: absolute;
+  left: 0;
+  color: var(--phosphor-dim);
+  font-weight: 700;
+}
+
+.changelog-section li strong {
+  color: var(--text);
+  font-weight: 600;
+}
+
+.changelog-section li code {
+  background: var(--bg-code);
+  padding: 1px 5px;
+  border-radius: 2px;
+  font-size: 12px;
+  color: var(--phosphor);
+  border: 1px solid var(--border);
+}
+
+/* ─── QUOTE ─── */
+.yogurt-quote {
+  text-align: center;
+  padding: 50px 0;
+  border-top: 1px solid var(--border);
+}
+
+.yogurt-quote blockquote {
+  font-size: 16px;
+  color: var(--amber);
+  font-style: italic;
+  max-width: 500px;
+  margin: 0 auto;
+  text-shadow: 0 0 10px rgba(255,170,51,0.15);
+}
+
+.yogurt-quote cite {
+  display: block;
+  margin-top: 12px;
+  font-size: 11px;
+  color: var(--text-dim);
+  font-style: normal;
+  letter-spacing: 1px;
+}
+
+/* ─── FOOTER ─── */
+footer {
+  padding: 30px 0;
+  border-top: 1px solid var(--border);
+  text-align: center;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+footer a { color: var(--phosphor-dim); }
+
+/* ─── RESPONSIVE ─── */
+@media (max-width: 640px) {
+  .ascii-logo { font-size: 8px; }
+  .hero { padding: 50px 0 40px; }
+  section { padding: 50px 0; }
+  .features-grid { grid-template-columns: 1fr; }
+  .terminal-body { font-size: 11px; padding: 14px; }
+}
+
+/* ─── ANIMATIONS ─── */
+@keyframes typeIn {
+  from { width: 0; }
+  to { width: 100%; }
+}
+
+.fade-in {
+  opacity: 0;
+  transform: translateY(12px);
+  transition: all 0.6s ease;
+}
+
+.fade-in.visible {
+  opacity: 1;
+  transform: translateY(0);
+}
+</style>
+</head>
+<body>
+
+<!-- ─── HERO ─── -->
+<div class="hero">
+  <div class="container">
+    <div class="ascii-logo">
+      __  __ ____     ____  _                 _
+     |  \/  |  _ \ . / ___|| | __ _ _   _  __| | ___
+     | |\/| | |_) |  | |   | |/ _` | | | |/ _` |/ _ \
+     | |  | |  _ <   | |___| | (_| | |_| | (_| |  __/
+     |_|  |_|_| \_\   \____|_|\__,_|\__,_|\__,_|\___|</div>
+
+    <div class="tagline">It's my industrial-strength hair dryer, AND IT WORKS.</div>
+    <p class="subtitle">
+      Sandboxed <em>Claude Code</em> in a Docker container with an iptables firewall.
+      Your code stays safe. Your databases stay unreachable. The Schwartz stays strong.
+    </p>
+    <div class="hero-cta">
+      <a href="#quickstart" class="btn btn-primary">Get Started</a>
+      <a href="https://github.com/aisaacs/mrc" class="btn btn-ghost">View Source</a>
+    </div>
+  </div>
+</div>
+
+<!-- ─── WHAT IT DOES ─── -->
+<section>
+  <div class="container">
+    <div class="section-label">// How it works</div>
+    <h2>Three commands. Total isolation.</h2>
+
+    <div class="how-it-works">
+      <div class="how-step">
+        <div class="how-step-num">1</div>
+      </div>
+      <div class="how-step-content">
+        <h3>You run <code style="color:var(--phosphor)">mrc ~/your/repo</code></h3>
+        <p>The launcher builds a Docker image, starts clipboard &amp; notification proxies, finds your .sandboxignore files, and fires up the container with your repo mounted.</p>
+      </div>
+
+      <div class="how-step">
+        <div class="how-step-num">2</div>
+      </div>
+      <div class="how-step-content">
+        <h3>The firewall jams their radar</h3>
+        <p>iptables locks the container down. Only api.anthropic.com, npm, and sentry can be reached. Your Postgres, Redis, AWS RDS, and everything else: blocked. IPv6: blocked. Host services: blocked.</p>
+      </div>
+
+      <div class="how-step">
+        <div class="how-step-num">3</div>
+      </div>
+      <div class="how-step-content">
+        <h3>Claude Code runs with full permissions</h3>
+        <p><code style="color:var(--phosphor)">--dangerously-skip-permissions</code> is safe here because the container IS the sandbox. Claude can do whatever it wants &mdash; inside the box.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── QUICKSTART ─── -->
+<section id="quickstart">
+  <div class="container">
+    <div class="section-label">// Quick start</div>
+    <h2>Prepare ship for Ludicrous Speed</h2>
+
+    <div class="terminal">
+      <div class="terminal-bar">
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="terminal-dot"></span>
+        <span class="terminal-title">Terminal</span>
+      </div>
+      <div class="terminal-body">
+<span class="comment"># Clone it</span>
+<span class="prompt">$</span> <span class="cmd">git clone https://github.com/aisaacs/mrc.git</span>
+<span class="prompt">$</span> <span class="cmd">export PATH="$PATH:$(pwd)/mrc"</span>
+
+<span class="comment"># Set your API key</span>
+<span class="prompt">$</span> <span class="cmd">export ANTHROPIC_API_KEY="sk-ant-..."</span>
+
+<span class="comment"># Launch against any repo</span>
+<span class="prompt">$</span> <span class="cmd">mrc ~/projects/myapp</span>
+<span class="output">  ◎ Mr. Radar is scanning the environment...</span>
+<span class="output">  ✓ Radar locked.</span>
+<span class="output">
+      __  __ ____     ____  _                 _
+     |  \/  |  _ \ . / ___|| | __ _ _   _  __| | ___
+     | |\/| | |_) |  | |   | |/ _` | | | |/ _` |/ _ \
+     | |  | |  _ <   | |___| | (_| | |_| | (_| |  __/
+     |_|  |_|_| \_\   \____|_|\__,_|\__,_|\__,_|\___|
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>
+<span class="output">  → Repo:      /Users/you/projects/myapp</span>
+<span class="output">  → Volume:    mrc-config-a1b2c3d4e5f6</span>
+<span class="output">  → Schwartz:  <span class="highlight">engaged (API key)</span></span>
+<span class="output">  → Clipboard: the Schwartz can see your clipboard</span>
+<span class="output">  → Notify:    the Schwartz will alert you when ready</span>
+<span class="output">  → Firewall:  jammed (just like their radar)</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── FEATURES ─── -->
+<section>
+  <div class="container">
+    <div class="section-label">// Features</div>
+    <h2>All bleeps, sweeps, and creeps accounted for</h2>
+
+    <div class="features-grid">
+      <div class="feature-card">
+        <span class="feature-icon">&#x1f6e1;</span>
+        <h3>iptables Firewall</h3>
+        <p>Default DROP policy. Whitelisted domains only. IPv6 blocked. Host services blocked. Your databases are unreachable.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">&#x1f4cb;</span>
+        <h3>Clipboard Proxy</h3>
+        <p>Paste images and text into the container via a TCP proxy. Works through host.docker.internal. Supports PNG, TIFF, JPEG.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">&#x1f514;</span>
+        <h3>Desktop Notifications</h3>
+        <p>Native macOS/Linux notifications when Claude finishes responding. Shows which repo and a summary. Configurable sound.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">&#x1f4be;</span>
+        <h3>Session Management</h3>
+        <p>Auto-resume, named sessions, list/resume subcommands. AI-generated summaries on exit. Tool-miss detection.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">&#x1f576;</span>
+        <h3>.sandboxignore</h3>
+        <p>Recursive, like .gitignore. Place anywhere in the tree. Files appear empty, directories appear as empty dirs.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">&#x2699;</span>
+        <h3>.mrcrc Config</h3>
+        <p>Global defaults in ~/.mrcrc, per-repo overrides in &lt;repo&gt;/.mrcrc. One flag per line. CLI always wins.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">&#x1f4e6;</span>
+        <h3>Multi-Instance</h3>
+        <p>Run multiple sessions against the same repo. Each gets its own config volume and dynamic proxy ports. No collisions.</p>
+      </div>
+
+      <div class="feature-card">
+        <span class="feature-icon">&#x1f4ca;</span>
+        <h3>mrc status</h3>
+        <p>See all running Mr. Claude containers across repos with uptime, web mode, and container IDs. One command.</p>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── CLI REFERENCE ─── -->
+<section>
+  <div class="container">
+    <div class="section-label">// CLI Reference</div>
+    <h2>mrc [options] [path] [-- args...]</h2>
+
+    <table class="cli-table">
+      <thead>
+        <tr><th>Flag</th><th>Description</th></tr>
+      </thead>
+      <tbody>
+        <tr><td colspan="2" class="cli-section-label">Options</td></tr>
+        <tr><td>-r, --rebuild</td><td>Force a full image rebuild (no cache)</td></tr>
+        <tr><td>-v, --verbose</td><td>Show Colima and Docker output</td></tr>
+        <tr><td>-n, --new [name]</td><td>Start a new conversation (optionally named)</td></tr>
+        <tr><td>-w, --web</td><td>Allow outbound HTTPS to any host</td></tr>
+        <tr><td>--no-summary</td><td>Skip AI session summary on exit</td></tr>
+        <tr><td>--no-notify</td><td>Disable desktop notifications entirely</td></tr>
+        <tr><td>--no-sound</td><td>Disable notification sound (still shows notification)</td></tr>
+
+        <tr><td colspan="2" class="cli-section-label">Commands</td></tr>
+        <tr><td>mrc status</td><td>Show active containers across repos</td></tr>
+        <tr><td>mrc sessions ls</td><td>List saved sessions</td></tr>
+        <tr><td>mrc sessions name</td><td>Name a session</td></tr>
+        <tr><td>mrc sessions resume</td><td>Resume a specific session</td></tr>
+
+        <tr><td colspan="2" class="cli-section-label">Environment</td></tr>
+        <tr><td>ANTHROPIC_API_KEY</td><td>API key (also loaded from .env next to mrc script)</td></tr>
+        <tr><td>MRC_PORT_BASE</td><td>Starting port for proxy allocation (default: 7722)</td></tr>
+      </tbody>
+    </table>
+
+    <div style="margin-top: 30px;">
+      <h3 style="color: var(--amber); font-size: 13px; margin-bottom: 12px;">Config files</h3>
+      <div class="terminal">
+        <div class="terminal-bar">
+          <span class="terminal-dot"></span>
+          <span class="terminal-dot"></span>
+          <span class="terminal-dot"></span>
+          <span class="terminal-title">~/.mrcrc</span>
+        </div>
+        <div class="terminal-body">
+<span class="comment"># Global defaults — apply to every repo</span>
+<span class="cmd">--no-sound</span>
+<span class="cmd">--web</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── CHANGELOG ─── -->
+<section>
+  <div class="container">
+    <div class="section-label">// Changelog</div>
+    <h2>What's new</h2>
+
+    <div class="changelog-section">
+      <h3>Session Management</h3>
+      <ul>
+        <li><strong>Auto-resume</strong> &mdash; Re-opening a repo continues the last conversation automatically.</li>
+        <li><strong>Named sessions</strong> &mdash; <code>mrc --new bugfix</code> starts a fresh conversation with a name.</li>
+        <li><strong>Session subcommands</strong> &mdash; <code>mrc sessions ls</code>, <code>name</code>, <code>resume</code>.</li>
+        <li><strong>Session summaries</strong> &mdash; AI-generated summaries saved on exit (requires API key).</li>
+        <li><strong>Tool-miss detection</strong> &mdash; Reports missing tools with issue links on exit.</li>
+      </ul>
+    </div>
+
+    <div class="changelog-section">
+      <h3>Desktop Notifications</h3>
+      <ul>
+        <li><strong>Response-complete notifications</strong> &mdash; Native macOS notification when Claude finishes, with repo name and summary.</li>
+        <li><strong><code>--no-notify</code></strong> &mdash; Disable notifications entirely.</li>
+        <li><strong><code>--no-sound</code></strong> &mdash; Keep the notification, kill the Glass sound.</li>
+      </ul>
+    </div>
+
+    <div class="changelog-section">
+      <h3>Security</h3>
+      <ul>
+        <li><strong>Host network lockdown</strong> &mdash; Firewall only opens proxy ports. Your local Postgres, Redis, and everything else on the host are blocked.</li>
+      </ul>
+    </div>
+
+    <div class="changelog-section">
+      <h3>Multi-Instance Support</h3>
+      <ul>
+        <li><strong>Concurrent sessions</strong> &mdash; Multiple instances per repo, each with its own config volume and fresh session.</li>
+        <li><strong>Dynamic port allocation</strong> &mdash; Each instance gets free ports starting from <code>MRC_PORT_BASE</code>.</li>
+        <li><strong>Collision warning</strong> &mdash; Warning when a second instance launches against an active repo.</li>
+      </ul>
+    </div>
+
+    <div class="changelog-section">
+      <h3>Config &amp; Ergonomics</h3>
+      <ul>
+        <li><strong><code>.mrcrc</code> config files</strong> &mdash; Global (<code>~/.mrcrc</code>) and per-repo defaults.</li>
+        <li><strong>Recursive <code>.sandboxignore</code></strong> &mdash; Place anywhere in the tree, entries resolve relative to their directory.</li>
+        <li><strong><code>mrc status</code></strong> &mdash; See all running containers with uptime and flags.</li>
+        <li><strong>Container labeling</strong> &mdash; Tagged with <code>mrc.*</code> labels for discoverability.</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- ─── YOGURT QUOTE ─── -->
+<div class="yogurt-quote">
+  <div class="container">
+    <blockquote>"God willing, we'll all meet again in Spaceballs 2: The Search for More Money."</blockquote>
+    <cite>&mdash; Yogurt</cite>
+  </div>
+</div>
+
+<!-- ─── FOOTER ─── -->
+<footer>
+  <div class="container">
+    Mr. Claude &mdash; <a href="https://github.com/aisaacs/mrc">GitHub</a> &mdash; Made with the Schwartz
+  </div>
+</footer>
+
+<!-- ─── SCROLL ANIMATIONS ─── -->
+<script>
+document.querySelectorAll('section, .feature-card').forEach(el => el.classList.add('fade-in'));
+const obs = new IntersectionObserver((entries) => {
+  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
+}, { threshold: 0.1 });
+document.querySelectorAll('.fade-in').forEach(el => obs.observe(el));
+</script>
+
+</body>
+</html>
