@@ -11,7 +11,7 @@
 #
 set -euo pipefail
 
-NO_SOUND=false
+NO_SOUND="${NO_SOUND:-false}"
 
 log() { echo "[notify-proxy] $(date +%H:%M:%S) $*" >&2; }
 
@@ -60,4 +60,4 @@ done
 export NO_SOUND
 
 log "starting on 127.0.0.1:$PORT (sound: $(! $NO_SOUND && echo on || echo off))"
-exec socat TCP-LISTEN:"$PORT",fork,reuseaddr,bind=127.0.0.1 SYSTEM:"$(printf '%q' "$0") --handle"
+exec socat TCP-LISTEN:"$PORT",fork,reuseaddr,bind=127.0.0.1 SYSTEM:"NO_SOUND=$NO_SOUND $(printf '%q' "$0") --handle"

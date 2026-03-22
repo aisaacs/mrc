@@ -45,6 +45,7 @@
 #
 # Environment:
 #   ANTHROPIC_API_KEY  — optional; loaded from .env next to this script if present
+#   MRC_PORT_BASE      — starting port for proxy allocation (default: 7722)
 
 set -euo pipefail
 
@@ -276,9 +277,6 @@ fi
 if $ALLOW_WEB; then
   ENV_FLAGS+=(-e ALLOW_WEB=1)
 fi
-if $NEW_SESSION; then
-  ENV_FLAGS+=(-e NEW_SESSION=1)
-fi
 if [[ -n "$RESUME_SESSION" ]]; then
   ENV_FLAGS+=(-e "RESUME_SESSION=$RESUME_SESSION")
 fi
@@ -418,13 +416,45 @@ done < <(find "$REPO_PATH" -name .sandboxignore -not -path '*/.git/*' -not -path
 
 # Persist Claude config between runs (per-repo to avoid cross-project contamination)
 REPO_HASH="$(printf '%s' "$REPO_PATH" | md5sum | cut -c1-12)"
-VOLUMES+=(-v "mrc-config-${REPO_HASH}:/home/coder/.claude")
+
+# Detect other mrc containers running against the same repo
+EXISTING_COUNT=0
+if docker ps --filter label=mrc=1 --filter "label=mrc.repo=$REPO_PATH" --format '{{.ID}}' 2>/dev/null | grep -q .; then
+  EXISTING_COUNT="$(docker ps --filter label=mrc=1 --filter "label=mrc.repo=$REPO_PATH" --format '{{.ID}}' 2>/dev/null | wc -l | tr -d ' ')"
+  echo ""
+  echo "  ⚠ There's already ${EXISTING_COUNT} Mr. Claude running in this repo."
+  echo "    They'll share the workspace but get separate config volumes."
+  echo "    Watch out for edit conflicts — two Claudes, one codebase, no good."
+  echo ""
+fi
+
+# Append instance number to volume name if another container is already running,
+# and force a new session so it doesn't try to --continue the active one.
+if [[ "$EXISTING_COUNT" -gt 0 ]]; then
+  INSTANCE_ID="$((EXISTING_COUNT + 1))"
+  VOLUME_NAME="mrc-config-${REPO_HASH}-${INSTANCE_ID}"
+  if ! $NEW_SESSION && [[ -z "$RESUME_SESSION" ]]; then
+    NEW_SESSION=true
+  fi
+else
+  VOLUME_NAME="mrc-config-${REPO_HASH}"
+fi
+VOLUMES+=(-v "${VOLUME_NAME}:/home/coder/.claude")
+
+# Find a free port starting from a base
+find_free_port() {
+  local port=$1
+  while nc -z 127.0.0.1 "$port" 2>/dev/null || lsof -i :"$port" &>/dev/null 2>&1; do
+    ((port++))
+  done
+  echo "$port"
+}
 
 # Start clipboard proxy if socat is available
-CLIP_PORT="7722"
+CLIP_PORT="$(find_free_port "${MRC_PORT_BASE:-7722}")"
 CLIP_PID=""
 if command -v socat &>/dev/null; then
-  bash "$SCRIPT_DIR/clipboard-proxy.sh" "$CLIP_PORT" &
+  bash "$SCRIPT_DIR/clipboard-proxy.sh" "$CLIP_PORT" 2>/dev/null &
   CLIP_PID=$!
   # Wait briefly for the proxy to start listening
   for _ in $(seq 1 10); do
@@ -444,14 +474,14 @@ else
 fi
 
 # Start notification proxy (fires macOS/Linux desktop notifications)
-NOTIFY_PORT="7723"
+NOTIFY_PORT="$(find_free_port $((CLIP_PORT + 1)))"
 NOTIFY_PID=""
 if ! $NO_NOTIFY && command -v socat &>/dev/null; then
   NOTIFY_PROXY_ARGS=("$NOTIFY_PORT")
   if $NO_SOUND; then
     NOTIFY_PROXY_ARGS+=(--no-sound)
   fi
-  bash "$SCRIPT_DIR/notify-proxy.sh" "${NOTIFY_PROXY_ARGS[@]}" &
+  bash "$SCRIPT_DIR/notify-proxy.sh" "${NOTIFY_PROXY_ARGS[@]}" 2>/dev/null &
   NOTIFY_PID=$!
   for _ in $(seq 1 10); do
     if lsof -i :"$NOTIFY_PORT" &>/dev/null 2>&1 || nc -z 127.0.0.1 "$NOTIFY_PORT" 2>/dev/null; then
@@ -479,7 +509,7 @@ cat << 'BANNER'
 
 BANNER
 echo "  → Repo:      $REPO_PATH"
-echo "  → Volume:    mrc-config-${REPO_HASH}"
+echo "  → Volume:    ${VOLUME_NAME}"
 if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   echo "  → Schwartz:  engaged (API key)"
 else
@@ -507,6 +537,11 @@ MRC_DIR="$REPO_PATH/.mrc"
 BEFORE_SESSIONS=""
 if [[ -d "$MRC_DIR" ]]; then
   BEFORE_SESSIONS="$(ls "$MRC_DIR"/*.jsonl 2>/dev/null || true)"
+fi
+
+# Finalize session env flags (must be after concurrent-instance detection)
+if $NEW_SESSION; then
+  ENV_FLAGS+=(-e NEW_SESSION=1)
 fi
 
 docker run --rm -it --init \

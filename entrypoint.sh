@@ -20,7 +20,10 @@ for i in $(seq 1 30); do
   sleep 1
 done
 
-sudo ALLOW_WEB="${ALLOW_WEB:-}" /usr/local/bin/init-firewall.sh
+sudo ALLOW_WEB="${ALLOW_WEB:-}" \
+  MRC_CLIPBOARD_PORT="${MRC_CLIPBOARD_PORT:-7722}" \
+  MRC_NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}" \
+  /usr/local/bin/init-firewall.sh
 
 # Seed plugins and config from build-time defaults into the persistent volume.
 # Copies marketplace data and merges plugin settings without overwriting user changes.

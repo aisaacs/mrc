@@ -12,11 +12,11 @@ The system has seven components:
 
 ### Host-side (runs on macOS/Linux)
 
-1. **`mrc`** (bash) — Host-side launcher. Loads config from `~/.mrcrc` (global) and `<repo>/.mrcrc` (per-repo), parses flags and subcommands (`status`, `sessions`), starts Colima if needed, builds the Docker image with the user's UID/GID, discovers `.sandboxignore` files recursively throughout the repo tree, starts clipboard and notification proxies, creates a per-repo config volume (`mrc-config-<hash>`), and runs the container with the repo bind-mounted at `/workspace`. Labels each container with `mrc.*` metadata for `mrc status` queries. On exit, detects new sessions, reports missing tools, and generates AI summaries.
+1. **`mrc`** (bash) — Host-side launcher. Loads config from `~/.mrcrc` (global) and `<repo>/.mrcrc` (per-repo), parses flags and subcommands (`status`, `sessions`), starts Colima if needed, builds the Docker image with the user's UID/GID, discovers `.sandboxignore` files recursively throughout the repo tree, starts clipboard and notification proxies on dynamically allocated ports, creates a per-repo config volume (`mrc-config-<hash>`), and runs the container with the repo bind-mounted at `/workspace`. Detects concurrent instances against the same repo and assigns separate config volumes. Labels each container with `mrc.*` metadata for `mrc status` queries. On exit, detects new sessions, reports missing tools, and generates AI summaries.
 
-2. **`clipboard-proxy.sh`** (bash) — Host-side TCP proxy (port 7722). Serves clipboard content (text and images) to the container via socat. The container reaches it through `host.docker.internal`.
+2. **`clipboard-proxy.sh`** (bash) — Host-side TCP proxy. Serves clipboard content (text and images) to the container via socat. The container reaches it through `host.docker.internal`. Port is dynamically allocated starting from `MRC_PORT_BASE` (default 7722).
 
-3. **`notify-proxy.sh`** (bash) — Host-side TCP proxy (port 7723). Receives notification messages from the container and fires native desktop notifications (`osascript` on macOS, `notify-send` on Linux). Supports `--no-sound` to suppress the Glass sound. Protocol: line 1 = repo name (title), line 2 = summary (body).
+3. **`notify-proxy.sh`** (bash) — Host-side TCP proxy. Receives notification messages from the container and fires native desktop notifications (`osascript` on macOS, `notify-send` on Linux). Supports `--no-sound` to suppress the Glass sound. Port is dynamically allocated (clipboard port + 1). Protocol: line 1 = repo name (title), line 2 = summary (body).
 
 ### Container-side (runs inside Docker)
 
@@ -37,10 +37,12 @@ The system has seven components:
 - **Auto-resume** — The entrypoint passes `--continue` to Claude Code, so re-opening a repo automatically resumes the last conversation. A fresh conversation starts if no prior session exists.
 - **Auto-update disabled** — `DISABLE_AUTOUPDATER=1` is set because the firewall blocks npm CDN hosts needed for updates. Rebuild the image (`docker rmi mister-claude`) to get a new Claude Code version.
 - **`.sandboxignore` (recursive)** — Can be placed anywhere in the repo tree. Each file's entries resolve relative to the directory containing it (like `.gitignore`). Files are masked with `/dev/null` (appear empty); directories get anonymous volume overlays (appear as empty dirs).
-- **Host network lockdown** — The firewall only allows traffic to the host on specific proxy ports (7722 clipboard, 7723 notifications). All other host services (Postgres, Redis, etc.) are unreachable from the container.
+- **Host network lockdown** — The firewall only allows traffic to the host on the dynamically assigned proxy ports. All other host services (Postgres, Redis, etc.) are unreachable from the container.
 - **Desktop notifications** — A Claude Code `Stop` hook fires on every response completion. The container-side hook script extracts a summary from the response and sends it to the host-side notification proxy, which shows a native macOS/Linux notification identifying which repo's session is ready.
 - **Container labeling** — Each container is labeled with `mrc=1`, `mrc.repo`, `mrc.repo.name`, and `mrc.web` for discovery by `mrc status`.
 - **Config files (`.mrcrc`)** — Global defaults in `~/.mrcrc`, per-repo overrides in `<repo>/.mrcrc`. Both use the same format: one CLI flag per line, comments with `#`. All sources are merged (global + repo + CLI), with CLI flags taking precedence.
+- **Multi-instance support** — Multiple `mrc` instances can run against the same repo. Each gets its own config volume (`mrc-config-<hash>-2`, `-3`, etc.) and dynamically allocated proxy ports. A warning is shown when concurrent instances are detected, since they share the workspace and file edit conflicts are possible.
+- **Dynamic port allocation** — Proxy ports are allocated by scanning for free ports starting from `MRC_PORT_BASE` (default 7722). The clipboard proxy takes the first free port, the notification proxy takes the next. This avoids collisions when running multiple instances.
 
 ## CLI Reference
 
@@ -56,16 +58,20 @@ Options:
   --no-notify          Disable desktop notifications entirely
   --no-sound           Disable notification sound (still shows notification)
 
-Config files (~/.mrcrc or <repo>/.mrcrc, one flag per line):
-  # Example ~/.mrcrc
-  --no-sound
-  --web
-
 Commands:
   mrc status                              Show active containers across repos
   mrc sessions ls [path]                  List saved sessions
   mrc sessions name <name> [#] [path]     Name a session
   mrc sessions resume <name-or-#> [path]  Resume a specific session
+
+Config files (~/.mrcrc or <repo>/.mrcrc, one flag per line):
+  # Example ~/.mrcrc
+  --no-sound
+  --web
+
+Environment:
+  ANTHROPIC_API_KEY    API key (also loaded from .env next to mrc script)
+  MRC_PORT_BASE        Starting port for proxy allocation (default: 7722)
 ```
 
 ## Development Workflow
@@ -91,3 +97,4 @@ Changes to `mrc`, `clipboard-proxy.sh`, and `notify-proxy.sh` take effect immedi
 - User-facing output uses Spaceballs-themed messaging
 - The launcher script handles macOS/Colima-specific concerns (auto-starting VM, DOCKER_HOST socket)
 - Host-container communication uses TCP proxies via socat + `host.docker.internal`
+- Proxy ports are dynamically allocated, not hardcoded
