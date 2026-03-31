@@ -261,15 +261,49 @@ shift || true
 [[ "${1:-}" == "--" ]] && shift
 
 
-# Load .env file if present (for dedicated API key)
+# Load .env file if present (for dedicated API key).
+# If it contains 1Password references (op://...), resolve via `op run`.
 ENV_FILE="$SCRIPT_DIR/.env"
 if [[ -f "$ENV_FILE" ]]; then
-  set -a            # auto-export all sourced variables
-  source "$ENV_FILE"
-  set +a
+  if grep -q 'op://' "$ENV_FILE" 2>/dev/null && command -v op &>/dev/null; then
+    # Try without --account first, then prompt if it fails
+    if [[ -n "${OP_ACCOUNT:-}" ]]; then
+      _OP_KEY="$(op run --env-file "$ENV_FILE" --no-masking --account "$OP_ACCOUNT" -- printenv ANTHROPIC_API_KEY 2>/dev/null)" || true
+    else
+      _OP_KEY="$(op run --env-file "$ENV_FILE" --no-masking -- printenv ANTHROPIC_API_KEY 2>/dev/null)" || true
+    fi
+    # If that failed, prompt for account selection
+    if [[ -z "$_OP_KEY" && -z "${OP_ACCOUNT:-}" ]]; then
+      mapfile -t _OP_ACCOUNTS < <(op account list --format=json 2>/dev/null | python3 -c 'import sys,json; [print(a["url"]) for a in json.load(sys.stdin)]' 2>/dev/null)
+      if [[ ${#_OP_ACCOUNTS[@]} -eq 1 ]]; then
+        OP_ACCOUNT="${_OP_ACCOUNTS[0]}"
+      elif [[ ${#_OP_ACCOUNTS[@]} -gt 1 ]]; then
+        echo "  1Password couldn't resolve .env — select an account:"
+        for i in "${!_OP_ACCOUNTS[@]}"; do
+          echo "    $((i+1))) ${_OP_ACCOUNTS[$i]}"
+        done
+        read -rp "  → " _OP_CHOICE
+        OP_ACCOUNT="${_OP_ACCOUNTS[$((_OP_CHOICE-1))]}"
+      fi
+      if [[ -n "${OP_ACCOUNT:-}" ]]; then
+        _OP_KEY="$(op run --env-file "$ENV_FILE" --no-masking --account "$OP_ACCOUNT" -- printenv ANTHROPIC_API_KEY 2>/dev/null)" || true
+      fi
+    fi
+    if [[ -n "$_OP_KEY" ]]; then
+      MRC_API_KEY="$_OP_KEY"
+    fi
+  else
+    set -a
+    source "$ENV_FILE"
+    set +a
+  fi
 fi
 
-# Pass API key through if set
+# MRC_API_KEY is used for host-side Haiku calls (naming, summaries).
+# Falls back to ANTHROPIC_API_KEY if not set by 1Password resolution above.
+MRC_API_KEY="${MRC_API_KEY:-${ANTHROPIC_API_KEY:-}}"
+
+# Pass API key through to the container if set
 ENV_FLAGS=()
 if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
   ENV_FLAGS+=(-e ANTHROPIC_API_KEY)
@@ -371,7 +405,7 @@ process_sandboxignore() {
   local rel_dir="${ignore_dir#"$REPO_PATH"}"
   rel_dir="${rel_dir#/}"  # strip leading slash
 
-  while IFS= read -r line; do
+  while IFS= read -r line || [[ -n "$line" ]]; do
     # Skip blank lines and comments
     line="${line%%#*}"          # strip inline comments
     line="${line%"${line##*[![:space:]]}"}"  # trim trailing whitespace
@@ -515,7 +549,7 @@ cat << 'BANNER'
 BANNER
 echo "  → Repo:      $REPO_PATH"
 echo "  → Volume:    ${VOLUME_NAME}"
-if [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
+if [[ -n "${MRC_API_KEY:-}" ]]; then
   echo "  → Schwartz:  engaged (API key)"
 else
   echo "  → Schwartz:  I see your Schwartz is as big as mine... you DO have a subscription, right?"
@@ -549,6 +583,44 @@ if $NEW_SESSION; then
   ENV_FLAGS+=(-e NEW_SESSION=1)
 fi
 
+# Background session name generator — names the session while it's still running
+if [[ -z "${NEW_SESSION_NAME:-}" ]] && ! $NO_SUMMARY && [[ -n "${MRC_API_KEY:-}" ]]; then
+  (
+    _SESSIONS="$SCRIPT_DIR/mrc-sessions"
+    _MRC_DIR="$REPO_PATH/.mrc"
+    _BEFORE="$BEFORE_SESSIONS"
+
+    # For resumed sessions, name immediately if unnamed (transcript already exists)
+    if [[ -d "$_MRC_DIR" ]]; then
+      _LATEST="$(ls -t "$_MRC_DIR"/*.jsonl 2>/dev/null | head -1)"
+      if [[ -n "$_LATEST" ]]; then
+        _UUID="$(basename "$_LATEST" .jsonl)"
+        ANTHROPIC_API_KEY="$MRC_API_KEY" python3 "$_SESSIONS" generate-name "$_MRC_DIR" "$_UUID" 2>/dev/null || true
+      fi
+    fi
+
+    # For new sessions, wait for a new JSONL to appear and accumulate context
+    for _i in $(seq 1 60); do
+      sleep 5
+      [[ -d "$_MRC_DIR" ]] || continue
+      _AFTER="$(ls "$_MRC_DIR"/*.jsonl 2>/dev/null || true)"
+      _NEW="$(comm -13 <(echo "$_BEFORE") <(echo "$_AFTER") | head -1)"
+      if [[ -n "$_NEW" ]]; then
+        # Wait for enough conversation (~10KB ≈ 3-5 exchanges)
+        for _j in $(seq 1 60); do
+          sleep 5
+          _SIZE="$(wc -c < "$_NEW" 2>/dev/null || echo 0)"
+          [[ "$_SIZE" -ge 10240 ]] && break
+        done
+        _UUID="$(basename "$_NEW" .jsonl)"
+        ANTHROPIC_API_KEY="$MRC_API_KEY" python3 "$_SESSIONS" generate-name "$_MRC_DIR" "$_UUID" 2>/dev/null || true
+        break
+      fi
+    done
+  ) &
+  NAME_WATCHER_PID=$!
+fi
+
 docker run --rm -it --init \
   --cap-add=NET_ADMIN \
   --cap-add=NET_RAW \
@@ -560,8 +632,14 @@ docker run --rm -it --init \
   ${ENV_FLAGS[@]+"${ENV_FLAGS[@]}"} \
   "${VOLUMES[@]}" \
   "$IMAGE_NAME" \
-  "$@"
-EXIT_CODE=$?
+  "$@" \
+  && EXIT_CODE=0 || EXIT_CODE=$?
+
+# Kill background name watcher if still running
+if [[ -n "${NAME_WATCHER_PID:-}" ]]; then
+  kill "$NAME_WATCHER_PID" 2>/dev/null || true
+  wait "$NAME_WATCHER_PID" 2>/dev/null || true
+fi
 
 # --- Post-session processing ---
 
@@ -581,6 +659,11 @@ if [[ -n "$NEW_FILE" ]]; then
     python3 "$SESSIONS" name "$MRC_DIR" "$NEW_SESSION_NAME" "$NEW_UUID" 2>/dev/null
   fi
 
+  # 2b. Auto-generate a descriptive name if none was set
+  if [[ -z "${NEW_SESSION_NAME:-}" ]] && ! $NO_SUMMARY && [[ -n "${MRC_API_KEY:-}" ]]; then
+    ANTHROPIC_API_KEY="$MRC_API_KEY" python3 "$SESSIONS" generate-name "$MRC_DIR" "$NEW_UUID"
+  fi
+
   # 3. Tool-miss detection (sync — fast, pure parsing)
   TOOL_MISSES="$(python3 "$SESSIONS" tool-misses "$MRC_DIR" "$NEW_UUID" 2>/dev/null || true)"
   if [[ -n "$TOOL_MISSES" ]]; then
@@ -598,8 +681,17 @@ if [[ -n "$NEW_FILE" ]]; then
   fi
 
   # 4. Session summary (async background — uses Haiku API)
-  if ! $NO_SUMMARY && [[ -n "${ANTHROPIC_API_KEY:-}" ]]; then
-    ANTHROPIC_API_KEY="$ANTHROPIC_API_KEY" python3 "$SESSIONS" summarize "$MRC_DIR" "$NEW_UUID" &
+  if ! $NO_SUMMARY && [[ -n "${MRC_API_KEY:-}" ]]; then
+    ANTHROPIC_API_KEY="$MRC_API_KEY" python3 "$SESSIONS" summarize "$MRC_DIR" "$NEW_UUID" &
+  fi
+fi
+
+# 5. Auto-name resumed sessions that are still unnamed
+if [[ -z "$NEW_FILE" ]] && ! $NO_SUMMARY && [[ -n "${MRC_API_KEY:-}" ]] && [[ -d "$MRC_DIR" ]]; then
+  LATEST_SESSION="$(ls -t "$MRC_DIR"/*.jsonl 2>/dev/null | head -1)"
+  if [[ -n "$LATEST_SESSION" ]]; then
+    LATEST_UUID="$(basename "$LATEST_SESSION" .jsonl)"
+    ANTHROPIC_API_KEY="$MRC_API_KEY" python3 "$SCRIPT_DIR/mrc-sessions" generate-name "$MRC_DIR" "$LATEST_UUID"
   fi
 fi
 

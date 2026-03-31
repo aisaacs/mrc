@@ -7,6 +7,7 @@ Usage:
   mrc-sessions name       <mrc-dir> <name> [number]
   mrc-sessions resolve    <mrc-dir> <name-or-number>
   mrc-sessions summarize  <mrc-dir> <uuid>
+  mrc-sessions generate-name <mrc-dir> <uuid>
   mrc-sessions tool-misses <mrc-dir> <uuid>
 """
 
@@ -88,6 +89,12 @@ def resolve(mrc_dir, query):
         if names.get(uuid) == query:
             return uuid
 
+    # Try as a substring of a name
+    for uuid, _, _ in sessions:
+        name = names.get(uuid, "")
+        if name and query.lower() in name.lower():
+            return uuid
+
     # Try as a raw UUID
     for uuid, _, _ in sessions:
         if uuid == query:
@@ -96,13 +103,18 @@ def resolve(mrc_dir, query):
     return None
 
 
-def extract_transcript(mrc_dir, uuid):
-    """Extract a condensed transcript from a session JSONL, suitable for summarization."""
+def extract_transcript(mrc_dir, uuid, max_chars=0):
+    """Extract a condensed transcript from a session JSONL, suitable for summarization.
+
+    If max_chars > 0, stop reading once the transcript reaches that length.
+    Otherwise, cap at ~16K chars (first 8K + last 8K).
+    """
     jsonl_file = Path(mrc_dir) / f"{uuid}.jsonl"
     if not jsonl_file.exists():
         return ""
 
     lines = []
+    total = 0
     with open(jsonl_file) as fh:
         for raw in fh:
             try:
@@ -119,15 +131,18 @@ def extract_transcript(mrc_dir, uuid):
                     )
                 if content.strip():
                     lines.append(f"USER: {content.strip()}")
+                    total += len(lines[-1])
 
             elif msg_type == "assistant":
                 content = obj.get("message", {}).get("content", [])
                 if isinstance(content, str):
                     lines.append(f"ASSISTANT: {content.strip()}")
+                    total += len(lines[-1])
                 elif isinstance(content, list):
                     for block in content:
                         if block.get("type") == "text" and block.get("text", "").strip():
                             lines.append(f"ASSISTANT: {block['text'].strip()}")
+                            total += len(lines[-1])
                         elif block.get("type") == "tool_use":
                             name = block.get("name", "?")
                             inp = block.get("input", {})
@@ -141,8 +156,15 @@ def extract_transcript(mrc_dir, uuid):
                             else:
                                 detail = str(inp)[:80]
                             lines.append(f"TOOL: {name}({detail})")
+                            total += len(lines[-1])
+
+            if max_chars > 0 and total >= max_chars:
+                break
 
     transcript = "\n".join(lines)
+
+    if max_chars > 0:
+        return transcript[:max_chars]
 
     # Cap at ~16K chars: first 8K + last 8K
     if len(transcript) > 16000:
@@ -201,6 +223,76 @@ def cmd_summarize(mrc_dir, uuid):
         summaries_dir = Path(mrc_dir) / "session-summaries"
         summaries_dir.mkdir(parents=True, exist_ok=True)
         (summaries_dir / f"{uuid}.md").write_text(text.strip() + "\n")
+
+
+def cmd_generate_name(mrc_dir, uuid):
+    """Generate a descriptive kebab-case session name using Haiku."""
+    # Skip if already named (manual name or previous generation)
+    names = load_names(mrc_dir)
+    if uuid in names:
+        return
+
+    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    if not api_key:
+        return
+
+    # Use a short transcript — only need first few exchanges for a name
+    transcript = extract_transcript(mrc_dir, uuid, max_chars=2000)
+
+    prompt = (
+        "Generate a short kebab-case name (3-5 words, lowercase, hyphens) that describes "
+        "what this Claude Code session is about. Examples: 'android-splash-screen-hang-fix', "
+        "'add-user-auth-middleware', 'refactor-db-connection-pool'.\n\n"
+        "Reply with ONLY the kebab-case name, nothing else.\n\n"
+        f"Transcript:\n{transcript}"
+    )
+
+    body = json.dumps({
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": 30,
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+
+    req = urllib.request.Request(
+        "https://api.anthropic.com/v1/messages",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "x-api-key": api_key,
+            "anthropic-version": "2023-06-01",
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            result = json.loads(resp.read())
+    except urllib.error.HTTPError as e:
+        error_body = e.read().decode("utf-8", errors="replace")[:200]
+        print(f"\033[1;31m  ✦ Name generation failed: {e} — {error_body}\033[0m", file=sys.stderr)
+        return
+    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+        print(f"\033[1;31m  ✦ Name generation failed: {e}\033[0m", file=sys.stderr)
+        return
+
+    text = ""
+    for block in result.get("content", []):
+        if block.get("type") == "text":
+            text += block["text"]
+
+    name = text.strip().lower().strip("\"'")
+    if not name:
+        print("\033[1;31m  ✦ Name generation: empty response from API\033[0m", file=sys.stderr)
+        return
+    if not re.match(r'^[a-z0-9]+(-[a-z0-9]+)*$', name):
+        print(f"\033[1;31m  ✦ Name generation: bad format '{name}'\033[0m", file=sys.stderr)
+        return
+
+    # Re-check names in case manual name was set while we were generating
+    names = load_names(mrc_dir)
+    if uuid not in names:
+        names[uuid] = name
+        save_names(mrc_dir, names)
+        print(f"\033[1;36m  ✦ Session named → \033[1;33m{name}\033[0m")
 
 
 def get_summary_preview(mrc_dir, uuid):
@@ -336,6 +428,11 @@ if __name__ == "__main__":
             print("Usage: mrc-sessions tool-misses <mrc-dir> <uuid>", file=sys.stderr)
             sys.exit(1)
         cmd_tool_misses(mrc_dir, sys.argv[3])
+    elif cmd == "generate-name":
+        if len(sys.argv) < 4:
+            print("Usage: mrc-sessions generate-name <mrc-dir> <uuid>", file=sys.stderr)
+            sys.exit(1)
+        cmd_generate_name(mrc_dir, sys.argv[3])
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)
         sys.exit(1)
