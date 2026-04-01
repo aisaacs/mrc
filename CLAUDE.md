@@ -60,9 +60,11 @@ Options:
 
 Commands:
   mrc status                              Show active containers across repos
+  mrc pick [path]                         Interactive session picker (arrow keys)
   mrc sessions ls [path]                  List saved sessions
   mrc sessions name <name> [#] [path]     Name a session
   mrc sessions resume <name-or-#> [path]  Resume a specific session
+  mrc sessions pick [path]                Alias for mrc pick
 
 Config files (~/.mrcrc or <repo>/.mrcrc, one flag per line):
   # Example ~/.mrcrc

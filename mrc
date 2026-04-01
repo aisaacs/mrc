@@ -17,11 +17,13 @@
 #
 # Commands:
 #   mrc status                            Show active containers across repos
+#   mrc pick [path]                       Interactive session picker (arrow keys)
 #
 # Session management:
 #   mrc sessions ls [path]                List saved sessions
 #   mrc sessions name <name> [#] [path]   Name a session (default: most recent)
 #   mrc sessions resume <name-or-#> [path] Resume a specific session
+#   mrc sessions pick [path]              Interactive session picker (alias for mrc pick)
 #
 # Examples:
 #   mrc ~/projects/myapp
@@ -105,7 +107,7 @@ read_mrcrc "$HOME/.mrcrc"
 _repo_hint=""
 for _arg in "$@"; do
   [[ "$_arg" == -* || "$_arg" == "--" ]] && continue
-  [[ "$_arg" == "status" || "$_arg" == "sessions" ]] && break
+  [[ "$_arg" == "status" || "$_arg" == "sessions" || "$_arg" == "pick" ]] && break
   if [[ -d "$_arg" ]]; then _repo_hint="$(cd "$_arg" && pwd)"; break; fi
 done
 : "${_repo_hint:=$(pwd)}"
@@ -197,7 +199,23 @@ if [[ "${1:-}" == "status" ]]; then
   exit 0
 fi
 
-# --- Subcommand: mrc sessions <ls|name|resume> ---
+# --- Subcommand: mrc pick [path] ---
+if [[ "${1:-}" == "pick" ]]; then
+  shift
+  REPO_PATH="${1:-.}"
+  REPO_PATH="$(cd "$REPO_PATH" && pwd)"
+  SESSIONS="$SCRIPT_DIR/mrc-sessions"
+  PICK_RESULT="$(python3 "$SESSIONS" pick "$REPO_PATH/.mrc")"
+  if [[ "$PICK_RESULT" == "NEW" ]]; then
+    NEW_SESSION=true
+    ALLOW_WEB=true
+  else
+    RESUME_SESSION="$PICK_RESULT"
+  fi
+  set --
+fi
+
+# --- Subcommand: mrc sessions <ls|name|resume|pick> ---
 if [[ "${1:-}" == "sessions" ]]; then
   SUBCMD="${2:-ls}"
   shift 2 || shift $#
@@ -232,15 +250,27 @@ if [[ "${1:-}" == "sessions" ]]; then
       # Clear args and fall through to normal launch with RESUME_SESSION set
       set --
       ;;
+    pick)
+      REPO_PATH="${1:-.}"
+      REPO_PATH="$(cd "$REPO_PATH" && pwd)"
+      PICK_RESULT="$(python3 "$SESSIONS" pick "$REPO_PATH/.mrc")"
+      if [[ "$PICK_RESULT" == "NEW" ]]; then
+        NEW_SESSION=true
+        ALLOW_WEB=true
+      else
+        RESUME_SESSION="$PICK_RESULT"
+      fi
+      set --
+      ;;
     *)
       echo "Unknown sessions command: $SUBCMD" >&2
-      echo "Usage: mrc sessions <ls|name|resume>" >&2
+      echo "Usage: mrc sessions <ls|name|resume|pick>" >&2
       exit 1
       ;;
   esac
 
-  # ls and name exit here; resume falls through to launch
-  if [[ "$SUBCMD" != "resume" ]]; then
+  # ls and name exit here; resume and pick fall through to launch
+  if [[ "$SUBCMD" != "resume" && "$SUBCMD" != "pick" ]]; then
     exit 0
   fi
 fi

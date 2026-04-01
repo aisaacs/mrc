@@ -4,6 +4,7 @@ mrc-sessions — Session manager for Mister Claude.
 
 Usage:
   mrc-sessions list       <mrc-dir>
+  mrc-sessions pick       <mrc-dir>
   mrc-sessions name       <mrc-dir> <name> [number]
   mrc-sessions resolve    <mrc-dir> <name-or-number>
   mrc-sessions summarize  <mrc-dir> <uuid>
@@ -11,6 +12,7 @@ Usage:
   mrc-sessions tool-misses <mrc-dir> <uuid>
 """
 
+import curses
 import json
 import os
 import re
@@ -22,27 +24,31 @@ from pathlib import Path
 
 
 def get_sessions(mrc_dir):
-    """Return sessions sorted newest-first as [(uuid, date, preview), ...]."""
+    """Return sessions sorted by last-updated newest-first as [(uuid, last_updated, preview), ...]."""
     sessions = []
     for f in Path(mrc_dir).glob("*.jsonl"):
         uuid = f.stem
+        preview = ""
+        last_ts = ""
         try:
             with open(f) as fh:
                 for line in fh:
                     obj = json.loads(line)
-                    if obj.get("type") == "user":
+                    ts = obj.get("timestamp", "")
+                    if ts:
+                        last_ts = ts
+                    if not preview and obj.get("type") == "user":
                         content = obj.get("message", {}).get("content", "")
                         if isinstance(content, list):
                             content = next(
                                 (c.get("text", "") for c in content if c.get("type") == "text"),
                                 "",
                             )
-                        ts = obj.get("timestamp", "")[:10]
                         preview = content[:60].replace("\n", " ")
                         if len(content) > 60:
                             preview += "..."
-                        sessions.append((uuid, ts, preview))
-                        break
+            if last_ts:
+                sessions.append((uuid, last_ts, preview))
         except (json.JSONDecodeError, OSError):
             continue
     sessions.sort(key=lambda s: s[1], reverse=True)
@@ -366,13 +372,124 @@ def cmd_list(mrc_dir):
         return
 
     names = load_names(mrc_dir)
-    print(f"  {'#':<4} {'Name':<20} {'Date':<12} Preview")
-    print(f"  {'—':<4} {'————':<20} {'————':<12} ———————")
+    print(f"  {'#':<5} {'Last Used':<22} {'Name':<50} Preview")
+    print(f"  {'—':<5} {'—————————':<22} {'————':<50} ———————")
     for i, (uuid, ts, preview) in enumerate(sessions, 1):
         name = names.get(uuid, "(unnamed)")
         summary = get_summary_preview(mrc_dir, uuid)
         display = summary if summary else preview
-        print(f"  {i:<4} {name:<20} {ts:<12} {display}")
+        try:
+            dt = datetime.fromisoformat(ts).astimezone()
+            ts_display = dt.strftime("%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            ts_display = ts[:19]
+        print(f"  {i:<5} {ts_display:<22} {name:<50} {display}")
+
+
+def _pick_tui(stdscr, rows):
+    """Curses TUI for session picking. Returns action string or None."""
+    curses.curs_set(0)
+    curses.use_default_colors()
+
+    selected = 0
+    scroll_offset = 0
+
+    while True:
+        stdscr.clear()
+        max_y, max_x = stdscr.getmaxyx()
+
+        # Header
+        stdscr.addnstr(0, 0, "  Use the Schwartz to pick a session", max_x - 1, curses.A_BOLD)
+        stdscr.addnstr(1, 0, "  \u2191/\u2193 navigate \u00b7 Enter select \u00b7 q quit", max_x - 1, curses.A_DIM)
+        stdscr.addnstr(2, 0, "  " + "\u2501" * min(max_x - 4, 70), max_x - 1)
+
+        list_start_y = 4
+        visible_rows = max_y - list_start_y - 1
+
+        if selected < scroll_offset:
+            scroll_offset = selected
+        elif selected >= scroll_offset + visible_rows:
+            scroll_offset = selected - visible_rows + 1
+
+        for vi in range(visible_rows):
+            idx = scroll_offset + vi
+            if idx >= len(rows):
+                break
+
+            action, num, ts, name, preview = rows[idx]
+            indicator = "\u25b8" if idx == selected else " "
+
+            if action == "NEW":
+                line = f"  {indicator} \u2726  New session"
+            else:
+                name_col = name[:30]
+                max_preview = max(0, max_x - 48)
+                preview_col = preview[:max_preview]
+                line = f"  {indicator} {num:<3} {ts:<20} {name_col:<32} {preview_col}"
+
+            line = line[:max_x - 1]
+            attr = curses.A_REVERSE if idx == selected else curses.A_NORMAL
+            try:
+                stdscr.addnstr(list_start_y + vi, 0, line, max_x - 1, attr)
+            except curses.error:
+                pass
+
+        stdscr.refresh()
+
+        key = stdscr.getch()
+        if key in (curses.KEY_UP, ord("k")):
+            selected = max(0, selected - 1)
+        elif key in (curses.KEY_DOWN, ord("j")):
+            selected = min(len(rows) - 1, selected + 1)
+        elif key in (10, 13, curses.KEY_ENTER, curses.KEY_RIGHT):
+            return rows[selected][0]
+        elif key in (ord("q"), 27):
+            return None
+        elif key == curses.KEY_HOME:
+            selected = 0
+        elif key == curses.KEY_END:
+            selected = len(rows) - 1
+        elif key == curses.KEY_PPAGE:
+            selected = max(0, selected - visible_rows)
+        elif key == curses.KEY_NPAGE:
+            selected = min(len(rows) - 1, selected + visible_rows)
+
+
+def cmd_pick(mrc_dir):
+    """Interactive session picker. Prints selected UUID or NEW to stdout."""
+    sessions = get_sessions(mrc_dir)
+    names = load_names(mrc_dir)
+
+    # Build rows: (action, num_display, timestamp, name, preview)
+    rows = [("NEW", "", "", "New session", "")]
+    for i, (uuid, ts, preview) in enumerate(sessions, 1):
+        name = names.get(uuid, "(unnamed)")
+        summary = get_summary_preview(mrc_dir, uuid)
+        display = summary if summary else preview
+        try:
+            dt = datetime.fromisoformat(ts).astimezone()
+            ts_display = dt.strftime("%Y-%m-%d %H:%M:%S")
+        except (ValueError, TypeError):
+            ts_display = ts[:19]
+        rows.append((uuid, str(i), ts_display, name, display))
+
+    # Redirect stdout to /dev/tty so curses renders to terminal
+    # (stdout may be captured by bash $(...))
+    saved_stdout = os.dup(1)
+    tty_fd = os.open("/dev/tty", os.O_WRONLY)
+    os.dup2(tty_fd, 1)
+    os.close(tty_fd)
+
+    try:
+        result = curses.wrapper(_pick_tui, rows)
+    finally:
+        os.dup2(saved_stdout, 1)
+        os.close(saved_stdout)
+
+    if result:
+        print(result)
+        return 0
+    return 1
 
 
 def cmd_name(mrc_dir, name, target="1"):
@@ -433,6 +550,8 @@ if __name__ == "__main__":
             print("Usage: mrc-sessions generate-name <mrc-dir> <uuid>", file=sys.stderr)
             sys.exit(1)
         cmd_generate_name(mrc_dir, sys.argv[3])
+    elif cmd == "pick":
+        sys.exit(cmd_pick(mrc_dir))
     else:
         print(f"Unknown command: {cmd}", file=sys.stderr)
         sys.exit(1)
