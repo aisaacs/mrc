@@ -464,10 +464,14 @@ def _pick_tui(stdscr, rows):
             if action == "NEW":
                 line = f"  {indicator} \u2726  New session"
             else:
-                name_col = name[:30]
-                max_preview = max(0, max_x - 48)
+                # Dynamic column widths based on terminal width
+                # Fixed parts: indent(2) + indicator(1) + space(1) + num(3) + space(1) + ts(20) + space(1) = 29
+                avail = max(0, max_x - 29)
+                name_width = max(20, min(avail * 2 // 5, 60))
+                name_col = name[:name_width]
+                max_preview = max(0, avail - name_width - 2)
                 preview_col = preview[:max_preview]
-                line = f"  {indicator} {num:<3} {ts:<20} {name_col:<32} {preview_col}"
+                line = f"  {indicator} {num:<3} {ts:<20} {name_col:<{name_width + 2}} {preview_col}"
 
             line = line[:max_x - 1]
             attr = curses.A_REVERSE if idx == selected else curses.A_NORMAL
