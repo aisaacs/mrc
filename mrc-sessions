@@ -403,6 +403,7 @@ def ensure_names_migrated(mrc_dir):
                 tty.readline()
         except OSError:
             pass
+    flag_file.parent.mkdir(parents=True, exist_ok=True)
     flag_file.write_text(datetime.now().isoformat() + "\n")
 
 
