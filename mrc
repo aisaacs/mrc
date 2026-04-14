@@ -147,6 +147,16 @@ set -- "${args[@]+"${args[@]}"}"
 # Debug helper — prints to stderr when --verbose is set
 dbg() { $VERBOSE && echo "[mrc:debug] $*" >&2 || true; }
 
+# Portable timeout wrapper (op CLI can block waiting for biometric auth)
+if command -v timeout &>/dev/null; then
+  _timeout() { timeout "$@"; }
+elif command -v gtimeout &>/dev/null; then
+  _timeout() { gtimeout "$@"; }
+else
+  # Fallback: perl is always present on macOS. Sets SIGALRM then execs the command.
+  _timeout() { local secs="$1"; shift; perl -e 'alarm(shift @ARGV); exec @ARGV' "$secs" "$@"; }
+fi
+
 # --- Subcommand: mrc status ---
 if [[ "${1:-}" == "status" ]]; then
   # Ensure Docker is reachable
@@ -210,10 +220,10 @@ if [[ -f "$ENV_FILE" ]]; then
     # Try without --account first, then prompt if it fails
     if [[ -n "${OP_ACCOUNT:-}" ]]; then
       dbg "op run with explicit OP_ACCOUNT=$OP_ACCOUNT"
-      _OP_KEY="$(op run --env-file "$ENV_FILE" --no-masking --account "$OP_ACCOUNT" -- printenv ANTHROPIC_API_KEY 2>/dev/null)" || true
+      _OP_KEY="$(_timeout 5 op run --env-file "$ENV_FILE" --no-masking --account "$OP_ACCOUNT" -- printenv ANTHROPIC_API_KEY 2>/dev/null)" || true
     else
       dbg "op run without --account"
-      _OP_KEY="$(op run --env-file "$ENV_FILE" --no-masking -- printenv ANTHROPIC_API_KEY 2>/dev/null)" || true
+      _OP_KEY="$(_timeout 5 op run --env-file "$ENV_FILE" --no-masking -- printenv ANTHROPIC_API_KEY 2>/dev/null)" || true
     fi
     dbg "op run result: ${_OP_KEY:+got key}${_OP_KEY:-empty}"
     # If that failed, try each known account silently
@@ -222,11 +232,11 @@ if [[ -f "$ENV_FILE" ]]; then
       _OP_ACCOUNTS=()
       while IFS= read -r _line; do
         _OP_ACCOUNTS+=("$_line")
-      done < <(op account list --format=json 2>/dev/null | python3 -c 'import sys,json; [print(a["url"]) for a in json.load(sys.stdin)]' 2>/dev/null)
+      done < <(_timeout 5 op account list --format=json 2>/dev/null | python3 -c 'import sys,json; [print(a["url"]) for a in json.load(sys.stdin)]' 2>/dev/null)
       dbg "found ${#_OP_ACCOUNTS[@]} op account(s)"
       for _acct in "${_OP_ACCOUNTS[@]}"; do
         dbg "trying op account: $_acct"
-        _OP_KEY="$(op run --env-file "$ENV_FILE" --no-masking --account "$_acct" -- printenv ANTHROPIC_API_KEY 2>/dev/null)" || true
+        _OP_KEY="$(_timeout 5 op run --env-file "$ENV_FILE" --no-masking --account "$_acct" -- printenv ANTHROPIC_API_KEY 2>/dev/null)" || true
         if [[ -n "$_OP_KEY" ]]; then
           dbg "got key from account: $_acct"
           break
