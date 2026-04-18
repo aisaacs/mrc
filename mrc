@@ -95,11 +95,16 @@ read_mrcrc() {
     line="${line#"${line%%[![:space:]]*}"}"  # trim leading
     line="${line%"${line##*[![:space:]]}"}"  # trim trailing
     [[ -z "$line" ]] && continue
-    config_args+=("$line")
+    if [[ "$line" =~ ^[A-Z_]+= ]]; then
+      config_envs+=("$line")   # KEY=VALUE → passed as env var
+    else
+      config_args+=("$line")
+    fi
   done < "$file"
 }
 
 config_args=()
+config_envs=()
 read_mrcrc "$HOME/.mrcrc"
 
 # Sniff repo path from CLI args for per-repo config (before full parsing).
@@ -403,6 +408,16 @@ if [[ -n "$RESUME_SESSION" ]]; then
 fi
 ENV_FLAGS+=(-e CLAUDE_CODE_MAX_OUTPUT_TOKENS="${CLAUDE_CODE_MAX_OUTPUT_TOKENS:-128000}")
 ENV_FLAGS+=(-e "MRC_REPO_NAME=$(basename "$REPO_PATH")")
+
+# Pass env vars from .mrcrc config files (KEY=VALUE lines)
+for _env in "${config_envs[@]+"${config_envs[@]}"}"; do
+  ENV_FLAGS+=(-e "$_env")
+done
+
+# Pass through host MRC_VIDEO_* env vars
+for _var in ${!MRC_VIDEO_*}; do
+  ENV_FLAGS+=(-e "$_var=${!_var}")
+done
 
 # Ensure Colima is running
 STARTED_COLIMA=false

@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     dnsutils \
     socat \
     python3 \
+    ffmpeg \
+    fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 
 # Create non-root user (UID/GID overridden at build time)
@@ -69,6 +71,12 @@ COPY container/container-setup.js /usr/local/bin/
 RUN chmod +x /usr/local/bin/mrc-notify-hook.js \
     /usr/local/bin/mrc-statusline.js \
     /usr/local/bin/container-setup.js
+
+# Video analysis script + slash command (staged for runtime seeding)
+COPY container/video-analysis.sh /usr/local/bin/video-analysis
+RUN chmod +x /usr/local/bin/video-analysis
+COPY container/video-analysis-command.md /opt/mrc-video-analysis/command.md
+COPY container/video-analysis-defaults.json /opt/mrc-video-analysis/defaults.json
 
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh

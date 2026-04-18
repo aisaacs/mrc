@@ -1,0 +1,7 @@
+{
+  "budget": 8,
+  "mode": "scene",
+  "scene_threshold": 0.3,
+  "width": 1280,
+  "max_frames": 50
+}
