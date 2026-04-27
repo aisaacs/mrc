@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { spinner, dbg } from './output.js'
@@ -28,12 +28,11 @@ export async function ensureDocker(verbose) {
       const flags = ['--vm-type', 'vz', '--mount-type', 'virtiofs', '--cpu', '4', '--memory', '8']
       await spinner(
         new Promise((resolve, reject) => {
-          try {
-            execFileSync('colima', ['start', ...flags], {
-              stdio: verbose ? 'inherit' : 'ignore',
-            })
-            resolve()
-          } catch (e) { reject(e) }
+          const child = spawn('colima', ['start', ...flags], {
+            stdio: verbose ? 'inherit' : 'ignore',
+          })
+          child.on('close', code => code === 0 ? resolve() : reject(new Error(`colima exit ${code}`)))
+          child.on('error', reject)
         })
       )
       console.log('  ✓ Ship ready. All bleeps, sweeps, and creeps accounted for.')

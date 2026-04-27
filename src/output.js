@@ -22,6 +22,7 @@ export function dbg(...args) {
 }
 
 export function log(prefix, ...args) {
+  if (!verbose) return
   const ts = new Date().toLocaleTimeString('en-US', { hour12: false })
   process.stderr.write(`[${prefix}] ${ts} ${args.join(' ')}\n`)
 }

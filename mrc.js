@@ -28,7 +28,7 @@ const SCRIPT_DIR = dirname(__filename)
 const CONTEXT_DIR = resolveContextDir(SCRIPT_DIR)
 
 // --- Load config ---
-const globalFlags = readMrcrc(resolve(process.env.HOME, '.mrcrc'))
+const { flags: globalFlags, envs: globalEnvs } = readMrcrc(resolve(process.env.HOME, '.mrcrc'))
 
 // Sniff repo path for per-repo .mrcrc
 let repoHint = process.cwd()
@@ -37,9 +37,10 @@ for (const arg of process.argv.slice(2)) {
   if (['status', 'sessions', 'pick'].includes(arg)) break
   try { if (existsSync(arg)) { repoHint = resolve(arg); break } } catch {}
 }
-const repoFlags = readMrcrc(resolve(repoHint, '.mrcrc'))
+const { flags: repoFlags, envs: repoEnvs } = readMrcrc(resolve(repoHint, '.mrcrc'))
 
 // Merge: config flags first, then CLI args (CLI overrides)
+const configEnvs = [...globalEnvs, ...repoEnvs]
 const allArgs = [...globalFlags, ...repoFlags, ...process.argv.slice(2)]
 const { config, remaining, claudeArgs, help } = parseArgs(allArgs)
 
@@ -48,23 +49,56 @@ if (help) {
 
 Options:
   -r, --rebuild        Force a full image rebuild (no cache)
-  -v, --verbose        Show Colima and Docker output
+  -v, --verbose        Show Colima and Docker output (useful for debugging)
   -n, --new [name]     Start a new conversation (optionally named)
-  -w, --web            Allow outbound HTTPS to any host
+  -w, --web            Allow outbound HTTPS to any host (for web search/fetch)
   --no-summary         Skip AI session summary on exit
-  --no-notify          Disable desktop notifications entirely
+  --no-notify          Disable desktop notifications on response complete
   --no-sound           Disable notification sound (still shows notification)
 
 Commands:
-  mrc status                              Show active containers
-  mrc pick [path]                         Interactive session picker
+  mrc status                              Show active containers across repos
+  mrc pick [path]                         Interactive session picker (arrow keys)
+
+Session management:
   mrc sessions ls [path]                  List saved sessions
-  mrc sessions name <name> [#] [path]     Name a session
-  mrc sessions resume <name-or-#> [path]  Resume a specific session`)
+  mrc sessions name <name> [#] [path]     Name a session (default: most recent)
+  mrc sessions resume <name-or-#> [path]  Resume a specific session
+  mrc sessions pick [path]                Interactive session picker (alias for mrc pick)
+
+Examples:
+  mrc ~/projects/myapp
+  mrc ~/projects/myapp -- --model claude-sonnet-4-5-20250929
+  mrc .                -- -p "fix the failing tests"
+  mrc -v ~/projects/myapp
+
+Hidden paths:
+  Create .sandboxignore files anywhere in your repo tree listing paths
+  to hide from the container (one per line, relative to the directory
+  containing the .sandboxignore file — works like .gitignore):
+
+    .env
+    secrets/
+    infrastructure/
+
+Config files (one flag per line, comments with #):
+  ~/.mrcrc              Global defaults
+  <repo>/.mrcrc         Per-repo overrides (merged on top of global)
+  CLI flags always take precedence over config files.
+
+Environment:
+  ANTHROPIC_API_KEY  — loaded from .env next to this script if present
+  MRC_PORT_BASE      — starting port for proxy allocation (default: 7722)`)
   process.exit(0)
 }
 
 setVerbose(config.verbose)
+
+// --- Subcommand: mrc status (runs without API key) ---
+if (remaining[0] === 'status') {
+  showStatus()
+  process.exit(0)
+}
 
 // --- Load .env / API key ---
 const opKey = loadEnv(SCRIPT_DIR)
@@ -97,20 +131,14 @@ if (!apiKey) {
   process.exit(1)
 }
 
-// --- Subcommand: mrc status ---
-if (remaining[0] === 'status') {
-  showStatus()
-  process.exit(0)
-}
-
 // --- Subcommand: mrc pick ---
 if (remaining[0] === 'pick') {
   const repoPath = resolve(remaining[1] || '.')
   const result = await pick(resolve(repoPath, '.mrc'))
   if (!result) process.exit(0)
+  config.allowWeb = true
   if (result === 'NEW') {
     config.newSession = true
-    config.allowWeb = true
   } else {
     config.resumeSession = result
   }
@@ -151,7 +179,8 @@ if (remaining[0] === 'sessions') {
       const repoPath = resolve(sessionsArgs[0] || '.')
       const result = await pick(resolve(repoPath, '.mrc'))
       if (!result) process.exit(0)
-      if (result === 'NEW') { config.newSession = true; config.allowWeb = true }
+      config.allowWeb = true
+      if (result === 'NEW') config.newSession = true
       else config.resumeSession = result
       remaining.length = 0
       break
@@ -217,6 +246,10 @@ if (config.resumeSession) envFlags.push('-e', `RESUME_SESSION=${config.resumeSes
 if (config.newSession) envFlags.push('-e', 'NEW_SESSION=1')
 envFlags.push('-e', `CLAUDE_CODE_MAX_OUTPUT_TOKENS=${process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '128000'}`)
 envFlags.push('-e', `MRC_REPO_NAME=${basename(repoPath)}`)
+for (const env of configEnvs) envFlags.push('-e', env)
+for (const key of Object.keys(process.env)) {
+  if (key.startsWith('MRC_VIDEO_')) envFlags.push('-e', `${key}=${process.env[key]}`)
+}
 
 // Start proxies
 const portBase = Number(process.env.MRC_PORT_BASE) || 7722
@@ -301,7 +334,7 @@ if (!config.newSessionName && !config.noSummary && apiKey) {
 }
 
 // Run container
-const exitCode = runContainer({
+const exitCode = await runContainer({
   repoPath,
   envFlags,
   volumes,
@@ -330,10 +363,19 @@ if (newFiles.length > 0) {
   // Tool-miss detection
   const misses = detectToolMisses(mrcDir, newUuid)
   if (misses.size > 0) {
+    let mrcRepoUrl = ''
+    try {
+      mrcRepoUrl = execFileSync('git', ['-C', SCRIPT_DIR, 'remote', 'get-url', 'origin'], { encoding: 'utf8' }).trim().replace(/\.git$/, '')
+    } catch {}
+    mrcRepoUrl = mrcRepoUrl || 'https://github.com/aisaacs/mrc'
+
     console.log('')
     console.log("  ⚠ We ain't found these tools:")
     for (const [cmd, desc] of misses) {
       console.log(`    - ${cmd}: ${desc}`)
+      const title = encodeURIComponent(`Add ${cmd} to Dockerfile`)
+      const body = encodeURIComponent(`Session reported: ${cmd}: ${desc}\n\nConsider adding \`${cmd}\` to the apt-get install line in the Dockerfile.`)
+      console.log(`      → ${mrcRepoUrl}/issues/new?title=${title}&body=${body}`)
     }
   }
 

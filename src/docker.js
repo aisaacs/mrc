@@ -1,6 +1,6 @@
-import { execFileSync, execSync } from 'node:child_process'
+import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { basename } from 'node:path'
+import { basename, join } from 'node:path'
 import { dbg } from './output.js'
 import { IMAGE_NAME } from './constants.js'
 
@@ -25,7 +25,8 @@ export function buildImage(scriptDir, { rebuild, verbose, uid, gid }) {
   try {
     execFileSync('docker', ['build', ...buildFlags, '-t', IMAGE_NAME, scriptDir], { stdio })
   } catch (e) {
-    console.error('  ✗ Build failed.')
+    console.error('  ✗ Build failed. Docker output:')
+    if (e.stderr) process.stderr.write(e.stderr)
     process.exit(1)
   }
   console.log('  ✓ Radar locked.')
@@ -64,7 +65,9 @@ export function volumeName(repoPath, instanceId) {
   return instanceId > 1 ? `mrc-config-${hash}-${instanceId}` : `mrc-config-${hash}`
 }
 
-/** Run the Docker container (blocking). Returns exit code. */
+/** Run the Docker container. Returns a promise that resolves to the exit code.
+ *  Uses spawn (not execFileSync) so the event loop stays free for the
+ *  clipboard and notification proxy servers running in the same process. */
 export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb }) {
   const args = [
     'run', '--rm', '-it', '--init',
@@ -81,16 +84,23 @@ export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb
     ...claudeArgs,
   ]
 
-  try {
-    execFileSync('docker', args, { stdio: 'inherit' })
-    return 0
-  } catch (e) {
-    return e.status || 1
-  }
+  return new Promise(resolve => {
+    const child = spawn('docker', args, { stdio: 'inherit' })
+    child.on('close', code => resolve(code ?? 1))
+    child.on('error', () => resolve(1))
+  })
 }
 
 /** Show active mrc containers (mrc status). */
 export function showStatus() {
+  // Set DOCKER_HOST for Colima if needed
+  if (!process.env.DOCKER_HOST) {
+    try {
+      execFileSync('which', ['colima'], { stdio: 'ignore' })
+      process.env.DOCKER_HOST = `unix://${join(process.env.HOME, '.colima/default/docker.sock')}`
+    } catch {}
+  }
+
   // Ensure Docker is reachable
   try {
     execFileSync('docker', ['info'], { stdio: 'ignore' })

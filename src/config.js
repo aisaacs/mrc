@@ -3,15 +3,18 @@ import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { dbg } from './output.js'
 
-/** Parse a .mrcrc file into an array of flags. */
+/** Parse a .mrcrc file into flags and env vars (KEY=VALUE lines). */
 export function readMrcrc(file) {
-  if (!existsSync(file)) return []
+  if (!existsSync(file)) return { flags: [], envs: [] }
   const flags = []
+  const envs = []
   for (let line of readFileSync(file, 'utf8').split('\n')) {
     line = line.replace(/#.*$/, '').trim()
-    if (line) flags.push(line)
+    if (!line) continue
+    if (/^[A-Z_]+=/.test(line)) envs.push(line)
+    else flags.push(line)
   }
-  return flags
+  return { flags, envs }
 }
 
 /** Load .env file, handling 1Password op:// references. Returns the API key or null. */
