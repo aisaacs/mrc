@@ -54,6 +54,7 @@ Options:
   -j, --json           Stream JSON output instead of interactive TTY (for embedding)
   -n, --new [name]     Start a new conversation (optionally named)
   -w, --web            Allow outbound HTTPS to any host (for web search/fetch)
+  --agent <name>       AI agent to launch: claude (default), codex
   --no-summary         Skip AI session summary on exit
   --no-notify          Disable desktop notifications on response complete
   --no-sound           Disable notification sound (still shows notification)
@@ -71,6 +72,7 @@ Session management:
 Examples:
   mrc ~/projects/myapp
   mrc ~/projects/myapp -- --model claude-sonnet-4-5-20250929
+  mrc --agent codex .                     # Use Codex instead of Claude
   mrc .                -- -p "fix the failing tests"
   mrc -v ~/projects/myapp
 
@@ -90,11 +92,17 @@ Config files (one flag per line, comments with #):
 
 Environment:
   ANTHROPIC_API_KEY  — loaded from .env next to this script if present
+  OPENAI_API_KEY     — loaded from .env (required for --agent codex)
   MRC_PORT_BASE      — starting port for proxy allocation (default: 7722)`)
   process.exit(0)
 }
 
 setVerbose(config.verbose)
+
+if (!['claude', 'codex'].includes(config.agent)) {
+  console.error(`Unknown agent: ${config.agent}. Available: claude, codex`)
+  process.exit(1)
+}
 
 // --- Subcommand: mrc status (runs without API key) ---
 if (remaining[0] === 'status') {
@@ -102,36 +110,12 @@ if (remaining[0] === 'status') {
   process.exit(0)
 }
 
-// --- Load .env / API key ---
-const opKey = loadEnv(SCRIPT_DIR)
-const apiKey = opKey || process.env.ANTHROPIC_API_KEY || ''
-if (apiKey) process.env.ANTHROPIC_API_KEY = apiKey
-dbg(`API key: ${apiKey ? `set (${apiKey.length} chars)` : 'NOT SET'}`)
-
-if (!apiKey) {
-  console.log(`
-  ⚠ The Schwartz is not with you... no API key found!
-
-  "I can't make it work without the combination!"
-     — Colonel Sandurz, probably talking about this .env file
-
-  mrc needs an Anthropic API key for session naming and summaries.
-  This is NOT your Claude Code subscription — it's a separate key
-  for Haiku API calls. Think of it as the combination to the air shield.
-
-  To unlock Druidia's fresh air supply:
-
-    1. Install the 1Password CLI (op)
-    2. Create a .env file next to the mrc script:
-       ${SCRIPT_DIR}/.env
-    3. Add this line:
-
-       ANTHROPIC_API_KEY="op://Engineering/MRC Claude API key/credential"
-
-  May the Schwartz be with you!
-`)
-  process.exit(1)
-}
+// --- Load .env / API keys ---
+loadEnv(SCRIPT_DIR)
+const apiKey = process.env.ANTHROPIC_API_KEY || ''
+const openaiKey = process.env.OPENAI_API_KEY || ''
+dbg(`Anthropic key: ${apiKey ? `set (${apiKey.length} chars)` : 'NOT SET'}`)
+dbg(`OpenAI key: ${openaiKey ? `set (${openaiKey.length} chars)` : 'NOT SET'}`)
 
 // --- Subcommand: mrc pick ---
 if (remaining[0] === 'pick') {
@@ -193,6 +177,50 @@ if (remaining[0] === 'sessions') {
   }
 }
 
+// --- Validate API key for selected agent ---
+if (config.agent === 'codex' && !openaiKey) {
+  console.log(`
+  ⚠ The Schwartz needs an OpenAI key for Codex!
+
+  "I can't fire this thing without the combination!"
+     — Colonel Sandurz, probably
+
+  Add OPENAI_API_KEY to your .env file:
+    ${SCRIPT_DIR}/.env
+
+    OPENAI_API_KEY="sk-..."
+
+  Or with 1Password:
+    OPENAI_API_KEY="op://Vault/OpenAI API key/credential"
+`)
+  process.exit(1)
+}
+
+if (config.agent === 'claude' && !apiKey) {
+  console.log(`
+  ⚠ The Schwartz is not with you... no API key found!
+
+  "I can't make it work without the combination!"
+     — Colonel Sandurz, probably talking about this .env file
+
+  mrc needs an Anthropic API key for session naming and summaries.
+  This is NOT your Claude Code subscription — it's a separate key
+  for Haiku API calls. Think of it as the combination to the air shield.
+
+  To unlock Druidia's fresh air supply:
+
+    1. Install the 1Password CLI (op)
+    2. Create a .env file next to the mrc script:
+       ${SCRIPT_DIR}/.env
+    3. Add this line:
+
+       ANTHROPIC_API_KEY="op://Engineering/MRC Claude API key/credential"
+
+  May the Schwartz be with you!
+`)
+  process.exit(1)
+}
+
 // --- Main launch flow ---
 const repoPath = resolve(remaining[0] || '.')
 
@@ -239,10 +267,13 @@ if (existingCount > 0) {
 const instanceId = existingCount > 0 ? existingCount + 1 : 1
 const volName = volumeName(repoPath, instanceId)
 volumes.push('-v', `${volName}:/home/coder/.claude`)
+volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)
 
 // Environment flags
 const envFlags = []
 if (apiKey) envFlags.push('-e', 'ANTHROPIC_API_KEY')
+if (openaiKey) envFlags.push('-e', 'OPENAI_API_KEY')
+if (config.agent !== 'claude') envFlags.push('-e', `MRC_AGENT=${config.agent}`)
 if (config.allowWeb) envFlags.push('-e', 'ALLOW_WEB=1')
 if (config.resumeSession) envFlags.push('-e', `RESUME_SESSION=${config.resumeSession}`)
 if (config.newSession) envFlags.push('-e', 'NEW_SESSION=1')
@@ -297,21 +328,24 @@ if (!config.json) {
   console.log(BANNER)
   console.log(`  → Repo:      ${repoPath}`)
   console.log(`  → Volume:    ${volName}`)
-  console.log(`  → Schwartz:  engaged (API key)`)
+  console.log(`  → Schwartz:  ${[apiKey && 'Anthropic', openaiKey && 'OpenAI'].filter(Boolean).join(' + ')} engaged`)
+  if (config.agent !== 'claude') console.log(`  → Agent:     ${config.agent}`)
   console.log(`  → Clipboard: ${clipboardServer ? 'the Schwartz can see your clipboard' : 'disabled'}`)
   console.log(`  → Notify:    ${notifyServer ? 'the Schwartz will alert you when ready' : 'disabled'}`)
   console.log(`  → Firewall:  ${config.allowWeb ? 'jammed, but he can see the web (--web)' : 'jammed (just like their radar)'}`)
   console.log('')
 }
 
-// Snapshot sessions for post-exit processing
+// Snapshot sessions for post-exit processing (Claude only — Codex has no .jsonl sessions)
 const mrcDir = resolve(repoPath, '.mrc')
 let beforeSessions = []
-try { beforeSessions = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')) } catch {}
+if (config.agent === 'claude') {
+  try { beforeSessions = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')) } catch {}
+}
 
 // Background name generator
 let nameWatcher = null
-if (!config.newSessionName && !config.noSummary && apiKey) {
+if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && apiKey) {
   nameWatcher = (async () => {
     // For resumed sessions, name immediately if unnamed
     try {
@@ -357,55 +391,57 @@ const exitCode = await runContainer({
   json: config.json,
 })
 
-// --- Post-session processing ---
-let afterSessions = []
-try { afterSessions = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')) } catch {}
-const newFiles = afterSessions.filter(f => !beforeSessions.includes(f))
+// --- Post-session processing (Claude only) ---
+if (config.agent === 'claude') {
+  let afterSessions = []
+  try { afterSessions = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')) } catch {}
+  const newFiles = afterSessions.filter(f => !beforeSessions.includes(f))
 
-if (newFiles.length > 0) {
-  const newUuid = basename(newFiles[0], '.jsonl')
+  if (newFiles.length > 0) {
+    const newUuid = basename(newFiles[0], '.jsonl')
 
-  // Name if --new was given with a name
-  if (config.newSessionName) {
-    nameSession(mrcDir, config.newSessionName, newUuid)
-  }
+    // Name if --new was given with a name
+    if (config.newSessionName) {
+      nameSession(mrcDir, config.newSessionName, newUuid)
+    }
 
-  // Auto-generate name if none set
-  if (!config.newSessionName && !config.noSummary && apiKey) {
-    await generateName(mrcDir, newUuid)
-  }
+    // Auto-generate name if none set
+    if (!config.newSessionName && !config.noSummary && apiKey) {
+      await generateName(mrcDir, newUuid)
+    }
 
-  // Tool-miss detection
-  const misses = detectToolMisses(mrcDir, newUuid)
-  if (misses.size > 0 && !config.json) {
-    let mrcRepoUrl = ''
-    try {
-      mrcRepoUrl = execFileSync('git', ['-C', SCRIPT_DIR, 'remote', 'get-url', 'origin'], { encoding: 'utf8' }).trim().replace(/\.git$/, '')
-    } catch {}
-    mrcRepoUrl = mrcRepoUrl || 'https://github.com/aisaacs/mrc'
+    // Tool-miss detection
+    const misses = detectToolMisses(mrcDir, newUuid)
+    if (misses.size > 0 && !config.json) {
+      let mrcRepoUrl = ''
+      try {
+        mrcRepoUrl = execFileSync('git', ['-C', SCRIPT_DIR, 'remote', 'get-url', 'origin'], { encoding: 'utf8' }).trim().replace(/\.git$/, '')
+      } catch {}
+      mrcRepoUrl = mrcRepoUrl || 'https://github.com/aisaacs/mrc'
 
-    console.log('')
-    console.log("  ⚠ We ain't found these tools:")
-    for (const [cmd, desc] of misses) {
-      console.log(`    - ${cmd}: ${desc}`)
-      const title = encodeURIComponent(`Add ${cmd} to Dockerfile`)
-      const body = encodeURIComponent(`Session reported: ${cmd}: ${desc}\n\nConsider adding \`${cmd}\` to the apt-get install line in the Dockerfile.`)
-      console.log(`      → ${mrcRepoUrl}/issues/new?title=${title}&body=${body}`)
+      console.log('')
+      console.log("  ⚠ We ain't found these tools:")
+      for (const [cmd, desc] of misses) {
+        console.log(`    - ${cmd}: ${desc}`)
+        const title = encodeURIComponent(`Add ${cmd} to Dockerfile`)
+        const body = encodeURIComponent(`Session reported: ${cmd}: ${desc}\n\nConsider adding \`${cmd}\` to the apt-get install line in the Dockerfile.`)
+        console.log(`      → ${mrcRepoUrl}/issues/new?title=${title}&body=${body}`)
+      }
+    }
+
+    // Session summary (background)
+    if (!config.noSummary && apiKey) {
+      summarize(mrcDir, newUuid).catch(() => {})
     }
   }
 
-  // Session summary (background)
-  if (!config.noSummary && apiKey) {
-    summarize(mrcDir, newUuid).catch(() => {})
+  // Auto-name resumed sessions that are still unnamed
+  if (newFiles.length === 0 && !config.noSummary && apiKey) {
+    try {
+      const latest = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')).sort().pop()
+      if (latest) await generateName(mrcDir, basename(latest, '.jsonl'))
+    } catch {}
   }
-}
-
-// Auto-name resumed sessions that are still unnamed
-if (newFiles.length === 0 && !config.noSummary && apiKey) {
-  try {
-    const latest = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')).sort().pop()
-    if (latest) await generateName(mrcDir, basename(latest, '.jsonl'))
-  } catch {}
 }
 
 process.exit(exitCode)

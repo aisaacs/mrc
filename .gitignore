@@ -1,3 +1,4 @@
 .env
 .mrc/
 __pycache__/
+.DS_Store

@@ -50,6 +50,9 @@ RUN claude plugin marketplace add anthropics/claude-plugins-official \
 
 USER root
 
+# Install Codex CLI (OpenAI) — always available for cross-model review
+RUN npm install -g --loglevel=error @openai/codex
+
 # Create workspace and config directories
 RUN mkdir -p /workspace && \
     ln -sf /home/coder/.claude/claude.json /home/coder/.claude.json
@@ -77,6 +80,9 @@ COPY container/video-analysis.sh /usr/local/bin/video-analysis
 RUN chmod +x /usr/local/bin/video-analysis
 COPY container/video-analysis-command.md /opt/mrc-video-analysis/command.md
 COPY container/video-analysis-defaults.json /opt/mrc-video-analysis/defaults.json
+
+# Codex slash command (seeded into ~/.claude/commands/ at runtime)
+COPY container/codex-command.md /opt/mrc-codex/command.md
 
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
