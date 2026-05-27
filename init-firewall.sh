@@ -54,12 +54,12 @@ done
 # Create ipset with CIDR support
 ipset create allowed-domains hash:net
 
-# Resolve and add allowed domains
+# Resolve and add allowed domains. A resolution failure is a warning, not fatal —
+# a transient DNS hiccup on one domain shouldn't wedge container startup.
 for domain in \
     "registry.npmjs.org" \
     "api.anthropic.com" \
     "sentry.io" \
-    "statsig.anthropic.com" \
     "statsig.com"; do
     echo "Resolving $domain..."
     ips=$(dig +noall +answer A "$domain" | awk '$4 == "A" {print $5}')
@@ -70,8 +70,8 @@ for domain in \
 
     while read -r ip; do
         if [[ ! "$ip" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
-            echo "ERROR: Invalid IP from DNS for $domain: $ip"
-            exit 1
+            echo "WARNING: Invalid IP from DNS for $domain: $ip — skipping"
+            continue
         fi
         echo "Adding $ip for $domain"
         ipset add allowed-domains "$ip" -exist
