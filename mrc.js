@@ -207,8 +207,18 @@ function cleanup() {
   if (clipboardServer) { clipboardServer.close(); clipboardServer = null }
   if (notifyServer) { notifyServer.close(); notifyServer = null }
   if (startedColima) {
-    console.log('\n🎩 Goodbye, Lone Starr.')
-    try { execFileSync('colima', ['stop'], { stdio: 'ignore' }) } catch {}
+    // Colima is a single shared VM hosting every mrc container. Only stop it
+    // if no other mrc sessions are still running — otherwise we'd kill them.
+    let others = ''
+    try {
+      others = execFileSync('docker', ['ps', '--filter', 'label=mrc=1', '--format', '{{.ID}}'], { encoding: 'utf8' }).trim()
+    } catch {}
+    if (!others) {
+      console.log('\n🎩 Goodbye, Lone Starr.')
+      try { execFileSync('colima', ['stop'], { stdio: 'ignore' }) } catch {}
+    } else {
+      console.log('\n🎩 Leaving the ship running — other Mr. Claude sessions are still aboard.')
+    }
   }
 }
 process.on('exit', cleanup)

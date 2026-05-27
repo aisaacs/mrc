@@ -446,9 +446,18 @@ cleanup() {
   [[ -n "${CLIP_PID:-}" ]] && kill "$CLIP_PID" 2>/dev/null || true
   [[ -n "${NOTIFY_PID:-}" ]] && kill "$NOTIFY_PID" 2>/dev/null || true
   if ${STARTED_COLIMA:-false}; then
-    echo ""
-    echo "🎩 Goodbye, Lone Starr."
-    colima stop 2>"$QUIET"
+    # Colima is a single shared VM hosting every mrc container. Only stop it
+    # if no other mrc sessions are still running — otherwise we'd kill them.
+    local others
+    others="$(docker ps --filter label=mrc=1 --format '{{.ID}}' 2>/dev/null || true)"
+    if [[ -z "$others" ]]; then
+      echo ""
+      echo "🎩 Goodbye, Lone Starr."
+      colima stop 2>"$QUIET"
+    else
+      echo ""
+      echo "🎩 Leaving the ship running — other Mr. Claude sessions are still aboard."
+    fi
   fi
 }
 trap cleanup EXIT
