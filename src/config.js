@@ -45,35 +45,44 @@ export function loadEnv(scriptDir) {
 function loadOpEnv(envFile) {
   const opAccount = process.env.OP_ACCOUNT || ''
 
-  // Try op run
-  const tryOp = (account) => {
+  const tryOp = (account, key) => {
     const args = ['run', '--env-file', envFile, '--no-masking']
     if (account) args.push('--account', account)
-    args.push('--', 'printenv', 'ANTHROPIC_API_KEY')
+    args.push('--', 'printenv', key)
     try {
       return execFileSync('op', args, { timeout: 5000, encoding: 'utf8' }).trim()
     } catch { return '' }
   }
 
-  let key = tryOp(opAccount)
-  if (key) { dbg('got key from op'); return key }
-
-  // Enumerate accounts
-  if (!opAccount) {
+  let accounts = null
+  const getAccounts = () => {
+    if (accounts !== null) return accounts
+    if (opAccount) return accounts = []
     try {
-      const accountsJson = execFileSync('op', ['account', 'list', '--format=json'], {
+      const json = execFileSync('op', ['account', 'list', '--format=json'], {
         timeout: 5000, encoding: 'utf8',
       })
-      const accounts = JSON.parse(accountsJson)
-      for (const acct of accounts) {
-        dbg(`trying op account: ${acct.url}`)
-        key = tryOp(acct.url)
-        if (key) { dbg(`got key from account: ${acct.url}`); return key }
-      }
-    } catch {}
+      accounts = JSON.parse(json).map(a => a.url)
+    } catch { accounts = [] }
+    return accounts
   }
 
-  return null
+  for (const envKey of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY']) {
+    let val = tryOp(opAccount, envKey)
+    if (!val) {
+      for (const acct of getAccounts()) {
+        dbg(`trying op account: ${acct} for ${envKey}`)
+        val = tryOp(acct, envKey)
+        if (val) { dbg(`got ${envKey} from account: ${acct}`); break }
+      }
+    }
+    if (val) {
+      dbg(`got ${envKey} from op`)
+      process.env[envKey] = val
+    }
+  }
+
+  return process.env.ANTHROPIC_API_KEY || null
 }
 
 /** Parse CLI args into a config object. Returns { config, repoArgs, claudeArgs }. */
@@ -90,6 +99,7 @@ export function parseArgs(argv) {
     noSummary: false,
     rebuild: false,
     resumeSession: '',
+    agent: 'claude',
   }
   const remaining = []
   const claudeArgs = []
@@ -113,6 +123,9 @@ export function parseArgs(argv) {
       case '--daemon': config.daemon = true; break
       case '-j': case '--json': config.json = true; break
       case '-w': case '--web': config.allowWeb = true; break
+      case '--agent':
+        if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.agent = argv[++i]
+        break
       default: remaining.push(arg)
     }
   }

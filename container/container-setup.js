@@ -125,6 +125,12 @@ if (existsSync(VA_SRC)) {
   copyIfAbsent(join(VA_SRC, 'defaults.json'), newCfg)
 }
 
+// 1c. Seed Codex slash command.
+const CODEX_SRC = '/opt/mrc-codex'
+if (existsSync(CODEX_SRC)) {
+  linkOrMigrate(join(CODEX_SRC, 'command.md'), join(CLAUDE_DIR, 'commands', 'codex.md'))
+}
+
 // 2. Restore claude.json from backup if missing
 if (!existsSync(CONFIG_FILE)) {
   const backupDir = join(CLAUDE_DIR, 'backups')
@@ -224,21 +230,25 @@ if (existsSync('/workspace/.git')) {
   writeJSON(SETTINGS_FILE, settings)
 }
 
-// 7. Compute resume flag and write it for entrypoint.sh to read
-const resumeSession = process.env.RESUME_SESSION || ''
-const newSession = process.env.NEW_SESSION === '1'
+// 7. Compute resume flag and write it for entrypoint.sh to read.
+// Only Claude supports session resume — other agents get an empty flag.
+const agent = process.env.MRC_AGENT || 'claude'
 let resumeFlag = ''
 
-if (resumeSession) {
-  resumeFlag = `--resume ${resumeSession}`
-} else if (!newSession) {
-  try {
-    const jsonls = readdirSync(MRC_LOCAL).filter(f => f.endsWith('.jsonl'))
-    if (jsonls.length > 0) resumeFlag = '--continue'
-  } catch {}
+if (agent === 'claude') {
+  const resumeSession = process.env.RESUME_SESSION || ''
+  const newSession = process.env.NEW_SESSION === '1'
+
+  if (resumeSession) {
+    resumeFlag = `--resume ${resumeSession}`
+  } else if (!newSession) {
+    try {
+      const jsonls = readdirSync(MRC_LOCAL).filter(f => f.endsWith('.jsonl'))
+      if (jsonls.length > 0) resumeFlag = '--continue'
+    } catch {}
+  }
 }
 
-// Write resume flag for entrypoint.sh to source
 writeFileSync('/tmp/mrc-resume-flag', resumeFlag)
 
 console.log('Container setup complete.')

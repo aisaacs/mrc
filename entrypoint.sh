@@ -38,16 +38,36 @@ if [ "${MRC_DAEMON:-}" = "1" ]; then
   exec tail -f /dev/null
 fi
 
-echo "Launching Claude Code..."
-claude --dangerously-skip-permissions $RESUME_FLAG "$@"
+# Auto-login Codex if OPENAI_API_KEY is present (persists in ~/.codex/ volume)
+if [ -n "${OPENAI_API_KEY:-}" ]; then
+  printenv OPENAI_API_KEY | codex login --with-api-key 2>/dev/null || true
+fi
+
+AGENT="${MRC_AGENT:-claude}"
+case "$AGENT" in
+  claude)
+    echo "Launching Claude Code..."
+    claude --dangerously-skip-permissions $RESUME_FLAG "$@"
+    ;;
+  codex)
+    echo "Launching Codex..."
+    codex --dangerously-bypass-approvals-and-sandbox "$@"
+    ;;
+  *)
+    echo "Unknown agent: $AGENT"
+    exit 1
+    ;;
+esac
 EXIT_CODE=$?
 if [ $EXIT_CODE -ne 0 ]; then
   echo ""
-  echo "Claude exited with code $EXIT_CODE"
+  echo "$AGENT exited with code $EXIT_CODE"
   echo "Debug info:"
-  echo "  Claude: $(claude --version 2>&1 || echo 'not found')"
+  echo "  claude: $(claude --version 2>&1 || echo 'not found')"
+  echo "  codex:  $(codex --version 2>&1 || echo 'not found')"
   echo "  TERM: ${TERM:-unset}"
   echo "  TTY: $(tty 2>&1 || echo 'not a tty')"
-  echo "  API key set: $([ -n "${ANTHROPIC_API_KEY:-}" ] && echo yes || echo no)"
+  echo "  ANTHROPIC_API_KEY set: $([ -n "${ANTHROPIC_API_KEY:-}" ] && echo yes || echo no)"
+  echo "  OPENAI_API_KEY set: $([ -n "${OPENAI_API_KEY:-}" ] && echo yes || echo no)"
 fi
 exit $EXIT_CODE

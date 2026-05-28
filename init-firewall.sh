@@ -59,6 +59,7 @@ ipset create allowed-domains hash:net
 for domain in \
     "registry.npmjs.org" \
     "api.anthropic.com" \
+    "api.openai.com" \
     "sentry.io" \
     "statsig.com"; do
     echo "Resolving $domain..."
