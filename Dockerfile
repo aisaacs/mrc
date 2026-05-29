@@ -51,7 +51,9 @@ RUN claude plugin marketplace add anthropics/claude-plugins-official \
 USER root
 
 # Install Codex CLI (OpenAI) — always available for cross-model review
-RUN npm install -g --loglevel=error @openai/codex
+RUN npm install -g --loglevel=error @openai/codex \
+    && mkdir -p /home/coder/.codex \
+    && chown ${USER_UID}:${USER_GID} /home/coder/.codex
 
 # Create workspace and config directories
 RUN mkdir -p /workspace && \
