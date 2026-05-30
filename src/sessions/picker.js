@@ -78,7 +78,8 @@ export async function pick(mrcDir) {
   }
 
   // We need to write to /dev/tty for the TUI (stdout may be captured by $())
-  const { openSync, createWriteStream, createReadStream } = await import('node:fs')
+  const { openSync, createWriteStream } = await import('node:fs')
+  const { ReadStream: TtyReadStream } = await import('node:tty')
   let ttyOut
   try {
     const fd = openSync('/dev/tty', 'w')
@@ -125,11 +126,29 @@ export async function pick(mrcDir) {
     write(HIDE_CURSOR)
     render()
 
-    let input = process.stdin
+    // Read keystrokes from the terminal in raw mode. Open /dev/tty directly so
+    // this works even when stdin isn't a TTY, and wrap the fd in a
+    // tty.ReadStream — NOT fs.createReadStream, which produces an fs.ReadStream
+    // with no setRawMode. Without raw mode the terminal stays in cooked/echo
+    // mode and arrow-key escape sequences get echoed (^[[A/^[[B) instead of
+    // delivered to us as discrete keypresses.
+    let input
     try {
-      const ttyFd = openSync('/dev/tty', 'r')
-      input = createReadStream(null, { fd: ttyFd })
-    } catch {}
+      input = new TtyReadStream(openSync('/dev/tty', 'r'))
+    } catch {
+      input = process.stdin
+    }
+
+    const finish = result => {
+      write(SHOW_CURSOR)
+      write(CLEAR_SCREEN)
+      if (input.setRawMode) input.setRawMode(false)
+      input.pause()
+      // Close our /dev/tty fd so it doesn't leak or hold the event loop open
+      // before mrc.js launches the container. Never destroy the shared stdin.
+      if (input !== process.stdin) input.destroy()
+      resolve(result)
+    }
 
     if (input.setRawMode) input.setRawMode(true)
     input.resume()
@@ -143,17 +162,9 @@ export async function pick(mrcDir) {
         selected = Math.min(rows.length - 1, selected + 1)
         render()
       } else if (k === '\r' || k === '\n' || k === '\x1b[C') { // enter / right
-        write(SHOW_CURSOR)
-        write(CLEAR_SCREEN)
-        if (input.setRawMode) input.setRawMode(false)
-        input.pause()
-        resolve(rows[selected].action)
-      } else if (k === 'q' || k === '\x1b') { // quit
-        write(SHOW_CURSOR)
-        write(CLEAR_SCREEN)
-        if (input.setRawMode) input.setRawMode(false)
-        input.pause()
-        resolve(null)
+        finish(rows[selected].action)
+      } else if (k === 'q' || k === '\x1b' || k === '\x03') { // quit / Ctrl-C
+        finish(null)
       }
     })
   })
