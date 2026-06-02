@@ -42,7 +42,7 @@ mrc-notify-hook.sh   # container-side hook that sends notifications (Stop, Permi
 
 ## Prerequisites (macOS, from scratch)
 
-You need three things: Homebrew, Docker CLI tools, and Colima (a lightweight Docker runtime — no Docker Desktop, no GUI, no license fees).
+You need Homebrew, Node.js, and the Docker CLI tools + Colima (a lightweight Docker runtime — no Docker Desktop, no GUI, no license fees).
 
 ### 1. Install Homebrew
 
@@ -62,10 +62,11 @@ eval "$(/opt/homebrew/bin/brew shellenv)"
 ### 2. Install Docker + Colima
 
 ```bash
-brew install docker docker-buildx colima socat terminal-notifier
+brew install node docker docker-buildx colima socat terminal-notifier
 ```
 
 This installs:
+- `node` — the runtime for the `mrc` launcher (it's a Node.js script)
 - `docker` — the CLI client (no daemon, just the command)
 - `docker-buildx` — the build plugin (required for `docker build`)
 - `colima` — a lightweight Linux VM that runs the Docker daemon
@@ -105,11 +106,11 @@ Go to [console.anthropic.com](https://console.anthropic.com/) and create an API 
 3. **Add `mrc` to your PATH:**
 
    ```bash
-   chmod +x mrc
-   sudo ln -s "$(pwd)/mrc" /usr/local/bin/mrc
+   chmod +x mrc.js
+   sudo ln -s "$(pwd)/mrc.js" /usr/local/bin/mrc
    ```
 
-   This creates a symlink so you can run `mrc` from anywhere.
+   This creates a symlink so you can run `mrc` from anywhere. (`mrc.js` is the Node.js launcher; the older bash launcher, `mrc`, is still in the repo if you need it.)
 
 ## Usage
 

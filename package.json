@@ -5,6 +5,9 @@
   "bin": {
     "mrc": "./mrc.js"
   },
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "node mrc.js"
   }
