@@ -98,6 +98,8 @@ export function parseArgs(argv) {
     noSound: false,
     noSummary: false,
     rebuild: false,
+    colimaCpu: '',
+    colimaMemory: '',
     resumeSession: '',
     agent: 'claude',
   }
@@ -123,6 +125,12 @@ export function parseArgs(argv) {
       case '--daemon': config.daemon = true; break
       case '-j': case '--json': config.json = true; break
       case '-w': case '--web': config.allowWeb = true; break
+      case '--colima-cpu':
+        if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.colimaCpu = argv[++i]
+        break
+      case '--colima-memory':
+        if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.colimaMemory = argv[++i]
+        break
       case '--agent':
         if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.agent = argv[++i]
         break

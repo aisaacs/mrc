@@ -28,14 +28,13 @@ Everything else is blocked. He'll get an immediate REJECT if he tries.
 ## Files
 
 ```
-mrc                  # the command — builds, mounts, launches
+mrc.js               # the command — builds, mounts, launches (Node.js)
+src/                  # host-side modules (colima, docker, config, proxies, sessions)
 Dockerfile           # his room — node:22-slim + Claude Code + firewall tools
-entrypoint.sh        # waits for network, runs firewall, starts claude
+entrypoint.sh        # waits for network, runs firewall, starts agent
 init-firewall.sh     # iptables + ipset whitelist — the lock on the door
-clipboard-proxy.sh   # host-side clipboard server (TCP, socat)
-clipboard-shim.sh    # container-side xclip replacement
-notify-proxy.sh      # host-side notification proxy (TCP, socat + terminal-notifier)
-mrc-notify-hook.sh   # container-side hook that sends notifications (Stop, PermissionRequest, Notification)
+container/           # container-side scripts (setup, hooks, statusline)
+clipboard-shim.sh   # container-side xclip replacement
 .env                 # your API key (not checked in)
 .mrc/                # project-local Claude memory (auto-created, gitignored)
 ```
@@ -62,7 +61,7 @@ eval "$(/opt/homebrew/bin/brew shellenv)"
 ### 2. Install Docker + Colima
 
 ```bash
-brew install node docker docker-buildx colima socat terminal-notifier
+brew install node docker docker-buildx colima terminal-notifier
 ```
 
 This installs:
@@ -70,6 +69,7 @@ This installs:
 - `docker` — the CLI client (no daemon, just the command)
 - `docker-buildx` — the build plugin (required for `docker build`)
 - `colima` — a lightweight Linux VM that runs the Docker daemon
+- `terminal-notifier` — native macOS notifications
 
 ### 3. Configure the buildx plugin
 
@@ -88,14 +88,21 @@ Go to [console.anthropic.com](https://console.anthropic.com/) and create an API 
 
 ## Setup
 
-1. **Clone this repo:**
+1. **Install via script:**
+
+   ```bash
+   curl -fsSL https://aisaacs.github.io/mrc/install.sh | bash
+   ```
+
+   Or **from source** (requires Node.js 22+):
 
    ```bash
    git clone git@github.com:aisaacs/mrc.git
-   cd mister-claude
+   cd mrc
+   sudo ln -s "$(pwd)/mrc.js" /usr/local/bin/mrc
    ```
 
-2. [Optional] **Create the `.env` file** in the repo root
+2. [Optional] **Create the `.env` file** (next to mrc.js or at `~/.config/mrc/.env`):
 
    ```bash
    echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
@@ -103,14 +110,11 @@ Go to [console.anthropic.com](https://console.anthropic.com/) and create an API 
 
    Replace `sk-ant-...` with your actual key. This file is gitignored.
 
-3. **Add `mrc` to your PATH:**
-
-   ```bash
-   chmod +x mrc.js
-   sudo ln -s "$(pwd)/mrc.js" /usr/local/bin/mrc
+   1Password references are supported:
    ```
-
-   This creates a symlink so you can run `mrc` from anywhere. (`mrc.js` is the Node.js launcher; the older bash launcher, `mrc`, is still in the repo if you need it.)
+   ANTHROPIC_API_KEY="op://Vault/Key/credential"
+   OPENAI_API_KEY="op://Vault/OpenAI/credential"
+   ```
 
 ## Usage
 
@@ -122,18 +126,27 @@ mrc ~/projects/my-app
 mrc ~/projects/my-app -- -p "refactor the auth module"
 mrc ~/projects/my-app -- --model claude-sonnet-4-5-20250929
 
+# Use Codex instead of Claude
+mrc --agent codex ~/projects/my-app
+
 # Current directory
 mrc .
 
 # Verbose mode (shows Colima and Docker output)
 mrc -v ~/projects/my-app
+
+# Run in background (daemon mode)
+mrc --daemon ~/projects/my-app
+
+# Stream JSON output (for embedding)
+mrc --json ~/projects/my-app
 ```
 
 First run builds the Docker image (~2 min). After that it's ready in about 5 seconds while the firewall sets up.
 
 When you quit Claude, the container disappears. Your files are safe on the host — only the container is ephemeral.
 
-Claude's global config (auth, settings, plugins) is persisted in a per-repo Docker volume (`mrc-config-<hash>`) between runs. Project-specific data (memory, conversation history, project settings) is stored in `.mrc/` inside the repo itself — it survives volume resets and travels with the project.
+Claude's global config (auth, settings, plugins) is persisted in a per-repo Docker volume (`mrc-config-<hash>`) between runs. Codex config is persisted in a separate volume (`mrc-codex-<hash>`). Project-specific data (memory, conversation history, project settings) is stored in `.mrc/` inside the repo itself — it survives volume resets and travels with the project.
 
 Sessions auto-resume: when you re-open the same repo, Claude picks up where you left off. To start a new conversation instead, use `mrc --new`.
 
@@ -147,6 +160,9 @@ mrc --new fix-bug-42
 
 # Start a new unnamed session
 mrc --new
+
+# Interactive session picker
+mrc pick
 
 # List sessions
 mrc sessions ls
@@ -188,7 +204,7 @@ He doesn't know what he's missing.
 
 Mister Claude stores data in two places:
 
-**Per-repo Docker volume** (`mrc-config-<hash>`) — holds global Claude config: auth state, global settings, installed plugins. Each repo gets its own volume (keyed by MD5 hash of the repo path) so projects don't contaminate each other. The volume name is shown in the banner at startup.
+**Per-repo Docker volumes** — `mrc-config-<hash>` holds global Claude config (auth state, settings, plugins). `mrc-codex-<hash>` holds Codex config. Each repo gets its own volumes (keyed by MD5 hash of the repo path) so projects don't contaminate each other. The volume name is shown in the banner at startup.
 
 **`.mrc/` in your repo** — holds project-specific Claude data: memory, conversation history, project settings. This directory is:
 - Auto-created on first run
@@ -205,6 +221,25 @@ docker volume ls | grep mrc-config
 
 # Remove it
 docker volume rm mrc-config-<hash>
+```
+
+## Colima resources
+
+By default, `mrc` gives the Colima VM **all your CPU cores** and **half your system RAM** (with an 8GB floor). Override with flags or in your `.mrcrc`:
+
+```bash
+# CLI
+mrc --colima-cpu 8 --colima-memory 32 ~/projects/my-app
+
+# Or in ~/.mrcrc (applies to every session)
+--colima-memory 48
+```
+
+Resource settings only take effect when `mrc` starts Colima. If Colima is already running, it keeps its current settings. To pick up changes:
+
+```bash
+colima stop
+mrc ~/projects/my-app
 ```
 
 ## Letting him visit new places
@@ -231,13 +266,12 @@ The next `mrc` run will rebuild the image with the new firewall rules.
 
 ## How it works
 
-1. `mrc` resolves the repo path, auto-starts Colima if needed, builds the Docker image, reads `.sandboxignore`, creates a per-repo config volume (`mrc-config-<hash>`), and starts the container with the repo bind-mounted at `/workspace`
+1. `mrc` resolves the repo path, auto-starts Colima if needed, builds the Docker image, reads `.sandboxignore`, creates per-repo config volumes, starts in-process clipboard and notification proxies, and starts the container with the repo bind-mounted at `/workspace`
 2. The container runs as a non-root `coder` user with UID/GID matching your host user (no permission weirdness with bind-mounted files)
 3. `entrypoint.sh` waits for the network, then runs `init-firewall.sh` via passwordless sudo
 4. The firewall resolves each allowed domain to IPs, adds them to an `ipset`, sets the default iptables policy to DROP, and verifies that `example.com` is unreachable
-5. The entrypoint symlinks Claude's project store into `/workspace/.mrc/` so memory and project data persist in the repo
-6. Claude Code starts with `--dangerously-skip-permissions` — the container is the security boundary, so Claude can freely run commands inside it
-7. VS Code on the host sees all file changes instantly via the bind mount
+5. The entrypoint runs `container-setup.js` to merge plugin config and symlink Claude's project store into `/workspace/.mrc/`
+6. The selected agent starts with full permissions — the container is the security boundary
 
 ## Customization
 
@@ -263,13 +297,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 FROM node:20-slim    # or node:18-slim, etc.
 ```
 
-**More resources for Colima:**
-
-```bash
-colima stop
-colima start --vm-type vz --mount-type virtiofs --cpu 6 --memory 16
-```
-
 **Let him run free** (no firewall) — replace the ENTRYPOINT in the Dockerfile:
 
 ```dockerfile
@@ -278,25 +305,13 @@ ENTRYPOINT ["claude", "--dangerously-skip-permissions"]
 
 ## Clipboard (image paste)
 
-Text paste works out of the box (it travels through the terminal as stdin), but pasting images requires a clipboard bridge between the host and the container. Mister Claude ships one — a small TCP proxy that lets the container read your host clipboard.
-
-### Prerequisites
-
-Install `socat` on the host:
-
-```bash
-# macOS
-brew install socat
-
-# Linux (Debian/Ubuntu)
-sudo apt-get install socat
-```
+Text paste works out of the box (it travels through the terminal as stdin), but pasting images requires a clipboard bridge between the host and the container. Mister Claude ships one — an in-process TCP proxy built into the launcher.
 
 ### How it works
 
-1. `mrc` starts `clipboard-proxy.sh` on the host, listening on `127.0.0.1:7722`
+1. `mrc` starts a TCP clipboard server on a dynamic port
 2. Inside the container, a shim installed at `/usr/local/bin/xclip` intercepts Claude Code's clipboard reads
-3. The shim connects to the proxy via `host.docker.internal:7722` and fetches clipboard data over TCP
+3. The shim connects to the proxy via `host.docker.internal` and fetches clipboard data over TCP
 
 The banner will show `Clipboard: the Schwartz can see your clipboard` when the proxy is running.
 
@@ -306,32 +321,23 @@ Just copy an image to your clipboard on the host and press **Ctrl+V** inside Cla
 
 ### Troubleshooting clipboard
 
-**Banner doesn't show the clipboard line** — Make sure `socat` is installed on the host. The proxy won't start without it.
+**Banner doesn't show the clipboard line** — The clipboard proxy failed to start. Check for port conflicts or run with `-v` for details.
 
 **"No image found in clipboard"** — Try these steps:
 
-1. From the host (separate terminal), verify the proxy is responding:
-
-   ```bash
-   echo "GET TARGETS" | socat - TCP:127.0.0.1:7722
-   # Should print "text/plain" (and "image/png" if an image is copied)
-   ```
-
-2. From inside the container, verify connectivity:
+1. From inside the container, verify connectivity:
 
    ```bash
    printf 'GET TARGETS\n' | socat -,ignoreeof TCP:host.docker.internal:7722
    ```
 
-3. Check the shim logs inside the container:
+2. Check the shim logs inside the container:
 
    ```bash
    cat /tmp/mrc-xclip-shim.log
    ```
 
-4. Host-side proxy logs appear in the terminal where `mrc` is running (stderr).
-
-**"No route to host" in shim logs** — The firewall may be blocking traffic to `host.docker.internal`. Rebuild the image (`docker rmi mister-claude`) to pick up the latest firewall rules that allow this route.
+**"No route to host" in shim logs** — The firewall may be blocking traffic to `host.docker.internal`. Rebuild the image (`docker rmi mister-claude`) to pick up the latest firewall rules.
 
 ## Notifications
 
@@ -339,10 +345,10 @@ Mister Claude sends a desktop notification whenever Claude needs your attention 
 
 ### Prerequisites
 
-Install `terminal-notifier` and `socat` on the host:
+Install `terminal-notifier` on the host:
 
 ```bash
-brew install terminal-notifier socat
+brew install terminal-notifier
 ```
 
 ### Do Not Disturb
@@ -381,21 +387,19 @@ If nothing appears, check the settings above. If you see an error, make sure it'
 
 **`docker: command not found`** — Run `brew install docker docker-buildx colima` and make sure Homebrew is on your PATH.
 
-**`Cannot connect to the Docker daemon`** — Colima isn't running. Start it with `colima start --vm-type vz --mount-type virtiofs --cpu 4 --memory 8`.
+**`Cannot connect to the Docker daemon`** — Colima isn't running. Start it with `colima start --vm-type vz --mount-type virtiofs` or just run `mrc` and it will auto-start Colima.
 
-**`ERROR: Network not ready after 30 attempts`** — The container couldn't resolve DNS. Try `colima stop && colima start --vm-type vz --mount-type virtiofs --cpu 4 --memory 8` to restart the VM.
+**`ERROR: Network not ready after 30 attempts`** — The container couldn't resolve DNS. Try `colima stop && colima start --vm-type vz --mount-type virtiofs` to restart the VM.
 
 **`ERROR: Firewall verification failed`** — The iptables rules didn't take effect. Make sure the container has `--cap-add=NET_ADMIN --cap-add=NET_RAW` (this is handled by `mrc` automatically).
 
 **Permission errors on mounted files** — The Docker image builds with your UID/GID. If you see permission issues, rebuild: `docker rmi mister-claude` and run `mrc` again.
 
-**`✗ Auto-update failed`** — Claude Code's version is baked into the Docker image at build time and auto-update is disabled inside the container. If you see this error, your image is stale. Rebuild it:
+**`✗ Auto-update failed`** — Claude Code's version is baked into the Docker image at build time and auto-update is disabled inside the container. Rebuild it:
 
 ```bash
 docker rmi mister-claude
 mrc ~/projects/my-app
 ```
 
-This pulls the latest Claude Code from npm and builds a fresh image.
-
-**Slow file access** — Make sure you started Colima with `--mount-type virtiofs`. If you started it without that flag, stop and restart with the full flags.
+**Slow file access** — Make sure Colima is running with `--mount-type virtiofs`. `mrc` does this automatically when it starts Colima; if you started Colima manually without that flag, stop and let `mrc` restart it.

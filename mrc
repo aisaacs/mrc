@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
 #
-# mrc — Mister Claude
+# mrc — Mister Claude (DEPRECATED — use mrc.js instead)
+# This bash launcher is frozen. All new development targets mrc.js + src/.
 # Launch Claude Code in a sandboxed Docker container with network firewall.
 #
+echo "⚠ This bash launcher is deprecated. Use mrc.js instead:" >&2
+echo "  node $(dirname "$0")/mrc.js $*" >&2
+echo "" >&2
 # Usage:
 #   mrc [options] [path-to-repo] [-- claude-code-args...]
 #
@@ -14,6 +18,8 @@
 #   --no-summary         Skip AI session summary on exit
 #   --no-notify          Disable desktop notifications on response complete
 #   --no-sound           Disable notification sound (still shows notification)
+#   --colima-cpu N       CPUs for Colima VM (default: all host cores)
+#   --colima-memory N    Memory (GB) for Colima VM (default: half host RAM, min 8)
 #
 # Commands:
 #   mrc status                            Show active containers across repos
@@ -129,6 +135,8 @@ NO_NOTIFY=false
 NO_SOUND=false
 NO_SUMMARY=false
 REBUILD=false
+COLIMA_CPU=""
+COLIMA_MEMORY=""
 RESUME_SESSION=""
 args=()
 while [[ $# -gt 0 ]]; do
@@ -143,6 +151,8 @@ while [[ $# -gt 0 ]]; do
     --rebuild|-r)  REBUILD=true ;;
     --verbose|-v)  VERBOSE=true ;;
     --web|-w)      ALLOW_WEB=true ;;
+    --colima-cpu)  COLIMA_CPU="$2"; shift ;;
+    --colima-memory) COLIMA_MEMORY="$2"; shift ;;
     *)             args+=("$1") ;;
   esac
   shift
@@ -428,7 +438,15 @@ if command -v colima &>/dev/null; then
   fi
   if ! colima status &>/dev/null 2>&1; then
     echo "🎩 Preparing ship for Ludicrous Speed..."
-    COLIMA_FLAGS=(--vm-type vz --mount-type virtiofs --cpu 4 --memory 8)
+    if [[ -z "$COLIMA_CPU" ]]; then
+      COLIMA_CPU="$(sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)"
+    fi
+    if [[ -z "$COLIMA_MEMORY" ]]; then
+      HOST_MEM_GB="$(( $(sysctl -n hw.memsize 2>/dev/null || echo 17179869184) / 1073741824 ))"
+      COLIMA_MEMORY="$(( HOST_MEM_GB / 2 ))"
+      [[ "$COLIMA_MEMORY" -lt 8 ]] && COLIMA_MEMORY=8
+    fi
+    COLIMA_FLAGS=(--vm-type vz --mount-type virtiofs --cpu "$COLIMA_CPU" --memory "$COLIMA_MEMORY")
     colima start "${COLIMA_FLAGS[@]}" 2>"$QUIET" &
     spinner $!
     wait $!

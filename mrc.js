@@ -58,6 +58,8 @@ Options:
   --no-summary         Skip AI session summary on exit
   --no-notify          Disable desktop notifications on response complete
   --no-sound           Disable notification sound (still shows notification)
+  --colima-cpu N       CPUs for Colima VM (default: all host cores)
+  --colima-memory N    Memory (GB) for Colima VM (default: half host RAM, min 8)
 
 Commands:
   mrc status                              Show active containers across repos
@@ -225,7 +227,7 @@ if (config.agent === 'claude' && !apiKey) {
 const repoPath = resolve(remaining[0] || '.')
 
 // Ensure Docker / Colima
-const startedColima = await ensureDocker(config.verbose)
+const startedColima = await ensureDocker(config.verbose, { colimaCpu: config.colimaCpu, colimaMemory: config.colimaMemory })
 
 // Cleanup on exit
 let clipboardServer = null

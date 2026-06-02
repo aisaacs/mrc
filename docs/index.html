@@ -615,7 +615,7 @@ footer a { color: var(--phosphor-dim); }
         </div>
         <div class="terminal-body">
 <span class="prompt">$</span> <span class="cmd">git clone https://github.com/aisaacs/mrc.git</span>
-<span class="prompt">$</span> <span class="cmd">export PATH="$PATH:$(pwd)/mrc"</span>
+<span class="prompt">$</span> <span class="cmd">sudo ln -s "$(pwd)/mrc/mrc.js" /usr/local/bin/mrc</span>
 <span class="output">  <span class="comment"># Requires Node.js 22+</span></span>
         </div>
       </div>
@@ -697,9 +697,14 @@ footer a { color: var(--phosphor-dim); }
         <tr><td>-v, --verbose</td><td>Show Colima and Docker output</td></tr>
         <tr><td>-n, --new [name]</td><td>Start a new conversation (optionally named)</td></tr>
         <tr><td>-w, --web</td><td>Allow outbound HTTPS to any host</td></tr>
+        <tr><td>--agent &lt;name&gt;</td><td>AI agent to launch: claude (default), codex</td></tr>
+        <tr><td>--daemon</td><td>Start container in background, print container ID</td></tr>
+        <tr><td>-j, --json</td><td>Stream JSON output instead of interactive TTY</td></tr>
         <tr><td>--no-summary</td><td>Skip AI session summary on exit</td></tr>
         <tr><td>--no-notify</td><td>Disable desktop notifications entirely</td></tr>
         <tr><td>--no-sound</td><td>Disable notification sound (still shows notification)</td></tr>
+        <tr><td>--colima-cpu N</td><td>CPUs for Colima VM (default: all host cores)</td></tr>
+        <tr><td>--colima-memory N</td><td>Memory (GB) for Colima VM (default: half host RAM, min 8)</td></tr>
 
         <tr><td colspan="2" class="cli-section-label">Commands</td></tr>
         <tr><td>mrc status</td><td>Show active containers across repos</td></tr>
@@ -710,6 +715,7 @@ footer a { color: var(--phosphor-dim); }
 
         <tr><td colspan="2" class="cli-section-label">Environment</td></tr>
         <tr><td>ANTHROPIC_API_KEY</td><td>API key (also loaded from .env or ~/.config/mrc/.env)</td></tr>
+        <tr><td>OPENAI_API_KEY</td><td>OpenAI key (required for --agent codex)</td></tr>
         <tr><td>MRC_PORT_BASE</td><td>Starting port for proxy allocation (default: 7722)</td></tr>
         <tr><td>MRC_HOME</td><td>Override Docker context directory (advanced)</td></tr>
       </tbody>
@@ -728,6 +734,7 @@ footer a { color: var(--phosphor-dim); }
 <span class="comment"># Global defaults — apply to every repo</span>
 <span class="cmd">--no-sound</span>
 <span class="cmd">--web</span>
+<span class="cmd">--colima-memory 32</span>
         </div>
       </div>
     </div>
