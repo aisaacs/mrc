@@ -55,6 +55,17 @@ RUN npm install -g --loglevel=error @openai/codex \
     && mkdir -p /home/coder/.codex \
     && chown ${USER_UID}:${USER_GID} /home/coder/.codex
 
+# Pre-install sharp globally so any repo at /workspace (or an ad-hoc script) can
+# require('sharp') without a per-project npm install. The prebuilt binary and the
+# bundled libvips ship as npm packages from registry.npmjs.org, which the firewall
+# already whitelists — no extra allowed domains needed.
+RUN npm install -g --loglevel=error sharp
+
+# Node does not search the global npm root by default, so make it resolvable from
+# project code via NODE_PATH. A project's own local node_modules still take
+# precedence, so this only acts as a fallback and never shadows a pinned version.
+ENV NODE_PATH=/usr/local/lib/node_modules
+
 # Create workspace and config directories
 RUN mkdir -p /workspace && \
     ln -sf /home/coder/.claude/claude.json /home/coder/.claude.json
