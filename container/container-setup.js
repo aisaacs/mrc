@@ -251,4 +251,12 @@ if (agent === 'claude') {
 
 writeFileSync('/tmp/mrc-resume-flag', resumeFlag)
 
+// 8. Negotiation room: write the channel-server MCP config so the entrypoint can load it
+// via --dangerously-load-development-channels server:room.
+if (process.env.MRC_ROOM_PORT) {
+  writeFileSync('/tmp/mrc-room-mcp.json', JSON.stringify({
+    mcpServers: { room: { command: 'node', args: ['/opt/mrc-channel/mrc-channel-server.js'] } },
+  }))
+}
+
 console.log('Container setup complete.')

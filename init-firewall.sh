@@ -93,7 +93,8 @@ echo "Host network detected as: $HOST_NETWORK"
 # This prevents the container from reaching services like Postgres on the host.
 CLIP_PORT="${MRC_CLIPBOARD_PORT:-7722}"
 NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}"
-for port in $CLIP_PORT $NOTIFY_PORT; do
+ROOM_PORT="${MRC_ROOM_PORT:-}"
+for port in $CLIP_PORT $NOTIFY_PORT ${ROOM_PORT:+$ROOM_PORT}; do
     iptables -A OUTPUT -d "$HOST_NETWORK" -p tcp --dport "$port" -j ACCEPT
     iptables -A INPUT -s "$HOST_NETWORK" -p tcp --sport "$port" -j ACCEPT
 done
@@ -103,7 +104,7 @@ done
 HDINT_IP=$(getent hosts host.docker.internal 2>/dev/null | awk '{print $1}')
 if [ -n "$HDINT_IP" ] && [ "$HDINT_IP" != "$HOST_IP" ]; then
     echo "Allowing host.docker.internal ($HDINT_IP) on proxy ports only"
-    for port in $CLIP_PORT $NOTIFY_PORT; do
+    for port in $CLIP_PORT $NOTIFY_PORT ${ROOM_PORT:+$ROOM_PORT}; do
         iptables -A OUTPUT -d "$HDINT_IP" -p tcp --dport "$port" -j ACCEPT
         iptables -A INPUT -s "$HDINT_IP" -p tcp --sport "$port" -j ACCEPT
     done

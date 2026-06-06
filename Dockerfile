@@ -67,6 +67,14 @@ RUN npm install -g --loglevel=error sharp
 # precedence, so this only acts as a fallback and never shadows a pinned version.
 ENV NODE_PATH=/usr/local/lib/node_modules
 
+# Negotiation-room channel server + its MCP SDK. Kept in its own dir with a LOCAL install so
+# the channel server's ESM `import` resolves — ESM does not consult NODE_PATH like require() does.
+RUN mkdir -p /opt/mrc-channel \
+    && cd /opt/mrc-channel \
+    && npm init -y >/dev/null 2>&1 \
+    && npm install --loglevel=error @modelcontextprotocol/sdk
+COPY container/mrc-channel-server.js /opt/mrc-channel/mrc-channel-server.js
+
 # Create workspace and config directories
 RUN mkdir -p /workspace && \
     ln -sf /home/coder/.claude/claude.json /home/coder/.claude.json

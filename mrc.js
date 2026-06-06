@@ -17,7 +17,7 @@ import { processSandboxignores } from './src/sandboxignore.js'
 import { findFreePort } from './src/ports.js'
 import { startClipboardProxy } from './src/proxies/clipboard-proxy.js'
 import { startNotifyProxy } from './src/proxies/notify-proxy.js'
-import { listSessions, nameSession, resolve as resolveSession } from './src/sessions/manager.js'
+import { listSessions, nameSession, resolve as resolveSession, loadNames } from './src/sessions/manager.js'
 import { summarize, generateName } from './src/sessions/api.js'
 import { pick, ensureNamesMigrated } from './src/sessions/picker.js'
 import { detectToolMisses } from './src/sessions/transcript.js'
@@ -45,6 +45,11 @@ const allArgs = [...globalFlags, ...repoFlags, ...process.argv.slice(2)]
 const { config, remaining, claudeArgs, help } = parseArgs(allArgs)
 
 if (help) {
+  if (remaining?.[0] === 'rooms' || remaining?.[0] === 'room') {
+    const { roomsCommand } = await import('./src/commands/rooms.js')
+    await roomsCommand(['help'])
+    process.exit(0)
+  }
   console.log(`Usage: mrc [options] [path-to-repo] [-- claude-code-args...]
 
 Options:
@@ -109,6 +114,13 @@ if (!['claude', 'codex'].includes(config.agent)) {
 // --- Subcommand: mrc status (runs without API key) ---
 if (remaining[0] === 'status') {
   showStatus()
+  process.exit(0)
+}
+
+// --- Subcommand: mrc rooms (observe/steer ambient pairings via the daemon; no API key) ---
+if (remaining[0] === 'rooms' || remaining[0] === 'room') {
+  const { roomsCommand } = await import('./src/commands/rooms.js')
+  await roomsCommand(remaining.slice(1))
   process.exit(0)
 }
 
@@ -232,10 +244,12 @@ const startedColima = await ensureDocker(config.verbose, { colimaCpu: config.col
 // Cleanup on exit
 let clipboardServer = null
 let notifyServer = null
+let roomBroker = null
 
 function cleanup() {
   if (clipboardServer) { clipboardServer.close(); clipboardServer = null }
   if (notifyServer) { notifyServer.close(); notifyServer = null }
+  if (roomBroker) { try { roomBroker.stop() } catch {} ; roomBroker = null }
   if (startedColima) {
     // Colima is a single shared VM hosting every mrc container. Only stop it
     // if no other mrc sessions are still running — otherwise we'd kill them.
@@ -283,7 +297,9 @@ volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/
 
 // Environment flags
 const envFlags = []
-if (apiKey) envFlags.push('-e', 'ANTHROPIC_API_KEY')
+// Room sessions deliberately omit the API key so the interactive session bills to the user's
+// Max subscription (the key stays host-side for Haiku session naming).
+if (apiKey && !config.room) envFlags.push('-e', 'ANTHROPIC_API_KEY')
 if (openaiKey) envFlags.push('-e', 'OPENAI_API_KEY')
 if (config.agent !== 'claude') envFlags.push('-e', `MRC_AGENT=${config.agent}`)
 if (config.allowWeb) envFlags.push('-e', 'ALLOW_WEB=1')
@@ -335,6 +351,26 @@ if (!config.noNotify) {
   }
 }
 
+// Room participation: --rooms (ambient) or --room <name> (explicit) → connect to the host daemon.
+let roomInfo = null
+if (config.room || config.rooms) {
+  if (config.daemon) { console.error('  ✗ rooms are not supported with --daemon (interactive only).'); process.exit(1) }
+  const { ensureRoomDaemon, roomSessionEnv } = await import('./src/commands/pair.js')
+  const { roomsRoot } = await import('./src/rooms.js')
+  const daemon = await ensureRoomDaemon({ portBase: notifyPort + 1, notifyPort })
+  const sessionId = `${basename(repoPath)}-${Date.now().toString(36)}-${process.pid}`
+  // Room identity for `mrc rooms` + ask_peer matching: the picked session's name if it has one,
+  // else the repo basename. (New/unnamed sessions fall back to the repo; the sessionId still
+  // carries the repo so same-repo sessions remain distinguishable.)
+  let label = basename(repoPath)
+  if (config.resumeSession) {
+    try { const nm = loadNames(resolve(repoPath, '.mrc'))[config.resumeSession]; if (nm) label = nm } catch {}
+  }
+  envFlags.push(...roomSessionEnv({ daemonPort: daemon.port, sessionId, repoName: basename(repoPath), roomName: config.room, label }))
+  volumes.push('-v', `${roomsRoot()}:/rooms`)
+  roomInfo = { sessionId, roomName: config.room || '', label }
+}
+
 // Banner
 if (!config.json) {
   console.log(BANNER)
@@ -345,6 +381,7 @@ if (!config.json) {
   console.log(`  → Clipboard: ${clipboardServer ? 'the Schwartz can see your clipboard' : 'disabled'}`)
   console.log(`  → Notify:    ${notifyServer ? 'the Schwartz will alert you when ready' : 'disabled'}`)
   console.log(`  → Firewall:  ${config.allowWeb ? 'jammed, but he can see the web (--web)' : 'jammed (just like their radar)'}`)
+  if (roomInfo) console.log(`  → Rooms:     "${roomInfo.label}" · ${roomInfo.roomName ? `explicit pair "${roomInfo.roomName}"` : 'ambient (say "ask <peer>: …")'}`)
   console.log('')
 }
 
@@ -394,6 +431,9 @@ if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && 
 }
 
 // Run container
+const roomLabels = roomInfo
+  ? ['--label', 'mrc.room=1', '--label', `mrc.room.session=${roomInfo.sessionId}`]
+  : []
 const exitCode = await runContainer({
   repoPath,
   envFlags,
@@ -401,6 +441,7 @@ const exitCode = await runContainer({
   claudeArgs,
   allowWeb: config.allowWeb,
   json: config.json,
+  labels: roomLabels,
 })
 
 // --- Post-session processing (Claude only) ---

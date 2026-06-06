@@ -68,7 +68,7 @@ export function volumeName(repoPath, instanceId) {
 /** Run the Docker container. Returns a promise that resolves to the exit code.
  *  Uses spawn (not execFileSync) so the event loop stays free for the
  *  clipboard and notification proxy servers running in the same process. */
-export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb, json }) {
+export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb, json, labels = [] }) {
   const args = [
     'run', '--rm', ...(json ? [] : ['-it']), '--init',
     '--cap-add=NET_ADMIN',
@@ -78,6 +78,7 @@ export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb
     '--label', `mrc.repo=${repoPath}`,
     '--label', `mrc.repo.name=${basename(repoPath)}`,
     '--label', `mrc.web=${!!allowWeb}`,
+    ...labels,
     ...envFlags,
     ...volumes,
     IMAGE_NAME,

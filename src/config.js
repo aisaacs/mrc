@@ -102,17 +102,20 @@ export function parseArgs(argv) {
     colimaMemory: '',
     resumeSession: '',
     agent: 'claude',
+    room: '',
+    rooms: false,
   }
   const remaining = []
   const claudeArgs = []
   let seenSeparator = false
+  let help = false
 
   for (let i = 0; i < argv.length; i++) {
     if (seenSeparator) { claudeArgs.push(argv[i]); continue }
     const arg = argv[i]
     switch (arg) {
       case '--': seenSeparator = true; break
-      case '-h': case '--help': return { config, help: true }
+      case '-h': case '--help': help = true; break
       case '-n': case '--new':
         config.newSession = true
         if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.newSessionName = argv[++i]
@@ -134,8 +137,12 @@ export function parseArgs(argv) {
       case '--agent':
         if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.agent = argv[++i]
         break
+      case '--room':
+        if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.room = argv[++i]
+        break
+      case '--rooms': config.rooms = true; break
       default: remaining.push(arg)
     }
   }
-  return { config, remaining, claudeArgs }
+  return { config, remaining, claudeArgs, help }
 }

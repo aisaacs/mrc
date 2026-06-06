@@ -21,6 +21,7 @@ done
 sudo ALLOW_WEB="${ALLOW_WEB:-}" \
   MRC_CLIPBOARD_PORT="${MRC_CLIPBOARD_PORT:-7722}" \
   MRC_NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}" \
+  MRC_ROOM_PORT="${MRC_ROOM_PORT:-}" \
   /usr/local/bin/init-firewall.sh
 
 # All config setup is now in Node
@@ -47,7 +48,16 @@ AGENT="${MRC_AGENT:-claude}"
 case "$AGENT" in
   claude)
     echo "Launching Claude Code..."
-    claude --dangerously-skip-permissions $RESUME_FLAG "$@"
+    if [ -n "${MRC_ROOM_PORT:-}" ]; then
+      # Room session: load the channel server directly (no wrapper). Claude renders natively and
+      # the user accepts the one-time dev-channel prompt manually. NO auto-accept — an injected
+      # "1<Enter>" was dangerous (it could land on an unintended menu, e.g. trigger a compact).
+      claude --dangerously-skip-permissions \
+        --dangerously-load-development-channels server:room \
+        --mcp-config /tmp/mrc-room-mcp.json $RESUME_FLAG "$@"
+    else
+      claude --dangerously-skip-permissions $RESUME_FLAG "$@"
+    fi
     ;;
   codex)
     echo "Launching Codex..."
