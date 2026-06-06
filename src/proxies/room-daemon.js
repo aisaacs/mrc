@@ -107,6 +107,29 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, s
     }
   }
 
+  function doBrake(p, reason = 'brake') {
+    p.state = 'Paused'; p.pauseReason = reason; appendThread(p.roomId, `${ts()} [paused: ${reason}]`)
+    return p.held ? p.held.text : null
+  }
+  function doResume(p) {
+    if (p.held) { deliver(p, p.held.toId, p.held.fromId, p.held.text); p.held = null }
+    p.state = 'Running'; p.pauseReason = null; p.lastActivityAt = Date.now(); appendThread(p.roomId, `${ts()} [resumed]`)
+  }
+  // Agent-initiated pause/resume: the human tells their own session "pause"/"resume" and the
+  // channel server relays it here. Closing a room is deliberately NOT an agent power — only the
+  // human, via `mrc rooms end`.
+  function onAgentPause(sessionId) {
+    const p = pairingFor(sessionId)
+    if (!p) return send(sessionId, { type: 'notice', text: '[No active room to pause.]' })
+    doBrake(p, 'brake'); notify(`Room ${p.roomId}: paused (agent)`)
+    send(sessionId, { type: 'notice', text: '[Room paused — relaying is held. Say "resume" to continue; closing is the human via `mrc rooms end`.]' })
+  }
+  function onAgentResume(sessionId) {
+    const p = pairingFor(sessionId)
+    if (!p) return send(sessionId, { type: 'notice', text: '[No active room to resume.]' })
+    doResume(p); send(sessionId, { type: 'notice', text: '[Room resumed.]' })
+  }
+
   // --- relay server (channel servers connect here) ---
   const server = net.createServer((sock) => {
     let buf = '', sessionId = null
@@ -128,6 +151,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, s
         } else if (f.type === 'ask' && sessionId) onAsk(sessionId, String(f.question ?? ''), f.peer)
         else if (f.type === 'msg' && sessionId) onMsg(sessionId, String(f.text ?? ''))
         else if (f.type === 'sign' && sessionId) onSign(sessionId, String(f.text ?? ''))
+        else if (f.type === 'pause' && sessionId) onAgentPause(sessionId)
+        else if (f.type === 'resume' && sessionId) onAgentResume(sessionId)
       }
     })
     sock.on('error', () => {})
@@ -156,8 +181,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, s
         const p = pick(f.roomId)
         if (!p) { reply({ ok: false, error: f.roomId ? `no open room "${f.roomId}" (see: mrc rooms status)` : (pairings.size ? 'multiple rooms open — pass a room id (see: mrc rooms status)' : 'no open room') }); continue }
         switch (f.action) {
-          case 'brake': p.state = 'Paused'; p.pauseReason = 'brake'; appendThread(p.roomId, `${ts()} [paused: brake]`); reply({ ok: true, held: p.held ? p.held.text : null }); break
-          case 'resume': if (p.held) { deliver(p, p.held.toId, p.held.fromId, p.held.text); p.held = null } p.state = 'Running'; p.pauseReason = null; p.lastActivityAt = Date.now(); appendThread(p.roomId, `${ts()} [resumed]`); reply({ ok: true }); break
+          case 'brake': reply({ ok: true, held: doBrake(p, 'brake') }); break
+          case 'resume': doResume(p); reply({ ok: true }); break
           case 'steer': {
             const targets = f.target === 'a' ? [p.a] : f.target === 'b' ? [p.b] : [p.a, p.b]
             for (const t of targets) send(t, { type: 'directive', text: `[Human directive]: ${f.text}` })

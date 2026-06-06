@@ -1,7 +1,7 @@
 # Negotiation Rooms
 
-**Status:** Implemented and host-validated (ambient model). Pending the first Docker
-rebuild-test (Phase 4).
+**Status:** Implemented and host-validated (ambient model, **on by default**). Pending the first
+Docker rebuild-test (Phase 4).
 **Design + plan + progress live in this one file.**
 
 Let two running `mrc` sessions (usually different repos — e.g. a **client** and a **server**)
@@ -33,9 +33,10 @@ among the running room-enabled sessions → relays the question into the server 
 server answers → it loops back. The human supervises by **observation + interrupt**, and the
 loop ends on consensus, a turn cap, a stall, or a human brake.
 
-Enabled with a single `--rooms` line in `.mrcrc` (global `~/.mrcrc` or per-repo). No `--room`,
-no paths typed per use. `--room <name>` still exists for explicit, deterministic pairing of two
-same-named sessions.
+**On by default** for interactive Claude sessions — no flag, no paths typed per use (disable with
+`--no-rooms`, e.g. in `~/.mrcrc`). Skipped automatically for `--daemon`, `--json`, and `--agent
+codex` (no interactive TTY to accept the channel prompt / drive the relay). `--room <name>` still
+exists for explicit, deterministic pairing of two same-named sessions.
 
 **The "room"** that forms for a pairing is a host dir at `~/.local/share/mrc/rooms/<roomId>/`,
 mounted into both containers at `/rooms/<roomId>/`:
@@ -66,7 +67,7 @@ sanctioned host port, reused as `MRC_ROOM_PORT`). The daemon pushes peer message
 that same socket*. Identical trust surface to the clipboard/notify proxies — no new egress.
 
 **One daemon, many sessions.** The daemon is a single detached process (auto-started by the
-first `--rooms` session, recorded in `~/.local/share/mrc/room-daemon.json`). It outlives any
+first room-enabled session, recorded in `~/.local/share/mrc/room-daemon.json`). It outlives any
 single session — closing a terminal does not break others' rooms.
 
 ## 4. Security model
@@ -87,9 +88,11 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 - **Channel is dormant + human-initiated.** The channel loads connected to the daemon but
   relays nothing until a human says "ask the \<peer>…". Agents don't autonomously open
   conversations.
-- **Max auth, not API credits.** Room sessions launch **without** `ANTHROPIC_API_KEY`, so the
-  interactive session bills to the user's Max subscription. The key stays host-side for the
-  Haiku session-naming calls only.
+- **Max auth, not API credits.** Room sessions launch **without** `ANTHROPIC_API_KEY` in the
+  container, so the interactive session bills to the user's Max subscription (this is now every
+  interactive session, since rooms are default-on; `--no-rooms` restores the key in-container).
+  The key stays host-side for the Haiku session-naming/summary calls, which run on the host — so
+  naming still works.
 
 ## 5. Key design decisions
 
@@ -118,6 +121,16 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 8. **Ambient over explicit.** Pairing is on-demand at runtime (`ask_peer`), not declared at
    launch — matches the real workflow (`mrc pick` then ask). `--room <name>` remains for
    deterministic explicit pairing.
+9. **On by default.** Rooms load for every interactive Claude session (`--no-rooms` opts out),
+   so "I'm mid-session and decide to ask the peer" just works — a session can only join a room if
+   it was *launched* room-enabled (the channel can't be injected into a live session), so the
+   capability must be present from the start. Cost: a one-time "Channels (experimental)" accept
+   per session. Skipped for `--daemon`/`--json`/codex.
+10. **Control split (human-authority preserved).** Reversible controls (`pause`/`resume`) are
+    reachable in-chat via agent tools *and* the CLI; **closing is CLI/human-only** (no agent
+    self-close). `end` is a **generic** close — it preserves `thread.log`/`consensus.md` and
+    notifies both sides, but carries no result payload (each side reads `consensus.md`). A live
+    `mrc rooms <id>` two-sided watch-TUI is deferred (use `status` + `tail -f thread.log`).
 
 ## 6. Transport — why channels (condensed findings)
 
@@ -138,8 +151,10 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
   `NODE_PATH`. So it ships in its own dir `/opt/mrc-channel/` with a **local** SDK install
   (validated).
 - **Activation:** the dev-channel "I am using this for local development" prompt is interactive
-  and not persisted (no settings key exists). The entrypoint wraps the launch in an **`expect`**
-  script that auto-answers it, then `interact`s to hand the PTY to the user.
+  and **not persisted** (no settings key exists). Auto-answering it via a PTY wrapper (`expect`)
+  proved version-brittle and dangerous (it once landed on the wrong menu and triggered a compact),
+  so it was **removed**: the entrypoint launches `claude` directly and the human accepts the
+  one-time prompt by hand (Claude renders natively — the wrapper was the source of TUI garbling).
 - **Risk:** channels are research preview — flag/protocol may change. Mitigation: the channel
   server is thin and the only coupling point.
 
@@ -151,27 +166,28 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
   untrusted framing, brake, turn cap, stall, consensus; notify-proxy notifications; control
   socket for `mrc rooms`; detached entrypoint that records `room-daemon.json`.
 - **`container/mrc-channel-server.js`** — container-side channel MCP server. Connects to the
-  daemon at `host.docker.internal:MRC_ROOM_PORT`, registers `{sessionId, repo, room?}`, exposes
-  `ask_peer`/`reply`/`sign_consensus`, pushes daemon frames into the session as `<channel>`
-  tags. Untrusted-data framing in its `instructions`.
+  daemon at `host.docker.internal:MRC_ROOM_PORT`, registers `{sessionId, repo, label, room?}`,
+  exposes `list_peers`/`ask_peer`/`reply`/`sign_consensus` plus `pause_room`/`resume_room`
+  (agent-relayed human control; closing stays human-CLI-only), pushes daemon frames into the
+  session as `<channel>` tags. Untrusted-data framing in its `instructions`.
 - **`src/commands/pair.js`** — `ensureRoomDaemon()` (auto-start the detached daemon, reuse if
   live) + `roomSessionEnv()` (the per-session env).
 - **`src/commands/rooms.js`** — `mrc rooms status|brake|resume|steer|end` via the daemon
   control port.
 - **`src/rooms.js`** — room-dir manager (`ensureRoom`, `appendThread`, `writeConsensus`, …) at
   `~/.local/share/mrc/rooms/<roomId>/`.
-- **`container/mrc-channel-launch.exp`** — `expect` wrapper: auto-accept the dev-channel prompt,
-  then `interact`.
 
 **Modified:**
-- **`mrc.js`** — `--rooms`/`--room` launch path (ensure daemon, drop API key, `/rooms` mount,
-  room labels); `mrc rooms` dispatch.
-- **`src/config.js`** — `--room <name>` and `--rooms` flags.
+- **`mrc.js`** — default-on room launch path (`roomsActive`: interactive Claude unless
+  `--no-rooms`; skip `--daemon`/`--json`/codex): ensure daemon, drop API key, `/rooms` mount,
+  room labels; `mrc rooms` dispatch; help text.
+- **`src/config.js`** — `rooms` defaults **true**; `--no-rooms` (disable) and `--room <name>`
+  (explicit pair) flags.
 - **`src/docker.js`** — `labels` param on `runContainer` (room labels).
-- **`Dockerfile`** — `expect`; `/opt/mrc-channel` with a local `@modelcontextprotocol/sdk`; copy
-  the channel server there + the `.exp` wrapper.
-- **`entrypoint.sh`** — pass `MRC_ROOM_PORT` to the firewall; when set, launch via the `expect`
-  wrapper with `--dangerously-load-development-channels server:room`.
+- **`Dockerfile`** — `/opt/mrc-channel` with a local `@modelcontextprotocol/sdk`; copy the
+  channel server there. (No `expect`/PTY wrapper.)
+- **`entrypoint.sh`** — pass `MRC_ROOM_PORT` to the firewall; when set, launch `claude
+  --dangerously-load-development-channels server:room` **directly** (human accepts the prompt).
 - **`init-firewall.sh`** — allow the one `MRC_ROOM_PORT` (modeled on the clipboard/notify rule).
 - **`container/container-setup.js`** — when `MRC_ROOM_PORT` set, write `/tmp/mrc-room-mcp.json`
   pointing at `/opt/mrc-channel/mrc-channel-server.js`.
@@ -206,10 +222,15 @@ consensus}`, `turn`/`turnCap` (default 20), `lastActivityAt`, held message, `sig
 - **consensus** → both `sign_consensus` with matching normalized text → write `consensus.md` →
   Paused + notify.
 - **resume** → deliver held, continue. **steer** → inject `[Human directive]` (drop held),
-  resume. **end** → drop the pairing.
+  resume. **end** → drop the pairing (generic close; no payload — see Decision 10).
 
-CLI: `mrc rooms status` (sessions + pairings), `mrc rooms brake|resume|end`,
-`mrc rooms steer [--target a|b] <text>` (applies to the sole active pairing).
+Control surfaces:
+- **CLI** (`mrc rooms`, from any terminal): `status`, `brake|resume|end [roomId]`,
+  `steer [--room id] [--target a|b] <text>`. **`end` is CLI/human-only** (no agent self-close).
+- **In-chat** (the human tells their own session): the agent calls `pause_room`/`resume_room`
+  (relayed to the daemon as `pause`/`resume`, acting on that session's pairing). Closing is *not*
+  an agent power. Steering your own side is just talking to your agent; cross-side directives use
+  the CLI `steer`.
 
 ## 10. Phases & progress
 
@@ -219,8 +240,9 @@ CLI: `mrc rooms status` (sessions + pairings), `mrc rooms brake|resume|end`,
   relay + untrusted framing + brake + turn-cap + stall + consensus. (Lives per-pairing inside
   `room-daemon.js`.)
 - **Phase 2 — Channel transport** ✅ *done, validated.* Channel server
-  (`ask_peer`/`reply`/`sign_consensus`), daemon protocol, ESM resolution via `/opt/mrc-channel`,
-  container wiring (Dockerfile/entrypoint/firewall/`expect` auto-accept).
+  (`list_peers`/`ask_peer`/`reply`/`sign_consensus`/`pause_room`/`resume_room`), daemon protocol,
+  ESM resolution via `/opt/mrc-channel`, container wiring (Dockerfile/entrypoint/firewall; direct
+  launch + manual channel accept).
 - **Phase 3 — Ambient pairing** ✅ *done, host-validated.* Detached daemon (registry, on-demand
   + named-room pairing), `--rooms` launch + `ensureRoomDaemon` + `/rooms` mount, `mrc rooms`
   CLI. Validated end-to-end on the host (no Docker): daemon auto-start → real channel servers
@@ -229,7 +251,7 @@ CLI: `mrc rooms status` (sessions + pairings), `mrc rooms brake|resume|end`,
   - **(fixed) Daemon-startup hang:** the first `--rooms` session blocked silently while
     `ensureRoomDaemon` polled for up to 5 s (2nd window was instant — daemon already up). Now
     prints "◎ Booting the negotiation-room daemon… ready."
-  - **(OPEN — needs a decision) `expect` activation is broken.** On the rebuild it failed to
+  - **(resolved → reverted, see below) `expect` activation was broken.** On the rebuild it failed to
     auto-accept the dev-channel prompt (session 1: had to accept manually) and garbled the TUI /
     input (session 2: arrow keys as `^[[B`, leaked terminal DA response, unusable). Root cause:
     `expect` mishandles PTY size/raw-mode for Claude's fullscreen Ink UI.
@@ -259,9 +281,10 @@ CLI: `mrc rooms status` (sessions + pairings), `mrc rooms brake|resume|end`,
     else repo basename; shown in `mrc rooms status` as `name (repo) [id]`; `ask_peer` matches on
     name+repo. Disambiguates multiple sessions from one repo.
   - **(round 2) close notifies both sides** and preserves the transcript.
-  - Remaining Phase-4 checks (next rebuild): clean native startup + manual accept; container→
-    daemon over the firewall (`mrc rooms status` shows both); the explicit list→pick→relay round
-    trip; `/rooms` mount; Max auth.
+  - Remaining Phase-4 checks (next rebuild): rooms auto-on (no flag) for `mrc pick`; clean native
+    startup + manual channel accept; container→daemon over the firewall (`mrc rooms status` shows
+    both); the explicit list→pick→relay round trip; in-chat `pause_room`/`resume_room`; `/rooms`
+    mount; Max auth (no key in container).
 - **Phase 5 — Polish & hardening** ☐ *stubbed.* Inline markers (`→ sent` / `← replied` /
   `✎ consensus`); consensus sign-off UX + notifications; turn-cap/stall tuning; daemon lifecycle
   (auto-shutdown when idle, health/restart, `mrc rooms stop`); remove dead code
@@ -275,18 +298,17 @@ CLI: `mrc rooms status` (sessions + pairings), `mrc rooms brake|resume|end`,
 
 ```bash
 docker rmi mister-claude                 # rebuild (Dockerfile/entrypoint/firewall changed)
-# add one line to ~/.mrcrc:  --rooms     # enables ambient rooms everywhere
-mrc pick     # client repo (first session auto-starts the daemon)
-mrc pick     # server repo
+mrc pick     # client repo — rooms are ON by default; first session auto-starts the daemon
+mrc pick     # server repo — accept the one-time "Channels (experimental)" prompt in each
 #   then in the client session:  ask the server: <question>
 mrc rooms status                          # observe; brake / steer / resume to supervise
 ```
 
 ## 12. Open items, limitations, follow-ups
 
-- **Phase-4 unknowns** (rebuild-only): `expect` ↔ Claude TUI robustness (Node-PTY fallback
-  ready); whether the agent reliably maps "ask the server" → `ask_peer`; firewall path to the
-  daemon; co-typing interaction.
+- **Phase-4 unknowns** (rebuild-only): whether the agent reliably maps "ask the server" →
+  `list_peers` → `ask_peer`; the one-time channel-accept prompt UX; firewall path to the daemon;
+  co-typing interaction.
 - **Daemon lifecycle:** currently never auto-stops (harmless local listener). Add idle
   shutdown + `mrc rooms stop` in Phase 5.
 - **Steering target default** is "both"; per-watched-side default is a possible refinement.
@@ -294,6 +316,8 @@ mrc rooms status                          # observe; brake / steer / resume to s
   server thin.
 - **Dead code** from the pre-ambient broker model is still in the tree (see §7) — slated for
   Phase-5 removal.
+- **Deferred by decision (this round):** a live `mrc rooms <id>` two-sided watch+control TUI
+  (use `status` + `tail -f thread.log` for now); a result-payload on `end` (kept generic).
 - **Closing / resuming rooms (implemented).** *Close:* human-initiated and **selective** —
   `mrc rooms end <roomId>` closes one room (ids from `mrc rooms status`); with no id it acts on
   the sole open room and refuses if several are open (never "close all"). `brake`/`resume`/`steer`

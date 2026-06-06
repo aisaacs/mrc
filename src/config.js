@@ -103,7 +103,7 @@ export function parseArgs(argv) {
     resumeSession: '',
     agent: 'claude',
     room: '',
-    rooms: false,
+    rooms: true,   // cross-session negotiation rooms are ON by default (disable with --no-rooms)
   }
   const remaining = []
   const claudeArgs = []
@@ -141,6 +141,7 @@ export function parseArgs(argv) {
         if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.room = argv[++i]
         break
       case '--rooms': config.rooms = true; break
+      case '--no-rooms': config.rooms = false; break
       default: remaining.push(arg)
     }
   }

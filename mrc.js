@@ -60,6 +60,8 @@ Options:
   -n, --new [name]     Start a new conversation (optionally named)
   -w, --web            Allow outbound HTTPS to any host (for web search/fetch)
   --agent <name>       AI agent to launch: claude (default), codex
+  --room <name>        Pair only with another session that shares this --room name
+  --no-rooms           Disable cross-session negotiation rooms for this session
   --no-summary         Skip AI session summary on exit
   --no-notify          Disable desktop notifications on response complete
   --no-sound           Disable notification sound (still shows notification)
@@ -69,6 +71,7 @@ Options:
 Commands:
   mrc status                              Show active containers across repos
   mrc pick [path]                         Interactive session picker (arrow keys)
+  mrc rooms [...]                         Watch/steer negotiation rooms (mrc rooms --help)
 
 Session management:
   mrc sessions ls [path]                  List saved sessions
@@ -295,11 +298,22 @@ const volName = volumeName(repoPath, instanceId)
 volumes.push('-v', `${volName}:/home/coder/.claude`)
 volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)
 
+// Rooms are ON by default for interactive Claude sessions (--no-rooms to disable). They need an
+// interactive TTY — to accept the channel prompt and drive the relay — so they're skipped for
+// --daemon, --json, and codex. --room <name> additionally requests explicit same-name pairing.
+const roomsEligible = config.agent === 'claude' && !config.daemon && !config.json
+if (config.room && !roomsEligible) {
+  console.error('  ✗ --room <name> is interactive-only (not with --daemon, --json, or --agent codex).')
+  process.exit(1)
+}
+const roomsActive = roomsEligible && (config.room || config.rooms)
+
 // Environment flags
 const envFlags = []
-// Room sessions deliberately omit the API key so the interactive session bills to the user's
-// Max subscription (the key stays host-side for Haiku session naming).
-if (apiKey && !config.room) envFlags.push('-e', 'ANTHROPIC_API_KEY')
+// Room sessions omit the API key so the interactive session bills to the user's Max subscription.
+// The key stays host-side for the Haiku session-naming/summary calls (those run on the host, not
+// in the container), so naming still works. Use --no-rooms to pass the key into the container.
+if (apiKey && !roomsActive) envFlags.push('-e', 'ANTHROPIC_API_KEY')
 if (openaiKey) envFlags.push('-e', 'OPENAI_API_KEY')
 if (config.agent !== 'claude') envFlags.push('-e', `MRC_AGENT=${config.agent}`)
 if (config.allowWeb) envFlags.push('-e', 'ALLOW_WEB=1')
@@ -351,10 +365,9 @@ if (!config.noNotify) {
   }
 }
 
-// Room participation: --rooms (ambient) or --room <name> (explicit) → connect to the host daemon.
+// Room participation (default-on for interactive Claude; see roomsActive above) → host daemon.
 let roomInfo = null
-if (config.room || config.rooms) {
-  if (config.daemon) { console.error('  ✗ rooms are not supported with --daemon (interactive only).'); process.exit(1) }
+if (roomsActive) {
   const { ensureRoomDaemon, roomSessionEnv } = await import('./src/commands/pair.js')
   const { roomsRoot } = await import('./src/rooms.js')
   const daemon = await ensureRoomDaemon({ portBase: notifyPort + 1, notifyPort })
