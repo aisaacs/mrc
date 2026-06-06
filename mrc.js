@@ -101,7 +101,9 @@ Config files (one flag per line, comments with #):
   CLI flags always take precedence over config files.
 
 Environment:
-  ANTHROPIC_API_KEY  — loaded from .env next to this script if present
+  MRC_SESSION_NAMING_ANTHROPIC_API_KEY — host-only key for Haiku session
+                       naming/summaries (.env next to this script). NOT used by the
+                       sandboxed session (it runs on Max/OAuth).
   OPENAI_API_KEY     — loaded from .env (required for --agent codex)
   MRC_PORT_BASE      — starting port for proxy allocation (default: 7722)`)
   process.exit(0)
@@ -128,10 +130,14 @@ if (remaining[0] === 'rooms' || remaining[0] === 'room') {
 }
 
 // --- Load .env / API keys ---
+// MRC_SESSION_NAMING_ANTHROPIC_API_KEY is host-only (Haiku naming/summaries). Legacy
+// ANTHROPIC_API_KEY still works as a deprecated fallback (it collides with the key Claude Code
+// auto-detects). Neither is ever injected into the container — the session runs on Max/OAuth.
 loadEnv(SCRIPT_DIR)
-const apiKey = process.env.ANTHROPIC_API_KEY || ''
+const apiKey = process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || ''
+const legacyKeyVar = !process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY && !!process.env.ANTHROPIC_API_KEY
 const openaiKey = process.env.OPENAI_API_KEY || ''
-dbg(`Anthropic key: ${apiKey ? `set (${apiKey.length} chars)` : 'NOT SET'}`)
+dbg(`Naming key: ${apiKey ? `set (${apiKey.length} chars)${legacyKeyVar ? ' [legacy ANTHROPIC_API_KEY]' : ''}` : 'NOT SET'}`)
 dbg(`OpenAI key: ${openaiKey ? `set (${openaiKey.length} chars)` : 'NOT SET'}`)
 
 // --- Subcommand: mrc pick ---
@@ -215,27 +221,35 @@ if (config.agent === 'codex' && !openaiKey) {
 
 if (config.agent === 'claude' && !apiKey) {
   console.log(`
-  ⚠ The Schwartz is not with you... no API key found!
+  ⚠ The Schwartz is not with you... no session-naming key found!
 
   "I can't make it work without the combination!"
      — Colonel Sandurz, probably talking about this .env file
 
-  mrc needs an Anthropic API key for session naming and summaries.
-  This is NOT your Claude Code subscription — it's a separate key
-  for Haiku API calls. Think of it as the combination to the air shield.
+  mrc needs an Anthropic API key for session naming and summaries — cheap Haiku
+  calls made on the HOST. This is NOT your Claude Code subscription: the sandboxed
+  session runs on your Max/OAuth login, and this key never enters the container.
 
-  To unlock Druidia's fresh air supply:
+  Upgrading? This key was renamed — ANTHROPIC_API_KEY is now
+  MRC_SESSION_NAMING_ANTHROPIC_API_KEY (so it can't collide with the key Claude
+  Code auto-detects). Rename it in your .env.
 
-    1. Install the 1Password CLI (op)
-    2. Create a .env file next to the mrc script:
-       ${SCRIPT_DIR}/.env
-    3. Add this line:
+  To unlock Druidia's fresh air supply, add one line to your .env
+  (${SCRIPT_DIR}/.env or ~/.config/mrc/.env):
 
-       ANTHROPIC_API_KEY="op://Engineering/MRC Claude API key/credential"
+    MRC_SESSION_NAMING_ANTHROPIC_API_KEY="sk-ant-..."
+    # ...or via 1Password:
+    MRC_SESSION_NAMING_ANTHROPIC_API_KEY="op://Engineering/MRC Claude API key/credential"
 
   May the Schwartz be with you!
 `)
   process.exit(1)
+}
+
+// Nudge anyone still on the legacy variable name (only when a key WAS found via the old name).
+if (config.agent === 'claude' && legacyKeyVar) {
+  console.log('\x1b[0;33m  ⚠ mrc is reading the legacy ANTHROPIC_API_KEY for session naming.\x1b[0m')
+  console.log('\x1b[0;2m    Rename it to MRC_SESSION_NAMING_ANTHROPIC_API_KEY in your .env (legacy works for now).\x1b[0m')
 }
 
 // --- Main launch flow ---
@@ -310,10 +324,9 @@ const roomsActive = roomsEligible && (config.room || config.rooms)
 
 // Environment flags
 const envFlags = []
-// Room sessions omit the API key so the interactive session bills to the user's Max subscription.
-// The key stays host-side for the Haiku session-naming/summary calls (those run on the host, not
-// in the container), so naming still works. Use --no-rooms to pass the key into the container.
-if (apiKey && !roomsActive) envFlags.push('-e', 'ANTHROPIC_API_KEY')
+// No Anthropic key is ever injected into the container — the sandboxed session authenticates via
+// the user's Max/OAuth login (persisted in the config volume). MRC_SESSION_NAMING_ANTHROPIC_API_KEY
+// is host-only (Haiku naming/summaries in src/sessions/api.js); it never crosses into the sandbox.
 if (openaiKey) envFlags.push('-e', 'OPENAI_API_KEY')
 if (config.agent !== 'claude') envFlags.push('-e', `MRC_AGENT=${config.agent}`)
 if (config.allowWeb) envFlags.push('-e', 'ALLOW_WEB=1')

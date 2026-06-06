@@ -113,7 +113,10 @@ Config files (~/.mrcrc or <repo>/.mrcrc, one flag per line):
   --colima-memory 32
 
 Environment:
-  ANTHROPIC_API_KEY    API key (loaded from .env next to mrc or ~/.config/mrc/.env)
+  MRC_SESSION_NAMING_ANTHROPIC_API_KEY   Host-only Anthropic key for Haiku session
+                       naming/summaries (.env next to mrc or ~/.config/mrc/.env).
+                       The sandboxed session runs on Max/OAuth, not this key.
+                       (Legacy ANTHROPIC_API_KEY still works as a deprecated fallback.)
   OPENAI_API_KEY       OpenAI key (required for --agent codex)
   MRC_PORT_BASE        Starting port for proxy allocation (default: 7722)
   MRC_HOME             Override Docker context directory (advanced)

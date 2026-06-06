@@ -2,6 +2,11 @@ import { HAIKU_MODEL } from '../constants.js'
 import { extractTranscript } from './transcript.js'
 import { loadNames, saveNames } from './manager.js'
 
+// Host-only key for the Haiku naming/summary calls. Renamed from ANTHROPIC_API_KEY so it never
+// collides with the key Claude Code auto-detects inside the sandbox; the legacy name still works
+// as a deprecated fallback.
+const namingKey = () => process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY
+
 async function callHaiku(apiKey, messages, maxTokens = 512) {
   const body = JSON.stringify({ model: HAIKU_MODEL, max_tokens: maxTokens, messages })
 
@@ -31,7 +36,7 @@ async function callHaiku(apiKey, messages, maxTokens = 512) {
 
 /** Generate a session summary using Haiku. Writes to session-summaries/<uuid>.md. */
 export async function summarize(mrcDir, uuid) {
-  const apiKey = process.env.ANTHROPIC_API_KEY
+  const apiKey = namingKey()
   if (!apiKey) return
 
   const transcript = extractTranscript(mrcDir, uuid)
@@ -62,9 +67,9 @@ export async function generateName(mrcDir, uuid) {
   const names = loadNames(mrcDir)
   if (names[uuid]) return  // already named
 
-  const apiKey = process.env.ANTHROPIC_API_KEY
+  const apiKey = namingKey()
   if (!apiKey) {
-    process.stderr.write('\x1b[1;31m  ✦ Name generation skipped: no ANTHROPIC_API_KEY set\x1b[0m\n')
+    process.stderr.write('\x1b[1;31m  ✦ Name generation skipped: no MRC_SESSION_NAMING_ANTHROPIC_API_KEY set\x1b[0m\n')
     return
   }
 

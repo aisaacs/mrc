@@ -105,14 +105,16 @@ Go to [console.anthropic.com](https://console.anthropic.com/) and create an API 
 2. [Optional] **Create the `.env` file** (next to mrc.js or at `~/.config/mrc/.env`):
 
    ```bash
-   echo "ANTHROPIC_API_KEY=sk-ant-..." > .env
+   echo "MRC_SESSION_NAMING_ANTHROPIC_API_KEY=sk-ant-..." > .env
    ```
 
-   Replace `sk-ant-...` with your actual key. This file is gitignored.
+   This key is used **only** on the host for cheap Haiku calls that name and
+   summarize sessions — the sandboxed session itself runs on your Max/OAuth login,
+   not this key. Replace `sk-ant-...` with your actual key. This file is gitignored.
 
    1Password references are supported:
    ```
-   ANTHROPIC_API_KEY="op://Vault/Key/credential"
+   MRC_SESSION_NAMING_ANTHROPIC_API_KEY="op://Vault/Key/credential"
    OPENAI_API_KEY="op://Vault/OpenAI/credential"
    ```
 

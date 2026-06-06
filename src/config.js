@@ -39,7 +39,7 @@ export function loadEnv(scriptDir) {
     const match = line.match(/^\s*(\w+)\s*=\s*"?([^"]*)"?\s*$/)
     if (match) process.env[match[1]] = match[2]
   }
-  return process.env.ANTHROPIC_API_KEY || null
+  return process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || null
 }
 
 function loadOpEnv(envFile) {
@@ -67,7 +67,7 @@ function loadOpEnv(envFile) {
     return accounts
   }
 
-  for (const envKey of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY']) {
+  for (const envKey of ['MRC_SESSION_NAMING_ANTHROPIC_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY']) {
     let val = tryOp(opAccount, envKey)
     if (!val) {
       for (const acct of getAccounts()) {
@@ -82,7 +82,7 @@ function loadOpEnv(envFile) {
     }
   }
 
-  return process.env.ANTHROPIC_API_KEY || null
+  return process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || null
 }
 
 /** Parse CLI args into a config object. Returns { config, repoArgs, claudeArgs }. */

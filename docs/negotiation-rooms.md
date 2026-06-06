@@ -88,11 +88,10 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 - **Channel is dormant + human-initiated.** The channel loads connected to the daemon but
   relays nothing until a human says "ask the \<peer>…". Agents don't autonomously open
   conversations.
-- **Max auth, not API credits.** Room sessions launch **without** `ANTHROPIC_API_KEY` in the
-  container, so the interactive session bills to the user's Max subscription (this is now every
-  interactive session, since rooms are default-on; `--no-rooms` restores the key in-container).
-  The key stays host-side for the Haiku session-naming/summary calls, which run on the host — so
-  naming still works.
+- **Max auth, not API credits.** No Anthropic key is ever injected into the container — the
+  sandboxed session authenticates via the user's Max/OAuth login (so it never bills API credits).
+  The host-only `MRC_SESSION_NAMING_ANTHROPIC_API_KEY` (renamed from `ANTHROPIC_API_KEY`) powers
+  the Haiku session-naming/summary calls, which run on the host — so naming still works.
 
 ## 5. Key design decisions
 
