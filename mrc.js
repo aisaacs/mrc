@@ -286,6 +286,30 @@ process.on('exit', cleanup)
 process.on('SIGINT', () => { cleanup(); process.exit(130) })
 process.on('SIGTERM', () => { cleanup(); process.exit(143) })
 
+// Rooms are ON by default for interactive Claude sessions (--no-rooms to disable). They need an
+// interactive TTY — to accept the channel prompt and drive the relay — so they're skipped for
+// --daemon, --json, and codex. --room <name> additionally requests explicit same-name pairing.
+const roomsEligible = config.agent === 'claude' && !config.daemon && !config.json
+if (config.room && !roomsEligible) {
+  console.error('  ✗ --room <name> is interactive-only (not with --daemon, --json, or --agent codex).')
+  process.exit(1)
+}
+const roomsActive = roomsEligible && (config.room || config.rooms)
+
+// Boot the room daemon BEFORE the (slow) image build so its "ready" log stays visible during the
+// build instead of flashing by right before the container clears the screen. Ports are allocated
+// once here and reused by the proxies below.
+const portBase = Number(process.env.MRC_PORT_BASE) || 7722
+let clipPort = 0
+let notifyPort = 0
+let roomDaemon = null
+if (roomsActive) {
+  const { ensureRoomDaemon } = await import('./src/commands/pair.js')
+  clipPort = await findFreePort(portBase)
+  notifyPort = await findFreePort(clipPort + 1)
+  roomDaemon = await ensureRoomDaemon({ portBase: notifyPort + 1, notifyPort })
+}
+
 // Build image
 const uid = process.getuid?.() ?? 1000
 const gid = process.getgid?.() ?? 1000
@@ -311,16 +335,6 @@ const instanceId = existingCount > 0 ? existingCount + 1 : 1
 const volName = volumeName(repoPath, instanceId)
 volumes.push('-v', `${volName}:/home/coder/.claude`)
 volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)
-
-// Rooms are ON by default for interactive Claude sessions (--no-rooms to disable). They need an
-// interactive TTY — to accept the channel prompt and drive the relay — so they're skipped for
-// --daemon, --json, and codex. --room <name> additionally requests explicit same-name pairing.
-const roomsEligible = config.agent === 'claude' && !config.daemon && !config.json
-if (config.room && !roomsEligible) {
-  console.error('  ✗ --room <name> is interactive-only (not with --daemon, --json, or --agent codex).')
-  process.exit(1)
-}
-const roomsActive = roomsEligible && (config.room || config.rooms)
 
 // Environment flags
 const envFlags = []
@@ -349,9 +363,8 @@ if (config.daemon) {
   process.exit(0)
 }
 
-// Start proxies
-const portBase = Number(process.env.MRC_PORT_BASE) || 7722
-const clipPort = await findFreePort(portBase)
+// Start proxies (reuse ports pre-allocated above when rooms booted the daemon early).
+if (!clipPort) clipPort = await findFreePort(portBase)
 try {
   clipboardServer = await startClipboardProxy(clipPort)
   envFlags.push('-e', `MRC_CLIPBOARD_PORT=${clipPort}`)
@@ -359,7 +372,7 @@ try {
   console.log('  ! Clipboard proxy failed to start (image paste won\'t work)')
 }
 
-const notifyPort = await findFreePort(clipPort + 1)
+if (!notifyPort) notifyPort = await findFreePort(clipPort + 1)
 if (!config.noNotify) {
   if (process.platform === 'darwin') {
     try { execFileSync('which', ['terminal-notifier'], { stdio: 'ignore' }) } catch {
@@ -378,12 +391,13 @@ if (!config.noNotify) {
   }
 }
 
-// Room participation (default-on for interactive Claude; see roomsActive above) → host daemon.
+// Room participation (default-on for interactive Claude; see roomsActive above). The daemon was
+// booted earlier (roomDaemon); here we just wire this session's channel to it.
 let roomInfo = null
 if (roomsActive) {
-  const { ensureRoomDaemon, roomSessionEnv } = await import('./src/commands/pair.js')
+  const { roomSessionEnv } = await import('./src/commands/pair.js')
   const { roomsRoot } = await import('./src/rooms.js')
-  const daemon = await ensureRoomDaemon({ portBase: notifyPort + 1, notifyPort })
+  const daemon = roomDaemon
   const sessionId = `${basename(repoPath)}-${Date.now().toString(36)}-${process.pid}`
   // Room identity for `mrc rooms` + ask_peer matching: the picked session's name if it has one,
   // else the repo basename. (New/unnamed sessions fall back to the repo; the sessionId still
