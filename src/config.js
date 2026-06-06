@@ -29,56 +29,59 @@ export function loadEnv(scriptDir) {
   dbg(`loading .env from ${envFile}`)
   const content = readFileSync(envFile, 'utf8')
 
+  // Load plain KEY=VALUE lines first (so OP_ACCOUNT, MRC_PORT_BASE, etc. take effect even when the
+  // file also contains op:// references). Values that ARE op:// references are left for the op CLI.
+  for (const line of content.split('\n')) {
+    const match = line.match(/^\s*(\w+)\s*=\s*"?([^"]*)"?\s*$/)
+    if (match && !match[2].includes('op://')) process.env[match[1]] = match[2]
+  }
+
   if (content.includes('op://')) {
     dbg('.env contains op:// references, using 1Password CLI')
     return loadOpEnv(envFile)
   }
 
-  // Simple .env parsing
-  for (const line of content.split('\n')) {
-    const match = line.match(/^\s*(\w+)\s*=\s*"?([^"]*)"?\s*$/)
-    if (match) process.env[match[1]] = match[2]
-  }
   return process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || null
 }
 
 function loadOpEnv(envFile) {
-  const opAccount = process.env.OP_ACCOUNT || ''
+  const keys = ['MRC_SESSION_NAMING_ANTHROPIC_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY']
 
-  const tryOp = (account, key) => {
+  // Resolve ALL op:// references in ONE `op run` per account (not once per key — that multiplied
+  // the biometric prompts), capturing the keys we care about. Stderr is dropped so a "vault not in
+  // this account" miss stays quiet instead of spamming [ERROR] lines.
+  const runFor = (account) => {
     const args = ['run', '--env-file', envFile, '--no-masking']
     if (account) args.push('--account', account)
-    args.push('--', 'printenv', key)
+    args.push('--', 'sh', '-c', keys.map(k => `printf '%s\\n' "$${k}"`).join('; '))
     try {
-      return execFileSync('op', args, { timeout: 5000, encoding: 'utf8' }).trim()
-    } catch { return '' }
+      const out = execFileSync('op', args, { timeout: 15000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      const lines = out.split('\n')
+      const got = {}
+      keys.forEach((k, i) => { const v = (lines[i] || '').trim(); if (v) got[k] = v })
+      return got
+    } catch { return {} }
   }
 
-  let accounts = null
-  const getAccounts = () => {
-    if (accounts !== null) return accounts
-    if (opAccount) return accounts = []
+  // Scope to one account when possible (OP_ACCOUNT, from the shell or the .env) — this avoids
+  // biometric-prompting (and erroring on) accounts that don't hold the referenced vault. Otherwise
+  // try each configured account in turn and stop at the first that resolves a secret.
+  const opAccount = process.env.OP_ACCOUNT || ''
+  let candidates = [opAccount]
+  if (!opAccount) {
     try {
-      const json = execFileSync('op', ['account', 'list', '--format=json'], {
-        timeout: 5000, encoding: 'utf8',
-      })
-      accounts = JSON.parse(json).map(a => a.url)
-    } catch { accounts = [] }
-    return accounts
+      const json = execFileSync('op', ['account', 'list', '--format=json'], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      const accts = JSON.parse(json).map(a => a.url).filter(Boolean)
+      candidates = accts.length ? accts : ['']
+    } catch { candidates = [''] }
   }
 
-  for (const envKey of ['MRC_SESSION_NAMING_ANTHROPIC_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY']) {
-    let val = tryOp(opAccount, envKey)
-    if (!val) {
-      for (const acct of getAccounts()) {
-        dbg(`trying op account: ${acct} for ${envKey}`)
-        val = tryOp(acct, envKey)
-        if (val) { dbg(`got ${envKey} from account: ${acct}`); break }
-      }
-    }
-    if (val) {
-      dbg(`got ${envKey} from op`)
-      process.env[envKey] = val
+  for (const acct of candidates) {
+    const got = runFor(acct)
+    if (Object.keys(got).length) {
+      for (const [k, v] of Object.entries(got)) process.env[k] = v
+      dbg(`got op secrets from account: ${acct || '(default)'}`)
+      break
     }
   }
 
