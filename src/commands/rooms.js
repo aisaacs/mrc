@@ -42,6 +42,8 @@ COMMANDS
                                   drops a held wrong-path message.
   end    [room-id]              Close a room. Both sides are notified; the transcript and
                                   consensus are preserved on disk (the room can be resumed).
+  restart                       Refresh the room daemon in place (same ports) so every connected
+                                  session reconnects to current code. Run after updating mrc.
   help, --help                  Show this.
 
 ROOM IDS
@@ -69,12 +71,19 @@ EXAMPLES
 export async function roomsCommand(args) {
   const sub = args[0] || 'status'
   if (sub === 'help' || sub === '--help' || sub === '-h') { printHelp(); return }
+  if (sub === 'restart') {
+    const { restartRoomDaemon } = await import('./pair.js')
+    const r = await restartRoomDaemon()
+    console.log(r.ok ? `  ↻ room daemon restarted on :${r.port} — connected sessions will reconnect.` : `  ! ${r.error}`)
+    return
+  }
   const port = daemonControlPort()
   if (!port) { console.log('  No room daemon running (start a session with --rooms).'); return }
 
   try {
     if (sub === 'status' || sub === 'ls') {
       const s = await ctrl(port, 'status')
+      console.log(`  Daemon:   v${s.version || '(unknown — stale code; run: mrc rooms restart)'}`)
       console.log('  Sessions:')
       for (const x of s.sessions) console.log(`    ${x.name}${x.name !== x.repo ? `  (${x.repo})` : ''}  [${x.id}]`)
       console.log('  Pairings:')

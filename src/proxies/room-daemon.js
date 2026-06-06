@@ -11,7 +11,7 @@ import { ensureRoom, appendThread, writeConsensus } from '../rooms.js'
 const norm = (s) => String(s || '').trim().replace(/\s+/g, ' ')
 const ts = () => new Date().toISOString()
 
-export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, stallMs = 120_000 }) {
+export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, stallMs = 120_000, version = '' }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
 
@@ -159,6 +159,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, s
     sock.on('close', () => { if (sessionId) sessions.delete(sessionId) })
   })
   server.listen(port, '127.0.0.1')
+  server.on('error', () => process.exit(1))   // e.g. EADDRINUSE on an in-place restart → let the caller fall back
 
   // --- control server (`mrc rooms` connects here) ---
   const pick = (roomId) => roomId ? pairings.get(roomId) : (pairings.size === 1 ? [...pairings.values()][0] : null)
@@ -173,9 +174,15 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, s
         if (f.action === 'status') {
           reply({
             ok: true,
+            version,
             sessions: [...sessions.entries()].map(([id, v]) => ({ id, repo: v.repo, name: v.label || v.repo })),
             pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, a: nameOf(p.a), b: nameOf(p.b) })),
           })
+          continue
+        }
+        if (f.action === 'shutdown') {   // graceful stop (used by `mrc rooms restart` / version refresh)
+          reply({ ok: true })
+          setTimeout(() => { try { server.close(); control.close() } catch {} ; process.exit(0) }, 50)
           continue
         }
         const p = pick(f.roomId)
@@ -201,6 +208,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, s
     sock.on('error', () => {})
   })
   control.listen(controlPort, '127.0.0.1')
+  control.on('error', () => process.exit(1))
 
   const stallTimer = setInterval(() => {
     for (const p of pairings.values()) {
@@ -216,15 +224,17 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, s
 
 // Direct invocation (mrc spawns this detached): node room-daemon.js <port> <controlPort> [notifyPort]
 if (import.meta.url === `file://${process.argv[1]}`) {
+  const { createHash } = await import('node:crypto')
+  const { readFileSync, writeFileSync, mkdirSync } = await import('node:fs')
+  const version = createHash('sha1').update(readFileSync(process.argv[1])).digest('hex').slice(0, 12)
   const port = Number(process.argv[2])
   const controlPort = Number(process.argv[3])
   const notifyPort = Number(process.argv[4]) || 0
-  startRoomDaemon({ port, controlPort, notifyPort })
-  const { writeFileSync, mkdirSync } = await import('node:fs')
+  startRoomDaemon({ port, controlPort, notifyPort, version })
   const { join } = await import('node:path')
   const { homedir } = await import('node:os')
   const dir = join(homedir(), '.local', 'share', 'mrc')
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, 'room-daemon.json'), JSON.stringify({ port, controlPort, notifyPort, pid: process.pid }, null, 2))
-  console.log(`mrc room daemon listening on ${port} (control ${controlPort})`)
+  writeFileSync(join(dir, 'room-daemon.json'), JSON.stringify({ port, controlPort, notifyPort, pid: process.pid, version }, null, 2))
+  console.log(`mrc room daemon v${version} listening on ${port} (control ${controlPort})`)
 }
