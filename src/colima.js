@@ -17,6 +17,19 @@ function detectMemory() {
   return Math.max(8, Math.floor(os.totalmem() / 1073741824 / 2))
 }
 
+/** CPUs of the running Colima VM (or null) — used to warn when it's smaller than what we'd start now. */
+function runningColimaCpus() {
+  try {
+    const out = execFileSync('colima', ['list', '--json'], { encoding: 'utf8' })
+    for (const line of out.split('\n')) {
+      if (!line.trim()) continue
+      let o; try { o = JSON.parse(line) } catch { continue }
+      if ((o.status === 'Running' || o.name === 'default') && Number(o.cpus)) return Number(o.cpus)
+    }
+  } catch {}
+  return null
+}
+
 /**
  * Ensure Docker is available. On macOS, starts Colima if needed.
  * Returns true if we started Colima (so we can stop it on exit).
@@ -35,6 +48,15 @@ export async function ensureDocker(verbose, { colimaCpu, colimaMemory } = {}) {
     // Check if Colima is running
     try {
       execFileSync('colima', ['status'], { stdio: 'ignore' })
+      // Already running. Colima won't resize a live VM, so a VM first started small stays small —
+      // warn if it has fewer CPUs than we'd allocate now (this caps room/workflow concurrency).
+      const want = parseInt(colimaCpu, 10) || detectCpus()
+      const have = runningColimaCpus()
+      if (have && want && have < want) {
+        console.log(`  ⚠ Colima VM is running with ${have} CPUs but ${want} are available — room/workflow`)
+        console.log(`    concurrency is capped (min(16, cpus-2)). Colima can't resize a live VM; to use all`)
+        console.log(`    cores: 'colima stop' then relaunch mrc (restarts the VM, ending running sessions).`)
+      }
       return false  // already running
     } catch {
       // Need to start Colima
