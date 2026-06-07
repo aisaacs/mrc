@@ -44,6 +44,8 @@ COMMANDS
                                   consensus are preserved on disk (the room can be resumed).
   restart                       Refresh the room daemon in place (same ports) so every connected
                                   session reconnects to current code. Run after updating mrc.
+  stop                          Stop the room daemon (no respawn). It also auto-stops ~10 min
+                                  after the last session disconnects; the next session reboots it.
   help, --help                  Show this.
 
 ROOM IDS
@@ -75,6 +77,12 @@ export async function roomsCommand(args) {
     const { restartRoomDaemon } = await import('./pair.js')
     const r = await restartRoomDaemon()
     console.log(r.ok ? `  ↻ room daemon restarted on :${r.port} — connected sessions will reconnect.` : `  ! ${r.error}`)
+    return
+  }
+  if (sub === 'stop') {
+    const { stopRoomDaemon } = await import('./pair.js')
+    const r = await stopRoomDaemon()
+    console.log(r.ok ? '  ⏹ room daemon stopped.' : `  ! ${r.error}`)
     return
   }
   const port = daemonControlPort()

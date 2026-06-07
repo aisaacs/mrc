@@ -3,7 +3,7 @@
 // a single detached process so it outlives any one session.)
 import net from 'node:net'
 import { spawn } from 'node:child_process'
-import { readFileSync } from 'node:fs'
+import { readFileSync, unlinkSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -64,7 +64,7 @@ export async function ensureRoomDaemon({ portBase, notifyPort }) {
   const version = daemonVersion()
   const meta = readMeta()
   if (meta && await probeControl(meta.controlPort)) {
-    if (meta.version === version) return meta   // live and current → reuse
+    if (meta.version === version) { console.log('  ◎ Negotiation-room daemon ready.'); return meta }   // live and current → reuse
     // Live but running OLD code: refresh in place on the SAME ports so connected sessions reconnect.
     process.stdout.write('  ◎ Refreshing the negotiation-room daemon (code changed)...')
     await stopDaemon(meta)
@@ -92,6 +92,15 @@ export async function restartRoomDaemon() {
   spawnDaemon(meta.port, meta.controlPort, meta.notifyPort || 0)
   const ok = await waitUp(meta.controlPort)
   return ok ? { ok: true, port: meta.port } : { ok: false, error: 'could not rebind — run: pkill -f room-daemon.js' }
+}
+
+// `mrc rooms stop`: stop the daemon without respawning, and clear its record.
+export async function stopRoomDaemon() {
+  const meta = readMeta()
+  if (!meta) return { ok: false, error: 'no room daemon running' }
+  const stopped = await stopDaemon(meta)
+  if (stopped) { try { unlinkSync(daemonMetaPath()) } catch {} }
+  return stopped ? { ok: true } : { ok: false, error: 'could not stop — run: pkill -f room-daemon.js' }
 }
 
 // Env that connects a session's channel server to the daemon.

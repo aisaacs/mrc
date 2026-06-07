@@ -6,21 +6,26 @@ import { IMAGE_NAME } from './constants.js'
 
 /** Build the Docker image if needed. */
 export function buildImage(scriptDir, { rebuild, verbose, uid, gid }) {
-  console.log('  ◎ Mr. Radar is scanning the environment...')
-
   const buildFlags = ['-q', '--build-arg', `USER_UID=${uid}`, '--build-arg', `USER_GID=${gid}`]
   const stdio = verbose ? 'inherit' : 'pipe'
 
+  let fullBuild = false
   if (rebuild) {
     try { execFileSync('docker', ['rmi', '-f', IMAGE_NAME], { stdio: 'ignore' }) } catch {}
-    buildFlags.push('--no-cache')
+    buildFlags.push('--no-cache'); fullBuild = true
   } else {
     try {
       execFileSync('docker', ['image', 'inspect', IMAGE_NAME], { stdio: 'ignore' })
     } catch {
-      buildFlags.push('--no-cache')
+      buildFlags.push('--no-cache'); fullBuild = true
     }
   }
+
+  // A full build (no image yet, or --rebuild) is silent for minutes — say so, so the wait isn't
+  // mistaken for a hang. A cached build is near-instant.
+  console.log(fullBuild
+    ? '  ◎ Mr. Radar is scanning the environment... (full image build — this takes a few minutes)'
+    : '  ◎ Mr. Radar is scanning the environment...')
 
   try {
     execFileSync('docker', ['build', ...buildFlags, '-t', IMAGE_NAME, scriptDir], { stdio })
