@@ -52,9 +52,15 @@ case "$AGENT" in
       # Room session: load the channel server directly (no wrapper). Claude renders natively and
       # the user accepts the one-time dev-channel prompt manually. NO auto-accept — an injected
       # "1<Enter>" was dangerous (it could land on an unintended menu, e.g. trigger a compact).
+      # Pin a stable conversation id for a NEW session (empty RESUME_FLAG) so rooms survive a later
+      # resume; resume/continue keep their flag, which already targets the right conversation.
+      SESSION_FLAG="$RESUME_FLAG"
+      if [ -z "$RESUME_FLAG" ] && [ -n "${MRC_SESSION_ID:-}" ]; then
+        SESSION_FLAG="--session-id ${MRC_SESSION_ID}"
+      fi
       claude --dangerously-skip-permissions \
         --dangerously-load-development-channels server:room \
-        --mcp-config /tmp/mrc-room-mcp.json $RESUME_FLAG "$@"
+        --mcp-config /tmp/mrc-room-mcp.json $SESSION_FLAG "$@"
     else
       claude --dangerously-skip-permissions $RESUME_FLAG "$@"
     fi

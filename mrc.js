@@ -17,7 +17,7 @@ import { processSandboxignores } from './src/sandboxignore.js'
 import { findFreePort } from './src/ports.js'
 import { startClipboardProxy } from './src/proxies/clipboard-proxy.js'
 import { startNotifyProxy } from './src/proxies/notify-proxy.js'
-import { listSessions, nameSession, resolve as resolveSession, loadNames } from './src/sessions/manager.js'
+import { listSessions, nameSession, resolve as resolveSession, loadNames, resolveSessionId } from './src/sessions/manager.js'
 import { summarize, generateName } from './src/sessions/api.js'
 import { pick, ensureNamesMigrated } from './src/sessions/picker.js'
 import { detectToolMisses } from './src/sessions/transcript.js'
@@ -398,14 +398,14 @@ if (roomsActive) {
   const { roomSessionEnv } = await import('./src/commands/pair.js')
   const { roomsRoot } = await import('./src/rooms.js')
   const daemon = roomDaemon
-  const sessionId = `${basename(repoPath)}-${Date.now().toString(36)}-${process.pid}`
-  // Room identity for `mrc rooms` + ask_peer matching: the picked session's name if it has one,
-  // else the repo basename. (New/unnamed sessions fall back to the repo; the sessionId still
-  // carries the repo so same-repo sessions remain distinguishable.)
+  // Stable session identity = the Claude conversation UUID, so a resumed conversation keeps its id
+  // (rooms between the same two conversations resume) while a new conversation gets a fresh id —
+  // pinned via `claude --session-id` in the entrypoint when RESUME_FLAG is empty.
+  const sessionId = resolveSessionId(resolve(repoPath, '.mrc'), { resumeSession: config.resumeSession, newSession: config.newSession })
+  // Human-readable label (alias) for `mrc rooms` + ask_peer matching: the session's name if it has
+  // one, else the repo basename.
   let label = basename(repoPath)
-  if (config.resumeSession) {
-    try { const nm = loadNames(resolve(repoPath, '.mrc'))[config.resumeSession]; if (nm) label = nm } catch {}
-  }
+  try { const nm = loadNames(resolve(repoPath, '.mrc'))[sessionId]; if (nm) label = nm } catch {}
   envFlags.push(...roomSessionEnv({ daemonPort: daemon.port, sessionId, repoName: basename(repoPath), roomName: config.room, label }))
   volumes.push('-v', `${roomsRoot()}:/rooms`)
   roomInfo = { sessionId, roomName: config.room || '', label }

@@ -1,5 +1,6 @@
 import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs'
 import { join, basename } from 'node:path'
+import { randomUUID } from 'node:crypto'
 
 /** Return sessions sorted newest-first as [{ uuid, lastUpdated, preview }, ...]. */
 export function getSessions(mrcDir) {
@@ -88,6 +89,15 @@ export function resolve(mrcDir, query) {
   }
 
   return null
+}
+
+/** The stable per-conversation id used for room identity: the resumed UUID, the latest conversation
+ *  (plain --continue), or a fresh UUID for a brand-new conversation (which the entrypoint then pins
+ *  via `claude --session-id`). Stable across resume; unique per new conversation. */
+export function resolveSessionId(mrcDir, { resumeSession, newSession } = {}) {
+  if (resumeSession) return resumeSession
+  if (!newSession) { try { const s = getSessions(mrcDir)[0]; if (s) return s.uuid } catch {} }
+  return randomUUID()
 }
 
 /** Get first line of a session summary, or null. */
