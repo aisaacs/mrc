@@ -3,7 +3,7 @@
 // Every room-enabled session's channel connects here at launch and registers (repo basename +
 // a display label = the picked session name, if any). It stays dormant until the human picks a
 // peer: the agent calls `list_peers` (→ `list` here) to discover, then `ask_peer` (→ `ask`) to
-// connect+send. Relays carry the same untrusted-data framing, brake, turn-cap, and consensus as
+// connect+send. Relays carry the same untrusted-data framing, brake, and turn-cap as
 // before. One daemon serves all sessions, so it outlives any single session.
 import net from 'node:net'
 import { createHash } from 'node:crypto'
@@ -12,7 +12,7 @@ import { ensureRoom, appendThread, writeConsensus } from '../rooms.js'
 const norm = (s) => String(s || '').trim().replace(/\s+/g, ' ')
 const ts = () => new Date().toISOString()
 
-export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000 }) {
+export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000 }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
 
@@ -90,7 +90,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, s
     if (existing && (existing.a === bId || existing.b === bId)) return existing
     const roomId = stableId(aId, bId, name)
     ensureRoom(roomId, nameOf(aId), nameOf(bId))
-    const p = { roomId, a: aId, b: bId, state: 'Running', pauseReason: null, turn: 0, turnCap, lastActivityAt: Date.now(), held: [], signed: {} }
+    const p = { roomId, a: aId, b: bId, state: 'Running', pauseReason: null, turn: 0, turnCap, lastActivityAt: Date.now(), held: [] }
     pairings.set(roomId, p)
     appendThread(roomId, `${ts()} [connected: ${nameOf(aId)} <-> ${nameOf(bId)}]`)
     send(aId, { type: 'notice', text: `[Now connected to ${nameOf(bId)}. Shared notes: /rooms/${roomId}/consensus.md. Full transcript incl. any earlier history with this peer: /rooms/${roomId}/thread.log — read it to catch up if this room is being resumed.]` })
@@ -105,7 +105,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, s
   // A real message proves the room isn't dead, so a STALL pause (a timeout *guess* that the room
   // went quiet) must never swallow it — a peer composing a long reply easily exceeds stallMs with
   // no frame crossing the daemon. Activity disproves the guess: clear it and let delivery proceed.
-  // Only DELIBERATE gates (human brake, agent pause, turnCap, consensus) actually hold a message.
+  // Only DELIBERATE gates (human brake, agent pause, turnCap) actually hold a message.
   function clearStallOnActivity(p) {
     if (p.state === 'Paused' && p.pauseReason === 'stall') {
       p.state = 'Running'; p.pauseReason = null
@@ -138,20 +138,16 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, s
     clearStallOnActivity(p)
     if (p.state === 'Paused') { p.held.push({ toId, fromId, text }); appendThread(p.roomId, `${ts()} [held while ${p.pauseReason}]`); return }
     deliver(p, toId, fromId, text)
-    if (p.turn >= p.turnCap) { p.state = 'Paused'; p.pauseReason = 'turnCap'; notify(`Room ${p.roomId}: paused (turnCap)`) }
+    if (p.turnCap > 0 && p.turn >= p.turnCap) { p.state = 'Paused'; p.pauseReason = 'turnCap'; notify(`Room ${p.roomId}: turn-cap check-in at ${p.turn} (resume to grant ${turnCap} more)`) }
   }
 
-  function onSign(fromId, text) {
+  // Shared running summary: either side may refresh consensus.md at any time. It's living notes,
+  // not a signed gate — no matching, no pause; the room stays open until the human ends it.
+  function onNote(fromId, text) {
     const p = pairingFor(fromId)
     if (!p) return
-    p.signed[fromId] = norm(text)
-    const other = p.a === fromId ? p.b : p.a
-    if (p.signed[fromId] && p.signed[other] && p.signed[fromId] === p.signed[other]) {
-      writeConsensus(p.roomId, text); p.state = 'Paused'; p.pauseReason = 'consensus'
-      notify(`Room ${p.roomId}: consensus reached`)
-    } else {
-      send(other, { type: 'notice', text: `Peer proposed a final consensus. If you agree, call sign_consensus with the SAME text:\n${text}` })
-    }
+    writeConsensus(p.roomId, text)
+    appendThread(p.roomId, `${ts()} [${nameOf(fromId)} updated the shared summary]`)
   }
 
   function doBrake(p, reason = 'brake') {
@@ -159,6 +155,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, s
     return p.held.length ? p.held.map((h) => h.text).join(' / ') : null   // pending queued message(s), for the human
   }
   function doResume(p) {
+    // A turn-cap pause is a periodic check-in, not a wall: resuming grants another full window so a
+    // long-running consult channel doesn't re-pause on the very next message.
+    if (p.pauseReason === 'turnCap' && turnCap > 0) p.turnCap = p.turn + turnCap
     // Deliver the FULL backlog in arrival order — held is a FIFO queue, so a brake that spanned
     // several messages no longer drops all but the last one on resume.
     const queued = p.held; p.held = []
@@ -202,7 +201,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, s
           send(sessionId, { type: 'peerlist', peers: peerList(sessionId) })
         } else if (f.type === 'ask' && sessionId) onAsk(sessionId, String(f.question ?? ''), f.peer)
         else if (f.type === 'msg' && sessionId) onMsg(sessionId, String(f.text ?? ''))
-        else if (f.type === 'sign' && sessionId) onSign(sessionId, String(f.text ?? ''))
+        else if (f.type === 'note' && sessionId) onNote(sessionId, String(f.text ?? ''))
         else if (f.type === 'pause' && sessionId) onAgentPause(sessionId)
         else if (f.type === 'resume' && sessionId) onAgentResume(sessionId)
       }
@@ -228,7 +227,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, s
             ok: true,
             version,
             sessions: [...sessions.entries()].map(([id, v]) => ({ id, repo: v.repo, name: v.label || v.repo })),
-            pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, a: nameOf(p.a), b: nameOf(p.b) })),
+            pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, turnCap: p.turnCap, a: nameOf(p.a), b: nameOf(p.b) })),
           })
           continue
         }
@@ -247,6 +246,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 20, s
             for (const t of targets) send(t, { type: 'directive', text: `[Human directive]: ${f.text}` })
             // Steering is a deliberate human override of the conversation's direction, so the held
             // backlog is intentionally dropped (not delivered) — but log how much, so it's traceable.
+            if (p.pauseReason === 'turnCap' && turnCap > 0) p.turnCap = p.turn + turnCap
             if (p.held.length) appendThread(p.roomId, `${ts()} [steer dropped ${p.held.length} held]`)
             p.held = []; p.state = 'Running'; p.pauseReason = null; p.lastActivityAt = Date.now()
             appendThread(p.roomId, `${ts()} HUMAN->${f.target || 'both'}: ${f.text}`); reply({ ok: true }); break
@@ -294,7 +294,9 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const port = Number(process.argv[2])
   const controlPort = Number(process.argv[3])
   const notifyPort = Number(process.argv[4]) || 0
-  startRoomDaemon({ port, controlPort, notifyPort, version })
+  const envCap = process.env.MRC_ROOM_TURN_CAP
+  const turnCap = envCap != null && envCap !== '' && Number.isFinite(Number(envCap)) ? Number(envCap) : undefined
+  startRoomDaemon({ port, controlPort, notifyPort, version, turnCap })
   const { join } = await import('node:path')
   const { homedir } = await import('node:os')
   const dir = join(homedir(), '.local', 'share', 'mrc')

@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MRC Rooms</title>
+<style>
+  :root {
+    --bg:#0d1117; --panel:#161b22; --panel2:#1c2230; --line:#2b3340; --ink:#e6edf3;
+    --dim:#8b949e; --accent:#58a6ff; --a:#58a6ff; --b:#3fb950; --human:#d29922; --sys:#6e7681;
+    --danger:#f85149; --warn:#d29922; --ok:#3fb950;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--ink); font:14px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Helvetica,Arial,sans-serif; height:100vh; display:flex; flex-direction:column; }
+  header { display:flex; align-items:center; gap:12px; padding:10px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
+  header h1 { font-size:15px; margin:0; font-weight:600; letter-spacing:.3px; }
+  header .grow { flex:1; }
+  .pill { font-size:12px; padding:3px 9px; border-radius:999px; border:1px solid var(--line); color:var(--dim); white-space:nowrap; }
+  .pill.on { color:var(--ok); border-color:#1f3b29; background:#10261a; }
+  .pill.off { color:var(--danger); border-color:#3b1f1f; background:#26100f; }
+  main { flex:1; display:flex; min-height:0; }
+  /* left list */
+  aside { width:330px; border-right:1px solid var(--line); display:flex; flex-direction:column; background:var(--panel); }
+  .listhead { padding:9px 12px; border-bottom:1px solid var(--line); display:flex; align-items:center; gap:8px; font-size:12px; color:var(--dim); }
+  .rooms { overflow-y:auto; flex:1; }
+  .room { padding:10px 12px; border-bottom:1px solid var(--line); cursor:pointer; }
+  .room:hover { background:var(--panel2); }
+  .room.sel { background:var(--panel2); border-left:3px solid var(--accent); padding-left:9px; }
+  .room .title { font-weight:600; font-size:13px; }
+  .room .sub { font-size:11px; color:var(--dim); margin-top:3px; display:flex; gap:8px; flex-wrap:wrap; }
+  .badge { font-size:10px; padding:1px 6px; border-radius:4px; border:1px solid var(--line); text-transform:uppercase; letter-spacing:.4px; }
+  .badge.running { color:var(--ok); border-color:#1f3b29; }
+  .badge.paused { color:var(--warn); border-color:#3b3115; }
+  .badge.history { color:var(--sys); }
+  /* right detail */
+  section { flex:1; display:flex; flex-direction:column; min-width:0; }
+  .empty { margin:auto; color:var(--dim); }
+  .detailhead { padding:12px 16px; border-bottom:1px solid var(--line); background:var(--panel); }
+  .detailhead .who { font-size:16px; font-weight:600; }
+  .detailhead .rid { font-size:11px; color:var(--dim); font-family:ui-monospace,SFMono-Regular,Menlo,monospace; margin-top:4px; word-break:break-all; cursor:pointer; }
+  .detailhead .rid:hover { color:var(--accent); }
+  .controls { display:flex; gap:8px; align-items:center; margin-top:10px; flex-wrap:wrap; }
+  button { font:inherit; font-size:13px; padding:5px 12px; border-radius:6px; border:1px solid var(--line); background:var(--panel2); color:var(--ink); cursor:pointer; }
+  button:hover:not(:disabled) { border-color:var(--accent); }
+  button:disabled { opacity:.4; cursor:not-allowed; }
+  button.danger { color:var(--danger); } button.danger:hover:not(:disabled) { border-color:var(--danger); }
+  select, input[type=text] { font:inherit; font-size:13px; padding:5px 8px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--ink); }
+  input[type=text].steer { flex:1; min-width:160px; }
+  .tabs { display:flex; gap:4px; padding:8px 16px 0; border-bottom:1px solid var(--line); background:var(--panel); }
+  .tab { padding:6px 14px; cursor:pointer; border:1px solid transparent; border-bottom:none; border-radius:6px 6px 0 0; color:var(--dim); font-size:13px; }
+  .tab.sel { color:var(--ink); background:var(--bg); border-color:var(--line); }
+  .view { flex:1; overflow-y:auto; padding:14px 16px; min-height:0; }
+  /* thread bubbles */
+  .msg { margin:0 0 12px; max-width:88%; }
+  .msg .meta { font-size:11px; color:var(--dim); margin-bottom:3px; }
+  .msg .body { padding:9px 12px; border-radius:8px; white-space:pre-wrap; word-wrap:break-word; overflow-wrap:anywhere; background:var(--panel); border:1px solid var(--line); }
+  .msg.a { margin-right:auto; } .msg.a .body { border-left:3px solid var(--a); }
+  .msg.b { margin-left:auto; } .msg.b .body { border-left:3px solid var(--b); }
+  .msg.human { max-width:100%; } .msg.human .body { border-left:3px solid var(--human); background:#241d10; }
+  .sysline { text-align:center; color:var(--sys); font-size:11px; margin:8px 0; font-family:ui-monospace,Menlo,monospace; }
+  .sysline.warn { color:var(--warn); }
+  pre.raw { white-space:pre-wrap; word-wrap:break-word; font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; margin:0; }
+  .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--panel2); border:1px solid var(--line); padding:8px 16px; border-radius:8px; font-size:13px; opacity:0; transition:opacity .2s; pointer-events:none; }
+  .toast.show { opacity:1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>🛰️ MRC Rooms</h1>
+  <span id="daemon" class="pill">…</span>
+  <span class="grow"></span>
+  <span id="tick" class="pill">updating…</span>
+</header>
+<main>
+  <aside>
+    <div class="listhead"><label><input type="checkbox" id="showHist" checked> show history</label><span class="grow"></span><span id="count"></span></div>
+    <div class="rooms" id="rooms"></div>
+  </aside>
+  <section id="detail"><div class="empty">Select a room to view its conversation.</div></section>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = (s, r=document) => r.querySelector(s)
+let STATE = null, SELECTED = null, TAB = 'thread', SHOW_HIST = true
+let lastThread = '', lastConsensus = ''
+
+const fmtTime = (ms) => { if (!ms) return ''; const d = new Date(ms); return d.toLocaleString() }
+const ago = (ms) => { if (!ms) return ''; const s = Math.round((Date.now()-ms)/1000); if (s<60) return s+'s ago'; if (s<3600) return Math.round(s/60)+'m ago'; if (s<86400) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago' }
+
+async function api(path, opts) { const r = await fetch(path, opts); return r.json() }
+function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('show'); clearTimeout(el._t); el._t = setTimeout(()=>el.classList.remove('show'), 1800) }
+
+function badge(room) {
+  if (!room.live) return '<span class="badge history">history</span>'
+  if (room.state === 'Paused') return '<span class="badge paused">paused'+(room.pauseReason?' · '+room.pauseReason:'')+'</span>'
+  return '<span class="badge running">running</span>'
+}
+
+function renderList() {
+  const rooms = (STATE?.rooms||[]).filter(r => SHOW_HIST || r.live)
+  $('#count').textContent = rooms.length + (rooms.length===1?' room':' rooms')
+  $('#rooms').innerHTML = rooms.map(r => `
+    <div class="room ${r.roomId===SELECTED?'sel':''}" data-id="${escAttr(r.roomId)}">
+      <div class="title">${esc(r.a)} ↔ ${esc(r.b)}</div>
+      <div class="sub">${badge(r)} ${r.turn!=null?'<span>turn '+r.turn+(r.turnCap?'/'+r.turnCap:'')+'</span>':''} <span>${ago(r.updatedAt)}</span></div>
+    </div>`).join('') || '<div style="padding:14px;color:var(--dim)">No rooms yet. Open one from inside a session (ask a peer).</div>'
+  $('#rooms').querySelectorAll('.room').forEach(el => el.onclick = () => select(el.dataset.id))
+}
+
+const esc = (s) => String(s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))
+const escAttr = (s) => esc(s).replace(/"/g,'&quot;')
+
+// Split thread.log into entries (each starts with an ISO timestamp at line-start; a message body
+// may itself contain newlines, so we cannot split on '\n').
+function parseThread(text) {
+  if (!text.trim()) return []
+  const re = /^(\d{4}-\d{2}-\d{2}T[\d:.]+Z)\s/gm
+  const idx = []; let m; while ((m = re.exec(text))) idx.push([m.index, m[1], re.lastIndex])
+  const entries = []
+  for (let i=0;i<idx.length;i++){
+    const start = idx[i][2], end = i+1<idx.length ? idx[i+1][0] : text.length
+    entries.push({ ts: idx[i][1], body: text.slice(start, end).replace(/\n+$/,'') })
+  }
+  return entries
+}
+
+function renderThread(text, room) {
+  const aName = room?.a, entries = parseThread(text)
+  return entries.map(e => {
+    const b = e.body
+    let mm
+    if (/^\[.*\]$/s.test(b.trim())) {
+      const warn = /paused|held|closed/.test(b) ? ' warn' : ''
+      return `<div class="sysline${warn}" title="${escAttr(e.ts)}">${esc(b.trim())}</div>`
+    }
+    if ((mm = b.match(/^HUMAN->(\S+):\s([\s\S]*)$/))) {
+      return `<div class="msg human"><div class="meta">👤 human → ${esc(mm[1])} · ${esc(new Date(e.ts).toLocaleTimeString())}</div><div class="body">${esc(mm[2])}</div></div>`
+    }
+    if ((mm = b.match(/^(.+?)->(.+?):\s([\s\S]*)$/))) {
+      const from = mm[1], side = (from === aName) ? 'a' : 'b'
+      return `<div class="msg ${side}"><div class="meta">${esc(from)} → ${esc(mm[2])} · ${esc(new Date(e.ts).toLocaleTimeString())}</div><div class="body">${esc(mm[3])}</div></div>`
+    }
+    return `<div class="msg a"><div class="meta">${esc(e.ts)}</div><div class="body">${esc(b)}</div></div>`
+  }).join('') || '<div class="empty" style="margin:20px auto">No messages yet.</div>'
+}
+
+function roomById(id) { return (STATE?.rooms||[]).find(r => r.roomId===id) }
+
+function renderDetail(data) {
+  const room = roomById(SELECTED) || {}
+  const live = room.live && STATE?.daemon?.running
+  const aName = esc(room.a||'A'), bName = esc(room.b||'B')
+  const head = `
+    <div class="detailhead">
+      <div class="who">${aName} ↔ ${bName} &nbsp; ${badge(room)}</div>
+      <div class="rid" title="click to copy" onclick="copyId()">${escAttr(SELECTED)}</div>
+      <div class="controls">
+        <button id="bPause" ${live && room.state!=='Paused'?'':'disabled'} onclick="act('brake')">⏸ Pause</button>
+        <button id="bResume" ${live && room.state==='Paused'?'':'disabled'} onclick="act('resume')">▶ Resume</button>
+        <button class="danger" ${live?'':'disabled'} onclick="endRoom()">⏹ End</button>
+        <span style="width:8px"></span>
+        <select id="steerTarget" ${live?'':'disabled'}>
+          <option value="both">steer: both</option>
+          <option value="a">steer: ${aName}</option>
+          <option value="b">steer: ${bName}</option>
+        </select>
+        <input type="text" class="steer" id="steerText" placeholder="[Human directive] to inject…" ${live?'':'disabled'}>
+        <button id="bSteer" ${live?'':'disabled'} onclick="steer()">Send</button>
+      </div>
+      ${live?'':'<div style="margin-top:8px;font-size:12px;color:var(--dim)">Read-only — this room is not currently active'+(STATE?.daemon?.running?'':' (daemon offline)')+'. Re-open it from a session to control it.</div>'}
+    </div>
+    <div class="tabs">
+      <div class="tab ${TAB==='thread'?'sel':''}" onclick="setTab('thread')">Thread</div>
+      <div class="tab ${TAB==='consensus'?'sel':''}" onclick="setTab('consensus')">Summary</div>
+    </div>`
+  const view = TAB==='thread'
+    ? `<div class="view" id="view">${renderThread(data.thread||'', room)}</div>`
+    : `<div class="view" id="view"><pre class="raw">${esc(data.consensus||'(empty)')}</pre></div>`
+  $('#detail').innerHTML = head + view
+  if (TAB==='thread') { const v = $('#view'); v.scrollTop = v.scrollHeight }
+  const st = $('#steerText'); if (st) st.onkeydown = (e) => { if (e.key==='Enter') steer() }
+}
+
+async function select(id) {
+  if (SELECTED !== id) { SELECTED = id; lastThread = lastConsensus = '' }
+  renderList()
+  await refreshDetail(true)
+}
+
+async function refreshDetail(force) {
+  if (!SELECTED) return
+  const data = await api('/api/room?id='+encodeURIComponent(SELECTED))
+  if (data.error) { $('#detail').innerHTML = '<div class="empty">'+esc(data.error)+'</div>'; return }
+  const changed = data.thread!==lastThread || data.consensus!==lastConsensus
+  if (!force && !changed) return
+  const v = $('#view'); const nearBottom = v ? (v.scrollHeight - v.scrollTop - v.clientHeight < 80) : true
+  lastThread = data.thread; lastConsensus = data.consensus
+  renderDetail(data)
+  if (TAB==='thread' && !force) { const nv = $('#view'); if (nv && nearBottom) nv.scrollTop = nv.scrollHeight }
+}
+
+function setTab(t) { TAB = t; lastThread = lastConsensus = ''; refreshDetail(true) }
+function copyId() { try { navigator.clipboard.writeText(SELECTED) } catch {} toast('room id copied') }
+
+async function act(action) {
+  const r = await api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ roomId: SELECTED, action }) })
+  toast(r.ok ? action+' ✓' : ('✗ '+(r.error||'failed')))
+  await refresh()
+}
+async function endRoom() {
+  if (!confirm('Close this room? Both sessions are notified; thread.log + consensus.md are kept on disk.')) return
+  await act('end')
+}
+async function steer() {
+  const text = $('#steerText').value.trim(); if (!text) return
+  const target = $('#steerTarget').value
+  const r = await api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ roomId: SELECTED, action:'steer', target, text }) })
+  toast(r.ok ? 'steered ('+target+') ✓' : ('✗ '+(r.error||'failed')))
+  $('#steerText').value = ''
+  await refresh()
+}
+
+async function refresh() {
+  STATE = await api('/api/state')
+  const d = $('#daemon')
+  if (STATE.daemon.running) { d.className='pill on'; d.textContent='daemon up'+(STATE.daemon.version?' · v'+STATE.daemon.version:'') }
+  else { d.className='pill off'; d.textContent='daemon offline' }
+  renderList()
+  if (SELECTED && !roomById(SELECTED)) { /* room vanished from disk — keep showing last content */ }
+  await refreshDetail(false)
+  $('#tick').textContent = 'updated ' + new Date().toLocaleTimeString()
+}
+
+$('#showHist').onchange = (e) => { SHOW_HIST = e.target.checked; renderList() }
+refresh()
+setInterval(refresh, 1500)
+</script>
+</body>
+</html>

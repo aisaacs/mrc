@@ -46,6 +46,9 @@ COMMANDS
                                   session reconnects to current code. Run after updating mrc.
   stop                          Stop the room daemon (no respawn). It also auto-stops ~10 min
                                   after the last session disconnects; the next session reboots it.
+  dashboard, ui                 Open a local web dashboard (127.0.0.1) to read every room's full
+                                  thread.log + consensus.md (live & historical, untruncated) and
+                                  pause / resume / steer / end them with buttons.
   help, --help                  Show this.
 
 ROOM IDS
@@ -54,7 +57,7 @@ ROOM IDS
 
 FILES  (per room, on the host; also mounted at /rooms/<id>/ inside both containers)
   ~/.local/share/mrc/rooms/<id>/thread.log     full relayed transcript — 'tail -f' to watch live
-  ~/.local/share/mrc/rooms/<id>/consensus.md   shared agreed record — edit it to steer; both
+  ~/.local/share/mrc/rooms/<id>/consensus.md   living shared summary — edit it to steer; both
                                                agents see the change
 
 RESUMING
@@ -63,6 +66,7 @@ RESUMING
   accumulating, and an agent catches up by reading thread.log (never relies on its own memory).
 
 EXAMPLES
+  mrc rooms dashboard
   mrc rooms status
   mrc rooms brake RP-Diet--rp
   mrc rooms steer --target b "the refund is async via webhook — re-approach"
@@ -83,6 +87,21 @@ export async function roomsCommand(args) {
     const { stopRoomDaemon } = await import('./pair.js')
     const r = await stopRoomDaemon()
     console.log(r.ok ? '  ⏹ room daemon stopped.' : `  ! ${r.error}`)
+    return
+  }
+  if (sub === 'dashboard' || sub === 'ui' || sub === 'web') {
+    const { startDashboard, openBrowser } = await import('../rooms-dashboard.js')
+    try {
+      const { url } = await startDashboard({})
+      console.log(`  ◎ Rooms dashboard live at ${url}`)
+      console.log('    Full thread.log + consensus.md for every room (live & historical), plus pause·resume·steer·end.')
+      console.log('    Ctrl-C to stop.')
+      openBrowser(url)
+      await new Promise(() => {})   // serve until the user Ctrl-Cs
+    } catch (e) {
+      console.error(`  ! could not start dashboard: ${e.message}`)
+      process.exit(1)
+    }
     return
   }
   const port = daemonControlPort()

@@ -1,6 +1,6 @@
 // Room-directory manager (host-side). Rooms live at ~/.local/share/mrc/rooms/<roomId>/,
-// distinct from each repo's project-local .mrc/. Each room holds consensus.md (the agreed
-// record), thread.log (append-only transcript), and room.json (metadata).
+// distinct from each repo's project-local .mrc/. Each room holds consensus.md (a living shared
+// summary), thread.log (append-only transcript), and room.json (metadata).
 import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, appendFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, basename } from 'node:path'
@@ -14,11 +14,12 @@ export function makeRoomId(repoA, repoB, stamp = Date.now()) {
 }
 
 const consensusTemplate = (roomId, repoA, repoB) =>
-  `# Consensus — ${roomId}\n\n` +
+  `# Shared summary — ${roomId}\n\n` +
   `Sides: A = ${repoA}  |  B = ${repoB}\n\n` +
-  `> The agreed record both sides adopt. Edit this file freely to steer the negotiation —\n` +
-  `> both sessions can read it at /room/consensus.md. The room completes when both sides\n` +
-  `> sign matching text.\n\n---\n\n(no consensus yet)\n`
+  `> A living summary of what the two sessions have established — refreshed by either agent via\n` +
+  `> update_notes, and editable by the human to steer (both sessions read it at\n` +
+  `> /rooms/${roomId}/consensus.md). Notes, not a contract: the room never "completes" on it —\n` +
+  `> the human ends it when done.\n\n---\n\n(no summary yet)\n`
 
 export function createRoom(repoA, repoB, stamp = Date.now()) {
   const roomId = makeRoomId(repoA, repoB, stamp)
@@ -70,7 +71,7 @@ export function appendThread(roomId, line) {
 // Replace the body below the "---" divider, preserving the header/instructions.
 export function writeConsensus(roomId, text) {
   const dir = roomDir(roomId)
-  const cur = existsSync(join(dir, 'consensus.md')) ? readFileSync(join(dir, 'consensus.md'), 'utf8') : '# Consensus\n\n---\n'
+  const cur = existsSync(join(dir, 'consensus.md')) ? readFileSync(join(dir, 'consensus.md'), 'utf8') : '# Shared summary\n\n---\n'
   const head = cur.split('\n---\n')[0]
   writeFileSync(join(dir, 'consensus.md'), `${head}\n---\n\n${text}\n`)
 }

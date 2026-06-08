@@ -9,7 +9,7 @@
 //   list_peers  -> show the human the real open sessions and let them choose (no guessing)
 //   ask_peer    -> send to the chosen peer; their reply arrives as a <channel> tag
 //   reply       -> answer an incoming peer message
-//   sign_consensus -> record a final agreement
+//   update_notes -> refresh the shared running summary (consensus.md); optional, never ends the room
 import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
@@ -47,8 +47,10 @@ const mcp = new Server(
       'when a peer message arrives, REPLY to it yourself with `reply` to keep it moving — do NOT ask ' +
       'your human to approve each reply. They supervise by watching and interrupting (or via `mrc ' +
       'rooms brake/steer`), not message-by-message. Pause to ask your human only when the peer needs ' +
-      'a decision or authorization that is genuinely theirs to give, or when you reach a final ' +
-      'agreement — then call `sign_consensus` and surface it for them to bless.\n' +
+      'a decision or authorization that is genuinely theirs to give. As you reach durable ' +
+      'conclusions, keep a short shared summary via `update_notes` (saved to the room\'s ' +
+      'consensus.md) so there is a skimmable record — it is living notes, not a contract: you do ' +
+      'not need to match the peer or "finish" the room.\n' +
       '5. CONTROL. If the human tells you to pause/hold the room, call `pause_room`; to continue, ' +
       '`resume_room`. You may NOT close a room — only the human can, by running `mrc rooms end`. ' +
       'Never end, abandon, or self-close a room.',
@@ -77,8 +79,8 @@ const tools = [
     inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
   },
   {
-    name: 'sign_consensus',
-    description: 'Record this as the final agreed consensus. Both sides must sign matching text to complete the room.',
+    name: 'update_notes',
+    description: "Write/refresh the shared running summary of what you and the peer have established so far (saved to the room's consensus.md). Optional and idempotent — living notes, not a contract: no matching with the peer, and it never ends the room. Read the current notes first (/rooms/<id>/consensus.md) and post the full updated summary.",
     inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
   },
   {
@@ -118,9 +120,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     case 'reply':
       send({ type: 'msg', text: String(a.text ?? '') })
       return { content: [{ type: 'text', text: 'sent to peer' }] }
-    case 'sign_consensus':
-      send({ type: 'sign', text: String(a.text ?? '') })
-      return { content: [{ type: 'text', text: 'consensus signature recorded' }] }
+    case 'update_notes':
+      send({ type: 'note', text: String(a.text ?? '') })
+      return { content: [{ type: 'text', text: 'shared summary updated' }] }
     case 'pause_room':
       send({ type: 'pause' })
       return { content: [{ type: 'text', text: 'Pause requested; the daemon will confirm with a [Room paused] notice.' }] }
