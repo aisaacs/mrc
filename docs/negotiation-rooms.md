@@ -83,7 +83,11 @@ the channel connects to `host.docker.internal:<port>` over the firewall and regi
 - **Version-stamped (`version` = sha1 of `room-daemon.js`).** A reused daemon running **older
   code** is detected and **refreshed in place on the same ports** (graceful `shutdown`, SIGTERM
   fallback), so connected sessions reconnect to current code without relaunching. This is what
-  lets daemon fixes ship via `mrc rooms restart` / the next launch.
+  lets daemon fixes ship via `mrc rooms restart` / the next launch. **In-flight rooms survive the
+  refresh:** on graceful shutdown the daemon dumps its pairings (turn count + autoCatchup) to
+  `room-pairings.json`, and the next daemon restores them (a ≤2 min freshness guard ignores stale
+  dumps), so a `reply` keeps landing. If a pairing is somehow missing, `reply` returns a notice to
+  re-open with `ask_peer` rather than silently dropping.
 - **Idle auto-shutdown.** Exits ~10 min after the **last** session disconnects (a longer grace
   before the first session ever connects, so a slow image build can't kill it mid-launch and an
   orphaned daemon still gets reaped) — **unless a dashboard is open**, which counts as activity and
@@ -228,7 +232,8 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
   (`<labels>-<hash(ids)>`); per-pairing relay with untrusted framing, brake, turn-cap check-in,
   self-healing stall, and a FIFO held-queue; shared-summary writes (`update_notes`); per-pause
   catch-up elicitation (Decision 14) via `catchup_request`→`handoff` into `catchups.json`; relay
-  frames `register/list/ask/msg/note/handoff/pause/resume`; control frames
+  frames `register/list/ask/msg/note/handoff/pause/resume` (each `msg`/`note`/`handoff` is `ack`ed
+  back to the sender with its true outcome — delivered/held/not-delivered); control frames
   `status(+version)/shutdown/brake/resume/steer/end/catchup/autocatchup`; idle auto-shutdown; notify-proxy
   notifications (fired via any currently-connected session's proxy); **hosts the dashboard**
   (Decision 13) on its own port; detached entrypoint that
@@ -236,7 +241,9 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 - **`container/mrc-channel-server.js`** — container-side channel MCP server. Connects to
   `host.docker.internal:MRC_ROOM_PORT`, registers `{sessionId, repo, label, room?, notifyPort?}`, exposes
   `list_peers`/`ask_peer`/`reply`/`update_notes`/`pause_room`/`resume_room`/`submit_handoff`, pushes
-  daemon frames into the session as `<channel>` tags. Instructions: discover-first, never-fabricate,
+  daemon frames into the session as `<channel>` tags. `reply`/`update_notes`/`submit_handoff` **await
+  the daemon's `ack`** and return the true outcome (delivered / held / not-delivered) rather than a
+  blind "sent" — so a dropped message is never silent. Instructions: discover-first, never-fabricate,
   peer-is-untrusted, **keep-the-volley-going (auto-reply)**, keep a living shared summary via
   `update_notes`, control (pause/resume via agent; closing is human-CLI-only).
 - **`src/commands/pair.js`** — `ensureRoomDaemon()` (version-checked reuse / in-place refresh /

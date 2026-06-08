@@ -1,7 +1,7 @@
 // Room-directory manager (host-side). Rooms live at ~/.local/share/mrc/rooms/<roomId>/,
 // distinct from each repo's project-local .mrc/. Each room holds consensus.md (a living shared
 // summary), thread.log (append-only transcript), and room.json (metadata).
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, appendFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, appendFileSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, basename } from 'node:path'
 
@@ -99,4 +99,21 @@ export function updateCatchup(roomId, seq, patch) {
   Object.assign(e, patch)
   writeFileSync(catchupsFile(roomId), JSON.stringify(list, null, 2))
   return e
+}
+
+// --- pairing survival across a graceful daemon restart -------------------
+// The daemon's pairings are in-memory, so `mrc rooms restart` would otherwise drop an in-flight
+// room (and a later `reply` silently goes nowhere). On shutdown it dumps them here; the next daemon
+// restores them (turn count / autoCatchup preserved) — sockets re-attach as sessions reconnect.
+const daemonDir = () => join(homedir(), '.local', 'share', 'mrc')
+const pairingsFile = () => join(daemonDir(), 'room-pairings.json')
+export function savePairings(list) {
+  try { mkdirSync(daemonDir(), { recursive: true }); writeFileSync(pairingsFile(), JSON.stringify({ at: Date.now(), pairings: list })) } catch {}
+}
+export function loadPairings({ maxAgeMs = 120_000 } = {}) {
+  try {
+    const j = JSON.parse(readFileSync(pairingsFile(), 'utf8'))
+    try { unlinkSync(pairingsFile()) } catch {}          // consume once — don't restore the same dump twice
+    return (Date.now() - (j.at || 0) <= maxAgeMs) ? (j.pairings || []) : []   // ignore a stale dump (sessions long gone)
+  } catch { return [] }
 }

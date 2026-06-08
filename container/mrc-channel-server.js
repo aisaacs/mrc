@@ -124,11 +124,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       send({ type: 'ask', question: String(a.question ?? ''), peer: a.peer || '' })
       return { content: [{ type: 'text', text: `Sent to "${a.peer}". Their reply will arrive as a <channel source="room"> message — relay only that, faithfully.` }] }
     case 'reply':
-      send({ type: 'msg', text: String(a.text ?? '') })
-      return { content: [{ type: 'text', text: 'sent to peer' }] }
+      return await sendAwaitAck({ type: 'msg', text: String(a.text ?? '') })
     case 'update_notes':
-      send({ type: 'note', text: String(a.text ?? '') })
-      return { content: [{ type: 'text', text: 'shared summary updated' }] }
+      return await sendAwaitAck({ type: 'note', text: String(a.text ?? '') })
     case 'pause_room':
       send({ type: 'pause' })
       return { content: [{ type: 'text', text: 'Pause requested; the daemon will confirm with a [Room paused] notice.' }] }
@@ -136,8 +134,7 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       send({ type: 'resume' })
       return { content: [{ type: 'text', text: 'Resume requested; any held message will be delivered.' }] }
     case 'submit_handoff':
-      send({ type: 'handoff', text: String(a.text ?? '') })
-      return { content: [{ type: 'text', text: "Handoff submitted to your human's catch-up." }] }
+      return await sendAwaitAck({ type: 'handoff', text: String(a.text ?? '') })
     default:
       throw new Error(`unknown tool: ${req.params.name}`)
   }
@@ -154,11 +151,37 @@ function pushIn(text, meta = {}) {
   mcp.notification({ method: 'notifications/claude/channel', params: { content: text, meta: { chat_id: String(++chatSeq), ...meta } } })
     .catch((e) => log(`notify error: ${e.message}`))
 }
+let ackSeq = 0
+const pendingAcks = new Map()
+function ackText(status) {
+  switch (status) {
+    case 'delivered': return 'Delivered to the peer.'
+    case 'held': return 'Room is paused — your message is queued and will be delivered when it resumes.'
+    case 'peer-offline': return 'NOT delivered — the peer session looks offline right now.'
+    case 'no-pairing': return 'NOT delivered — no active room (the daemon may have restarted). Re-open with ask_peer; the room id and history are preserved.'
+    case 'noted': return 'Shared summary updated.'
+    case 'recorded': return 'Handoff recorded for your human.'
+    case 'no-pane': return 'Nothing to record — no catch-up was waiting (only relevant right after a catch-up request).'
+    default: return 'Sent.'
+  }
+}
+// Send a frame and WAIT for the daemon's ack, so the tool result tells the truth (delivered / held /
+// not-delivered) instead of optimistically claiming success. Falls back if the daemon never answers.
+function sendAwaitAck(frame) {
+  const id = String(++ackSeq)
+  return new Promise((resolve) => {
+    const done = (text) => { if (pendingAcks.has(id)) { pendingAcks.delete(id); clearTimeout(timer); resolve({ content: [{ type: 'text', text }] }) } }
+    const timer = setTimeout(() => done("Sent, but the room daemon didn't acknowledge within a few seconds — it may be restarting. Check the dashboard; if it didn't land, re-open with ask_peer."), 4000)
+    pendingAcks.set(id, (status) => done(ackText(status)))
+    send({ ...frame, id })
+  })
+}
 function onFrame(f) {
   if (f.type === 'peerlist') {                         // response to list_peers (tool result)
     if (pendingList) { pendingList(f.peers || []); pendingList = null }
     return
   }
+  if (f.type === 'ack' && f.id != null) { const r = pendingAcks.get(String(f.id)); if (r) r(f.status); return }   // delivery confirmation
   // peer message (untrusted), human directive (trusted), or notice — push into the session.
   if ((f.type === 'deliver' || f.type === 'directive' || f.type === 'notice' || f.type === 'peers' || f.type === 'catchup_request') && f.text) pushIn(f.text)
 }

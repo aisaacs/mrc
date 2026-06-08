@@ -7,7 +7,7 @@
 // before. One daemon serves all sessions, so it outlives any single session.
 import net from 'node:net'
 import { createHash } from 'node:crypto'
-import { ensureRoom, appendThread, writeConsensus, readCatchups, appendCatchup, updateCatchup } from '../rooms.js'
+import { ensureRoom, appendThread, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings } from '../rooms.js'
 
 const norm = (s) => String(s || '').trim().replace(/\s+/g, ' ')
 const ts = () => new Date().toISOString()
@@ -23,6 +23,9 @@ const catchupPrompt = (reason) =>
 export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
+  // Restore pairings a graceful restart dumped, so an in-flight room survives `mrc rooms restart`
+  // (turn count / autoCatchup preserved). Sockets re-attach as the sessions reconnect + re-register.
+  for (const sp of loadPairings()) pairings.set(sp.roomId, { ...sp, held: [] })
 
   // Idle auto-shutdown: exit once no session has been connected for idleMs. A longer grace applies
   // before the FIRST session ever connects, so a slow image build doesn't kill the daemon
@@ -49,6 +52,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
     const s = sessions.get(sessionId)
     if (s && s.sock && !s.sock.destroyed) s.sock.write(JSON.stringify(frame) + '\n')
   }
+  const online = (id) => { const s = sessions.get(id); return !!(s && s.sock && !s.sock.destroyed) }
   const repoOf = (id) => sessions.get(id)?.repo || '?'                       // basename — for clean room ids
   const nameOf = (id) => { const s = sessions.get(id); return s ? (s.label || s.repo) : '?' }  // display / match
   function pairingFor(id) { for (const p of pairings.values()) if (p.a === id || p.b === id) return p; return null }
@@ -144,25 +148,29 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
     deliver(p, r.peer.id, askerId, question)
   }
 
-  function onMsg(fromId, text) {
+  function onMsg(fromId, text, ackId) {
+    const ack = (status) => { if (ackId != null) send(fromId, { type: 'ack', id: ackId, status }) }
     const p = pairingFor(fromId)
-    if (!p) return
+    if (!p) { send(fromId, { type: 'notice', text: '[No open room to reply into — the daemon may have just restarted and lost this pairing. Re-open it with ask_peer (the room id + full history are preserved); a plain reply needs an active pairing.]' }); ack('no-pairing'); return }
     const toId = p.a === fromId ? p.b : p.a
     p.turn += 1; p.lastActivityAt = Date.now()
     appendThread(p.roomId, `${ts()} ${nameOf(fromId)}->${nameOf(toId)}: ${text}`)
     clearStallOnActivity(p)
-    if (p.state === 'Paused') { p.held.push({ toId, fromId, text }); appendThread(p.roomId, `${ts()} [held while ${p.pauseReason}]`); return }
+    if (p.state === 'Paused') { p.held.push({ toId, fromId, text }); appendThread(p.roomId, `${ts()} [held while ${p.pauseReason}]`); ack('held'); return }
     deliver(p, toId, fromId, text)
+    ack(online(toId) ? 'delivered' : 'peer-offline')
     if (p.turnCap > 0 && p.turn >= p.turnCap) { p.state = 'Paused'; p.pauseReason = 'turnCap'; notify(`Room ${p.roomId}: turn-cap check-in at ${p.turn} (resume to grant ${turnCap} more)`); maybeCatchup(p, 'turnCap') }
   }
 
   // Shared running summary: either side may refresh consensus.md at any time. It's living notes,
   // not a signed gate — no matching, no pause; the room stays open until the human ends it.
-  function onNote(fromId, text) {
+  function onNote(fromId, text, ackId) {
+    const ack = (status) => { if (ackId != null) send(fromId, { type: 'ack', id: ackId, status }) }
     const p = pairingFor(fromId)
-    if (!p) return
+    if (!p) { ack('no-pairing'); return }
     writeConsensus(p.roomId, text)
     appendThread(p.roomId, `${ts()} [${nameOf(fromId)} updated the shared summary]`)
+    ack('noted')
   }
 
   // --- catch-up panes: at an autonomous pause, ask each live side for a handoff for the human. The
@@ -192,8 +200,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
     }, catchupTimeoutMs)
     return { ok: true, seq }
   }
-  function onHandoff(fromId, text) {
-    const p = pairingFor(fromId); if (!p) return
+  function onHandoff(fromId, text, ackId) {
+    const ack = (status) => { if (ackId != null) send(fromId, { type: 'ack', id: ackId, status }) }
+    const p = pairingFor(fromId); if (!p) { ack('no-pairing'); return }
     const role = p.a === fromId ? 'a' : 'b'
     const list = readCatchups(p.roomId)
     // Prefer the pane we're actively gathering; else fall back to the most recent un-reviewed pane
@@ -201,7 +210,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
     // after the pane already timed out) still lands instead of being dropped.
     let e = p.pendingCatchup ? list.find((x) => x.seq === p.pendingCatchup) : null
     if (!e) for (let i = list.length - 1; i >= 0; i--) { const x = list[i]; if (!x.reviewedAt && !(x.handoffs && x.handoffs[role])) { e = x; break } }
-    if (!e) return
+    if (!e) { ack('no-pane'); return }
     e.handoffs = e.handoffs || {}
     e.handoffs[role] = { name: nameOf(fromId), text: String(text || '') }
     if (Object.keys(e.handoffs).length >= (e.expected || 1)) { e.status = 'ready'; if (p.pendingCatchup === e.seq) p.pendingCatchup = null }
@@ -209,6 +218,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
     // Durably capture the FULL handoff in the canonical audit log too (panes can be edited/dropped;
     // thread.log is append-only). The dashboard display-makes the `[handoff]` prefix into a card.
     appendThread(p.roomId, `${ts()} [handoff] ${nameOf(fromId)} -> human\n${String(text || '')}`)
+    ack('recorded')
   }
   // Auto-elicit on a pause UNLESS the human turned it off for this room (they're watching live and
   // don't want the agents interrupted). Manual `catchup` ignores this — it's an explicit request.
@@ -267,9 +277,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
         } else if (f.type === 'list' && sessionId) {
           send(sessionId, { type: 'peerlist', peers: peerList(sessionId) })
         } else if (f.type === 'ask' && sessionId) onAsk(sessionId, String(f.question ?? ''), f.peer)
-        else if (f.type === 'msg' && sessionId) onMsg(sessionId, String(f.text ?? ''))
-        else if (f.type === 'note' && sessionId) onNote(sessionId, String(f.text ?? ''))
-        else if (f.type === 'handoff' && sessionId) onHandoff(sessionId, String(f.text ?? ''))
+        else if (f.type === 'msg' && sessionId) onMsg(sessionId, String(f.text ?? ''), f.id)
+        else if (f.type === 'note' && sessionId) onNote(sessionId, String(f.text ?? ''), f.id)
+        else if (f.type === 'handoff' && sessionId) onHandoff(sessionId, String(f.text ?? ''), f.id)
         else if (f.type === 'pause' && sessionId) onAgentPause(sessionId)
         else if (f.type === 'resume' && sessionId) onAgentResume(sessionId)
       }
@@ -301,6 +311,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
         }
         if (f.action === 'shutdown') {   // graceful stop (used by `mrc rooms restart` / version refresh)
           reply({ ok: true })
+          // Dump live pairings so the next daemon can restore them — an in-flight room survives the restart.
+          savePairings([...pairings.values()].map((p) => ({ roomId: p.roomId, a: p.a, b: p.b, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, state: p.state, pauseReason: p.pauseReason })))
           setTimeout(() => { try { server.close(); control.close() } catch {} ; process.exit(0) }, 50)
           continue
         }
