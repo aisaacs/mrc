@@ -32,7 +32,7 @@ $ mrc pick           # server repo (another terminal)
 The client agent calls **`list_peers`** to show the real open sessions, the human picks one, the
 agent calls **`ask_peer`** → a host **room daemon** relays the question into that session → the
 peer answers → it loops back **autonomously**. The human supervises by observation + interrupt;
-the loop ends on consensus, a turn cap, a stall, or a human brake/close.
+the loop pauses on a turn-cap check-in, a stall, or a human brake, and ends only on a human close.
 
 **On by default** for interactive Claude sessions — no flag, no paths typed per use (disable with
 `--no-rooms`, e.g. in `~/.mrcrc`). Skipped automatically for `--daemon`, `--json`, and `--agent
@@ -41,13 +41,14 @@ explicitly pairs two same-named sessions (and is how you deliberately join a roo
 
 **The "room"** that forms for a pairing is a host dir at `~/.local/share/mrc/rooms/<roomId>/`,
 mounted into both containers at `/rooms/<roomId>/`:
-- **`consensus.md`** — the living *agreed record* (Decision 1). Single source of truth.
-- **`thread.log`** — append-only transcript of every relayed hop.
+- **`thread.log`** — append-only transcript of every relayed hop. The source of truth.
+- **`consensus.md`** — a living *shared summary* (Decision 1) either agent refreshes via
+  `update_notes`, and the human can edit to steer. Notes, not a contract.
 
 **Room identity (Decision 9).** A room id is **`<readable-labels>-<hash>`**, where the hash is
 over the two participants' **stable session ids**. The session id is the Claude **conversation
 UUID** (stable across resume, fresh per new conversation — see §5.9), so:
-- a fresh pair of conversations always gets a **fresh** room (no stale consensus reused);
+- a fresh pair of conversations always gets a **fresh** room (no stale summary/transcript reused);
 - resuming **both** conversations resumes the **same** room (history preserved);
 - human names are **aliases** only — used for discovery/addressing, never for identity.
 
@@ -58,13 +59,13 @@ UUID** (stable across resume, fresh per new conversation — see §5.9), so:
    claude … --dangerously-load-development-channels server:room   (dormant until paired)
         │ stdio                                            │ stdio
    mrc-channel-server.js                              mrc-channel-server.js
-   (list_peers/ask_peer/reply/sign_consensus/pause_room/resume_room)
+   (list_peers/ask_peer/reply/update_notes/pause_room/resume_room)
         │  persistent outbound TCP                         │  persistent outbound TCP
         └───────►  ROOM DAEMON (host, detached)  ◄─────────┘
                    host.docker.internal:MRC_ROOM_PORT
                    • registry of sessions (id + repo + label)
                    • forms pairings on ask_peer / same --room name
-                   • per-pairing: relay, brake, turn-cap, stall, consensus
+                   • per-pairing: relay, brake, turn-cap check-in, self-healing stall
                    • control socket (mrc rooms); room dirs at ~/.local/share/mrc/rooms/
         └──── /rooms (bind mount, shared) ────┴──── /rooms (bind mount, shared) ────┘
 ```
@@ -118,28 +119,34 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 
 ## 5. Key design decisions
 
-1. **Flexible "agreed record".** `consensus.md` is one format-flexible doc (prose-first, can embed
-   a schema). "Done" = both sign off on the same version; each side reflects it into its own repo.
-2. **Autonomy = auto-relay + observe + sign-off**, not per-hop gating. Once the human opens a
-   room, the agent **replies to incoming peer messages itself** to keep the volley moving — it does
-   *not* ask the human to approve each reply. It pauses to ask only on a decision/authorization
-   that's genuinely the human's, or a final consensus to bless. Bounded by turn cap + stall +
-   consensus + human brake.
+1. **Living shared summary (not a signed contract).** `consensus.md` is one format-flexible doc
+   (prose-first, can embed a schema) that either agent refreshes via `update_notes` as durable
+   conclusions land, and the human can edit to steer. It's a skimmable running summary on top of
+   the `thread.log` transcript — there is no "both sign matching text" gate and no terminal "done"
+   state; the human ends the room when finished. (An earlier design used a dual-signed consensus;
+   it was dropped — see §10.)
+2. **Autonomy = auto-relay + observe**, not per-hop gating. Once the human opens a room, the agent
+   **replies to incoming peer messages itself** to keep the volley moving — it does *not* ask the
+   human to approve each reply. It pauses to ask only on a decision/authorization that's genuinely
+   the human's. Bounded by a turn-cap check-in + stall + human brake/close.
 3. **Initiation = discover-then-ask.** The human says "ask the \<peer>…"; the agent calls
    `list_peers` (shows the REAL connected sessions), the human picks, the agent calls `ask_peer`.
    The daemon resolves the peer **most-specific-first** (exact id → exact display handle → exact
    name → name substring → name+repo substring), so an exact name beats a loose repo substring;
    genuinely identical names disambiguate via unique `[id]` handles. Human-initiated; the agent
    never opens a room unprompted or fabricates a peer.
-4. **Monitoring** = `mrc rooms status` (daemon version + sessions + pairings),
-   `tail -f /rooms/<id>/thread.log`, editing `consensus.md` (itself a steering mechanism), and
-   notifications on consensus/stall (via the notify proxy).
-5. **Unified "Paused" state + daemon-enforced brake.** One Paused state reached four ways (human
-   brake / turn cap / stall / consensus). Brake is enforced at the daemon: it stops delivering;
-   in-flight messages are held + logged, never delivered until resume.
+4. **Monitoring** = the **`mrc rooms dashboard`** web UI (Decision 13) for the full live/historical
+   transcript + summary and one-click pause/resume/steer/end; plus `mrc rooms status` (daemon
+   version + sessions + pairings), `tail -f /rooms/<id>/thread.log`, editing `consensus.md` (itself
+   a steering mechanism), and desktop notifications on turn-cap/stall (via the notify proxy).
+5. **Unified "Paused" state + daemon-enforced brake.** One Paused state reached three ways (human
+   brake / turn-cap check-in / stall). Brake is enforced at the daemon: it stops delivering;
+   in-flight messages are held in a **FIFO queue** + logged, then delivered in order on resume. A
+   *stall* pause is self-healing (the next real message auto-resumes it) and a *turn-cap* pause
+   grants another window on resume — see §9.
 6. **Steering.** A human steer is a trusted directive; default applies to both sides
-   (`mrc rooms steer --target a|b` to narrow). Submitting a steer drops the held wrong-path
-   message; plain resume lets it continue.
+   (`mrc rooms steer --target a|b` to narrow). Submitting a steer drops the held backlog (the
+   wrong-path messages); plain resume delivers it instead.
 7. **Transport = channels** (see §6). Best UX (stay in your live session, on Max), local, our own
    thin server. Cost: rides a research-preview Claude Code feature.
 8. **Ambient over explicit.** Pairing is on-demand at runtime (`ask_peer`), not declared at launch.
@@ -157,10 +164,16 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 11. **Control split (human-authority preserved).** Reversible controls (`pause`/`resume`) are
     reachable in-chat via agent tools *and* the CLI; **closing is CLI/human-only** (no agent
     self-close). `end` is a **generic** close — preserves `thread.log`/`consensus.md` and notifies
-    both sides, no result payload. A live `mrc rooms <id>` two-sided watch-TUI is deferred (use
-    `status` + `tail -f thread.log`).
+    both sides, no result payload. The live two-sided watch view is now the **`mrc rooms
+    dashboard`** web UI (Decision 13).
 12. **Self-managing daemon.** Singleton, version-stamped (auto-refresh on code change), idle
     auto-shutdown, `mrc rooms restart`/`stop`. See §3.
+13. **Local dashboard.** `mrc rooms dashboard` serves a dependency-free web UI on `127.0.0.1` that
+    reads every room's full, untruncated `thread.log` + summary (live and historical, polled) and
+    exposes pause/resume/steer/end. It's the practical way to *read* a relay: the in-session TUI
+    only renders a collapsed one-line preview of each `<channel>` message. Read-mostly and
+    localhost-only — room ids are whitelisted against the rooms dir (no path traversal), actions are
+    an allowlist, and it degrades gracefully when the daemon is down (history still browses).
 
 ## 6. Transport — why channels (condensed findings)
 
@@ -190,22 +203,27 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 **New:**
 - **`src/proxies/room-daemon.js`** — the host daemon. Session registry (id + repo + label, unique
   display handles); `resolvePeer` (most-specific-first matching); per-conversation `stableId`
-  (`<labels>-<hash(ids)>`); per-pairing relay with untrusted framing, brake, turn cap, stall,
-  consensus; relay frames `register/list/ask/msg/sign/pause/resume`; control frames
+  (`<labels>-<hash(ids)>`); per-pairing relay with untrusted framing, brake, turn-cap check-in,
+  self-healing stall, and a FIFO held-queue; shared-summary writes (`update_notes`); relay frames
+  `register/list/ask/msg/note/pause/resume`; control frames
   `status(+version)/shutdown/brake/resume/steer/end`; idle auto-shutdown; notify-proxy
   notifications; detached entrypoint that records `room-daemon.json` with a code `version`.
 - **`container/mrc-channel-server.js`** — container-side channel MCP server. Connects to
   `host.docker.internal:MRC_ROOM_PORT`, registers `{sessionId, repo, label, room?}`, exposes
-  `list_peers`/`ask_peer`/`reply`/`sign_consensus`/`pause_room`/`resume_room`, pushes daemon
+  `list_peers`/`ask_peer`/`reply`/`update_notes`/`pause_room`/`resume_room`, pushes daemon
   frames into the session as `<channel>` tags. Instructions: discover-first, never-fabricate,
-  peer-is-untrusted, **keep-the-volley-going (auto-reply)**, control (pause/resume via agent;
-  closing is human-CLI-only).
+  peer-is-untrusted, **keep-the-volley-going (auto-reply)**, keep a living shared summary via
+  `update_notes`, control (pause/resume via agent; closing is human-CLI-only).
 - **`src/commands/pair.js`** — `ensureRoomDaemon()` (version-checked reuse / in-place refresh /
   fresh boot), `restartRoomDaemon()`, `stopRoomDaemon()`, `roomSessionEnv()` (per-session env).
-- **`src/commands/rooms.js`** — `mrc rooms status|brake|resume|steer|end|restart|stop` via the
-  daemon control port; `status` shows the daemon code version.
+- **`src/commands/rooms.js`** — `mrc rooms status|brake|resume|steer|end|restart|stop|dashboard` via
+  the daemon control port; `status` shows the daemon code version.
 - **`src/rooms.js`** — room-dir manager (`ensureRoom`, `appendThread`, `writeConsensus`, …) at
   `~/.local/share/mrc/rooms/<roomId>/`.
+- **`src/rooms-dashboard.js`** + **`src/rooms-dashboard.html`** — the `mrc rooms dashboard` web UI
+  (Decision 13): a localhost HTTP server (no deps) serving room state from the daemon control
+  socket + the rooms dir, and a single-page app that renders the full thread + summary and the
+  pause/resume/steer/end controls.
 
 **Modified:**
 - **`mrc.js`** — default-on room launch (`roomsActive`; skip `--daemon`/`--json`/codex): boot the
@@ -226,12 +244,10 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 - **`container/container-setup.js`** — when `MRC_ROOM_PORT` set, write `/tmp/mrc-room-mcp.json`
   pointing at `/opt/mrc-channel/mrc-channel-server.js`.
 
-**Dead code (pre-ambient broker model; still in tree, slated for removal):**
-`src/proxies/room-broker.js`, `src/commands/room.js`.
-
 **Env vars:** `MRC_ROOM_PORT` (daemon relay port), `MRC_ROOM_HOST` (`host.docker.internal`),
 `MRC_SESSION_ID` (the conversation UUID), `MRC_REPO_NAME`, `MRC_ROOM_LABEL` (display alias),
-`MRC_ROOM` (optional explicit `--room` name).
+`MRC_ROOM` (optional explicit `--room` name), `MRC_ROOM_TURN_CAP` (turn-cap window; `0` disables),
+`MRC_DASHBOARD_PORT` (dashboard port; default 8787).
 
 ## 8. Data flow — one ask
 
@@ -242,28 +258,34 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
    `{type:"deliver", text:'Peer (A) says: "…" [turn N/M]'}` over B's socket.
 4. Channel B → session B sees `<channel source="room">…</channel>`. Agent B answers **on its own**
    via `reply` (auto-relay).
-5. Channel B → daemon `{type:"msg", text}` → routed to A as the next `deliver`. Loop until
-   consensus / cap / stall / brake / close.
+5. Channel B → daemon `{type:"msg", text}` → routed to A as the next `deliver`. Loop until a human
+   brake/close (a turn-cap check-in or a stall only *pauses*).
 
 Daemon-applied framing: peer messages `Peer (<name>) says: …`; human steers `[Human directive]:
 …`. Those are the only two message classes a session sees.
 
 ## 9. Pairing & control
 
-Per-pairing state in the daemon: `Running | Paused` + `pauseReason ∈ {brake,turnCap,stall,
-consensus}`, `turn`/`turnCap` (default 20), `lastActivityAt`, held message, `signed` map.
+Per-pairing state in the daemon: `Running | Paused` + `pauseReason ∈ {brake,turnCap,stall}`,
+`turn`/`turnCap` (default 100; `MRC_ROOM_TURN_CAP`, `0` disables), `lastActivityAt`, and a FIFO
+`held` queue.
 
-- **brake** → Paused, stop delivering, stash next message.
-- **turnCap** → Paused at `turn ≥ cap`. **stall** → idle > 2 min → Paused + notify.
-- **consensus** → both `sign_consensus` with matching normalized text → write `consensus.md` →
-  Paused + notify.
-- **resume** → deliver held, continue. **steer** → inject `[Human directive]` (drop held), resume.
+- **brake** → Paused, stop delivering, queue further messages (FIFO).
+- **turnCap** → a periodic *check-in*: Paused at `turn ≥ cap`; **resume grants another full window**
+  so a long-running channel isn't a per-turn wall (default 100; `MRC_ROOM_TURN_CAP`, `0` disables).
+- **stall** → idle > 10 min → Paused + notify, but **self-healing**: the next real message
+  auto-resumes it (a slow peer composing a long reply is never swallowed).
+- **update_notes** → either side rewrites the shared summary in `consensus.md`. *Not* a pause and
+  *not* a gate — no matching, the room stays open.
+- **resume** → deliver the full held backlog in order, continue. **steer** → inject
+  `[Human directive]` (drops held backlog), resume.
 - **end** → drop the pairing (generic close; preserves files; no payload).
 
 Control surfaces:
 - **CLI** (`mrc rooms`, any terminal): `status` (daemon version + sessions + pairings),
   `brake|resume|end [roomId]`, `steer [--room id] [--target a|b] <text>`, `restart` (refresh the
-  daemon in place), `stop` (stop it). **`end` is human-only** (no agent self-close).
+  daemon in place), `stop` (stop it), `dashboard` (the web UI, Decision 13). **`end` is human-only**
+  (no agent self-close).
 - **In-chat** (the human tells their own session): the agent calls `pause_room`/`resume_room`
   (relayed to the daemon as `pause`/`resume`). Closing is *not* an agent power. Steering your own
   side is just talking to your agent; cross-side directives use the CLI `steer`.
@@ -280,8 +302,8 @@ depends on agent memory.
 `ask_peer` relay, autonomous reply, and the round-trip surfacing as `<channel source="room">`.
 
 Built and validated (host-side unit tests where the container path can't run locally):
-- **Relay engine** — per-pairing state machine (relay + untrusted framing + brake + turn-cap +
-  stall + consensus).
+- **Relay engine** — per-pairing state machine (relay + untrusted framing + brake + turn-cap
+  check-in + self-healing stall + FIFO held-queue).
 - **Channel transport** — channel server + daemon protocol; ESM resolution via `/opt/mrc-channel`;
   direct launch + manual channel accept (the `expect` auto-accept was reverted as dangerous).
 - **Ambient pairing** — detached daemon, `mrc rooms` CLI.
@@ -290,15 +312,23 @@ Built and validated (host-side unit tests where the container path can't run loc
   the daemon port from inside a session).
 - **Peer matching** — most-specific-first + unique `[id]` handles (an exact name no longer
   collides with another session sharing the repo).
-- **Per-conversation room ids** — `<labels>-<hash>` over the conversation UUIDs (no stale consensus
-  reuse; resume-both reuses the room).
+- **Per-conversation room ids** — `<labels>-<hash>` over the conversation UUIDs (no stale reuse;
+  resume-both reuses the room).
 - **Autonomous relay** — the agent keeps the volley going without per-message approval.
 - **Daemon lifecycle** — idle auto-shutdown, `mrc rooms restart`/`stop`, visible startup status.
+- **Stall recovery + FIFO held-queue** — a slow peer's reply is no longer dropped by the stall
+  pause; held messages deliver in order on resume (host-side smoke test).
+- **Turn-cap check-in** — resume/steer grant another window instead of re-pausing every turn once
+  over the cap (host-side smoke test).
+- **Shared summary** — `update_notes` rewrites `consensus.md`; the old dual-signed consensus gate
+  was removed (it didn't fit an open-ended consult channel — two agents rarely emit byte-identical
+  text, and there's no single "done" moment).
+- **Dashboard** — `mrc rooms dashboard` web UI over the control socket + rooms dir (served
+  end-to-end against real room data).
 
-**Future (not built):** inline markers (`→ sent` / `← replied` / `✎ consensus`); a live
-`mrc rooms <id>` two-sided watch-TUI; a result-payload on `end`; per-repo peer aliases;
-background-subagent delegation (answer from repo B without a live B session); >2-party rooms;
-strict per-hop approval mode; remove the dead `room-broker.js`/`room.js`.
+**Future (not built):** inline markers (`→ sent` / `← replied`); a result-payload on `end`; per-repo
+peer aliases; background-subagent delegation (answer from repo B without a live B session); >2-party
+rooms; strict per-hop approval mode.
 
 ## 11. Deploy / rebuild recipe
 
@@ -316,6 +346,7 @@ mrc pick                     # client repo — rooms ON by default; accept the o
 mrc pick                     # server repo — accept it there too
 #   in one session:  ask the <peer>: <question>     → list_peers → pick → relay (auto)
 mrc rooms status             # daemon version + sessions + pairings
+mrc rooms dashboard          # web UI: full transcript + summary, live & historical, with controls
 mrc rooms restart | stop     # refresh in place / stop the daemon
 ```
 
@@ -328,7 +359,6 @@ mrc rooms restart | stop     # refresh in place / stop the daemon
   show; the daemon's exact-name matching already resolves the common case without it.
 - **Research-preview channels:** monitor for upstream flag/protocol changes; keep the channel
   server thin.
-- **Dead code** (`room-broker.js`, `room.js`) still in the tree — remove.
 - **Steering target default** is "both"; a per-watched-side default is a possible refinement.
 - Future niceties: explicit multi-topic named rooms per pair; an agent `request_close` surfaced to
   the human for confirmation.
