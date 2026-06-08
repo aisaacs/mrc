@@ -77,7 +77,7 @@ socket*. Identical trust surface to the clipboard/notify proxies — no new egre
 the channel connects to `host.docker.internal:<port>` over the firewall and registers.)
 
 **One daemon, many sessions — self-managing.** A single detached host process, recorded in
-`~/.local/share/mrc/room-daemon.json` (`{port, controlPort, notifyPort, pid, version}`):
+`~/.local/share/mrc/room-daemon.json` (`{port, controlPort, notifyPort, dashboardPort, pid, version}`):
 - **Singleton + reuse.** The first room-enabled session boots it; every later session reuses it
   (and prints `◎ Negotiation-room daemon ready.`).
 - **Version-stamped (`version` = sha1 of `room-daemon.js`).** A reused daemon running **older
@@ -86,8 +86,12 @@ the channel connects to `host.docker.internal:<port>` over the firewall and regi
   lets daemon fixes ship via `mrc rooms restart` / the next launch.
 - **Idle auto-shutdown.** Exits ~10 min after the **last** session disconnects (a longer grace
   before the first session ever connects, so a slow image build can't kill it mid-launch and an
-  orphaned daemon still gets reaped). Survives `docker rmi` (it's a host process, not a
-  container). The next session reboots it in <1 s.
+  orphaned daemon still gets reaped) — **unless a dashboard is open**, which counts as activity and
+  keeps it up. Survives `docker rmi` (it's a host process, not a container). The next session (or
+  `mrc rooms dashboard`) reboots it in <1 s.
+- **Hosts the dashboard.** Serves the `mrc rooms dashboard` web UI (Decision 13) on its own
+  `127.0.0.1` port (recorded in `room-daemon.json`), so the dashboard lives as long as the daemon
+  and needs no foreground tab.
 - **Explicit control:** `mrc rooms restart` (refresh in place) and `mrc rooms stop` (stop + clear
   the record).
 
@@ -168,12 +172,15 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
     dashboard`** web UI (Decision 13).
 12. **Self-managing daemon.** Singleton, version-stamped (auto-refresh on code change), idle
     auto-shutdown, `mrc rooms restart`/`stop`. See §3.
-13. **Local dashboard.** `mrc rooms dashboard` serves a dependency-free web UI on `127.0.0.1` that
-    reads every room's full, untruncated `thread.log` + summary (live and historical, polled) and
-    exposes pause/resume/steer/end. It's the practical way to *read* a relay: the in-session TUI
-    only renders a collapsed one-line preview of each `<channel>` message. Read-mostly and
-    localhost-only — room ids are whitelisted against the rooms dir (no path traversal), actions are
-    an allowlist, and it degrades gracefully when the daemon is down (history still browses).
+13. **Local dashboard, hosted by the daemon.** `mrc rooms dashboard` **boots-or-reuses the daemon**
+    (which serves the UI on `127.0.0.1`) and just opens the browser, then exits — no foreground tab
+    to babysit, and it works even if the daemon had idle-shut-down. The page shows every room's
+    full, untruncated `thread.log` + summary (live and historical, polled) and exposes
+    pause/resume/steer/end. It's the practical way to *read* a relay: the in-session TUI only
+    renders a collapsed one-line preview of each `<channel>` message. An **open dashboard counts as
+    keep-alive**, so the daemon won't idle-shutdown out from under a viewer. Read-mostly and
+    localhost-only — room ids whitelisted against the rooms dir (no path traversal), actions an
+    allowlist. Port in `room-daemon.json`; `MRC_DASHBOARD_PORT=0` disables it.
 
 ## 6. Transport — why channels (condensed findings)
 
@@ -207,9 +214,11 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
   self-healing stall, and a FIFO held-queue; shared-summary writes (`update_notes`); relay frames
   `register/list/ask/msg/note/pause/resume`; control frames
   `status(+version)/shutdown/brake/resume/steer/end`; idle auto-shutdown; notify-proxy
-  notifications; detached entrypoint that records `room-daemon.json` with a code `version`.
+  notifications (fired via any currently-connected session's proxy); **hosts the dashboard**
+  (Decision 13) on its own port; detached entrypoint that
+  records `room-daemon.json` (`{port, controlPort, notifyPort, dashboardPort, pid, version}`).
 - **`container/mrc-channel-server.js`** — container-side channel MCP server. Connects to
-  `host.docker.internal:MRC_ROOM_PORT`, registers `{sessionId, repo, label, room?}`, exposes
+  `host.docker.internal:MRC_ROOM_PORT`, registers `{sessionId, repo, label, room?, notifyPort?}`, exposes
   `list_peers`/`ask_peer`/`reply`/`update_notes`/`pause_room`/`resume_room`, pushes daemon
   frames into the session as `<channel>` tags. Instructions: discover-first, never-fabricate,
   peer-is-untrusted, **keep-the-volley-going (auto-reply)**, keep a living shared summary via
@@ -221,9 +230,10 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 - **`src/rooms.js`** — room-dir manager (`ensureRoom`, `appendThread`, `writeConsensus`, …) at
   `~/.local/share/mrc/rooms/<roomId>/`.
 - **`src/rooms-dashboard.js`** + **`src/rooms-dashboard.html`** — the `mrc rooms dashboard` web UI
-  (Decision 13): a localhost HTTP server (no deps) serving room state from the daemon control
-  socket + the rooms dir, and a single-page app that renders the full thread + summary and the
-  pause/resume/steer/end controls.
+  (Decision 13): a localhost HTTP server (no deps), **started inside the daemon process**, serving
+  room state from the daemon control socket + the rooms dir, plus a single-page app that renders the
+  full thread + summary and the pause/resume/steer/end controls. `mrc rooms dashboard` boots-or-
+  reuses the daemon and opens the browser (then exits).
 
 **Modified:**
 - **`mrc.js`** — default-on room launch (`roomsActive`; skip `--daemon`/`--json`/codex): boot the
@@ -247,7 +257,7 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 **Env vars:** `MRC_ROOM_PORT` (daemon relay port), `MRC_ROOM_HOST` (`host.docker.internal`),
 `MRC_SESSION_ID` (the conversation UUID), `MRC_REPO_NAME`, `MRC_ROOM_LABEL` (display alias),
 `MRC_ROOM` (optional explicit `--room` name), `MRC_ROOM_TURN_CAP` (turn-cap window; `0` disables),
-`MRC_DASHBOARD_PORT` (dashboard port; default 8787).
+`MRC_DASHBOARD_PORT` (dashboard port; default 8787, `0` disables).
 
 ## 8. Data flow — one ask
 

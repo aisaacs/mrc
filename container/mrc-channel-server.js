@@ -22,6 +22,7 @@ const SESSION_ID = process.env.MRC_SESSION_ID || `s-${process.pid}`
 const REPO = process.env.MRC_REPO_NAME || 'session'                // true repo basename
 const LABEL = process.env.MRC_ROOM_LABEL || REPO                   // room identity (session name if picked)
 const ROOM = process.env.MRC_ROOM || ''                            // optional explicit room name
+const NOTIFY = parseInt(process.env.MRC_NOTIFY_PORT || '0', 10)    // host notify-proxy port, so the daemon can reuse it
 const LOG = process.env.MRC_ROOM_LOG || '/tmp/mrc-channel.log'
 const log = (m) => { try { appendFileSync(LOG, `[${new Date().toISOString()}][${LABEL}] ${m}\n`) } catch {} }
 
@@ -159,7 +160,7 @@ function connect() {
   sock.on('connect', () => {
     connected = true
     log(`connected to daemon ${HOST}:${PORT}`)
-    sock.write(JSON.stringify({ type: 'register', sessionId: SESSION_ID, repo: REPO, label: LABEL, room: ROOM || undefined }) + '\n')
+    sock.write(JSON.stringify({ type: 'register', sessionId: SESSION_ID, repo: REPO, label: LABEL, room: ROOM || undefined, notifyPort: NOTIFY || undefined }) + '\n')
     while (outQ.length) sock.write(outQ.shift())
   })
   sock.on('data', (d) => {

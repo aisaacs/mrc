@@ -102,11 +102,13 @@ async function handle(req, res) {
   }
 }
 
-export async function startDashboard({ port } = {}) {
+export async function startDashboard({ port, onActivity } = {}) {
   if (!existsSync(roomsRoot())) { /* no rooms yet — the page will just show an empty list */ }
   const base = port || Number(process.env.MRC_DASHBOARD_PORT) || 8787
   const free = await findFreePort(base)
-  const server = http.createServer(handle)
+  // onActivity fires per request; the daemon uses it as a keep-alive so an open dashboard
+  // prevents idle-shutdown (you won't lose the view mid-browse).
+  const server = http.createServer((req, res) => { try { onActivity?.() } catch {} handle(req, res) })
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(free, '127.0.0.1', resolve) })
   return { server, port: free, url: `http://127.0.0.1:${free}/` }
 }

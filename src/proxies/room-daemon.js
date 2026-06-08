@@ -12,7 +12,7 @@ import { ensureRoom, appendThread, writeConsensus } from '../rooms.js'
 const norm = (s) => String(s || '').trim().replace(/\s+/g, ' ')
 const ts = () => new Date().toISOString()
 
-export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000 }) {
+export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000 }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
 
@@ -21,14 +21,21 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
   // mid-launch and an orphaned daemon (spawned but never used) still gets reaped.
   let everConnected = false
   let emptySince = Date.now()
+  let lastDashboardHit = 0   // bumped per dashboard HTTP request; an open dashboard blocks idle-shutdown
   const noteSessions = () => {
     if (sessions.size > 0) { everConnected = true; emptySince = null }
     else if (emptySince === null) emptySince = Date.now()
   }
 
+  // Fire desktop notifications through a currently-connected session's notify proxy (the sessions
+  // map only holds live ones), falling back to the boot value. So a daemon booted without a proxy
+  // (e.g. by `mrc rooms dashboard`) starts notifying once a real session registers, and it survives
+  // the session that booted it leaving.
+  const notifyPortFor = () => { for (const s of sessions.values()) if (s.notifyPort) return s.notifyPort; return notifyPort }
   function notify(msg) {
-    if (!notifyPort) return
-    try { const c = net.connect(notifyPort, '127.0.0.1', () => { c.write(`mrc-room\n${msg}`); c.end() }); c.on('error', () => {}) } catch {}
+    const port = notifyPortFor()
+    if (!port) return
+    try { const c = net.connect(port, '127.0.0.1', () => { c.write(`mrc-room\n${msg}`); c.end() }); c.on('error', () => {}) } catch {}
   }
   function send(sessionId, frame) {
     const s = sessions.get(sessionId)
@@ -190,7 +197,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
         let f; try { f = JSON.parse(line) } catch { continue }
         if (f.type === 'register' && f.sessionId) {
           sessionId = f.sessionId
-          sessions.set(sessionId, { sock, repo: f.repo || '?', label: f.label || f.repo || '?', room: f.room || null })
+          sessions.set(sessionId, { sock, repo: f.repo || '?', label: f.label || f.repo || '?', room: f.room || null, notifyPort: Number(f.notifyPort) || 0 })
           noteSessions()
           if (f.room) {  // explicit named room: auto-pair with another session of the same name
             for (const [oid, ov] of sessions) {
@@ -276,31 +283,41 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
       }
     }
     // Idle auto-shutdown: exit after idleMs with zero connected sessions (longer grace until the
-    // first session ever connects, so a slow image build doesn't kill the daemon mid-launch).
-    if (emptySince !== null && Date.now() - emptySince > (everConnected ? idleMs : Math.max(idleMs, 1_800_000))) {
+    // first session ever connects, so a slow image build doesn't kill the daemon mid-launch). An
+    // open dashboard counts as activity, so the daemon never quits out from under someone watching.
+    const idleGrace = everConnected ? idleMs : Math.max(idleMs, 1_800_000)
+    if (emptySince !== null && Date.now() - emptySince > idleGrace && Date.now() - lastDashboardHit > dashboardKeepaliveMs) {
       try { server.close(); control.close() } catch {}
       process.exit(0)
     }
   }, tickMs)
   stallTimer.unref?.()
 
-  return { server, control, sessions, pairings, stop: () => { clearInterval(stallTimer); try { server.close(); control.close() } catch {} } }
+  return { server, control, sessions, pairings, noteDashboardActivity: () => { lastDashboardHit = Date.now() }, stop: () => { clearInterval(stallTimer); try { server.close(); control.close() } catch {} } }
 }
 
 // Direct invocation (mrc spawns this detached): node room-daemon.js <port> <controlPort> [notifyPort]
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { readFileSync, writeFileSync, mkdirSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { homedir } = await import('node:os')
+  const { findFreePort } = await import('../ports.js')
   const version = createHash('sha1').update(readFileSync(process.argv[1])).digest('hex').slice(0, 12)
   const port = Number(process.argv[2])
   const controlPort = Number(process.argv[3])
   const notifyPort = Number(process.argv[4]) || 0
   const envCap = process.env.MRC_ROOM_TURN_CAP
   const turnCap = envCap != null && envCap !== '' && Number.isFinite(Number(envCap)) ? Number(envCap) : undefined
-  startRoomDaemon({ port, controlPort, notifyPort, version, turnCap })
-  const { join } = await import('node:path')
-  const { homedir } = await import('node:os')
+  // Serve the dashboard from inside the daemon so it persists without a foreground tab. Port is
+  // allocated here so it can be recorded in room-daemon.json (MRC_DASHBOARD_PORT=0 disables it).
+  const dashboardPort = process.env.MRC_DASHBOARD_PORT === '0' ? 0 : await findFreePort(Number(process.env.MRC_DASHBOARD_PORT) || 8787)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort, version, turnCap })
+  if (dashboardPort) {
+    const { startDashboard } = await import('../rooms-dashboard.js')
+    startDashboard({ port: dashboardPort, onActivity: daemon.noteDashboardActivity }).catch(() => {})
+  }
   const dir = join(homedir(), '.local', 'share', 'mrc')
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, 'room-daemon.json'), JSON.stringify({ port, controlPort, notifyPort, pid: process.pid, version }, null, 2))
-  console.log(`mrc room daemon v${version} listening on ${port} (control ${controlPort})`)
+  writeFileSync(join(dir, 'room-daemon.json'), JSON.stringify({ port, controlPort, notifyPort, dashboardPort, pid: process.pid, version }, null, 2))
+  console.log(`mrc room daemon v${version} listening on ${port} (control ${controlPort}${dashboardPort ? `, dashboard ${dashboardPort}` : ''})`)
 }

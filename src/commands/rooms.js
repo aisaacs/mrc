@@ -5,9 +5,10 @@ import { readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
-function daemonControlPort() {
-  try { return JSON.parse(readFileSync(join(homedir(), '.local', 'share', 'mrc', 'room-daemon.json'), 'utf8')).controlPort } catch { return null }
+function readMeta() {
+  try { return JSON.parse(readFileSync(join(homedir(), '.local', 'share', 'mrc', 'room-daemon.json'), 'utf8')) } catch { return null }
 }
+function daemonControlPort() { return readMeta()?.controlPort ?? null }
 function ctrl(controlPort, action, extra = {}) {
   return new Promise((res, rej) => {
     const c = net.connect(controlPort, '127.0.0.1', () => c.write(JSON.stringify({ action, ...extra }) + '\n'))
@@ -90,18 +91,21 @@ export async function roomsCommand(args) {
     return
   }
   if (sub === 'dashboard' || sub === 'ui' || sub === 'web') {
-    const { startDashboard, openBrowser } = await import('../rooms-dashboard.js')
-    try {
-      const { url } = await startDashboard({})
-      console.log(`  ◎ Rooms dashboard live at ${url}`)
-      console.log('    Full thread.log + consensus.md for every room (live & historical), plus pause·resume·steer·end.')
-      console.log('    Ctrl-C to stop.')
-      openBrowser(url)
-      await new Promise(() => {})   // serve until the user Ctrl-Cs
-    } catch (e) {
-      console.error(`  ! could not start dashboard: ${e.message}`)
-      process.exit(1)
-    }
+    // Boot-or-reuse the daemon (it hosts the dashboard), then just open the browser and exit — the
+    // daemon keeps serving, and an open dashboard keeps it alive, so there's no tab to babysit.
+    const { ensureRoomDaemon } = await import('./pair.js')
+    const { openBrowser } = await import('../rooms-dashboard.js')
+    try { await ensureRoomDaemon({ portBase: Number(process.env.MRC_PORT_BASE) || 7722, notifyPort: 0 }) }
+    catch (e) { console.error(`  ! could not start the room daemon: ${e.message}`); process.exit(1) }
+    // The daemon records its dashboard port a beat after its control port answers; poll briefly.
+    let dashboardPort = readMeta()?.dashboardPort
+    for (let i = 0; !dashboardPort && i < 30; i++) { await new Promise((r) => setTimeout(r, 100)); dashboardPort = readMeta()?.dashboardPort }
+    if (!dashboardPort) { console.error('  ! the daemon is not serving a dashboard (MRC_DASHBOARD_PORT=0?).'); return }
+    const url = `http://127.0.0.1:${dashboardPort}/`
+    console.log(`  ◎ Rooms dashboard: ${url}`)
+    console.log('    Served by the room daemon — it stays up while you have sessions OR this dashboard open,')
+    console.log('    so you can close this terminal. (It boots the daemon if it was shut down.)')
+    openBrowser(url)
     return
   }
   const port = daemonControlPort()
