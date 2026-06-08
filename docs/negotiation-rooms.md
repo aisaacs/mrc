@@ -192,7 +192,10 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
     only the side(s) that haven't filed, e.g. one that was mid-task). The dashboard paginates panes latest-first, opens to
     the oldest unreviewed, and tracks an explicit `reviewedAt` — opening a pane never marks it, only
     the "Mark reviewed" button does. Unreviewed counts drive room-list triage, and Resume
-    soft-confirms when a room still has unreviewed panes.
+    soft-confirms when a room still has unreviewed panes. A per-room **auto catch-up** toggle
+    (🔔/🔕 in the dashboard, control `autocatchup`) suppresses the *pause-triggered* elicitation
+    while you're watching live — the room still pauses, the agents just aren't interrupted for a
+    handoff (skips are logged to `thread.log`, and **Catch-up now** still works on demand).
 
 ## 6. Transport — why channels (condensed findings)
 
@@ -226,7 +229,7 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
   self-healing stall, and a FIFO held-queue; shared-summary writes (`update_notes`); per-pause
   catch-up elicitation (Decision 14) via `catchup_request`→`handoff` into `catchups.json`; relay
   frames `register/list/ask/msg/note/handoff/pause/resume`; control frames
-  `status(+version)/shutdown/brake/resume/steer/end/catchup`; idle auto-shutdown; notify-proxy
+  `status(+version)/shutdown/brake/resume/steer/end/catchup/autocatchup`; idle auto-shutdown; notify-proxy
   notifications (fired via any currently-connected session's proxy); **hosts the dashboard**
   (Decision 13) on its own port; detached entrypoint that
   records `room-daemon.json` (`{port, controlPort, notifyPort, dashboardPort, pid, version}`).

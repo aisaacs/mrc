@@ -44,6 +44,7 @@
   button:hover:not(:disabled) { border-color:var(--accent); }
   button:disabled { opacity:.4; cursor:not-allowed; }
   button.danger { color:var(--danger); } button.danger:hover:not(:disabled) { border-color:var(--danger); }
+  button.auto-off { color:var(--warn); border-color:#3b3115; }
   select, input[type=text] { font:inherit; font-size:13px; padding:5px 8px; border-radius:6px; border:1px solid var(--line); background:var(--bg); color:var(--ink); }
   input[type=text].steer { flex:1; min-width:160px; }
   .tabs { display:flex; gap:4px; padding:8px 16px 0; border-bottom:1px solid var(--line); background:var(--panel); }
@@ -197,6 +198,7 @@ function renderDetail() {
         <button ${live && room.state==='Paused'?'':'disabled'} onclick="act('resume')">▶ Resume</button>
         <button class="danger" ${live?'':'disabled'} onclick="endRoom()">⏹ End</button>
         <button ${live?'':'disabled'} onclick="requestCatchup()">📋 Catch-up now</button>
+        <button class="${room.autoCatchup===false?'auto-off':''}" ${live?'':'disabled'} title="Auto-elicit a catch-up when this room pauses. Turn off while you're watching live." onclick="toggleAutoCatchup()">${room.autoCatchup===false?'🔕 auto off':'🔔 auto on'}</button>
         <span style="width:8px"></span>
         <select id="steerTarget" ${live?'':'disabled'}>
           <option value="both">steer: both</option>
@@ -258,6 +260,12 @@ async function requestCatchup() {
   const r = await api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ roomId: SELECTED, action:'catchup' }) })
   toast(r.ok ? (r.nudged!=null ? 're-asked '+r.nudged+' side(s) ✓' : 'catch-up requested ✓') : ('✗ '+(r.error||'failed')))
   TAB = 'catchups'; PANE = null   // jump to the Catch-ups tab so the new/filling pane is visible
+  await refresh()
+}
+async function toggleAutoCatchup() {
+  const cur = roomById(SELECTED)?.autoCatchup !== false   // currently on?
+  const r = await api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ roomId: SELECTED, action:'autocatchup', on: !cur }) })
+  toast(r.ok ? ('auto catch-up '+(!cur?'on':'off')) : ('✗ '+(r.error||'failed')))
   await refresh()
 }
 

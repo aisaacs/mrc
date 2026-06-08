@@ -105,7 +105,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
     if (existing && (existing.a === bId || existing.b === bId)) return existing
     const roomId = stableId(aId, bId, name)
     ensureRoom(roomId, nameOf(aId), nameOf(bId))
-    const p = { roomId, a: aId, b: bId, state: 'Running', pauseReason: null, turn: 0, turnCap, lastActivityAt: Date.now(), held: [] }
+    const p = { roomId, a: aId, b: bId, state: 'Running', pauseReason: null, turn: 0, turnCap, lastActivityAt: Date.now(), held: [], autoCatchup: true }
     pairings.set(roomId, p)
     appendThread(roomId, `${ts()} [connected: ${nameOf(aId)} <-> ${nameOf(bId)}]`)
     send(aId, { type: 'notice', text: `[Now connected to ${nameOf(bId)}. Shared notes: /rooms/${roomId}/consensus.md. Full transcript incl. any earlier history with this peer: /rooms/${roomId}/thread.log — read it to catch up if this room is being resumed.]` })
@@ -153,7 +153,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
     clearStallOnActivity(p)
     if (p.state === 'Paused') { p.held.push({ toId, fromId, text }); appendThread(p.roomId, `${ts()} [held while ${p.pauseReason}]`); return }
     deliver(p, toId, fromId, text)
-    if (p.turnCap > 0 && p.turn >= p.turnCap) { p.state = 'Paused'; p.pauseReason = 'turnCap'; notify(`Room ${p.roomId}: turn-cap check-in at ${p.turn} (resume to grant ${turnCap} more)`); elicitCatchup(p, 'turnCap') }
+    if (p.turnCap > 0 && p.turn >= p.turnCap) { p.state = 'Paused'; p.pauseReason = 'turnCap'; notify(`Room ${p.roomId}: turn-cap check-in at ${p.turn} (resume to grant ${turnCap} more)`); maybeCatchup(p, 'turnCap') }
   }
 
   // Shared running summary: either side may refresh consensus.md at any time. It's living notes,
@@ -209,6 +209,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
     // Durably capture the FULL handoff in the canonical audit log too (panes can be edited/dropped;
     // thread.log is append-only). The dashboard display-makes the `[handoff]` prefix into a card.
     appendThread(p.roomId, `${ts()} [handoff] ${nameOf(fromId)} -> human\n${String(text || '')}`)
+  }
+  // Auto-elicit on a pause UNLESS the human turned it off for this room (they're watching live and
+  // don't want the agents interrupted). Manual `catchup` ignores this — it's an explicit request.
+  function maybeCatchup(p, reason) {
+    if (p.autoCatchup === false) { appendThread(p.roomId, `${ts()} [catch-up skipped — auto off (${reason})]`); return }
+    elicitCatchup(p, reason)
   }
 
   function doBrake(p, reason = 'brake') {
@@ -289,7 +295,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
             ok: true,
             version,
             sessions: [...sessions.entries()].map(([id, v]) => ({ id, repo: v.repo, name: v.label || v.repo })),
-            pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, turnCap: p.turnCap, a: nameOf(p.a), b: nameOf(p.b) })),
+            pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, a: nameOf(p.a), b: nameOf(p.b) })),
           })
           continue
         }
@@ -304,6 +310,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
           case 'brake': reply({ ok: true, held: doBrake(p, 'brake') }); break
           case 'resume': doResume(p); reply({ ok: true }); break
           case 'catchup': reply(elicitCatchup(p, 'requested', { manual: true })); break
+          case 'autocatchup': p.autoCatchup = !!f.on; appendThread(p.roomId, `${ts()} [auto catch-up ${p.autoCatchup ? 'on' : 'off'} (human)]`); reply({ ok: true, autoCatchup: p.autoCatchup }); break
           case 'steer': {
             const targets = f.target === 'a' ? [p.a] : f.target === 'b' ? [p.b] : [p.a, p.b]
             for (const t of targets) send(t, { type: 'directive', text: `[Human directive]: ${f.text}` })
@@ -336,7 +343,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
         p.state = 'Paused'; p.pauseReason = 'stall'
         appendThread(p.roomId, `${ts()} [paused: stall (${Math.round((Date.now() - p.lastActivityAt) / 1000)}s idle)]`)
         notify(`Room ${p.roomId}: paused (stall)`)
-        elicitCatchup(p, 'stall')
+        maybeCatchup(p, 'stall')
       }
     }
     // Idle auto-shutdown: exit after idleMs with zero connected sessions (longer grace until the
