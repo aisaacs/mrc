@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Examples &amp; Recipes — Mister Claude</title>
+<meta name="description" content="Real-world recipes for Mister Claude: locking down secrets, running two Claudes on one repo, headless CI runs, big parallel workflows, Codex second opinions, and more.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎩</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ─── NAV ─── -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-brand"><span class="hat">🎩</span> Mister&nbsp;Claude</a>
+    <button class="nav-toggle" aria-label="Menu">≡</button>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="docs.html">Docs</a>
+      <a href="examples.html">Examples</a>
+      <a href="docs.html#security">Security</a>
+      <a href="https://github.com/aisaacs/mrc" class="nav-gh">★ GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<div class="doc-hero">
+  <div class="section-label">Examples</div>
+  <h1>Recipes from the cockpit</h1>
+  <p>Copy-paste patterns for real work — from your first run to headless CI to running a fleet of parallel agents. Every command here is accurate to the current <code>mrc</code>.</p>
+</div>
+
+<div class="container" style="padding-bottom:80px">
+
+  <!-- 1 -->
+  <div class="recipe reveal" id="first-run">
+    <div class="recipe-head"><span class="icon">🚀</span><h3>Your first run</h3><span class="tag green">basics</span></div>
+    <p>Point <code>mrc</code> at a repo. The first launch builds the image (~2 min); every launch after is ~5 seconds. Quit Claude and the container vanishes — your files never left the host.</p>
+    <div class="terminal">
+      <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">first run</span></div>
+<div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">export ANTHROPIC_API_KEY=<span class="t-str">"sk-ant-..."</span></span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc ~/projects/myapp</span>
+<span class="t-out">  ◎ Mr. Radar is scanning the environment...</span>
+<span class="t-ok">  ✓ Radar locked.</span>
+<span class="t-out">  → Firewall:  jammed (just like their radar)</span></div>
+    </div>
+  </div>
+
+  <!-- 2 -->
+  <div class="recipe reveal" id="secrets">
+    <div class="recipe-head"><span class="icon">🕶️</span><h3>Keep secrets out of the room</h3><span class="tag green">security</span></div>
+    <p>The firewall already blocks the network path to your databases. <code>.sandboxignore</code> closes the other door — it makes the secret <em>files</em> themselves disappear inside the container.</p>
+    <div class="terminal">
+      <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">~/projects/myapp/.sandboxignore</span></div>
+<div class="terminal-body"><span class="t-com"># These appear empty (files) or empty dirs (folders) to Claude</span>
+.env
+.env.production
+secrets/
+terraform/
+~/.aws/            <span class="t-com"># yes, even paths outside the repo root, per file location</span></div>
+    </div>
+    <div class="callout tip"><p>Files are masked with <code>/dev/null</code>; directories get an anonymous overlay. Combine with the default firewall and there's simply nothing sensitive to find — on disk <em>or</em> on the wire.</p></div>
+  </div>
+
+  <!-- 3 -->
+  <div class="recipe reveal" id="web">
+    <div class="recipe-head"><span class="icon">🌐</span><h3>Let him read the web</h3><span class="tag cyan">network</span></div>
+    <p>Need web search and fetch? <code>--web</code> opens outbound HTTPS to any host — while the host-services lockdown and IPv6 block stay in place. Make it a default for a repo by dropping it in <code>.mrcrc</code>.</p>
+    <div class="terminal">
+      <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">web access</span></div>
+<div class="terminal-body"><span class="t-com"># One-off</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc <span class="t-flag">--web</span> ~/projects/myapp</span>
+
+<span class="t-com"># Or always-on for this repo</span>
+<span class="t-prompt">$</span> <span class="t-cmd">echo <span class="t-flag">--web</span> &gt;&gt; ~/projects/myapp/.mrcrc</span></div>
+    </div>
+    <p class="muted" style="font-size:13px">Need a specific private host but not the whole web? Add it to the allowlist loop in <code>init-firewall.sh</code> and rebuild — see <a href="docs.html#security">the security docs</a>.</p>
+  </div>
+
+  <!-- 4 -->
+  <div class="recipe reveal" id="multi-instance">
+    <div class="recipe-head"><span class="icon">👯</span><h3>Two Claudes, one repo</h3><span class="tag">scale</span></div>
+    <p>Run a second session against the same project — say, one writing a feature while another investigates a bug. Each instance gets its own config volume and its own dynamically allocated proxy ports, so they never collide.</p>
+    <div class="terminal">
+      <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">terminal A &amp; B</span></div>
+<div class="terminal-body"><span class="t-com"># Terminal A</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc ~/projects/myapp</span>
+
+<span class="t-com"># Terminal B — mrc notices the first and isolates the second</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc ~/projects/myapp</span>
+<span class="t-warn">  ⚠ There's already 1 Mr. Claude running in this repo.</span>
+<span class="t-dim">    They'll share the workspace but get separate config volumes.</span></div>
+    </div>
+    <div class="callout warn"><p>They share the same working tree — so mind edit conflicts. Two Claudes, one codebase, no good if they fight over the same file.</p></div>
+  </div>
+
+  <!-- 5 -->
+  <div class="recipe reveal" id="codex">
+    <div class="recipe-head"><span class="icon">🤝</span><h3>A second opinion from Codex</h3><span class="tag cyan">multi-agent</span></div>
+    <p>Same sandbox, different brain. Launch OpenAI's Codex CLI with <code>--agent codex</code> to cross-check a tricky refactor. It uses its own persistent config volume and the already-whitelisted <code>api.openai.com</code>.</p>
+    <div class="terminal">
+      <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">codex</span></div>
+<div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">export OPENAI_API_KEY=<span class="t-str">"sk-..."</span></span>   <span class="t-com"># or in .env / 1Password</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc <span class="t-flag">--agent</span> codex ~/projects/myapp</span></div>
+    </div>
+  </div>
+
+  <!-- 6 -->
+  <div class="recipe reveal" id="workflows">
+    <div class="recipe-head"><span class="icon">🧮</span><h3>Feed a fleet of parallel agents</h3><span class="tag">performance</span></div>
+    <p>Dynamic workflows can fan out many subagents at once. Give the VM room to breathe: <code>mrc</code> already defaults to all your cores and half your RAM, but you can push memory higher for heavy parallel runs.</p>
+    <div class="terminal">
+      <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">big iron</span></div>
+<div class="terminal-body"><span class="t-com"># All cores, 48 GB for this session</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc <span class="t-flag">--colima-memory</span> 48 ~/projects/myapp</span>
+
+<span class="t-com"># Resizing an already-running VM? Stop it first.</span>
+<span class="t-prompt">$</span> <span class="t-cmd">colima stop &amp;&amp; mrc <span class="t-flag">--colima-cpu</span> 16 <span class="t-flag">--colima-memory</span> 64 .</span></div>
+    </div>
+    <div class="callout note"><p>Concurrency in dynamic workflows is capped at <code>min(16, cores − 2)</code>, so once you're past ~18 cores more CPU won't add parallelism — but more RAM still helps when many agents run at once.</p></div>
+  </div>
+
+  <!-- 7 -->
+  <div class="recipe reveal" id="headless">
+    <div class="recipe-head"><span class="icon">🤖</span><h3>Headless &amp; scriptable</h3><span class="tag cyan">automation</span></div>
+    <p>For CI or embedding, run detached with <code>--daemon</code> (prints a container ID) or stream machine-readable output with <code>--json</code>.</p>
+    <div class="terminal">
+      <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">headless</span></div>
+<div class="terminal-body"><span class="t-com"># Detached — capture the container ID</span>
+<span class="t-prompt">$</span> <span class="t-cmd">CID=$(mrc <span class="t-flag">--daemon</span> ~/projects/myapp)</span>
+<span class="t-prompt">$</span> <span class="t-cmd">echo $CID</span>
+<span class="t-out">  9f8e7d6c5b4a...</span>
+
+<span class="t-com"># Stream stream-json for a one-shot prompt</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc <span class="t-flag">--json</span> . <span class="t-flag">--</span> <span class="t-flag">-p</span> <span class="t-str">"summarize the test failures"</span></span></div>
+    </div>
+  </div>
+
+  <!-- 8 -->
+  <div class="recipe reveal" id="session-flow">
+    <div class="recipe-head"><span class="icon">💾</span><h3>A session-driven workflow</h3><span class="tag green">sessions</span></div>
+    <p>Name conversations as you go, then jump back into any of them. Reopening a repo resumes the most recent automatically; the picker lets you choose.</p>
+    <div class="terminal">
+      <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">sessions</span></div>
+<div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">mrc <span class="t-flag">--new</span> payment-retries ~/projects/myapp</span>   <span class="t-com"># start, named</span>
+<span class="t-com"># ...later...</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc pick ~/projects/myapp</span>                      <span class="t-com"># arrow-key picker</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc sessions resume payment-retries ~/projects/myapp</span></div>
+    </div>
+  </div>
+
+  <!-- 9 -->
+  <div class="recipe reveal" id="team-defaults">
+    <div class="recipe-head"><span class="icon">⚙️</span><h3>Team-wide defaults</h3><span class="tag">ergonomics</span></div>
+    <p>Commit a <code>.mrcrc</code> to a repo so everyone gets the same sandbox behavior. Personal preferences go in <code>~/.mrcrc</code>; CLI flags override both.</p>
+    <div class="terminal">
+      <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">repo .mrcrc</span></div>
+<div class="terminal-body"><span class="t-com"># Checked into the repo — sane defaults for everyone</span>
+<span class="t-flag">--web</span>                 <span class="t-com"># this project needs web search</span>
+<span class="t-flag">--colima-memory</span> 24    <span class="t-com"># it's a heavy monorepo</span>
+
+<span class="t-com"># ~/.mrcrc — just for you, layered on top</span>
+<span class="t-flag">--no-sound</span></div>
+    </div>
+  </div>
+
+  <!-- 10 -->
+  <div class="recipe reveal" id="status">
+    <div class="recipe-head"><span class="icon">📡</span><h3>See everything that's running</h3><span class="tag">ops</span></div>
+    <p>Lost track of how many sessions are open across projects? <code>mrc status</code> sweeps every repo — and it needs no API key, so it's safe to alias and run anywhere.</p>
+    <div class="terminal">
+      <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">mrc status</span></div>
+<div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">mrc status</span>
+  🎩 Active Mr. Claude Sessions
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<span class="t-out">  → myapp  ·  up 1h 12m</span>
+<span class="t-dim">    /Users/you/projects/myapp  [a1b2c3d4e5f6]</span>
+<span class="t-out">  → infra-tools  ·  up 23m</span> <span class="t-warn">(--web)</span>
+<span class="t-dim">    /Users/you/work/infra-tools  [9f8e7d6c5b4a]</span></div>
+    </div>
+  </div>
+
+</div>
+
+<!-- ─── QUOTE ─── -->
+<div class="quote">
+  <div class="container">
+    <blockquote>"Ludicrous speed... GO!"</blockquote>
+    <cite>— Dark Helmet</cite>
+  </div>
+</div>
+
+<!-- ─── CTA ─── -->
+<section class="center">
+  <div class="container-narrow">
+    <h2 class="reveal">Got a pattern of your own?</h2>
+    <p class="lede reveal" style="margin:0 auto">The recipes live in the repo. PRs with new ones are very welcome.</p>
+    <div class="hero-cta reveal" style="justify-content:center">
+      <a href="index.html#quickstart" class="btn btn-primary">▸ Install Mister Claude</a>
+      <a href="https://github.com/aisaacs/mrc" class="btn btn-ghost">★ Contribute on GitHub</a>
+    </div>
+  </div>
+</section>
+
+<!-- ─── FOOTER ─── -->
+<footer>
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="index.html" class="nav-brand"><span class="hat">🎩</span> Mister&nbsp;Claude</a>
+      <p>Sandboxed Claude Code with an iptables firewall. Full permissions, zero blast radius.</p>
+    </div>
+    <div class="footer-col">
+      <h5>Project</h5>
+      <a href="docs.html">Documentation</a>
+      <a href="examples.html">Examples</a>
+      <a href="docs.html#security">Security model</a>
+      <a href="https://github.com/aisaacs/mrc">GitHub</a>
+    </div>
+    <div class="footer-col">
+      <h5>Reference</h5>
+      <a href="docs.html#cli">CLI reference</a>
+      <a href="docs.html#config">Config files</a>
+      <a href="docs.html#sessions">Sessions</a>
+      <a href="docs.html#troubleshooting">Troubleshooting</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    Made with the Schwartz · MIT licensed · <a href="https://github.com/aisaacs/mrc">github.com/aisaacs/mrc</a>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>

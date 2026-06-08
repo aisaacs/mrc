@@ -3,560 +3,87 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Mr. Claude — Sandboxed Claude Code</title>
-<style>
-@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,600;0,700;1,400&family=Silkscreen:wght@400;700&display=swap');
-
-*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-:root {
-  --phosphor: #33ff99;
-  --phosphor-dim: #1a9956;
-  --phosphor-glow: #33ff9940;
-  --phosphor-bright: #88ffcc;
-  --amber: #ffaa33;
-  --amber-dim: #996622;
-  --red: #ff4444;
-  --bg: #0a0e0a;
-  --bg-panel: #0d120d;
-  --bg-code: #060906;
-  --border: #1a2e1a;
-  --text: #b0c8b0;
-  --text-dim: #5a7a5a;
-  --scanline: rgba(0,0,0,0.12);
-}
-
-html { scroll-behavior: smooth; }
-
-body {
-  background: var(--bg);
-  color: var(--text);
-  font-family: 'JetBrains Mono', 'Courier New', monospace;
-  font-size: 14px;
-  line-height: 1.7;
-  overflow-x: hidden;
-}
-
-/* CRT scanline overlay */
-body::after {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background: repeating-linear-gradient(
-    0deg,
-    var(--scanline) 0px,
-    var(--scanline) 1px,
-    transparent 1px,
-    transparent 3px
-  );
-  pointer-events: none;
-  z-index: 9999;
-}
-
-/* CRT vignette */
-body::before {
-  content: '';
-  position: fixed;
-  inset: 0;
-  background: radial-gradient(ellipse at center, transparent 50%, rgba(0,0,0,0.6) 100%);
-  pointer-events: none;
-  z-index: 9998;
-}
-
-a { color: var(--phosphor); text-decoration: none; }
-a:hover { color: var(--phosphor-bright); text-shadow: 0 0 8px var(--phosphor-glow); }
-
-.container {
-  max-width: 900px;
-  margin: 0 auto;
-  padding: 0 24px;
-}
-
-/* ─── HERO ─── */
-.hero {
-  padding: 80px 0 60px;
-  text-align: center;
-  position: relative;
-}
-
-.hero::before {
-  content: '';
-  position: absolute;
-  top: 20%;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 600px;
-  height: 400px;
-  background: radial-gradient(ellipse, var(--phosphor-glow) 0%, transparent 70%);
-  pointer-events: none;
-  opacity: 0.3;
-}
-
-.ascii-logo {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: clamp(9px, 2vw, 14px);
-  line-height: 1.2;
-  color: var(--phosphor);
-  text-shadow: 0 0 20px var(--phosphor-glow), 0 0 40px rgba(51,255,153,0.15);
-  white-space: pre;
-  display: inline-block;
-  position: relative;
-  animation: flicker 4s infinite;
-  letter-spacing: 0;
-  margin: 0;
-  overflow-x: auto;
-}
-
-@keyframes flicker {
-  0%, 97%, 100% { opacity: 1; }
-  98% { opacity: 0.85; }
-  99% { opacity: 0.92; }
-}
-
-.tagline {
-  font-family: 'Silkscreen', monospace;
-  font-size: 12px;
-  color: var(--amber);
-  margin-top: 24px;
-  text-transform: uppercase;
-  letter-spacing: 3px;
-  text-shadow: 0 0 10px rgba(255,170,51,0.3);
-}
-
-.subtitle {
-  font-size: 15px;
-  color: var(--text-dim);
-  margin-top: 16px;
-  max-width: 560px;
-  margin-left: auto;
-  margin-right: auto;
-}
-
-.subtitle em {
-  color: var(--text);
-  font-style: normal;
-}
-
-.hero-cta {
-  margin-top: 40px;
-  display: flex;
-  gap: 16px;
-  justify-content: center;
-  flex-wrap: wrap;
-}
-
-.btn {
-  display: inline-block;
-  padding: 10px 28px;
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 13px;
-  font-weight: 600;
-  border: 1px solid;
-  cursor: pointer;
-  transition: all 0.2s;
-  text-decoration: none;
-}
-
-.btn-primary {
-  color: var(--bg);
-  background: var(--phosphor);
-  border-color: var(--phosphor);
-  box-shadow: 0 0 15px var(--phosphor-glow), inset 0 0 15px rgba(255,255,255,0.1);
-}
-.btn-primary:hover {
-  background: var(--phosphor-bright);
-  color: var(--bg);
-  box-shadow: 0 0 30px var(--phosphor-glow);
-  text-shadow: none;
-}
-
-.btn-ghost {
-  color: var(--phosphor);
-  background: transparent;
-  border-color: var(--border);
-}
-.btn-ghost:hover {
-  border-color: var(--phosphor-dim);
-  box-shadow: 0 0 15px var(--phosphor-glow);
-}
-
-/* ─── TERMINAL BLOCK ─── */
-.terminal {
-  background: var(--bg-code);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  overflow: hidden;
-  margin: 20px 0;
-  box-shadow: 0 4px 30px rgba(0,0,0,0.5), inset 0 1px 0 rgba(51,255,153,0.05);
-}
-
-.terminal-bar {
-  background: var(--bg-panel);
-  padding: 8px 14px;
-  display: flex;
-  align-items: center;
-  gap: 7px;
-  border-bottom: 1px solid var(--border);
-}
-
-.terminal-dot {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
-}
-.terminal-dot:nth-child(1) { background: #ff5f57; }
-.terminal-dot:nth-child(2) { background: #ffbd2e; }
-.terminal-dot:nth-child(3) { background: #28c840; }
-
-.terminal-title {
-  font-size: 11px;
-  color: var(--text-dim);
-  margin-left: 8px;
-}
-
-.terminal-body {
-  padding: 18px 20px;
-  font-size: 13px;
-  line-height: 1.6;
-  overflow-x: auto;
-  white-space: pre;
-}
-
-.terminal-body .prompt { color: var(--phosphor); }
-.terminal-body .cmd { color: #eee; }
-.terminal-body .output { color: var(--text-dim); }
-.terminal-body .highlight { color: var(--amber); }
-.terminal-body .comment { color: var(--text-dim); font-style: italic; }
-
-/* ─── SECTIONS ─── */
-section {
-  padding: 70px 0;
-  border-top: 1px solid var(--border);
-}
-
-.section-label {
-  font-family: 'Silkscreen', monospace;
-  font-size: 10px;
-  color: var(--amber);
-  text-transform: uppercase;
-  letter-spacing: 4px;
-  margin-bottom: 8px;
-}
-
-h2 {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 22px;
-  font-weight: 700;
-  color: var(--phosphor);
-  margin-bottom: 24px;
-  text-shadow: 0 0 15px var(--phosphor-glow);
-}
-
-h3 {
-  font-family: 'JetBrains Mono', monospace;
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--phosphor-bright);
-  margin-bottom: 8px;
-}
-
-p { margin-bottom: 16px; }
-
-/* ─── HOW IT WORKS ─── */
-.how-it-works {
-  display: grid;
-  grid-template-columns: 40px 1fr;
-  gap: 0 20px;
-  position: relative;
-}
-
-.how-step-num {
-  font-family: 'Silkscreen', monospace;
-  font-size: 16px;
-  color: var(--phosphor);
-  text-align: center;
-  padding-top: 2px;
-  position: relative;
-}
-
-.how-step-num::after {
-  content: '';
-  position: absolute;
-  top: 28px;
-  left: 50%;
-  bottom: -20px;
-  width: 1px;
-  background: var(--border);
-}
-
-.how-step:last-child .how-step-num::after { display: none; }
-
-.how-step-content {
-  padding-bottom: 32px;
-}
-
-.how-step-content h3 { margin-bottom: 6px; }
-.how-step-content p { color: var(--text-dim); margin-bottom: 0; font-size: 13px; }
-
-/* ─── FEATURES GRID ─── */
-.features-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
-  gap: 16px;
-}
-
-.feature-card {
-  background: var(--bg-panel);
-  border: 1px solid var(--border);
-  padding: 22px;
-  border-radius: 4px;
-  transition: all 0.25s;
-  position: relative;
-  overflow: hidden;
-}
-
-.feature-card::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: 1px;
-  background: linear-gradient(90deg, transparent, var(--phosphor-dim), transparent);
-  opacity: 0;
-  transition: opacity 0.25s;
-}
-
-.feature-card:hover {
-  border-color: var(--phosphor-dim);
-  box-shadow: 0 0 20px rgba(51,255,153,0.05);
-}
-
-.feature-card:hover::before { opacity: 1; }
-
-.feature-icon {
-  font-size: 18px;
-  margin-bottom: 12px;
-  display: block;
-}
-
-.feature-card h3 {
-  font-size: 13px;
-  margin-bottom: 8px;
-}
-
-.feature-card p {
-  font-size: 12px;
-  color: var(--text-dim);
-  margin-bottom: 0;
-  line-height: 1.6;
-}
-
-/* ─── CLI REF ─── */
-.cli-table {
-  width: 100%;
-  border-collapse: collapse;
-  font-size: 13px;
-}
-
-.cli-table th {
-  text-align: left;
-  color: var(--phosphor);
-  font-weight: 600;
-  padding: 8px 0;
-  border-bottom: 1px solid var(--border);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 2px;
-}
-
-.cli-table td {
-  padding: 8px 0;
-  border-bottom: 1px solid rgba(26,46,26,0.5);
-  vertical-align: top;
-}
-
-.cli-table td:first-child {
-  color: var(--phosphor-bright);
-  white-space: nowrap;
-  padding-right: 24px;
-  font-weight: 600;
-}
-
-.cli-table td:last-child { color: var(--text-dim); }
-
-.cli-section-label {
-  color: var(--amber);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 2px;
-  padding-top: 20px !important;
-  padding-bottom: 10px !important;
-  border-bottom: none !important;
-}
-
-/* ─── CHANGELOG ─── */
-.changelog-section {
-  margin-bottom: 32px;
-}
-
-.changelog-section h3 {
-  font-size: 14px;
-  color: var(--amber);
-  margin-bottom: 12px;
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--border);
-}
-
-.changelog-section ul {
-  list-style: none;
-  padding: 0;
-}
-
-.changelog-section li {
-  padding: 4px 0 4px 20px;
-  position: relative;
-  font-size: 13px;
-  color: var(--text-dim);
-}
-
-.changelog-section li::before {
-  content: '>';
-  position: absolute;
-  left: 0;
-  color: var(--phosphor-dim);
-  font-weight: 700;
-}
-
-.changelog-section li strong {
-  color: var(--text);
-  font-weight: 600;
-}
-
-.changelog-section li code {
-  background: var(--bg-code);
-  padding: 1px 5px;
-  border-radius: 2px;
-  font-size: 12px;
-  color: var(--phosphor);
-  border: 1px solid var(--border);
-}
-
-/* ─── QUOTE ─── */
-.yogurt-quote {
-  text-align: center;
-  padding: 50px 0;
-  border-top: 1px solid var(--border);
-}
-
-.yogurt-quote blockquote {
-  font-size: 16px;
-  color: var(--amber);
-  font-style: italic;
-  max-width: 500px;
-  margin: 0 auto;
-  text-shadow: 0 0 10px rgba(255,170,51,0.15);
-}
-
-.yogurt-quote cite {
-  display: block;
-  margin-top: 12px;
-  font-size: 11px;
-  color: var(--text-dim);
-  font-style: normal;
-  letter-spacing: 1px;
-}
-
-/* ─── FOOTER ─── */
-footer {
-  padding: 30px 0;
-  border-top: 1px solid var(--border);
-  text-align: center;
-  font-size: 11px;
-  color: var(--text-dim);
-}
-
-footer a { color: var(--phosphor-dim); }
-
-/* ─── RESPONSIVE ─── */
-@media (max-width: 640px) {
-  .ascii-logo { font-size: 8px; }
-  .hero { padding: 50px 0 40px; }
-  section { padding: 50px 0; }
-  .features-grid { grid-template-columns: 1fr; }
-  .terminal-body { font-size: 11px; padding: 14px; }
-}
-
-/* ─── ANIMATIONS ─── */
-@keyframes typeIn {
-  from { width: 0; }
-  to { width: 100%; }
-}
-
-.fade-in {
-  opacity: 0;
-  transform: translateY(12px);
-  transition: all 0.6s ease;
-}
-
-.fade-in.visible {
-  opacity: 1;
-  transform: translateY(0);
-}
-</style>
+<title>Mister Claude — Sandboxed Claude Code with a Firewall</title>
+<meta name="description" content="Run Claude Code at full permissions inside a locked-down Docker container. An iptables firewall blocks everything except the few domains it needs. Your code stays on the host. Your databases stay unreachable.">
+<meta property="og:title" content="Mister Claude — Sandboxed Claude Code">
+<meta property="og:description" content="Full-permission Claude Code in a box. The container is the sandbox; the firewall is the lock on the door.">
+<meta property="og:type" content="website">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎩</text></svg>">
+<link rel="stylesheet" href="style.css">
 </head>
 <body>
 
-<!-- ─── HERO ─── -->
-<div class="hero">
-  <div class="container">
-    <pre class="ascii-logo">__  __ ____     ____  _                 _
-     |  \/  |  _ \ . / ___|| | __ _ _   _  __| | ___
-      | |\/| | |_) |  | |   | |/ _` | | | |/ _` |/ _ \
-      | |  | |  _ <   | |___| | (_| | |_| | (_| |  __/
-      |_|  |_|_| \_\   \____|_|\__,_|\__,_|\__,_|\___|</pre>
-
-    <div class="tagline">It's my industrial-strength hair dryer, AND IT WORKS.</div>
-    <p class="subtitle">
-      Sandboxed <em>Claude Code</em> in a Docker container with an iptables firewall.
-      Your code stays safe. Your databases stay unreachable. The Schwartz stays strong.
-    </p>
-    <div class="hero-cta">
-      <a href="#quickstart" class="btn btn-primary">Install</a>
-      <a href="https://github.com/aisaacs/mrc" class="btn btn-ghost">View Source</a>
+<!-- ─── NAV ─── -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-brand"><span class="hat">🎩</span> Mister&nbsp;Claude</a>
+    <button class="nav-toggle" aria-label="Menu">≡</button>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="docs.html">Docs</a>
+      <a href="examples.html">Examples</a>
+      <a href="docs.html#security">Security</a>
+      <a href="https://github.com/aisaacs/mrc" class="nav-gh">★ GitHub</a>
     </div>
   </div>
-</div>
+</nav>
 
-<!-- ─── WHAT IT DOES ─── -->
-<section>
+<!-- ─── HERO ─── -->
+<header class="hero">
+  <div class="hero-glow"></div>
   <div class="container">
-    <div class="section-label">// How it works</div>
-    <h2>Three commands. Total isolation.</h2>
+<pre class="ascii-logo" aria-label="MRC — Mister Claude">███╗   ███╗██████╗  ██████╗
+████╗ ████║██╔══██╗██╔════╝
+██╔████╔██║██████╔╝██║
+██║╚██╔╝██║██╔══██╗██║
+██║ ╚═╝ ██║██║  ██║╚██████╗
+╚═╝     ╚═╝╚═╝  ╚═╝ ╚═════╝</pre>
 
-    <div class="how-it-works">
-      <div class="how-step">
-        <div class="how-step-num">1</div>
-      </div>
-      <div class="how-step-content">
-        <h3>You run <code style="color:var(--phosphor)">mrc ~/your/repo</code></h3>
-        <p>The launcher builds a Docker image, starts clipboard &amp; notification proxies, finds your .sandboxignore files, and fires up the container with your repo mounted.</p>
-      </div>
+    <div class="hero-tagline">It's my industrial-strength hair dryer — and it works</div>
+    <h1>Claude Code, in a box.</h1>
+    <p class="subtitle">
+      Run Claude Code at <em>full permissions</em> inside a locked-down Docker container.
+      An iptables firewall blocks everything except the handful of domains it actually needs.
+      Your code stays on the host. Your databases stay unreachable. The Schwartz stays strong.
+    </p>
+    <div class="hero-cta">
+      <a href="#quickstart" class="btn btn-primary">▸ Install in 30 seconds</a>
+      <a href="docs.html" class="btn btn-ghost">Read the docs</a>
+    </div>
+    <div class="hero-meta">
+      <span><span class="dot">◆</span> macOS &amp; Linux</span>
+      <span><span class="dot">◆</span> No Docker Desktop</span>
+      <span><span class="dot">◆</span> Claude or Codex</span>
+      <span><span class="dot">◆</span> MIT licensed</span>
+    </div>
+  </div>
+</header>
 
-      <div class="how-step">
-        <div class="how-step-num">2</div>
+<!-- ─── THE PROBLEM ─── -->
+<section id="why">
+  <div class="container">
+    <div class="section-label reveal">The problem</div>
+    <h2 class="reveal">Skip permissions is fast. It's also how you wake up to a dropped table.</h2>
+    <p class="lede reveal">
+      <code>--dangerously-skip-permissions</code> makes Claude Code fly. But an agent running unattended on
+      your laptop can reach your production database, read every <code>.env</code> you own, push to any remote,
+      and phone home to anywhere. "It probably won't" is not a security model.
+    </p>
+    <div class="grid grid-3" style="margin-top:32px">
+      <div class="card reveal">
+        <span class="icon">🔥</span>
+        <h3>The naive way</h3>
+        <p>YOLO mode on the host. Full network. Full filesystem. One confidently-wrong command away from a very bad afternoon.</p>
       </div>
-      <div class="how-step-content">
-        <h3>The firewall jams their radar</h3>
-        <p>iptables locks the container down. Only api.anthropic.com, npm, and sentry can be reached. Your Postgres, Redis, AWS RDS, and everything else: blocked. IPv6: blocked. Host services: blocked.</p>
+      <div class="card reveal">
+        <span class="icon">🐢</span>
+        <h3>The paranoid way</h3>
+        <p>Approve every tool call by hand. Safe, but you've turned a tireless agent back into a very expensive autocomplete.</p>
       </div>
-
-      <div class="how-step">
-        <div class="how-step-num">3</div>
-      </div>
-      <div class="how-step-content">
-        <h3>Claude Code runs with full permissions</h3>
-        <p><code style="color:var(--phosphor)">--dangerously-skip-permissions</code> is safe here because the container IS the sandbox. Claude can do whatever it wants &mdash; inside the box.</p>
+      <div class="card reveal">
+        <span class="icon">🎩</span>
+        <h3>The Mister Claude way</h3>
+        <p>Let him run wild — inside a sealed room. The container is the boundary; the firewall is the lock. He can't reach what isn't there.</p>
       </div>
     </div>
   </div>
@@ -565,262 +92,304 @@ footer a { color: var(--phosphor-dim); }
 <!-- ─── QUICKSTART ─── -->
 <section id="quickstart">
   <div class="container">
-    <div class="section-label">// Quick start</div>
-    <h2>Prepare ship for Ludicrous Speed</h2>
+    <div class="section-label reveal">Quick start</div>
+    <h2 class="reveal">Prepare ship for Ludicrous Speed</h2>
+    <p class="lede reveal">One install script, one API key, one command. First run builds the image (~2 min); after that he's ready in about five seconds.</p>
 
-    <div class="terminal">
+    <div class="terminal reveal">
       <div class="terminal-bar">
-        <span class="terminal-dot"></span>
-        <span class="terminal-dot"></span>
-        <span class="terminal-dot"></span>
-        <span class="terminal-title">Terminal</span>
+        <span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span>
+        <span class="terminal-title">your-mac — zsh</span>
       </div>
-      <div class="terminal-body">
-<span class="comment"># Install it</span>
-<span class="prompt">$</span> <span class="cmd">curl -fsSL https://aisaacs.github.io/mrc/install.sh | bash</span>
+<div class="terminal-body"><span class="t-com"># 1 · Install (drops mrc into ~/.local/bin)</span>
+<span class="t-prompt">$</span> <span class="t-cmd">curl -fsSL https://aisaacs.github.io/mrc/install.sh | bash</span>
 
-<span class="comment"># Set your API key</span>
-<span class="prompt">$</span> <span class="cmd">export ANTHROPIC_API_KEY="sk-ant-..."</span>
+<span class="t-com"># 2 · Point it at an Anthropic API key (or use a .env / 1Password)</span>
+<span class="t-prompt">$</span> <span class="t-cmd">export ANTHROPIC_API_KEY=<span class="t-str">"sk-ant-..."</span></span>
 
-<span class="comment"># Launch against any repo</span>
-<span class="prompt">$</span> <span class="cmd">mrc ~/projects/myapp</span>
-<span class="output">  ◎ Mr. Radar is scanning the environment...</span>
-<span class="output">  ✓ Radar locked.</span>
-<span class="output">
-  
-  
+<span class="t-com"># 3 · Launch against any repo</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc ~/projects/myapp</span>
+<span class="t-out">  ◎ Mr. Radar is scanning the environment...</span>
+<span class="t-ok">  ✓ Radar locked.</span>
+<span class="t-green">
       __  __ ____     ____  _                 _
      |  \/  |  _ \ . / ___|| | __ _ _   _  __| | ___
      | |\/| | |_) |  | |   | |/ _` | | | |/ _` |/ _ \
-     | |  | |  _ <   | |___| | (_| | |_| | (_| |  __/
+     | |  | |  _ &lt;   | |___| | (_| | |_| | (_| |  __/
      |_|  |_|_| \_\   \____|_|\__,_|\__,_|\__,_|\___|
   ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━</span>
-<span class="output">  → Repo:      /Users/you/projects/myapp</span>
-<span class="output">  → Volume:    mrc-config-a1b2c3d4e5f6</span>
-<span class="output">  → Schwartz:  <span class="highlight">engaged (API key)</span></span>
-<span class="output">  → Clipboard: the Schwartz can see your clipboard</span>
-<span class="output">  → Notify:    the Schwartz will alert you when ready</span>
-<span class="output">  → Firewall:  jammed (just like their radar)</span>
+<span class="t-out">  → Repo:      /Users/you/projects/myapp</span>
+<span class="t-out">  → Volume:    mrc-config-a1b2c3d4e5f6</span>
+<span class="t-out">  → Schwartz:  <span class="t-warn">Anthropic engaged</span></span>
+<span class="t-out">  → Clipboard: the Schwartz can see your clipboard</span>
+<span class="t-out">  → Notify:    the Schwartz will alert you when ready</span>
+<span class="t-out">  → Firewall:  jammed (just like their radar)</span></div>
+    </div>
+
+    <p class="muted reveal" style="font-size:13px">
+      Prefer source? <code>git clone</code> the repo and symlink <code>mrc.js</code> — see the
+      <a href="docs.html#install">installation docs</a>. Requires Node.js 22+, Docker CLI, and Colima.
+    </p>
+  </div>
+</section>
+
+<!-- ─── HOW IT WORKS ─── -->
+<section id="how">
+  <div class="container">
+    <div class="section-label reveal">How it works</div>
+    <h2 class="reveal">Three moving parts. Total isolation.</h2>
+    <div class="steps" style="margin-top:28px">
+      <div class="step reveal">
+        <div class="step-num">1</div>
+        <div class="step-body">
+          <h3>You run <code>mrc ~/your/repo</code></h3>
+          <p>The Node.js launcher auto-starts Colima, builds a Docker image stamped with <em>your</em> UID/GID, discovers your <code>.sandboxignore</code> files, spins up in-process clipboard &amp; notification proxies, and boots the container with your repo bind-mounted at <code>/workspace</code>.</p>
+        </div>
+      </div>
+      <div class="step reveal">
+        <div class="step-num">2</div>
+        <div class="step-body">
+          <h3>The firewall jams their radar</h3>
+          <p>Inside the container, <code>iptables</code> sets a default-DROP policy and an <code>ipset</code> allowlist. Only a few domains resolve. IPv6 is blocked. Host services — Postgres, Redis, that staging box — are unreachable. It verifies the lock by confirming <code>example.com</code> is dead.</p>
+        </div>
+      </div>
+      <div class="step reveal">
+        <div class="step-num">3</div>
+        <div class="step-body">
+          <h3>Claude runs with the gloves off</h3>
+          <p><code>--dangerously-skip-permissions</code> is perfectly safe here, because the container <em>is</em> the sandbox. He installs packages, runs tests, rewrites files — and VS Code on your host sees every change instantly through the bind mount.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ─── SECURITY MODEL ─── -->
+<section id="firewall">
+  <div class="container">
+    <div class="section-label reveal">The security boundary</div>
+    <h2 class="reveal">He can only reach five doors. Everything else is a wall.</h2>
+    <p class="lede reveal">The allowlist is resolved to IPs at boot and pinned in an <code>ipset</code>. Outbound traffic to anything else gets an immediate REJECT — fast feedback, no hanging sockets.</p>
+
+    <div class="fw reveal">
+      <div class="fw-col">
+        <div class="fw-pill allow"><span class="ic">✓</span> api.anthropic.com</div>
+        <div class="fw-pill allow"><span class="ic">✓</span> api.openai.com</div>
+        <div class="fw-pill allow"><span class="ic">✓</span> registry.npmjs.org</div>
+        <div class="fw-pill allow"><span class="ic">✓</span> sentry.io</div>
+        <div class="fw-pill allow"><span class="ic">✓</span> statsig.com</div>
+      </div>
+      <div class="fw-core">
+        <div class="hat">🎩</div>
+        <div class="lbl">default<br>DROP</div>
+      </div>
+      <div class="fw-col">
+        <div class="fw-pill block"><span class="ic">✕</span> your-db.rds.amazonaws.com</div>
+        <div class="fw-pill block"><span class="ic">✕</span> localhost:5432 (Postgres)</div>
+        <div class="fw-pill block"><span class="ic">✕</span> 169.254.169.254 (metadata)</div>
+        <div class="fw-pill block"><span class="ic">✕</span> everything on IPv6</div>
+        <div class="fw-pill block"><span class="ic">✕</span> the entire rest of the internet</div>
       </div>
     </div>
 
-    <div style="margin-top: 24px;">
-      <h3 style="color: var(--amber); font-size: 13px; margin-bottom: 12px;">Or install from source</h3>
-      <div class="terminal">
-        <div class="terminal-bar">
-          <span class="terminal-dot"></span>
-          <span class="terminal-dot"></span>
-          <span class="terminal-dot"></span>
-          <span class="terminal-title">Terminal</span>
-        </div>
-        <div class="terminal-body">
-<span class="prompt">$</span> <span class="cmd">git clone https://github.com/aisaacs/mrc.git</span>
-<span class="prompt">$</span> <span class="cmd">sudo ln -s "$(pwd)/mrc/mrc.js" /usr/local/bin/mrc</span>
-<span class="output">  <span class="comment"># Requires Node.js 22+</span></span>
-        </div>
-      </div>
+    <div class="callout tip reveal">
+      <span class="callout-title">Need the open web?</span>
+      <p>Pass <code>--web</code> (or set it in <code>.mrcrc</code>) to open outbound HTTPS for web search and fetch — while every other restriction stays in place. Add your own private registries by editing one loop in <code>init-firewall.sh</code>.</p>
     </div>
   </div>
 </section>
 
 <!-- ─── FEATURES ─── -->
-<section>
+<section id="features">
   <div class="container">
-    <div class="section-label">// Features</div>
-    <h2>All bleeps, sweeps, and creeps accounted for</h2>
+    <div class="section-label reveal">Features</div>
+    <h2 class="reveal">All the bleeps, the sweeps, and the creeps</h2>
+    <div class="grid grid-3" style="margin-top:28px">
 
-    <div class="features-grid">
-      <div class="feature-card">
-        <span class="feature-icon">&#x1f6e1;</span>
-        <h3>iptables Firewall</h3>
-        <p>Default DROP policy. Whitelisted domains only. IPv6 blocked. Host services blocked. Your databases are unreachable.</p>
+      <div class="card reveal">
+        <span class="icon">🛡️</span>
+        <h3>iptables firewall</h3>
+        <p>Default-DROP policy, ipset allowlist, IPv6 blocked, host services sealed off. Verified at every boot.</p>
+        <span class="tag green">security</span>
       </div>
 
-      <div class="feature-card">
-        <span class="feature-icon">&#x1f4cb;</span>
-        <h3>Clipboard Proxy</h3>
-        <p>Paste images and text into the container via a TCP proxy. Works through host.docker.internal. Supports PNG, TIFF, JPEG.</p>
+      <div class="card reveal">
+        <span class="icon">🤖</span>
+        <h3>Claude <em>or</em> Codex</h3>
+        <p>Run Claude Code by default, or <code>--agent codex</code> for OpenAI's CLI. Both get their own persistent config volume.</p>
+        <span class="tag cyan">multi-agent</span>
       </div>
 
-      <div class="feature-card">
-        <span class="feature-icon">&#x1f514;</span>
-        <h3>Desktop Notifications</h3>
-        <p>Native macOS/Linux notifications when Claude finishes responding. Shows which repo and a summary. Configurable sound.</p>
+      <div class="card reveal">
+        <span class="icon">📋</span>
+        <h3>Clipboard bridge</h3>
+        <p>Paste images straight into Claude. An in-process TCP proxy serves your host clipboard — no <code>socat</code>, no external deps.</p>
+        <span class="tag">built-in</span>
       </div>
 
-      <div class="feature-card">
-        <span class="feature-icon">&#x1f4be;</span>
-        <h3>Session Management</h3>
-        <p>Auto-resume, named sessions, interactive picker with <code>mrc pick</code>. AI-generated names and summaries. Tool-miss detection on exit.</p>
+      <div class="card reveal">
+        <span class="icon">🔔</span>
+        <h3>Desktop notifications</h3>
+        <p>Native macOS/Linux pings when Claude finishes, with repo name and a one-line summary. Work elsewhere; he taps your shoulder.</p>
+        <span class="tag">built-in</span>
       </div>
 
-      <div class="feature-card">
-        <span class="feature-icon">&#x1f576;</span>
+      <div class="card reveal">
+        <span class="icon">💾</span>
+        <h3>Session management</h3>
+        <p>Auto-resume, named sessions, an arrow-key picker, AI-generated names &amp; summaries, and tool-miss detection on exit.</p>
+        <span class="tag green">sessions</span>
+      </div>
+
+      <div class="card reveal">
+        <span class="icon">🕶️</span>
         <h3>.sandboxignore</h3>
-        <p>Recursive, like .gitignore. Place anywhere in the tree. Files appear empty, directories appear as empty dirs.</p>
+        <p>Recursive, like <code>.gitignore</code>. Listed files appear empty; listed directories appear as empty dirs. He doesn't know what he's missing.</p>
+        <span class="tag green">security</span>
       </div>
 
-      <div class="feature-card">
-        <span class="feature-icon">&#x2699;</span>
-        <h3>.mrcrc Config</h3>
-        <p>Global defaults in ~/.mrcrc, per-repo overrides in &lt;repo&gt;/.mrcrc. One flag per line. CLI always wins.</p>
+      <div class="card reveal">
+        <span class="icon">📊</span>
+        <h3>Context status line</h3>
+        <p>A live bar showing context-window usage plus 5-hour and 7-day rate-limit gauges, color-coded as you approach compaction.</p>
+        <span class="tag cyan">visibility</span>
       </div>
 
-      <div class="feature-card">
-        <span class="feature-icon">&#x1f4e6;</span>
-        <h3>Multi-Instance</h3>
-        <p>Run multiple sessions against the same repo. Each gets its own config volume and dynamic proxy ports. No collisions.</p>
+      <div class="card reveal">
+        <span class="icon">⚙️</span>
+        <h3>.mrcrc config</h3>
+        <p>Global defaults in <code>~/.mrcrc</code>, per-repo overrides in <code>&lt;repo&gt;/.mrcrc</code>. One flag per line. CLI always wins.</p>
+        <span class="tag">ergonomics</span>
       </div>
 
-      <div class="feature-card">
-        <span class="feature-icon">&#x1f4ca;</span>
-        <h3>Context Status Line</h3>
-        <p>Live progress bar showing context window usage, 5h/7d rate limits, and session name. Color-coded warnings as you approach compaction.</p>
+      <div class="card reveal">
+        <span class="icon">👯</span>
+        <h3>Multi-instance</h3>
+        <p>Run several sessions against one repo. Each gets its own config volume and dynamically allocated proxy ports. No collisions.</p>
+        <span class="tag">scale</span>
       </div>
+
+      <div class="card reveal">
+        <span class="icon">🧠</span>
+        <h3>Project-local memory</h3>
+        <p>Conversation history and memory live in <code>.mrc/</code> inside the repo — survives volume resets, travels with the project.</p>
+        <span class="tag green">sessions</span>
+      </div>
+
+      <div class="card reveal">
+        <span class="icon">👻</span>
+        <h3>Daemon &amp; JSON modes</h3>
+        <p><code>--daemon</code> runs detached and prints a container ID; <code>--json</code> streams <code>stream-json</code> for scripting and CI.</p>
+        <span class="tag cyan">automation</span>
+      </div>
+
+      <div class="card reveal">
+        <span class="icon">🚀</span>
+        <h3>Smart Colima sizing</h3>
+        <p>Defaults the VM to all your cores and half your RAM (8 GB floor). Override with <code>--colima-cpu</code> / <code>--colima-memory</code>.</p>
+        <span class="tag">performance</span>
+      </div>
+
     </div>
   </div>
 </section>
 
-<!-- ─── CLI REFERENCE ─── -->
-<section>
+<!-- ─── SHOWCASE ─── -->
+<section id="showcase">
   <div class="container">
-    <div class="section-label">// CLI Reference</div>
-    <h2>mrc [options] [path] [-- args...]</h2>
+    <div class="section-label reveal">Live from the cockpit</div>
+    <h2 class="reveal">It's genuinely nice to look at</h2>
 
-    <table class="cli-table">
-      <thead>
-        <tr><th>Flag</th><th>Description</th></tr>
-      </thead>
-      <tbody>
-        <tr><td colspan="2" class="cli-section-label">Options</td></tr>
-        <tr><td>-r, --rebuild</td><td>Force a full image rebuild (no cache)</td></tr>
-        <tr><td>-v, --verbose</td><td>Show Colima and Docker output</td></tr>
-        <tr><td>-n, --new [name]</td><td>Start a new conversation (optionally named)</td></tr>
-        <tr><td>-w, --web</td><td>Allow outbound HTTPS to any host</td></tr>
-        <tr><td>--agent &lt;name&gt;</td><td>AI agent to launch: claude (default), codex</td></tr>
-        <tr><td>--daemon</td><td>Start container in background, print container ID</td></tr>
-        <tr><td>-j, --json</td><td>Stream JSON output instead of interactive TTY</td></tr>
-        <tr><td>--no-summary</td><td>Skip AI session summary on exit</td></tr>
-        <tr><td>--no-notify</td><td>Disable desktop notifications entirely</td></tr>
-        <tr><td>--no-sound</td><td>Disable notification sound (still shows notification)</td></tr>
-        <tr><td>--colima-cpu N</td><td>CPUs for Colima VM (default: all host cores)</td></tr>
-        <tr><td>--colima-memory N</td><td>Memory (GB) for Colima VM (default: half host RAM, min 8)</td></tr>
-
-        <tr><td colspan="2" class="cli-section-label">Commands</td></tr>
-        <tr><td>mrc status</td><td>Show active containers across repos</td></tr>
-        <tr><td>mrc pick [path]</td><td>Interactive session picker (arrow keys)</td></tr>
-        <tr><td>mrc sessions ls</td><td>List saved sessions</td></tr>
-        <tr><td>mrc sessions name</td><td>Name a session</td></tr>
-        <tr><td>mrc sessions resume</td><td>Resume a specific session</td></tr>
-
-        <tr><td colspan="2" class="cli-section-label">Environment</td></tr>
-        <tr><td>ANTHROPIC_API_KEY</td><td>API key (also loaded from .env or ~/.config/mrc/.env)</td></tr>
-        <tr><td>OPENAI_API_KEY</td><td>OpenAI key (required for --agent codex)</td></tr>
-        <tr><td>MRC_PORT_BASE</td><td>Starting port for proxy allocation (default: 7722)</td></tr>
-        <tr><td>MRC_HOME</td><td>Override Docker context directory (advanced)</td></tr>
-      </tbody>
-    </table>
-
-    <div style="margin-top: 30px;">
-      <h3 style="color: var(--amber); font-size: 13px; margin-bottom: 12px;">Config files</h3>
-      <div class="terminal">
-        <div class="terminal-bar">
-          <span class="terminal-dot"></span>
-          <span class="terminal-dot"></span>
-          <span class="terminal-dot"></span>
-          <span class="terminal-title">~/.mrcrc</span>
-        </div>
-        <div class="terminal-body">
-<span class="comment"># Global defaults — apply to every repo</span>
-<span class="cmd">--no-sound</span>
-<span class="cmd">--web</span>
-<span class="cmd">--colima-memory 32</span>
+    <div class="grid grid-2" style="margin-top:28px; align-items:start">
+      <div class="reveal">
+        <h3>The status line</h3>
+        <p class="muted" style="font-size:13.5px">Pinned to the bottom of every session. Green under 60%, amber from 60–76%, red past 77% — because Claude reserves ~15% for compaction.</p>
+        <div class="terminal" data-nocopy="true">
+          <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">claude — statusline</span></div>
+<div class="terminal-body wrap"><span class="t-ok">[█████████</span><span class="t-dim">░░░░░░░░░░░]</span> <span class="t-ok">49% context</span> <span class="t-dim">·</span> <span class="t-cyan">5h</span> <span class="t-ok">12%</span> <span class="t-dim">│</span> <span class="t-cyan">7d</span> <span class="t-ok">7%</span> <span class="t-dim">·</span> <span class="t-mag">add-context-progress-bar</span></div>
         </div>
       </div>
+
+      <div class="reveal">
+        <h3>Who's running where</h3>
+        <p class="muted" style="font-size:13.5px"><code>mrc status</code> sweeps every repo and shows live containers with uptime and flags — no API key required.</p>
+        <div class="terminal" data-nocopy="true">
+          <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">mrc status</span></div>
+<div class="terminal-body">  🎩 Active Mr. Claude Sessions
+  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+<span class="t-out">  → myapp  ·  up 1h 12m</span>
+<span class="t-dim">    /Users/you/projects/myapp  [a1b2c3d4e5f6]</span>
+<span class="t-out">  → infra-tools  ·  up 23m</span> <span class="t-warn">(--web)</span>
+<span class="t-dim">    /Users/you/work/infra-tools  [9f8e7d6c5b4a]</span></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="reveal">
+      <h3 style="margin-top:14px">Pick up where you left off</h3>
+      <p class="muted" style="font-size:13.5px">An arrow-key picker over named, auto-summarized sessions. Reopening a repo resumes the last one automatically.</p>
+      <div class="terminal" data-nocopy="true">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">mrc pick</span></div>
+<div class="terminal-body">  🎩 Choose your adventure, Lone Starr:
+
+<span class="t-ok">  ▸ 1  add-context-progress-bar</span>   <span class="t-dim">2h ago   · added a 20-char usage bar to the statusline</span>
+<span class="t-out">    2  fix-clipboard-targets</span>      <span class="t-dim">yesterday · verified image/* MIME types over TCP</span>
+<span class="t-out">    3  colima-autosizing</span>          <span class="t-dim">3d ago   · detect host cores + half RAM for the VM</span>
+<span class="t-out">    +  start a new conversation</span>
+
+  <span class="t-dim">↑/↓ move · ↵ open · q quit</span></div>
+      </div>
     </div>
   </div>
 </section>
 
-<!-- ─── CHANGELOG ─── -->
-<section>
-  <div class="container">
-    <div class="section-label">// Changelog</div>
-    <h2>What's new</h2>
-
-    <div class="changelog-section">
-      <h3>v1.0.0 &mdash; Ludicrous Speed</h3>
-      <ul>
-        <li><strong>Standalone binary</strong> &mdash; Single-file install via <code>curl | bash</code>. No Node.js required on the host.</li>
-        <li><strong>Session picker</strong> &mdash; <code>mrc pick</code> launches an interactive TUI to browse, select, or start sessions.</li>
-        <li><strong>Context status line</strong> &mdash; Live progress bar showing context window usage, 5h/7d rate limits, and session name.</li>
-        <li><strong>Auto-naming</strong> &mdash; Sessions are automatically named via Haiku API after enough conversation builds up.</li>
-        <li><strong>Node.js rewrite</strong> &mdash; Host launcher and container scripts rewritten from bash/Python to Node.js for easier maintenance.</li>
-      </ul>
-    </div>
-
-    <div class="changelog-section">
-      <h3>Session Management</h3>
-      <ul>
-        <li><strong>Auto-resume</strong> &mdash; Re-opening a repo continues the last conversation automatically.</li>
-        <li><strong>Named sessions</strong> &mdash; <code>mrc --new bugfix</code> starts a fresh conversation with a name.</li>
-        <li><strong>Session subcommands</strong> &mdash; <code>mrc sessions ls</code>, <code>name</code>, <code>resume</code>.</li>
-        <li><strong>Session summaries</strong> &mdash; AI-generated summaries saved on exit (requires API key).</li>
-        <li><strong>Tool-miss detection</strong> &mdash; Reports missing tools with issue links on exit.</li>
-      </ul>
-    </div>
-
-    <div class="changelog-section">
-      <h3>Desktop Notifications</h3>
-      <ul>
-        <li><strong>Response-complete notifications</strong> &mdash; Native macOS notification when Claude finishes, with repo name and summary.</li>
-        <li><strong><code>--no-notify</code></strong> &mdash; Disable notifications entirely.</li>
-        <li><strong><code>--no-sound</code></strong> &mdash; Keep the notification, kill the Glass sound.</li>
-      </ul>
-    </div>
-
-    <div class="changelog-section">
-      <h3>Security &amp; Multi-Instance</h3>
-      <ul>
-        <li><strong>Host network lockdown</strong> &mdash; Firewall only opens proxy ports. Your local Postgres, Redis, and everything else on the host are blocked.</li>
-        <li><strong>Concurrent sessions</strong> &mdash; Multiple instances per repo, each with its own config volume and fresh session.</li>
-        <li><strong>Dynamic port allocation</strong> &mdash; Each instance gets free ports starting from <code>MRC_PORT_BASE</code>.</li>
-      </ul>
-    </div>
-
-    <div class="changelog-section">
-      <h3>Config &amp; Ergonomics</h3>
-      <ul>
-        <li><strong><code>.mrcrc</code> config files</strong> &mdash; Global (<code>~/.mrcrc</code>) and per-repo defaults.</li>
-        <li><strong>Recursive <code>.sandboxignore</code></strong> &mdash; Place anywhere in the tree, entries resolve relative to their directory.</li>
-        <li><strong><code>mrc status</code></strong> &mdash; See all running containers with uptime and flags.</li>
-      </ul>
-    </div>
-  </div>
-</section>
-
-<!-- ─── YOGURT QUOTE ─── -->
-<div class="yogurt-quote">
+<!-- ─── QUOTE ─── -->
+<div class="quote">
   <div class="container">
     <blockquote>"God willing, we'll all meet again in Spaceballs 2: The Search for More Money."</blockquote>
-    <cite>&mdash; Yogurt</cite>
+    <cite>— Yogurt</cite>
   </div>
 </div>
 
+<!-- ─── FINAL CTA ─── -->
+<section id="cta" class="center">
+  <div class="container-narrow">
+    <h2 class="reveal">Ready when you are, Lone Starr.</h2>
+    <p class="lede reveal" style="margin:0 auto">Seal the room, hand over the keys, and let Claude actually work.</p>
+    <div class="hero-cta reveal" style="justify-content:center">
+      <a href="#quickstart" class="btn btn-primary">▸ Install Mister Claude</a>
+      <a href="examples.html" class="btn btn-ghost">See the recipes</a>
+    </div>
+  </div>
+</section>
+
 <!-- ─── FOOTER ─── -->
 <footer>
-  <div class="container">
-    Mr. Claude &mdash; <a href="https://github.com/aisaacs/mrc">GitHub</a> &mdash; Made with the Schwartz
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="index.html" class="nav-brand"><span class="hat">🎩</span> Mister&nbsp;Claude</a>
+      <p>Sandboxed Claude Code with an iptables firewall. Full permissions, zero blast radius.</p>
+    </div>
+    <div class="footer-col">
+      <h5>Project</h5>
+      <a href="docs.html">Documentation</a>
+      <a href="examples.html">Examples</a>
+      <a href="docs.html#security">Security model</a>
+      <a href="https://github.com/aisaacs/mrc">GitHub</a>
+    </div>
+    <div class="footer-col">
+      <h5>Reference</h5>
+      <a href="docs.html#cli">CLI reference</a>
+      <a href="docs.html#config">Config files</a>
+      <a href="docs.html#sessions">Sessions</a>
+      <a href="docs.html#troubleshooting">Troubleshooting</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    Made with the Schwartz · MIT licensed · <a href="https://github.com/aisaacs/mrc">github.com/aisaacs/mrc</a>
   </div>
 </footer>
 
-<!-- ─── SCROLL ANIMATIONS ─── -->
-<script>
-document.querySelectorAll('section, .feature-card').forEach(el => el.classList.add('fade-in'));
-const obs = new IntersectionObserver((entries) => {
-  entries.forEach(e => { if (e.isIntersecting) e.target.classList.add('visible'); });
-}, { threshold: 0.1 });
-document.querySelectorAll('.fade-in').forEach(el => obs.observe(el));
-</script>
-
+<script src="app.js"></script>
 </body>
 </html>

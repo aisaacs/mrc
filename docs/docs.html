@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Documentation — Mister Claude</title>
+<meta name="description" content="Full documentation for Mister Claude (mrc): installation, configuration, CLI reference, sessions, the security model, and troubleshooting.">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎩</text></svg>">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<!-- ─── NAV ─── -->
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="index.html" class="nav-brand"><span class="hat">🎩</span> Mister&nbsp;Claude</a>
+    <button class="nav-toggle" aria-label="Menu">≡</button>
+    <div class="nav-links">
+      <a href="index.html">Home</a>
+      <a href="docs.html">Docs</a>
+      <a href="examples.html">Examples</a>
+      <a href="docs.html#security">Security</a>
+      <a href="https://github.com/aisaacs/mrc" class="nav-gh">★ GitHub</a>
+    </div>
+  </div>
+</nav>
+
+<div class="doc-hero">
+  <div class="section-label">Documentation</div>
+  <h1>The owner's manual</h1>
+  <p>Everything <code>mrc</code> does, how to configure it, and what to do when the radar goes quiet. New here? Start with <a href="#install">Installation</a>, then skim the <a href="#cli">CLI reference</a>.</p>
+</div>
+
+<div class="docs-layout">
+  <!-- ─── SIDEBAR ─── -->
+  <aside class="docs-sidebar">
+    <h4>Getting started</h4>
+    <a href="#install">Installation</a>
+    <a href="#config">Configuration</a>
+    <a href="#usage">Usage</a>
+    <h4>Reference</h4>
+    <a href="#cli">CLI reference</a>
+    <a href="#sessions">Sessions</a>
+    <a href="#sandboxignore">.sandboxignore</a>
+    <a href="#colima">Colima resources</a>
+    <a href="#agents">Claude &amp; Codex</a>
+    <h4>Integrations</h4>
+    <a href="#clipboard">Clipboard</a>
+    <a href="#notifications">Notifications</a>
+    <a href="#statusline">Status line</a>
+    <h4>Under the hood</h4>
+    <a href="#persistence">Data persistence</a>
+    <a href="#security">Security model</a>
+    <a href="#updating">Updating</a>
+    <h4>Help</h4>
+    <a href="#troubleshooting">Troubleshooting</a>
+  </aside>
+
+  <!-- ─── CONTENT ─── -->
+  <main class="docs-content">
+
+    <!-- INSTALL -->
+    <section id="install">
+      <h2>Installation</h2>
+      <p>Mister Claude is a Node.js launcher (<code>mrc.js</code>) that drives Docker. You need a Docker engine, and on macOS the lightweight choice is <strong>Colima</strong> — no Docker Desktop, no GUI, no license fees.</p>
+
+      <h3>1 · Prerequisites (macOS)</h3>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">prerequisites</span></div>
+<div class="terminal-body"><span class="t-com"># Homebrew, then the toolchain</span>
+<span class="t-prompt">$</span> <span class="t-cmd">brew install node docker docker-buildx colima terminal-notifier</span>
+
+<span class="t-com"># Tell Docker where Homebrew put the buildx plugin</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mkdir -p ~/.docker</span>
+<span class="t-prompt">$</span> <span class="t-cmd">echo '{"cliPluginsExtraDirs": ["/opt/homebrew/lib/docker/cli-plugins"]}' &gt; ~/.docker/config.json</span></div>
+      </div>
+      <ul class="bullets">
+        <li><strong>node</strong> — runtime for the <code>mrc</code> launcher</li>
+        <li><strong>docker</strong> + <strong>docker-buildx</strong> — the CLI client and build plugin</li>
+        <li><strong>colima</strong> — the Linux VM that runs the Docker daemon</li>
+        <li><strong>terminal-notifier</strong> — native macOS desktop notifications</li>
+      </ul>
+      <div class="callout warn">
+        <span class="callout-title">Merging config.json</span>
+        <p>If you already have a <code>~/.docker/config.json</code>, merge the <code>cliPluginsExtraDirs</code> key in by hand rather than overwriting the file.</p>
+      </div>
+
+      <h3>2 · Install mrc</h3>
+      <p>The install script drops a launcher into <code>~/.local/bin/mrc</code> and the Docker build context into <code>~/.local/share/mrc/</code>:</p>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">install — one liner</span></div>
+<div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">curl -fsSL https://aisaacs.github.io/mrc/install.sh | bash</span></div>
+      </div>
+      <p>Or <strong>from source</strong> (requires Node.js 22+):</p>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">install — from source</span></div>
+<div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">git clone https://github.com/aisaacs/mrc.git</span>
+<span class="t-prompt">$</span> <span class="t-cmd">sudo ln -s "$(pwd)/mrc/mrc.js" /usr/local/bin/mrc</span></div>
+      </div>
+      <div class="callout note">
+        <span class="callout-title">Linux</span>
+        <p>On Linux with a native Docker daemon, skip Colima entirely — <code>mrc</code> talks to Docker directly. Swap <code>terminal-notifier</code> for <code>notify-send</code> (usually in <code>libnotify-bin</code>).</p>
+      </div>
+    </section>
+
+    <!-- CONFIG -->
+    <section id="config">
+      <h2>Configuration</h2>
+      <p>Three sources, merged in order — global config, per-repo config, then CLI flags. <strong>CLI flags always win.</strong></p>
+
+      <h3>.mrcrc files</h3>
+      <p>One CLI flag per line; <code>#</code> for comments. Global defaults live in <code>~/.mrcrc</code>; per-repo overrides in <code>&lt;repo&gt;/.mrcrc</code>.</p>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">~/.mrcrc</span></div>
+<div class="terminal-body"><span class="t-com"># Global defaults — apply to every repo</span>
+<span class="t-flag">--no-sound</span>
+<span class="t-flag">--web</span>
+<span class="t-flag">--colima-memory</span> <span class="t-cmd">32</span></div>
+      </div>
+
+      <h3>API keys &amp; .env</h3>
+      <p><code>mrc</code> loads a <code>.env</code> from next to the launcher, or from <code>~/.config/mrc/.env</code>. Both Anthropic and OpenAI keys are picked up.</p>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">.env</span></div>
+<div class="terminal-body"><span class="t-key">ANTHROPIC_API_KEY</span>=<span class="t-str">"sk-ant-..."</span>
+<span class="t-key">OPENAI_API_KEY</span>=<span class="t-str">"sk-..."</span>   <span class="t-com"># only needed for --agent codex</span></div>
+      </div>
+      <div class="callout tip">
+        <span class="callout-title">1Password native</span>
+        <p>Use <code>op://</code> references and <code>mrc</code> resolves them through the 1Password CLI at launch — keys never touch disk in plaintext:</p>
+        <div class="terminal" style="margin:10px 0 0">
+<div class="terminal-body"><span class="t-key">ANTHROPIC_API_KEY</span>=<span class="t-str">"op://Engineering/MRC Claude API key/credential"</span>
+<span class="t-key">OPENAI_API_KEY</span>=<span class="t-str">"op://Engineering/OpenAI/credential"</span></div>
+        </div>
+      </div>
+      <div class="callout note">
+        <span class="callout-title">Why a separate Anthropic key?</span>
+        <p>This key is <em>not</em> your Claude Code subscription. It powers small Haiku calls for session naming and summaries. A dedicated key lets you revoke it independently. Claude Code itself authenticates inside the container as usual.</p>
+      </div>
+
+      <h3>Environment variables</h3>
+      <table class="table">
+        <tr><th>Variable</th><th>Purpose</th></tr>
+        <tr><td>ANTHROPIC_API_KEY</td><td>Anthropic key — from env, <code>.env</code>, or <code>~/.config/mrc/.env</code></td></tr>
+        <tr><td>OPENAI_API_KEY</td><td>OpenAI key — required for <code>--agent codex</code></td></tr>
+        <tr><td>MRC_PORT_BASE</td><td>Starting port for proxy allocation (default <code>7722</code>)</td></tr>
+        <tr><td>MRC_HOME</td><td>Override the Docker build-context directory (advanced)</td></tr>
+      </table>
+    </section>
+
+    <!-- USAGE -->
+    <section id="usage">
+      <h2>Usage</h2>
+      <p>Point <code>mrc</code> at a repo. Pass anything after <code>--</code> straight through to Claude Code.</p>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">usage</span></div>
+<div class="terminal-body"><span class="t-com"># Open a project (resumes the last conversation)</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc ~/projects/my-app</span>
+
+<span class="t-com"># Current directory</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc .</span>
+
+<span class="t-com"># Pass args through to Claude Code after --</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc . <span class="t-flag">--</span> <span class="t-flag">-p</span> <span class="t-str">"refactor the auth module"</span></span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc . <span class="t-flag">--</span> <span class="t-flag">--model</span> claude-sonnet-4-5-20250929</span>
+
+<span class="t-com"># Start a fresh, named conversation</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc <span class="t-flag">--new</span> fix-bug-42 ~/projects/my-app</span>
+
+<span class="t-com"># Open the web (HTTPS to any host) for search & fetch</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc <span class="t-flag">--web</span> ~/projects/my-app</span></div>
+      </div>
+      <p>When you quit, the container disappears — your files are safe on the host, only the container is ephemeral. Reopening the same repo auto-resumes via <code>--continue</code>.</p>
+    </section>
+
+    <!-- CLI -->
+    <section id="cli">
+      <h2>CLI reference</h2>
+      <p class="muted" style="font-size:13px"><code>mrc [options] [path-to-repo] [-- claude-code-args...]</code></p>
+
+      <h3>Options</h3>
+      <table class="table">
+        <tr><th>Flag</th><th>Description</th></tr>
+        <tr><td>-r, --rebuild</td><td>Force a full image rebuild (no cache)</td></tr>
+        <tr><td>-v, --verbose</td><td>Show Colima and Docker output</td></tr>
+        <tr><td>-n, --new [name]</td><td>Start a new conversation (optionally named)</td></tr>
+        <tr><td>-w, --web</td><td>Allow outbound HTTPS to any host</td></tr>
+        <tr><td>--agent &lt;name&gt;</td><td>Agent to launch: <code>claude</code> (default) or <code>codex</code></td></tr>
+        <tr><td>--daemon</td><td>Start the container detached and print its ID</td></tr>
+        <tr><td>-j, --json</td><td>Stream <code>stream-json</code> instead of an interactive TTY</td></tr>
+        <tr><td>--no-summary</td><td>Skip the AI session summary on exit</td></tr>
+        <tr><td>--no-notify</td><td>Disable desktop notifications entirely</td></tr>
+        <tr><td>--no-sound</td><td>Notify silently (no sound)</td></tr>
+        <tr><td>--colima-cpu N</td><td>CPUs for the Colima VM (default: all host cores)</td></tr>
+        <tr><td>--colima-memory N</td><td>Memory in GB (default: half host RAM, min 8)</td></tr>
+      </table>
+
+      <h3>Commands</h3>
+      <table class="table">
+        <tr><th>Command</th><th>Description</th></tr>
+        <tr><td>mrc status</td><td>Show active containers across all repos (no key needed)</td></tr>
+        <tr><td>mrc pick [path]</td><td>Interactive session picker (arrow keys)</td></tr>
+        <tr><td>mrc sessions ls [path]</td><td>List saved sessions</td></tr>
+        <tr><td>mrc sessions name &lt;name&gt; [#] [path]</td><td>Name a session (defaults to most recent)</td></tr>
+        <tr><td>mrc sessions resume &lt;name-or-#&gt; [path]</td><td>Resume a specific session</td></tr>
+        <tr><td>mrc sessions pick [path]</td><td>Alias for <code>mrc pick</code></td></tr>
+      </table>
+    </section>
+
+    <!-- SESSIONS -->
+    <section id="sessions">
+      <h2>Sessions</h2>
+      <p>Every conversation is a <code>.jsonl</code> file in <code>.mrc/</code>. They auto-resume, auto-name, and auto-summarize.</p>
+      <ul class="bullets">
+        <li><strong>Auto-resume</strong> — reopening a repo continues the last conversation (<code>--continue</code>).</li>
+        <li><strong>Named sessions</strong> — <code>mrc --new bugfix</code> starts fresh with a name; names live in <code>.mrc/session-names</code>.</li>
+        <li><strong>AI names &amp; summaries</strong> — once enough conversation builds up, a Haiku call names and summarizes it (skip with <code>--no-summary</code>).</li>
+        <li><strong>Tool-miss detection</strong> — on exit, <code>mrc</code> reports any tools Claude reached for but didn't have, with a one-click GitHub issue link.</li>
+      </ul>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">sessions</span></div>
+<div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">mrc pick</span>                       <span class="t-com"># arrow-key picker</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc sessions ls</span>                <span class="t-com"># list them</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc sessions name <span class="t-str">"auth-refactor"</span></span>   <span class="t-com"># name the latest</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc sessions name <span class="t-str">"clipboard-fix"</span> 2</span> <span class="t-com"># name session #2</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc sessions resume auth-refactor</span>  <span class="t-com"># by name</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc sessions resume 2</span>             <span class="t-com"># or by number</span></div>
+      </div>
+    </section>
+
+    <!-- SANDBOXIGNORE -->
+    <section id="sandboxignore">
+      <h2>.sandboxignore</h2>
+      <p>Hide secrets and infrastructure from the container. Works like <code>.gitignore</code> and is <strong>recursive</strong> — drop a <code>.sandboxignore</code> anywhere in the tree and its entries resolve relative to that directory.</p>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">.sandboxignore</span></div>
+<div class="terminal-body"><span class="t-com"># Secrets</span>
+.env
+.env.local
+.env.production
+
+<span class="t-com"># Infrastructure</span>
+terraform/
+k8s/
+secrets/</div>
+      </div>
+      <ul class="bullets">
+        <li><strong>Files</strong> are masked with <code>/dev/null</code> — they appear empty inside the container.</li>
+        <li><strong>Directories</strong> get an anonymous volume overlay — they appear as empty dirs.</li>
+        <li>Comments (<code>#</code>) and blank lines are supported.</li>
+      </ul>
+      <div class="callout tip"><p>He doesn't know what he's missing. Even if Claude is convinced your AWS keys must be <em>somewhere</em>, the bytes simply aren't in the container.</p></div>
+    </section>
+
+    <!-- COLIMA -->
+    <section id="colima">
+      <h2>Colima resources</h2>
+      <p>By default the Colima VM gets <strong>all your CPU cores</strong> and <strong>half your RAM</strong> (with an 8 GB floor). Override per-run or in <code>.mrcrc</code>:</p>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">colima sizing</span></div>
+<div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">mrc <span class="t-flag">--colima-cpu</span> 8 <span class="t-flag">--colima-memory</span> 32 ~/projects/my-app</span>
+
+<span class="t-com"># or pin it in ~/.mrcrc</span>
+<span class="t-flag">--colima-memory</span> 48</div>
+      </div>
+      <div class="callout warn">
+        <span class="callout-title">Only applies on a fresh start</span>
+        <p>Colima is a single shared VM. These settings take effect when <code>mrc</code> <em>starts</em> Colima — if it's already running, it keeps its current size. To resize: <code>colima stop</code> then run <code>mrc</code> again.</p>
+      </div>
+    </section>
+
+    <!-- AGENTS -->
+    <section id="agents">
+      <h2>Claude &amp; Codex</h2>
+      <p>Claude Code is the default. Pass <code>--agent codex</code> to launch OpenAI's Codex CLI in the same sandbox instead.</p>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">agents</span></div>
+<div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">mrc ~/projects/my-app</span>                 <span class="t-com"># Claude (default)</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc <span class="t-flag">--agent</span> codex ~/projects/my-app</span>   <span class="t-com"># Codex</span></div>
+      </div>
+      <ul class="bullets">
+        <li>Codex needs <code>OPENAI_API_KEY</code> in your environment or <code>.env</code>.</li>
+        <li>Claude config persists in <code>mrc-config-&lt;hash&gt;</code>; Codex config in a separate <code>mrc-codex-&lt;hash&gt;</code> volume.</li>
+        <li>Session naming &amp; summaries are Claude-only — they're skipped for Codex.</li>
+        <li>The firewall already whitelists <code>api.openai.com</code>, so Codex works out of the box.</li>
+      </ul>
+    </section>
+
+    <!-- CLIPBOARD -->
+    <section id="clipboard">
+      <h2>Clipboard (image paste)</h2>
+      <p>Text paste works through the terminal already. Images need a bridge — <code>mrc</code> ships one as an in-process TCP proxy (no <code>socat</code>, no external dependency).</p>
+      <ol class="bullets">
+        <li><code>mrc</code> starts a clipboard server on a dynamic port (from <code>MRC_PORT_BASE</code>, default 7722).</li>
+        <li>Inside the container, a shim at <code>/usr/local/bin/xclip</code> intercepts Claude's clipboard reads.</li>
+        <li>The shim fetches clipboard data over <code>host.docker.internal</code>.</li>
+      </ol>
+      <p>The banner shows <code>Clipboard: the Schwartz can see your clipboard</code> when it's live. Just copy an image and press <strong>Ctrl+V</strong> inside Claude Code.</p>
+      <div class="callout note">
+        <span class="callout-title">Debugging</span>
+        <p>Check <code>/tmp/mrc-xclip-shim.log</code> inside the container. A "No route to host" there usually means a stale firewall — rebuild with <code>docker rmi mister-claude</code>.</p>
+      </div>
+    </section>
+
+    <!-- NOTIFICATIONS -->
+    <section id="notifications">
+      <h2>Notifications</h2>
+      <p>A Claude Code <code>Stop</code> hook fires when he finishes responding. The container-side hook sends the repo name and a one-line summary to a host-side proxy, which fires a native notification (<code>terminal-notifier</code> on macOS, <code>notify-send</code> on Linux).</p>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">notification flags</span></div>
+<div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">mrc <span class="t-flag">--no-notify</span> ~/projects/my-app</span>   <span class="t-com"># off entirely</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc <span class="t-flag">--no-sound</span> ~/projects/my-app</span>    <span class="t-com"># show it, silently</span></div>
+      </div>
+      <div class="callout warn">
+        <span class="callout-title">macOS not showing banners?</span>
+        <p>System Settings → Notifications → <strong>terminal-notifier</strong> → set the style to Banners or Alerts and toggle <strong>Allow Notifications</strong> on. To let them through Do Not Disturb, add terminal-notifier under Focus → Allowed Notifications.</p>
+      </div>
+    </section>
+
+    <!-- STATUSLINE -->
+    <section id="statusline">
+      <h2>Status line</h2>
+      <p>A live bar at the bottom of every session: context-window usage, plus 5-hour and 7-day rate-limit gauges, plus the session name.</p>
+      <div class="terminal" data-nocopy="true">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">statusline</span></div>
+<div class="terminal-body wrap"><span class="t-ok">[█████████</span><span class="t-dim">░░░░░░░░░░░]</span> <span class="t-ok">49% context</span> <span class="t-dim">·</span> <span class="t-cyan">5h</span> <span class="t-ok">12%</span> <span class="t-dim">│</span> <span class="t-cyan">7d</span> <span class="t-ok">7%</span> <span class="t-dim">·</span> <span class="t-mag">add-context-progress-bar</span></div>
+      </div>
+      <table class="table">
+        <tr><th>Range</th><th>Color</th><th>Meaning</th></tr>
+        <tr><td>0–59%</td><td>Green</td><td>Normal usage</td></tr>
+        <tr><td>60–76%</td><td>Yellow</td><td>Getting full</td></tr>
+        <tr><td>77–100%</td><td>Red</td><td>Compaction imminent (Claude reserves ~15%)</td></tr>
+      </table>
+      <p>It's installed automatically on container start — but only if you haven't set your own. A custom <code>/statusline</code> always wins.</p>
+    </section>
+
+    <!-- PERSISTENCE -->
+    <section id="persistence">
+      <h2>Data persistence</h2>
+      <p>Two places, two jobs:</p>
+      <table class="table">
+        <tr><th>Location</th><th>Holds</th><th>Lifecycle</th></tr>
+        <tr><td>mrc-config-&lt;hash&gt;</td><td>Global Claude config: auth, settings, plugins</td><td>Docker volume, per repo</td></tr>
+        <tr><td>mrc-codex-&lt;hash&gt;</td><td>Codex config</td><td>Docker volume, per repo</td></tr>
+        <tr><td>.mrc/ in your repo</td><td>Memory, conversation history, project settings</td><td>Lives in the repo; survives volume resets</td></tr>
+      </table>
+      <p>Each repo gets its own volumes (keyed by an MD5 hash of the repo path) so projects never cross-contaminate. <code>.mrc/</code> is auto-created and auto-added to <code>.gitignore</code>, and is symlinked from <code>~/.claude/projects/-workspace/</code> inside the container.</p>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">resets</span></div>
+<div class="terminal-body"><span class="t-com"># Fresh project memory</span>
+<span class="t-prompt">$</span> <span class="t-cmd">rm -rf .mrc/</span>
+
+<span class="t-com"># Nuke a repo's global config volume</span>
+<span class="t-prompt">$</span> <span class="t-cmd">docker volume ls | grep mrc-config</span>
+<span class="t-prompt">$</span> <span class="t-cmd">docker volume rm mrc-config-&lt;hash&gt;</span></div>
+      </div>
+    </section>
+
+    <!-- SECURITY -->
+    <section id="security">
+      <h2>Security model</h2>
+      <p>The whole design rests on one idea: <strong>the container is the security boundary</strong>, not Claude's own permission prompts. That's what makes <code>--dangerously-skip-permissions</code> safe here.</p>
+
+      <h3>What the firewall does</h3>
+      <ul class="bullets">
+        <li>Resolves the allowlist to IPs at boot and pins them in an <code>ipset</code>.</li>
+        <li>Sets the default <code>iptables</code> policy to <strong>DROP</strong> on INPUT, OUTPUT, and FORWARD.</li>
+        <li>Adds an explicit <strong>REJECT</strong> for non-allowed outbound traffic, so blocked calls fail instantly instead of hanging.</li>
+        <li><strong>Blocks all IPv6</strong> — otherwise an IPv6-capable service could sidestep the IPv4 rules.</li>
+        <li>Allows the host only on the dynamic <strong>proxy ports</strong> — your local Postgres, Redis, and everything else stay unreachable.</li>
+        <li>Verifies the lock by confirming <code>example.com</code> is unreachable before handing control to Claude.</li>
+      </ul>
+
+      <h3>The allowlist</h3>
+      <div class="pillrow">
+        <span class="tag green">api.anthropic.com</span>
+        <span class="tag green">api.openai.com</span>
+        <span class="tag green">registry.npmjs.org</span>
+        <span class="tag green">sentry.io</span>
+        <span class="tag green">statsig.com</span>
+      </div>
+      <p>Add your own (a private registry, an internal API) by editing the <code>for domain in ...</code> loop in <code>init-firewall.sh</code>, then rebuild. With <code>--web</code>, outbound HTTPS (port 443) opens to any host while every other rule stays in force.</p>
+
+      <h3>Other guarantees</h3>
+      <ul class="bullets">
+        <li><strong>UID/GID matching</strong> — the image is built with your host UID/GID, so bind-mounted files keep correct ownership and Claude runs as a non-root <code>coder</code> user.</li>
+        <li><strong>Scoped sudo</strong> — <code>coder</code> may run exactly one command with sudo: the firewall script. Nothing else.</li>
+        <li><strong>Ephemeral containers</strong> — every container runs with <code>--rm</code>; quit and it's gone.</li>
+        <li><strong>NET_ADMIN / NET_RAW only</strong> — the container gets just the capabilities needed to firewall itself.</li>
+      </ul>
+      <div class="callout note">
+        <span class="callout-title">Add domains, responsibly</span>
+        <p>The allowlist is short on purpose. Every domain you add is a door. Prefer <code>.sandboxignore</code> for secrets and <code>--web</code> only when you actually need the open web.</p>
+      </div>
+    </section>
+
+    <!-- UPDATING -->
+    <section id="updating">
+      <h2>Updating</h2>
+      <p>Claude Code's version is baked into the image at build time, and auto-update is disabled inside the container (the firewall blocks the npm CDN hosts it would need). To get a newer Claude Code, rebuild:</p>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">rebuild</span></div>
+<div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">docker rmi mister-claude</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc ~/projects/my-app</span>
+
+<span class="t-com"># or, equivalently</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc <span class="t-flag">--rebuild</span> ~/projects/my-app</span></div>
+      </div>
+      <p><code>mrc</code> nudges you when the image is more than four days old. Rebuilding also picks up changes to the Dockerfile, entrypoint, firewall rules, and container scripts.</p>
+    </section>
+
+    <!-- TROUBLESHOOTING -->
+    <section id="troubleshooting">
+      <h2>Troubleshooting</h2>
+      <table class="table">
+        <tr><th>Symptom</th><th>Fix</th></tr>
+        <tr><td>docker: command not found</td><td><code>brew install docker docker-buildx colima</code> and ensure Homebrew is on your PATH.</td></tr>
+        <tr><td>Cannot connect to the Docker daemon</td><td>Colima isn't running. Just run <code>mrc</code> — it auto-starts Colima — or <code>colima start --vm-type vz --mount-type virtiofs</code>.</td></tr>
+        <tr><td>Network not ready after 30 attempts</td><td>DNS didn't come up in the VM. <code>colima stop &amp;&amp; colima start --vm-type vz --mount-type virtiofs</code>.</td></tr>
+        <tr><td>Firewall verification failed</td><td>iptables rules didn't apply. Confirm the container has <code>NET_ADMIN</code>/<code>NET_RAW</code> (mrc adds these automatically).</td></tr>
+        <tr><td>Permission errors on mounted files</td><td>The image is built with your UID/GID. Rebuild: <code>docker rmi mister-claude</code>, then <code>mrc</code>.</td></tr>
+        <tr><td>Auto-update failed (inside container)</td><td>Expected — the image version is pinned. Rebuild to update Claude Code.</td></tr>
+        <tr><td>Slow file access</td><td>Make sure Colima runs with <code>--mount-type virtiofs</code> (mrc does this when it starts the VM).</td></tr>
+        <tr><td>Codex: Permission denied loading config</td><td>Rebuild the image so <code>~/.codex</code> is created with the right owner: <code>docker rmi mister-claude</code>.</td></tr>
+      </table>
+      <p class="muted" style="font-size:13px">Still stuck? Open an issue at <a href="https://github.com/aisaacs/mrc/issues">github.com/aisaacs/mrc</a> — and run with <code>-v</code> to capture the Colima/Docker output.</p>
+    </section>
+
+  </main>
+</div>
+
+<!-- ─── QUOTE ─── -->
+<div class="quote">
+  <div class="container">
+    <blockquote>"May the Schwartz be with you."</blockquote>
+    <cite>— Yogurt</cite>
+  </div>
+</div>
+
+<!-- ─── FOOTER ─── -->
+<footer>
+  <div class="footer-grid">
+    <div class="footer-brand">
+      <a href="index.html" class="nav-brand"><span class="hat">🎩</span> Mister&nbsp;Claude</a>
+      <p>Sandboxed Claude Code with an iptables firewall. Full permissions, zero blast radius.</p>
+    </div>
+    <div class="footer-col">
+      <h5>Project</h5>
+      <a href="docs.html">Documentation</a>
+      <a href="examples.html">Examples</a>
+      <a href="docs.html#security">Security model</a>
+      <a href="https://github.com/aisaacs/mrc">GitHub</a>
+    </div>
+    <div class="footer-col">
+      <h5>Reference</h5>
+      <a href="docs.html#cli">CLI reference</a>
+      <a href="docs.html#config">Config files</a>
+      <a href="docs.html#sessions">Sessions</a>
+      <a href="docs.html#troubleshooting">Troubleshooting</a>
+    </div>
+  </div>
+  <div class="footer-bottom">
+    Made with the Schwartz · MIT licensed · <a href="https://github.com/aisaacs/mrc">github.com/aisaacs/mrc</a>
+  </div>
+</footer>
+
+<script src="app.js"></script>
+</body>
+</html>
