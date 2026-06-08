@@ -50,6 +50,17 @@ The system has two layers: a **Node.js host launcher** (`mrc.js` + `src/`) and a
 
 17. **`container/mrc-statusline.js`** — Container-side Claude Code `statusLine` handler. Reads the statusline JSON from stdin and renders a color-coded context-usage progress bar, 5h/7d rate-limit gauges, and the session name.
 
+### Negotiation rooms (cross-session consultation)
+
+Lets two running `mrc` sessions consult each other through a host-mediated relay — one session's agent asks a peer and the reply loops back autonomously. On by default for interactive Claude sessions (`--no-rooms` opts out). **Deep dive, architecture, and design decisions live in `docs/negotiation-rooms.md`.**
+
+- **`src/proxies/room-daemon.js`** — The host room daemon: a detached, version-stamped singleton that registers sessions, forms pairings, relays messages with untrusted-data framing, enforces brake / turn-cap check-in / self-healing stall (with a FIFO held-queue), writes `thread.log` + the `consensus.md` shared summary, and **hosts the dashboard**. Records `~/.local/share/mrc/room-daemon.json`; idle-shuts-down ~10 min after the last session leaves (an open dashboard keeps it alive).
+- **`src/commands/pair.js`** — `ensureRoomDaemon()` (version-checked reuse / in-place refresh / fresh boot), `restartRoomDaemon()`, `stopRoomDaemon()`, and `roomSessionEnv()` (per-session env).
+- **`src/commands/rooms.js`** — the `mrc rooms` CLI (`status` / `brake` / `resume` / `steer` / `end` / `restart` / `stop` / `dashboard`) over the daemon's control socket.
+- **`src/rooms.js`** — room-dir manager for `~/.local/share/mrc/rooms/<roomId>/`: `ensureRoom`, `appendThread`, `writeConsensus`, `listRooms`.
+- **`src/rooms-dashboard.js`** + **`src/rooms-dashboard.html`** — a dependency-free localhost web dashboard (served from inside the daemon) showing every room's full `thread.log` + summary (live & historical) with pause/resume/steer/end controls.
+- **`container/mrc-channel-server.js`** — container-side MCP "channel" server (loaded via `--dangerously-load-development-channels server:room`). Connects to the daemon and exposes `list_peers`/`ask_peer`/`reply`/`update_notes`/`pause_room`/`resume_room`, pushing peer messages into the session as `<channel>` tags.
+
 ### Legacy (deprecated — do not modify)
 
 18. **`mrc`** (bash) — Original host-side launcher. Superseded by `mrc.js`. Kept for reference only.
@@ -78,6 +89,8 @@ The system has two layers: a **Node.js host launcher** (`mrc.js` + `src/`) and a
 - **Multi-agent support** — `--agent codex` launches OpenAI Codex instead of Claude Code. The `MRC_AGENT` env var is passed to the container, and session post-processing is skipped for non-Claude agents.
 - **Colima resource detection** — CPU and memory for the Colima VM default to all host cores and half host RAM (8GB floor). Overridable via `--colima-cpu` and `--colima-memory` flags or `.mrcrc`.
 - **Docker context resolution** — `mrc.js` searches for the Dockerfile in three locations: `<scriptDir>`, `~/.local/share/mrc/`, and `$MRC_HOME/`. This enables standalone binary installs separate from the Docker context.
+- **Negotiation rooms are host-mediated and sandbox-safe** — cross-session consultation flows session → host daemon → session over one sanctioned host port (no container-to-container network, no new firewall egress). Peer messages are always framed as untrusted data (`Peer (<name>) says: …`); only the human's steers are trusted (`[Human directive]: …`). Rooms are a host-controlled bind mount (`/rooms`), not network. Room ids hash the two sessions' conversation UUIDs, so resuming both conversations deterministically rejoins the same room (history preserved); closing a room is human-only.
+- **Rooms daemon + dashboard lifecycle** — one self-managing daemon serves all sessions (version-stamped, so it auto-refreshes when `room-daemon.js` changes; idle auto-shutdown). It also hosts the `mrc rooms dashboard` web UI, so the dashboard persists without a foreground tab and an open dashboard keeps the daemon alive. `consensus.md` is a *living shared summary* refreshed by either agent via `update_notes` (not a signed gate); the turn cap (default 100, `MRC_ROOM_TURN_CAP`) is a periodic check-in that grants another window on resume.
 
 ## CLI Reference
 
@@ -92,6 +105,8 @@ Options:
   -n, --new [name]     Start a new conversation (optionally named)
   -w, --web            Allow outbound HTTPS to any host
   --agent <name>       AI agent to launch: claude (default), codex
+  --room <name>        Pair only with another session sharing this --room name
+  --no-rooms           Disable cross-session negotiation rooms (on by default)
   --no-summary         Skip AI session summary on exit
   --no-notify          Disable desktop notifications entirely
   --no-sound           Disable notification sound (still shows notification)
@@ -105,6 +120,11 @@ Commands:
   mrc sessions name <name> [#] [path]     Name a session
   mrc sessions resume <name-or-#> [path]  Resume a specific session
   mrc sessions pick [path]                Alias for mrc pick
+  mrc rooms status                        Show the room daemon, sessions, and pairings
+  mrc rooms dashboard                     Open the local web dashboard (daemon-hosted)
+  mrc rooms brake|resume|end [room-id]    Pause / resume / close a room
+  mrc rooms steer [--target a|b] <text>   Inject a trusted [Human directive] into a room
+  mrc rooms restart|stop                  Refresh / stop the room daemon
 
 Config files (~/.mrcrc or <repo>/.mrcrc, one flag per line):
   # Example ~/.mrcrc
@@ -119,6 +139,8 @@ Environment:
                        (Legacy ANTHROPIC_API_KEY still works as a deprecated fallback.)
   OPENAI_API_KEY       OpenAI key (required for --agent codex)
   MRC_PORT_BASE        Starting port for proxy allocation (default: 7722)
+  MRC_ROOM_TURN_CAP    Room turn-cap window before a check-in pause (default: 100; 0 disables)
+  MRC_DASHBOARD_PORT   Room dashboard port (default: 8787; 0 disables the daemon-hosted dashboard)
   MRC_HOME             Override Docker context directory (advanced)
 ```
 
@@ -133,7 +155,7 @@ docker rmi mister-claude
 node mrc.js ~/some/repo
 ```
 
-Changes to `mrc.js` and `src/` take effect immediately (they run on the host).
+Changes to `mrc.js` and `src/` take effect immediately (they run on the host) — except `src/proxies/room-daemon.js`, which runs as a long-lived daemon: apply it with `mrc rooms restart` (or it auto-refreshes on the next launch via its version stamp).
 
 **To add allowed domains:** edit the `for domain in ...` loop in `init-firewall.sh`.
 
