@@ -20,7 +20,7 @@ const catchupPrompt = (reason) =>
   `to the peer; (2) where things stand now; (3) exactly what you need from your human to get ` +
   `unblocked. Be concrete and skip preamble.`
 
-export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000 }) {
+export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
 
@@ -168,29 +168,47 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
   // --- catch-up panes: at an autonomous pause, ask each live side for a handoff for the human. The
   // working agent (not a transcript summarizer) writes it, so off-log context — its own repo work,
   // reasoning, the real blocker — makes it in. Captured per-pause into the room's catchups.json.
-  function elicitCatchup(p, reason) {
-    if (p.pendingCatchup) return                                   // one already in flight
+  function elicitCatchup(p, reason, { manual = false } = {}) {
     const live = [['a', p.a], ['b', p.b]].filter(([, id]) => sessions.has(id))
-    if (!live.length) return
+    if (!live.length) return { ok: false, error: 'no live sessions to ask' }
+    if (p.pendingCatchup) {
+      if (!manual) return { ok: false, error: 'catch-up already pending' }
+      // Manual re-trigger while a pane is still filling: re-ask only the sides that haven't filed
+      // (e.g. one was busy with the human's own work when the first request arrived).
+      const e = readCatchups(p.roomId).find((x) => x.seq === p.pendingCatchup)
+      const missing = live.filter(([role]) => !(e && e.handoffs && e.handoffs[role]))
+      for (const [, id] of missing) send(id, { type: 'catchup_request', text: catchupPrompt(reason) })
+      appendThread(p.roomId, `${ts()} [catch-up re-request] (${reason}) -> ${missing.map(([, id]) => nameOf(id)).join(', ') || '(none missing)'}\n${catchupPrompt(reason)}`)
+      return { ok: true, seq: p.pendingCatchup, nudged: missing.length }
+    }
     const seq = appendCatchup(p.roomId, { ts: ts(), pauseReason: reason, status: 'pending', expected: live.length, handoffs: {} })
     p.pendingCatchup = seq
     for (const [, id] of live) send(id, { type: 'catchup_request', text: catchupPrompt(reason) })
+    appendThread(p.roomId, `${ts()} [catch-up request] (${reason}) -> ${live.map(([, id]) => nameOf(id)).join(', ')}\n${catchupPrompt(reason)}`)
     setTimeout(() => {
       const e = readCatchups(p.roomId).find((x) => x.seq === seq)
       if (e && e.status === 'pending') updateCatchup(p.roomId, seq, { status: 'ready' })
       if (p.pendingCatchup === seq) p.pendingCatchup = null
-    }, CATCHUP_TIMEOUT_MS)
+    }, catchupTimeoutMs)
+    return { ok: true, seq }
   }
   function onHandoff(fromId, text) {
-    const p = pairingFor(fromId); if (!p || !p.pendingCatchup) return
-    const seq = p.pendingCatchup
-    const e = readCatchups(p.roomId).find((x) => x.seq === seq)
-    if (!e || e.status !== 'pending') return
+    const p = pairingFor(fromId); if (!p) return
     const role = p.a === fromId ? 'a' : 'b'
+    const list = readCatchups(p.roomId)
+    // Prefer the pane we're actively gathering; else fall back to the most recent un-reviewed pane
+    // still missing THIS side — so a side that files late (it was mid-task when the request arrived,
+    // after the pane already timed out) still lands instead of being dropped.
+    let e = p.pendingCatchup ? list.find((x) => x.seq === p.pendingCatchup) : null
+    if (!e) for (let i = list.length - 1; i >= 0; i--) { const x = list[i]; if (!x.reviewedAt && !(x.handoffs && x.handoffs[role])) { e = x; break } }
+    if (!e) return
+    e.handoffs = e.handoffs || {}
     e.handoffs[role] = { name: nameOf(fromId), text: String(text || '') }
-    if (Object.keys(e.handoffs).length >= (e.expected || 1)) { e.status = 'ready'; p.pendingCatchup = null }
-    updateCatchup(p.roomId, seq, { handoffs: e.handoffs, status: e.status })
-    appendThread(p.roomId, `${ts()} [${nameOf(fromId)} filed a catch-up handoff]`)
+    if (Object.keys(e.handoffs).length >= (e.expected || 1)) { e.status = 'ready'; if (p.pendingCatchup === e.seq) p.pendingCatchup = null }
+    updateCatchup(p.roomId, e.seq, { handoffs: e.handoffs, status: e.status })
+    // Durably capture the FULL handoff in the canonical audit log too (panes can be edited/dropped;
+    // thread.log is append-only). The dashboard display-makes the `[handoff]` prefix into a card.
+    appendThread(p.roomId, `${ts()} [handoff] ${nameOf(fromId)} -> human\n${String(text || '')}`)
   }
 
   function doBrake(p, reason = 'brake') {
@@ -285,6 +303,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
         switch (f.action) {
           case 'brake': reply({ ok: true, held: doBrake(p, 'brake') }); break
           case 'resume': doResume(p); reply({ ok: true }); break
+          case 'catchup': reply(elicitCatchup(p, 'requested', { manual: true })); break
           case 'steer': {
             const targets = f.target === 'a' ? [p.a] : f.target === 'b' ? [p.b] : [p.a, p.b]
             for (const t of targets) send(t, { type: 'directive', text: `[Human directive]: ${f.text}` })

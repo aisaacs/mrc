@@ -187,7 +187,9 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
     human — by pushing a `catchup_request`; the agent answers via the `submit_handoff` tool (Opus
     on the user's Max plan, so no API cost, and richer than a transcript summary because the working
     agent has off-log context the `thread.log` never saw). The daemon assembles both sides into
-    **one pane per pause** in `catchups.json`. The dashboard paginates panes latest-first, opens to
+    **one pane per pause** in `catchups.json` — or on demand from the dashboard's **Catch-up now**
+    button (no pause needed; a pane shows whatever's filed immediately, and re-triggering re-asks
+    only the side(s) that haven't filed, e.g. one that was mid-task). The dashboard paginates panes latest-first, opens to
     the oldest unreviewed, and tracks an explicit `reviewedAt` — opening a pane never marks it, only
     the "Mark reviewed" button does. Unreviewed counts drive room-list triage, and Resume
     soft-confirms when a room still has unreviewed panes.
@@ -224,7 +226,7 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
   self-healing stall, and a FIFO held-queue; shared-summary writes (`update_notes`); per-pause
   catch-up elicitation (Decision 14) via `catchup_request`→`handoff` into `catchups.json`; relay
   frames `register/list/ask/msg/note/handoff/pause/resume`; control frames
-  `status(+version)/shutdown/brake/resume/steer/end`; idle auto-shutdown; notify-proxy
+  `status(+version)/shutdown/brake/resume/steer/end/catchup`; idle auto-shutdown; notify-proxy
   notifications (fired via any currently-connected session's proxy); **hosts the dashboard**
   (Decision 13) on its own port; detached entrypoint that
   records `room-daemon.json` (`{port, controlPort, notifyPort, dashboardPort, pid, version}`).
@@ -298,8 +300,13 @@ Per-pairing state in the daemon: `Running | Paused` + `pauseReason ∈ {brake,tu
   so a long-running channel isn't a per-turn wall (default 100; `MRC_ROOM_TURN_CAP`, `0` disables).
 - **stall** → idle > 10 min → Paused + notify, but **self-healing**: the next real message
   auto-resumes it (a slow peer composing a long reply is never swallowed).
-- **catch-up** → on a turnCap/stall pause the daemon elicits a handoff from each live side
-  (`catchup_request`→`submit_handoff`) into a per-pause pane in `catchups.json` (Decision 14).
+- **catch-up** → on a turnCap/stall pause (or the dashboard's **Catch-up now**) the daemon elicits
+  a handoff from each live side (`catchup_request`→`submit_handoff`) into a per-pause pane in
+  `catchups.json`; a side that files late (after the pane timed out) still lands on it. The
+  **verbatim** request prompt and the full handoffs are **also appended to `thread.log`** word-for-
+  word — it's the canonical append-only record, so nothing is lost even though panes can be
+  edited/dropped. The dashboard then *display-makes* the log (collapses the boilerplate prompt into a
+  chip, renders handoffs as cards) — full audit in the log, clean conversation in the UI (Decision 14).
 - **update_notes** → either side rewrites the shared summary in `consensus.md`. *Not* a pause and
   *not* a gate — no matching, the room stays open.
 - **resume** → deliver the full held backlog in order, continue. **steer** → inject

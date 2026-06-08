@@ -91,7 +91,7 @@ async function handle(req, res) {
       req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
       req.on('end', async () => {
         let j; try { j = JSON.parse(body || '{}') } catch { return sendJSON(res, 400, { ok: false, error: 'bad json' }) }
-        if (!['brake', 'resume', 'steer', 'end', 'review'].includes(j.action)) return sendJSON(res, 400, { ok: false, error: 'action not allowed' })
+        if (!['brake', 'resume', 'steer', 'end', 'review', 'catchup'].includes(j.action)) return sendJSON(res, 400, { ok: false, error: 'action not allowed' })
         if (j.roomId && !knownRoom(j.roomId)) return sendJSON(res, 404, { ok: false, error: 'unknown room' })
         // 'review' is a local catchups.json write (we run inside the daemon process), not a control action.
         if (j.action === 'review') {

@@ -76,6 +76,9 @@
   .cu-side.a .cu-name { color:var(--a); } .cu-side.b .cu-name { color:var(--b); }
   .cu-side .cu-text { white-space:pre-wrap; word-wrap:break-word; overflow-wrap:anywhere; background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--line); border-radius:8px; padding:10px 12px; }
   .cu-side.a .cu-text { border-left-color:var(--a); } .cu-side.b .cu-text { border-left-color:var(--b); }
+  .cu-prompt { display:inline-block; }
+  .cu-prompt summary { cursor:pointer; color:var(--accent); font-size:11px; }
+  .cu-prompt pre.raw { margin-top:6px; font-size:11px; color:var(--dim); text-align:left; max-width:560px; }
 </style>
 </head>
 <body>
@@ -140,21 +143,37 @@ function parseThread(text) {
   return entries
 }
 
+// thread.log is the raw, complete record (every prompt/reply verbatim); the rendering here is pure
+// "display-making" — e.g. a catch-up request's full prompt is logged but collapsed into a chip.
 function renderThread(text, room) {
   const aName = room?.a, entries = parseThread(text)
   return entries.map(e => {
     const b = e.body
+    const nl = b.indexOf('\n')
+    const head = (nl < 0 ? b : b.slice(0, nl)).trim()
+    const rest = (nl < 0 ? '' : b.slice(nl + 1)).replace(/\s+$/, '')
+    const time = esc(new Date(e.ts).toLocaleTimeString())
     let mm
+    // catch-up request — clean chip; the verbatim prompt is in the log (audit) but collapsed here
+    if ((mm = head.match(/^\[catch-up (re-)?request\] (.*)$/))) {
+      return `<div class="sysline" title="${escAttr(e.ts)}">🔔 catch-up ${mm[1] ? 're-' : ''}requested ${esc(mm[2])}`
+        + (rest ? ` <details class="cu-prompt"><summary>prompt</summary><pre class="raw">${esc(rest)}</pre></details>` : '') + `</div>`
+    }
+    // handoff reply — distinct card holding the full text
+    if ((mm = head.match(/^\[handoff\] (.+?) -> human$/))) {
+      const from = mm[1], side = (from === aName) ? 'a' : 'b'
+      return `<div class="cu-side ${side}" style="max-width:90%"><div class="cu-name">📋 ${esc(from)} → human · handoff · ${time}</div><div class="cu-text">${esc(rest)}</div></div>`
+    }
     if (/^\[.*\]$/s.test(b.trim())) {
       const warn = /paused|held|closed/.test(b) ? ' warn' : ''
       return `<div class="sysline${warn}" title="${escAttr(e.ts)}">${esc(b.trim())}</div>`
     }
     if ((mm = b.match(/^HUMAN->(\S+):\s([\s\S]*)$/))) {
-      return `<div class="msg human"><div class="meta">👤 human → ${esc(mm[1])} · ${esc(new Date(e.ts).toLocaleTimeString())}</div><div class="body">${esc(mm[2])}</div></div>`
+      return `<div class="msg human"><div class="meta">👤 human → ${esc(mm[1])} · ${time}</div><div class="body">${esc(mm[2])}</div></div>`
     }
     if ((mm = b.match(/^(.+?)->(.+?):\s([\s\S]*)$/))) {
       const from = mm[1], side = (from === aName) ? 'a' : 'b'
-      return `<div class="msg ${side}"><div class="meta">${esc(from)} → ${esc(mm[2])} · ${esc(new Date(e.ts).toLocaleTimeString())}</div><div class="body">${esc(mm[3])}</div></div>`
+      return `<div class="msg ${side}"><div class="meta">${esc(from)} → ${esc(mm[2])} · ${time}</div><div class="body">${esc(mm[3])}</div></div>`
     }
     return `<div class="msg a"><div class="meta">${esc(e.ts)}</div><div class="body">${esc(b)}</div></div>`
   }).join('') || '<div class="empty" style="margin:20px auto">No messages yet.</div>'
@@ -177,6 +196,7 @@ function renderDetail() {
         <button ${live && room.state!=='Paused'?'':'disabled'} onclick="act('brake')">⏸ Pause</button>
         <button ${live && room.state==='Paused'?'':'disabled'} onclick="act('resume')">▶ Resume</button>
         <button class="danger" ${live?'':'disabled'} onclick="endRoom()">⏹ End</button>
+        <button ${live?'':'disabled'} onclick="requestCatchup()">📋 Catch-up now</button>
         <span style="width:8px"></span>
         <select id="steerTarget" ${live?'':'disabled'}>
           <option value="both">steer: both</option>
@@ -218,19 +238,26 @@ function renderCatchups(cs) {
     + ((c.status==='ready' && !reviewed) ? '<button onclick="markReviewed('+c.seq+')">✓ Mark reviewed</button>' : '')
     + '<button '+(PANE>=cs.length-1?'disabled':'')+' onclick="pane(1)">next →</button>'
     + '</div>'
-  let body
-  if (c.status==='pending') body = '<div class="empty" style="margin:24px auto">Waiting for the sessions to file their handoffs…</div>'
-  else {
-    body = ['a','b'].map(k => { const h = c.handoffs && c.handoffs[k]; if (!h) return ''
-      return '<div class="cu-side '+k+'"><div class="cu-name">'+esc(h.name||k)+'</div><div class="cu-text">'+esc(h.text||'')+'</div></div>' }).join('')
-    if (!body) body = '<div class="empty" style="margin:24px auto">No handoffs were filed for this pause.</div>'
-  }
+  // Show whatever's filed right away — even while pending — so a side that's already reported isn't
+  // hidden behind the one that's still busy; offer a nudge for the missing side(s).
+  let body = ['a','b'].map(k => { const h = c.handoffs && c.handoffs[k]; if (!h) return ''
+    return '<div class="cu-side '+k+'"><div class="cu-name">'+esc(h.name||k)+'</div><div class="cu-text">'+esc(h.text||'')+'</div></div>' }).join('')
+  if (c.status==='pending') {
+    const waiting = Math.max(0, (c.expected||0) - Object.keys(c.handoffs||{}).length)
+    body += '<div class="empty" style="margin:16px auto">⏳ waiting on '+waiting+' more handoff'+(waiting===1?'':'s')+' (a side may be busy) — <button onclick="requestCatchup()">nudge</button></div>'
+  } else if (!body) body = '<div class="empty" style="margin:24px auto">No handoffs were filed for this pause.</div>'
   return nav + body
 }
 function pane(d) { PANE = (PANE==null?0:PANE) + d; renderDetail() }
 async function markReviewed(seq) {
   const r = await api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ roomId: SELECTED, action:'review', seq }) })
   toast(r.ok ? 'marked reviewed ✓' : ('✗ '+(r.error||'failed')))
+  await refresh()
+}
+async function requestCatchup() {
+  const r = await api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ roomId: SELECTED, action:'catchup' }) })
+  toast(r.ok ? (r.nudged!=null ? 're-asked '+r.nudged+' side(s) ✓' : 'catch-up requested ✓') : ('✗ '+(r.error||'failed')))
+  TAB = 'catchups'; PANE = null   // jump to the Catch-ups tab so the new/filling pane is visible
   await refresh()
 }
 
