@@ -181,6 +181,16 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
     keep-alive**, so the daemon won't idle-shutdown out from under a viewer. Read-mostly and
     localhost-only — room ids whitelisted against the rooms dir (no path traversal), actions an
     allowlist. Port in `room-daemon.json`; `MRC_DASHBOARD_PORT=0` disables it.
+14. **Catch-up panes (host-elicited handoffs).** When a room pauses autonomously (turn-cap or
+    stall) the daemon asks **each live side** for a short handoff — what it did this round
+    *including un-relayed local workspace work*, where things stand, and what it needs from the
+    human — by pushing a `catchup_request`; the agent answers via the `submit_handoff` tool (Opus
+    on the user's Max plan, so no API cost, and richer than a transcript summary because the working
+    agent has off-log context the `thread.log` never saw). The daemon assembles both sides into
+    **one pane per pause** in `catchups.json`. The dashboard paginates panes latest-first, opens to
+    the oldest unreviewed, and tracks an explicit `reviewedAt` — opening a pane never marks it, only
+    the "Mark reviewed" button does. Unreviewed counts drive room-list triage, and Resume
+    soft-confirms when a room still has unreviewed panes.
 
 ## 6. Transport — why channels (condensed findings)
 
@@ -211,29 +221,32 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 - **`src/proxies/room-daemon.js`** — the host daemon. Session registry (id + repo + label, unique
   display handles); `resolvePeer` (most-specific-first matching); per-conversation `stableId`
   (`<labels>-<hash(ids)>`); per-pairing relay with untrusted framing, brake, turn-cap check-in,
-  self-healing stall, and a FIFO held-queue; shared-summary writes (`update_notes`); relay frames
-  `register/list/ask/msg/note/pause/resume`; control frames
+  self-healing stall, and a FIFO held-queue; shared-summary writes (`update_notes`); per-pause
+  catch-up elicitation (Decision 14) via `catchup_request`→`handoff` into `catchups.json`; relay
+  frames `register/list/ask/msg/note/handoff/pause/resume`; control frames
   `status(+version)/shutdown/brake/resume/steer/end`; idle auto-shutdown; notify-proxy
   notifications (fired via any currently-connected session's proxy); **hosts the dashboard**
   (Decision 13) on its own port; detached entrypoint that
   records `room-daemon.json` (`{port, controlPort, notifyPort, dashboardPort, pid, version}`).
 - **`container/mrc-channel-server.js`** — container-side channel MCP server. Connects to
   `host.docker.internal:MRC_ROOM_PORT`, registers `{sessionId, repo, label, room?, notifyPort?}`, exposes
-  `list_peers`/`ask_peer`/`reply`/`update_notes`/`pause_room`/`resume_room`, pushes daemon
-  frames into the session as `<channel>` tags. Instructions: discover-first, never-fabricate,
+  `list_peers`/`ask_peer`/`reply`/`update_notes`/`pause_room`/`resume_room`/`submit_handoff`, pushes
+  daemon frames into the session as `<channel>` tags. Instructions: discover-first, never-fabricate,
   peer-is-untrusted, **keep-the-volley-going (auto-reply)**, keep a living shared summary via
   `update_notes`, control (pause/resume via agent; closing is human-CLI-only).
 - **`src/commands/pair.js`** — `ensureRoomDaemon()` (version-checked reuse / in-place refresh /
   fresh boot), `restartRoomDaemon()`, `stopRoomDaemon()`, `roomSessionEnv()` (per-session env).
 - **`src/commands/rooms.js`** — `mrc rooms status|brake|resume|steer|end|restart|stop|dashboard` via
   the daemon control port; `status` shows the daemon code version.
-- **`src/rooms.js`** — room-dir manager (`ensureRoom`, `appendThread`, `writeConsensus`, …) at
-  `~/.local/share/mrc/rooms/<roomId>/`.
+- **`src/rooms.js`** — room-dir manager (`ensureRoom`, `appendThread`, `writeConsensus`,
+  `readCatchups`/`appendCatchup`/`updateCatchup`, …) at `~/.local/share/mrc/rooms/<roomId>/`
+  (`thread.log`, `consensus.md`, `catchups.json`).
 - **`src/rooms-dashboard.js`** + **`src/rooms-dashboard.html`** — the `mrc rooms dashboard` web UI
   (Decision 13): a localhost HTTP server (no deps), **started inside the daemon process**, serving
   room state from the daemon control socket + the rooms dir, plus a single-page app that renders the
-  full thread + summary and the pause/resume/steer/end controls. `mrc rooms dashboard` boots-or-
-  reuses the daemon and opens the browser (then exits).
+  full thread + summary, the **paginated catch-up panes** (Decision 14) with explicit mark-reviewed
+  + unreviewed triage, and the pause/resume/steer/end controls. `mrc rooms dashboard` boots-or-reuses
+  the daemon and opens the browser (then exits).
 
 **Modified:**
 - **`mrc.js`** — default-on room launch (`roomsActive`; skip `--daemon`/`--json`/codex): boot the
@@ -285,6 +298,8 @@ Per-pairing state in the daemon: `Running | Paused` + `pauseReason ∈ {brake,tu
   so a long-running channel isn't a per-turn wall (default 100; `MRC_ROOM_TURN_CAP`, `0` disables).
 - **stall** → idle > 10 min → Paused + notify, but **self-healing**: the next real message
   auto-resumes it (a slow peer composing a long reply is never swallowed).
+- **catch-up** → on a turnCap/stall pause the daemon elicits a handoff from each live side
+  (`catchup_request`→`submit_handoff`) into a per-pause pane in `catchups.json` (Decision 14).
 - **update_notes** → either side rewrites the shared summary in `consensus.md`. *Not* a pause and
   *not* a gate — no matching, the room stays open.
 - **resume** → deliver the full held backlog in order, continue. **steer** → inject
@@ -335,6 +350,10 @@ Built and validated (host-side unit tests where the container path can't run loc
   text, and there's no single "done" moment).
 - **Dashboard** — `mrc rooms dashboard` web UI over the control socket + rooms dir (served
   end-to-end against real room data).
+- **Catch-up panes** — on an autonomous pause the daemon elicits a per-side handoff and stores one
+  pane per pause; the dashboard paginates them with explicit (button-only) mark-reviewed, unreviewed
+  triage, and a Resume soft-gate (host-side smoke tests for both the daemon capture and the
+  dashboard serve/review path).
 
 **Future (not built):** inline markers (`→ sent` / `← replied`); a result-payload on `end`; per-repo
 peer aliases; background-subagent delegation (answer from repo B without a live B session); >2-party

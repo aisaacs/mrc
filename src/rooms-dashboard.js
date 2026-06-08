@@ -2,7 +2,7 @@
 // thread.log + consensus.md (live and historical, polled in near-real-time) and exposes the
 // room-level controls (pause/resume/steer/end) by proxying to the daemon's control socket. No
 // external dependencies — http + fs + the existing control protocol. It deliberately cannot post
-// into a chat; the only writes are the four control actions.
+// into a chat; the only writes are the room controls and marking a catch-up reviewed.
 import http from 'node:http'
 import net from 'node:net'
 import { readFileSync, existsSync, statSync } from 'node:fs'
@@ -10,7 +10,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { roomsRoot, roomDir, listRooms } from './rooms.js'
+import { roomsRoot, roomDir, listRooms, readCatchups, updateCatchup } from './rooms.js'
 import { findFreePort } from './ports.js'
 
 const metaPath = () => join(homedir(), '.local', 'share', 'mrc', 'room-daemon.json')
@@ -46,6 +46,7 @@ async function buildState() {
     let updatedAt = r.meta?.createdAt || 0
     try { updatedAt = statSync(join(r.dir, 'thread.log')).mtimeMs } catch {}
     const lp = byId.get(r.roomId)
+    const unreviewed = readCatchups(r.roomId).filter((c) => c.status === 'ready' && !c.reviewedAt).length
     return {
       roomId: r.roomId,
       a: lp?.a || r.meta?.repoA || '?',
@@ -55,10 +56,12 @@ async function buildState() {
       pauseReason: lp?.pauseReason || null,
       turn: lp?.turn ?? null,
       turnCap: lp?.turnCap ?? null,
+      unreviewed,
       createdAt: r.meta?.createdAt || 0,
       updatedAt,
     }
-  }).sort((x, y) => (Number(y.live) - Number(x.live)) || (y.updatedAt - x.updatedAt))
+  // Float rooms that want your eyes (unreviewed catch-ups) to the top, then live, then most-recent.
+  }).sort((x, y) => (Number(y.unreviewed > 0) - Number(x.unreviewed > 0)) || (Number(y.live) - Number(x.live)) || (y.updatedAt - x.updatedAt))
   return {
     daemon: { running: !!(meta && status?.ok), version: status?.version || null, controlPort: meta?.controlPort || null },
     sessions: live.sessions || [],
@@ -81,15 +84,20 @@ async function handle(req, res) {
       if (!knownRoom(id)) return sendJSON(res, 404, { error: 'unknown room' })
       const dir = roomDir(id)
       let meta = {}; try { meta = JSON.parse(readIf(join(dir, 'room.json'))) } catch {}
-      return sendJSON(res, 200, { roomId: id, meta, thread: readIf(join(dir, 'thread.log')), consensus: readIf(join(dir, 'consensus.md')) })
+      return sendJSON(res, 200, { roomId: id, meta, thread: readIf(join(dir, 'thread.log')), consensus: readIf(join(dir, 'consensus.md')), catchups: readCatchups(id) })
     }
     if (req.method === 'POST' && url.pathname === '/api/action') {
       let body = ''
       req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
       req.on('end', async () => {
         let j; try { j = JSON.parse(body || '{}') } catch { return sendJSON(res, 400, { ok: false, error: 'bad json' }) }
-        if (!['brake', 'resume', 'steer', 'end'].includes(j.action)) return sendJSON(res, 400, { ok: false, error: 'action not allowed' })
+        if (!['brake', 'resume', 'steer', 'end', 'review'].includes(j.action)) return sendJSON(res, 400, { ok: false, error: 'action not allowed' })
         if (j.roomId && !knownRoom(j.roomId)) return sendJSON(res, 404, { ok: false, error: 'unknown room' })
+        // 'review' is a local catchups.json write (we run inside the daemon process), not a control action.
+        if (j.action === 'review') {
+          const e = updateCatchup(j.roomId, Number(j.seq), { reviewedAt: new Date().toISOString() })
+          return sendJSON(res, 200, e ? { ok: true } : { ok: false, error: 'unknown catch-up' })
+        }
         const extra = { roomId: j.roomId }
         if (j.action === 'steer') { extra.target = ['a', 'b', 'both'].includes(j.target) ? j.target : 'both'; extra.text = String(j.text || '').slice(0, 8000) }
         return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, j.action, extra))

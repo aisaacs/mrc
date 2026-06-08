@@ -75,3 +75,28 @@ export function writeConsensus(roomId, text) {
   const head = cur.split('\n---\n')[0]
   writeFileSync(join(dir, 'consensus.md'), `${head}\n---\n\n${text}\n`)
 }
+
+// --- catch-up panes -------------------------------------------------------
+// One per-pause handoff digest for the human, kept as an ordered list per room. Each entry:
+//   { seq, ts, pauseReason, status:'pending'|'ready', expected, handoffs:{a?:{name,text},b?:{name,text}}, reviewedAt }
+// reviewedAt is set only by an explicit "mark reviewed" — opening a pane never marks it.
+const catchupsFile = (roomId) => join(roomDir(roomId), 'catchups.json')
+
+export function readCatchups(roomId) {
+  try { return JSON.parse(readFileSync(catchupsFile(roomId), 'utf8')) } catch { return [] }
+}
+export function appendCatchup(roomId, entry) {
+  const list = readCatchups(roomId)
+  const seq = (list.length ? list[list.length - 1].seq : 0) + 1
+  list.push({ ...entry, seq, reviewedAt: null })
+  writeFileSync(catchupsFile(roomId), JSON.stringify(list, null, 2))
+  return seq
+}
+export function updateCatchup(roomId, seq, patch) {
+  const list = readCatchups(roomId)
+  const e = list.find((x) => x.seq === seq)
+  if (!e) return null
+  Object.assign(e, patch)
+  writeFileSync(catchupsFile(roomId), JSON.stringify(list, null, 2))
+  return e
+}

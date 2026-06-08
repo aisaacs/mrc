@@ -7,10 +7,18 @@
 // before. One daemon serves all sessions, so it outlives any single session.
 import net from 'node:net'
 import { createHash } from 'node:crypto'
-import { ensureRoom, appendThread, writeConsensus } from '../rooms.js'
+import { ensureRoom, appendThread, writeConsensus, readCatchups, appendCatchup, updateCatchup } from '../rooms.js'
 
 const norm = (s) => String(s || '').trim().replace(/\s+/g, ' ')
 const ts = () => new Date().toISOString()
+
+const CATCHUP_TIMEOUT_MS = 120_000   // finalize a catch-up pane even if a side never files its handoff
+const catchupPrompt = (reason) =>
+  `[Room handoff requested — system message, not a peer] Your human stepped away and the room just ` +
+  `paused (${reason}). Write a SHORT handoff for them and submit it via the submit_handoff tool. ` +
+  `Include: (1) what you got done this round, INCLUDING work in your own workspace you did NOT relay ` +
+  `to the peer; (2) where things stand now; (3) exactly what you need from your human to get ` +
+  `unblocked. Be concrete and skip preamble.`
 
 export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000 }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
@@ -145,7 +153,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
     clearStallOnActivity(p)
     if (p.state === 'Paused') { p.held.push({ toId, fromId, text }); appendThread(p.roomId, `${ts()} [held while ${p.pauseReason}]`); return }
     deliver(p, toId, fromId, text)
-    if (p.turnCap > 0 && p.turn >= p.turnCap) { p.state = 'Paused'; p.pauseReason = 'turnCap'; notify(`Room ${p.roomId}: turn-cap check-in at ${p.turn} (resume to grant ${turnCap} more)`) }
+    if (p.turnCap > 0 && p.turn >= p.turnCap) { p.state = 'Paused'; p.pauseReason = 'turnCap'; notify(`Room ${p.roomId}: turn-cap check-in at ${p.turn} (resume to grant ${turnCap} more)`); elicitCatchup(p, 'turnCap') }
   }
 
   // Shared running summary: either side may refresh consensus.md at any time. It's living notes,
@@ -155,6 +163,34 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
     if (!p) return
     writeConsensus(p.roomId, text)
     appendThread(p.roomId, `${ts()} [${nameOf(fromId)} updated the shared summary]`)
+  }
+
+  // --- catch-up panes: at an autonomous pause, ask each live side for a handoff for the human. The
+  // working agent (not a transcript summarizer) writes it, so off-log context — its own repo work,
+  // reasoning, the real blocker — makes it in. Captured per-pause into the room's catchups.json.
+  function elicitCatchup(p, reason) {
+    if (p.pendingCatchup) return                                   // one already in flight
+    const live = [['a', p.a], ['b', p.b]].filter(([, id]) => sessions.has(id))
+    if (!live.length) return
+    const seq = appendCatchup(p.roomId, { ts: ts(), pauseReason: reason, status: 'pending', expected: live.length, handoffs: {} })
+    p.pendingCatchup = seq
+    for (const [, id] of live) send(id, { type: 'catchup_request', text: catchupPrompt(reason) })
+    setTimeout(() => {
+      const e = readCatchups(p.roomId).find((x) => x.seq === seq)
+      if (e && e.status === 'pending') updateCatchup(p.roomId, seq, { status: 'ready' })
+      if (p.pendingCatchup === seq) p.pendingCatchup = null
+    }, CATCHUP_TIMEOUT_MS)
+  }
+  function onHandoff(fromId, text) {
+    const p = pairingFor(fromId); if (!p || !p.pendingCatchup) return
+    const seq = p.pendingCatchup
+    const e = readCatchups(p.roomId).find((x) => x.seq === seq)
+    if (!e || e.status !== 'pending') return
+    const role = p.a === fromId ? 'a' : 'b'
+    e.handoffs[role] = { name: nameOf(fromId), text: String(text || '') }
+    if (Object.keys(e.handoffs).length >= (e.expected || 1)) { e.status = 'ready'; p.pendingCatchup = null }
+    updateCatchup(p.roomId, seq, { handoffs: e.handoffs, status: e.status })
+    appendThread(p.roomId, `${ts()} [${nameOf(fromId)} filed a catch-up handoff]`)
   }
 
   function doBrake(p, reason = 'brake') {
@@ -209,6 +245,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
         } else if (f.type === 'ask' && sessionId) onAsk(sessionId, String(f.question ?? ''), f.peer)
         else if (f.type === 'msg' && sessionId) onMsg(sessionId, String(f.text ?? ''))
         else if (f.type === 'note' && sessionId) onNote(sessionId, String(f.text ?? ''))
+        else if (f.type === 'handoff' && sessionId) onHandoff(sessionId, String(f.text ?? ''))
         else if (f.type === 'pause' && sessionId) onAgentPause(sessionId)
         else if (f.type === 'resume' && sessionId) onAgentResume(sessionId)
       }
@@ -280,6 +317,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
         p.state = 'Paused'; p.pauseReason = 'stall'
         appendThread(p.roomId, `${ts()} [paused: stall (${Math.round((Date.now() - p.lastActivityAt) / 1000)}s idle)]`)
         notify(`Room ${p.roomId}: paused (stall)`)
+        elicitCatchup(p, 'stall')
       }
     }
     // Idle auto-shutdown: exit after idleMs with zero connected sessions (longer grace until the

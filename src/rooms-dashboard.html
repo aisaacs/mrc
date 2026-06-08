@@ -62,6 +62,20 @@
   pre.raw { white-space:pre-wrap; word-wrap:break-word; font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace; margin:0; }
   .toast { position:fixed; bottom:18px; left:50%; transform:translateX(-50%); background:var(--panel2); border:1px solid var(--line); padding:8px 16px; border-radius:8px; font-size:13px; opacity:0; transition:opacity .2s; pointer-events:none; }
   .toast.show { opacity:1; }
+  /* catch-up panes */
+  .badge.cu { color:var(--warn); border-color:#3b3115; }
+  .tabdot { display:inline-block; min-width:16px; text-align:center; background:var(--warn); color:#1a1205; border-radius:999px; font-size:10px; padding:0 5px; margin-left:3px; font-weight:700; }
+  .cu-nav { display:flex; align-items:center; gap:10px; margin-bottom:16px; font-size:12px; color:var(--dim); flex-wrap:wrap; }
+  .cu-nav .grow { flex:1; }
+  .cu-badge { font-size:10px; padding:1px 8px; border-radius:999px; border:1px solid var(--line); white-space:nowrap; }
+  .cu-badge.new { color:var(--warn); border-color:#3b3115; }
+  .cu-badge.rev { color:var(--ok); border-color:#1f3b29; }
+  .cu-badge.gen { color:var(--sys); }
+  .cu-side { margin:0 0 16px; }
+  .cu-side .cu-name { font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; margin-bottom:5px; }
+  .cu-side.a .cu-name { color:var(--a); } .cu-side.b .cu-name { color:var(--b); }
+  .cu-side .cu-text { white-space:pre-wrap; word-wrap:break-word; overflow-wrap:anywhere; background:var(--panel); border:1px solid var(--line); border-left:3px solid var(--line); border-radius:8px; padding:10px 12px; }
+  .cu-side.a .cu-text { border-left-color:var(--a); } .cu-side.b .cu-text { border-left-color:var(--b); }
 </style>
 </head>
 <body>
@@ -83,7 +97,8 @@
 <script>
 const $ = (s, r=document) => r.querySelector(s)
 let STATE = null, SELECTED = null, TAB = 'thread', SHOW_HIST = true
-let lastThread = '', lastConsensus = ''
+let DETAIL = null, PANE = null, JUST_SELECTED = false
+let lastThread = '', lastConsensus = '', lastCatchups = ''
 
 const fmtTime = (ms) => { if (!ms) return ''; const d = new Date(ms); return d.toLocaleString() }
 const ago = (ms) => { if (!ms) return ''; const s = Math.round((Date.now()-ms)/1000); if (s<60) return s+'s ago'; if (s<3600) return Math.round(s/60)+'m ago'; if (s<86400) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago' }
@@ -103,7 +118,7 @@ function renderList() {
   $('#rooms').innerHTML = rooms.map(r => `
     <div class="room ${r.roomId===SELECTED?'sel':''}" data-id="${escAttr(r.roomId)}">
       <div class="title">${esc(r.a)} ↔ ${esc(r.b)}</div>
-      <div class="sub">${badge(r)} ${r.turn!=null?'<span>turn '+r.turn+(r.turnCap?'/'+r.turnCap:'')+'</span>':''} <span>${ago(r.updatedAt)}</span></div>
+      <div class="sub">${badge(r)} ${r.unreviewed?'<span class="badge cu">'+r.unreviewed+' new</span>':''} ${r.turn!=null?'<span>turn '+r.turn+(r.turnCap?'/'+r.turnCap:'')+'</span>':''} <span>${ago(r.updatedAt)}</span></div>
     </div>`).join('') || '<div style="padding:14px;color:var(--dim)">No rooms yet. Open one from inside a session (ask a peer).</div>'
   $('#rooms').querySelectorAll('.room').forEach(el => el.onclick = () => select(el.dataset.id))
 }
@@ -147,17 +162,20 @@ function renderThread(text, room) {
 
 function roomById(id) { return (STATE?.rooms||[]).find(r => r.roomId===id) }
 
-function renderDetail(data) {
+function renderDetail() {
+  const data = DETAIL || {}
   const room = roomById(SELECTED) || {}
   const live = room.live && STATE?.daemon?.running
   const aName = esc(room.a||'A'), bName = esc(room.b||'B')
+  const cs = data.catchups || []
+  const unrev = cs.filter(c => c.status==='ready' && !c.reviewedAt).length
   const head = `
     <div class="detailhead">
       <div class="who">${aName} ↔ ${bName} &nbsp; ${badge(room)}</div>
       <div class="rid" title="click to copy" onclick="copyId()">${escAttr(SELECTED)}</div>
       <div class="controls">
-        <button id="bPause" ${live && room.state!=='Paused'?'':'disabled'} onclick="act('brake')">⏸ Pause</button>
-        <button id="bResume" ${live && room.state==='Paused'?'':'disabled'} onclick="act('resume')">▶ Resume</button>
+        <button ${live && room.state!=='Paused'?'':'disabled'} onclick="act('brake')">⏸ Pause</button>
+        <button ${live && room.state==='Paused'?'':'disabled'} onclick="act('resume')">▶ Resume</button>
         <button class="danger" ${live?'':'disabled'} onclick="endRoom()">⏹ End</button>
         <span style="width:8px"></span>
         <select id="steerTarget" ${live?'':'disabled'}>
@@ -166,24 +184,58 @@ function renderDetail(data) {
           <option value="b">steer: ${bName}</option>
         </select>
         <input type="text" class="steer" id="steerText" placeholder="[Human directive] to inject…" ${live?'':'disabled'}>
-        <button id="bSteer" ${live?'':'disabled'} onclick="steer()">Send</button>
+        <button ${live?'':'disabled'} onclick="steer()">Send</button>
       </div>
       ${live?'':'<div style="margin-top:8px;font-size:12px;color:var(--dim)">Read-only — this room is not currently active'+(STATE?.daemon?.running?'':' (daemon offline)')+'. Re-open it from a session to control it.</div>'}
     </div>
     <div class="tabs">
+      <div class="tab ${TAB==='catchups'?'sel':''}" onclick="setTab('catchups')">Catch-ups${unrev?' <span class="tabdot">'+unrev+'</span>':''}</div>
       <div class="tab ${TAB==='thread'?'sel':''}" onclick="setTab('thread')">Thread</div>
       <div class="tab ${TAB==='consensus'?'sel':''}" onclick="setTab('consensus')">Summary</div>
     </div>`
-  const view = TAB==='thread'
-    ? `<div class="view" id="view">${renderThread(data.thread||'', room)}</div>`
-    : `<div class="view" id="view"><pre class="raw">${esc(data.consensus||'(empty)')}</pre></div>`
+  let view
+  if (TAB==='catchups') view = `<div class="view" id="view">${renderCatchups(cs)}</div>`
+  else if (TAB==='consensus') view = `<div class="view" id="view"><pre class="raw">${esc(data.consensus||'(empty)')}</pre></div>`
+  else view = `<div class="view" id="view">${renderThread(data.thread||'', room)}</div>`
   $('#detail').innerHTML = head + view
   if (TAB==='thread') { const v = $('#view'); v.scrollTop = v.scrollHeight }
   const st = $('#steerText'); if (st) st.onkeydown = (e) => { if (e.key==='Enter') steer() }
 }
 
+// One pane per pause, paginated. Opens to the oldest unreviewed (see refreshDetail). Opening a pane
+// never marks it — only the explicit "Mark reviewed" button writes reviewedAt.
+function renderCatchups(cs) {
+  if (!cs.length) return '<div class="empty" style="margin:24px auto">No catch-ups yet. They appear when a room pauses (turn-cap or stall) while you\'re away — one pane per pause.</div>'
+  if (PANE==null || PANE<0 || PANE>=cs.length) PANE = cs.length-1
+  const c = cs[PANE], reviewed = !!c.reviewedAt
+  const stat = c.status==='pending'
+    ? '<span class="cu-badge gen">⏳ generating…</span>'
+    : (reviewed ? '<span class="cu-badge rev">✓ reviewed '+ago(Date.parse(c.reviewedAt))+'</span>' : '<span class="cu-badge new">● unreviewed</span>')
+  const nav = '<div class="cu-nav">'
+    + '<button '+(PANE<=0?'disabled':'')+' onclick="pane(-1)">← prev</button>'
+    + '<span><b>Catch-up '+(PANE+1)+'</b> of '+cs.length+' · '+esc(c.pauseReason||'')+' · '+esc(new Date(c.ts).toLocaleString())+'</span>'
+    + stat + '<span class="grow"></span>'
+    + ((c.status==='ready' && !reviewed) ? '<button onclick="markReviewed('+c.seq+')">✓ Mark reviewed</button>' : '')
+    + '<button '+(PANE>=cs.length-1?'disabled':'')+' onclick="pane(1)">next →</button>'
+    + '</div>'
+  let body
+  if (c.status==='pending') body = '<div class="empty" style="margin:24px auto">Waiting for the sessions to file their handoffs…</div>'
+  else {
+    body = ['a','b'].map(k => { const h = c.handoffs && c.handoffs[k]; if (!h) return ''
+      return '<div class="cu-side '+k+'"><div class="cu-name">'+esc(h.name||k)+'</div><div class="cu-text">'+esc(h.text||'')+'</div></div>' }).join('')
+    if (!body) body = '<div class="empty" style="margin:24px auto">No handoffs were filed for this pause.</div>'
+  }
+  return nav + body
+}
+function pane(d) { PANE = (PANE==null?0:PANE) + d; renderDetail() }
+async function markReviewed(seq) {
+  const r = await api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ roomId: SELECTED, action:'review', seq }) })
+  toast(r.ok ? 'marked reviewed ✓' : ('✗ '+(r.error||'failed')))
+  await refresh()
+}
+
 async function select(id) {
-  if (SELECTED !== id) { SELECTED = id; lastThread = lastConsensus = '' }
+  if (SELECTED !== id) { SELECTED = id; PANE = null; JUST_SELECTED = true; lastThread = lastConsensus = lastCatchups = '' }
   renderList()
   await refreshDetail(true)
 }
@@ -192,18 +244,31 @@ async function refreshDetail(force) {
   if (!SELECTED) return
   const data = await api('/api/room?id='+encodeURIComponent(SELECTED))
   if (data.error) { $('#detail').innerHTML = '<div class="empty">'+esc(data.error)+'</div>'; return }
-  const changed = data.thread!==lastThread || data.consensus!==lastConsensus
+  const csStr = JSON.stringify(data.catchups||[])
+  const changed = data.thread!==lastThread || data.consensus!==lastConsensus || csStr!==lastCatchups
   if (!force && !changed) return
   const v = $('#view'); const nearBottom = v ? (v.scrollHeight - v.scrollTop - v.clientHeight < 80) : true
-  lastThread = data.thread; lastConsensus = data.consensus
-  renderDetail(data)
+  lastThread = data.thread; lastConsensus = data.consensus; lastCatchups = csStr
+  DETAIL = data
+  if (JUST_SELECTED) {           // on a fresh open, jump to the oldest unreviewed catch-up
+    JUST_SELECTED = false
+    const cs = data.catchups || []
+    const oldest = cs.findIndex(c => c.status==='ready' && !c.reviewedAt)
+    if (oldest >= 0) { TAB = 'catchups'; PANE = oldest }
+    else { if (TAB==='catchups') TAB = 'thread'; PANE = cs.length-1 }
+  }
+  renderDetail()
   if (TAB==='thread' && !force) { const nv = $('#view'); if (nv && nearBottom) nv.scrollTop = nv.scrollHeight }
 }
 
-function setTab(t) { TAB = t; lastThread = lastConsensus = ''; refreshDetail(true) }
+function setTab(t) { TAB = t; renderDetail() }
 function copyId() { try { navigator.clipboard.writeText(SELECTED) } catch {} toast('room id copied') }
 
 async function act(action) {
+  if (action==='resume') {   // soft-gate: don't unblock blind on unreviewed catch-ups
+    const room = roomById(SELECTED)
+    if (room && room.unreviewed>0 && !confirm(room.unreviewed+' unreviewed catch-up'+(room.unreviewed>1?'s':'')+' for this room — resume anyway?')) return
+  }
   const r = await api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ roomId: SELECTED, action }) })
   toast(r.ok ? action+' ✓' : ('✗ '+(r.error||'failed')))
   await refresh()

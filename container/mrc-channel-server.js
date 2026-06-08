@@ -94,6 +94,11 @@ const tools = [
     description: 'Resume a paused room: deliver any held message and continue. Call when the human says to resume/continue.',
     inputSchema: { type: 'object', properties: {} },
   },
+  {
+    name: 'submit_handoff',
+    description: 'ONLY in response to a "[Room handoff requested]" message: submit a short catch-up for your human — what you did this round (including local workspace work you did NOT relay), where things stand, and exactly what you need to get unblocked. Do not call this unprompted.',
+    inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+  },
 ]
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
 
@@ -130,6 +135,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     case 'resume_room':
       send({ type: 'resume' })
       return { content: [{ type: 'text', text: 'Resume requested; any held message will be delivered.' }] }
+    case 'submit_handoff':
+      send({ type: 'handoff', text: String(a.text ?? '') })
+      return { content: [{ type: 'text', text: "Handoff submitted to your human's catch-up." }] }
     default:
       throw new Error(`unknown tool: ${req.params.name}`)
   }
@@ -152,7 +160,7 @@ function onFrame(f) {
     return
   }
   // peer message (untrusted), human directive (trusted), or notice — push into the session.
-  if ((f.type === 'deliver' || f.type === 'directive' || f.type === 'notice' || f.type === 'peers') && f.text) pushIn(f.text)
+  if ((f.type === 'deliver' || f.type === 'directive' || f.type === 'notice' || f.type === 'peers' || f.type === 'catchup_request') && f.text) pushIn(f.text)
 }
 function connect() {
   if (!PORT) { log('MRC_ROOM_PORT unset — dormant (no daemon)'); return }
