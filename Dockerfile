@@ -76,6 +76,16 @@ RUN mkdir -p /opt/mrc-channel \
     && npm install --loglevel=error @modelcontextprotocol/sdk
 COPY container/mrc-channel-server.js /opt/mrc-channel/mrc-channel-server.js
 
+# Negotiation-room / crew channel, packaged as a plugin in a baked-in LOCAL marketplace so it loads
+# via `--channels plugin:room@mrc` with NO experimental-channel prompt (vs the old
+# --dangerously-load-development-channels, which prompted). The allowlist below makes the load
+# non-interactive; container-setup.js registers the plugin into the per-repo config volume at runtime
+# (local marketplaces aren't cloned into ~/.claude/plugins, so they don't ride the defaults-restore the
+# GitHub-marketplace plugins use). The plugin's .mcp.json points back at /opt/mrc-channel above.
+COPY mrc-marketplace /opt/mrc-marketplace
+RUN mkdir -p /etc/claude-code \
+    && printf '%s\n' '{ "channelsEnabled": true, "allowedChannelPlugins": [ { "marketplace": "mrc", "plugin": "room" } ] }' > /etc/claude-code/managed-settings.json
+
 # Create workspace and config directories
 RUN mkdir -p /workspace && \
     ln -sf /home/coder/.claude/claude.json /home/coder/.claude.json

@@ -59,7 +59,7 @@ Lets two running `mrc` sessions consult each other through a host-mediated relay
 - **`src/commands/rooms.js`** — the `mrc rooms` CLI (`status` / `brake` / `resume` / `steer` / `end` / `restart` / `stop` / `dashboard`) over the daemon's control socket.
 - **`src/rooms.js`** — room-dir manager for `~/.local/share/mrc/rooms/<roomId>/`: `ensureRoom`, `appendThread`, `writeConsensus`, `listRooms`.
 - **`src/rooms-dashboard.js`** + **`src/rooms-dashboard.html`** — a dependency-free localhost web dashboard (served from inside the daemon) showing every room's full `thread.log` + summary (live & historical), paginated per-pause **catch-up panes** (agent-written handoffs captured when a room pauses, with explicit mark-reviewed), and pause/resume/steer/end controls.
-- **`container/mrc-channel-server.js`** — container-side MCP "channel" server (loaded via `--dangerously-load-development-channels server:room`). Connects to the daemon and exposes `list_peers`/`ask_peer`/`reply`/`update_notes`/`pause_room`/`resume_room`, pushing peer messages into the session as `<channel>` tags.
+- **`container/mrc-channel-server.js`** — container-side MCP "channel" server (shipped as the `room` plugin in a baked-in local marketplace `mrc-marketplace/`; loaded via `--channels plugin:room@mrc`, allowlisted in managed-settings so there's no prompt). Connects to the daemon and exposes `list_peers`/`ask_peer`/`reply`/`update_notes`/`pause_room`/`resume_room`, pushing peer messages into the session as `<channel>` tags.
 
 ### Legacy (deprecated — do not modify)
 

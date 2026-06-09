@@ -56,7 +56,7 @@ UUID** (stable across resume, fresh per new conversation — see §5.9), so:
 
 ```
    Session A (container, repo A)                    Session B (container, repo B)
-   claude … --dangerously-load-development-channels server:room   (dormant until paired)
+   claude … --channels plugin:room@mrc   (dormant until paired)
         │ stdio                                            │ stdio
    mrc-channel-server.js                              mrc-channel-server.js
    (list_peers/ask_peer/reply/update_notes/pause_room/resume_room)
@@ -208,8 +208,10 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
   **`/channels`** feature (research preview, present in our build though hidden from `--help`).
 - **Channels** = a local MCP server (stdio + loopback, **no cloud**), two-way (push in via
   `notifications/claude/channel`; out via a tool), coexists with an interactive session, works on
-  **Max/OAuth**. We ship our own channel server, loaded with
-  `--dangerously-load-development-channels server:room`.
+  **Max/OAuth**. We ship our own channel server as the `room` plugin in a baked-in **local
+  marketplace**, loaded with `--channels plugin:room@mrc` — allowlisted in managed-settings, so it
+  loads with no experimental-channel prompt (was `--dangerously-load-development-channels`, which
+  prompted every first-use).
 - **Remote Control** was ruled out: requires claude.ai OAuth *and* routes through Anthropic's
   cloud ("API keys not supported"). Channels work on either auth and stay local.
 - **ESM gotcha:** the channel server uses ESM `import`, which (unlike `require`) ignores
@@ -271,13 +273,16 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 - **`src/docker.js`** — `labels` param on `runContainer`; `buildImage` announces a full image
   build ("a few minutes") vs a cached one.
 - **`Dockerfile`** — `/opt/mrc-channel` with a local `@modelcontextprotocol/sdk`; copy the channel
-  server there. (No `expect`/PTY wrapper.)
+  server there. Also bake `/opt/mrc-marketplace` (the local `mrc` marketplace whose `room` plugin
+  points at that server) + `/etc/claude-code/managed-settings.json` allowlisting `{marketplace:mrc,
+  plugin:room}`. (No `expect`/PTY wrapper.)
 - **`entrypoint.sh`** — pass `MRC_ROOM_PORT` to the firewall; room branch launches `claude
-  --dangerously-load-development-channels server:room --mcp-config …`, pinning `--session-id
-  $MRC_SESSION_ID` for a NEW conversation (empty `RESUME_FLAG`); resume/continue keep their flag.
+  --channels plugin:room@mrc`, pinning `--session-id $MRC_SESSION_ID` for a NEW conversation (empty
+  `RESUME_FLAG`); resume/continue keep their flag.
 - **`init-firewall.sh`** — allow the one `MRC_ROOM_PORT` (modeled on clipboard/notify).
-- **`container/container-setup.js`** — when `MRC_ROOM_PORT` set, write `/tmp/mrc-room-mcp.json`
-  pointing at `/opt/mrc-channel/mrc-channel-server.js`.
+- **`container/container-setup.js`** — when `MRC_ROOM_PORT` set, register the `room` plugin into the
+  per-repo volume (`claude plugin marketplace add /opt/mrc-marketplace` + `plugin install room@mrc`),
+  idempotently (skipped once present) — local marketplaces don't ride the plugin defaults-restore.
 
 **Env vars:** `MRC_ROOM_PORT` (daemon relay port), `MRC_ROOM_HOST` (`host.docker.internal`),
 `MRC_SESSION_ID` (the conversation UUID), `MRC_REPO_NAME`, `MRC_ROOM_LABEL` (display alias),

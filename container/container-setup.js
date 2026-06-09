@@ -6,6 +6,7 @@
 //
 import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, readdirSync, cpSync, rmSync, lstatSync, statSync, appendFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 const HOME = process.env.HOME || '/home/coder'
 const CLAUDE_DIR = join(HOME, '.claude')
@@ -251,12 +252,22 @@ if (agent === 'claude') {
 
 writeFileSync('/tmp/mrc-resume-flag', resumeFlag)
 
-// 8. Negotiation room: write the channel-server MCP config so the entrypoint can load it
-// via --dangerously-load-development-channels server:room.
-if (process.env.MRC_ROOM_PORT) {
-  writeFileSync('/tmp/mrc-room-mcp.json', JSON.stringify({
-    mcpServers: { room: { command: 'node', args: ['/opt/mrc-channel/mrc-channel-server.js'] } },
-  }))
+// 8. Negotiation-room / crew channel plugin. The channel ships as a plugin in a baked-in LOCAL
+// marketplace (/opt/mrc-marketplace), allowlisted in /etc/claude-code/managed-settings.json, so the
+// entrypoint loads it via `--channels plugin:room@mrc` with NO experimental-channel prompt. Local
+// marketplaces aren't cloned into ~/.claude/plugins, so they don't ride the defaults-restore the
+// GitHub plugins use — register it into this (per-repo) volume here instead. Idempotent: skipped once
+// installed_plugins.json shows it, so it's a one-time cost on a fresh volume.
+if (process.env.MRC_ROOM_PORT && existsSync('/opt/mrc-marketplace')) {
+  const installed = readJSON(join(CLAUDE_DIR, 'plugins', 'installed_plugins.json'))
+  if (!installed || !JSON.stringify(installed).includes('room@mrc')) {
+    try {
+      execFileSync('claude', ['plugin', 'marketplace', 'add', '/opt/mrc-marketplace'], { stdio: 'ignore' })
+      execFileSync('claude', ['plugin', 'install', 'room@mrc'], { stdio: 'ignore' })
+    } catch (e) {
+      console.error('Warning: room channel plugin registration failed:', e.message)
+    }
+  }
 }
 
 console.log('Container setup complete.')
