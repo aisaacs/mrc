@@ -90,7 +90,7 @@ Lets two running `mrc` sessions consult each other through a host-mediated relay
 - **Colima resource detection** — CPU and memory for the Colima VM default to all host cores and half host RAM (8GB floor). Overridable via `--colima-cpu` and `--colima-memory` flags or `.mrcrc`.
 - **Docker context resolution** — `mrc.js` searches for the Dockerfile in three locations: `<scriptDir>`, `~/.local/share/mrc/`, and `$MRC_HOME/`. This enables standalone binary installs separate from the Docker context.
 - **Negotiation rooms are host-mediated and sandbox-safe** — cross-session consultation flows session → host daemon → session over one sanctioned host port (no container-to-container network, no new firewall egress). Peer messages are always framed as untrusted data (`Peer (<name>) says: …`); only the human's steers are trusted (`[Human directive]: …`). Rooms are a host-controlled bind mount (`/rooms`), not network. Room ids hash the two sessions' conversation UUIDs, so resuming both conversations deterministically rejoins the same room (history preserved); closing a room is human-only.
-- **Rooms daemon + dashboard lifecycle** — one self-managing daemon serves all sessions (version-stamped, so it auto-refreshes when `room-daemon.js` changes; idle auto-shutdown). It also hosts the `mrc rooms dashboard` web UI, so the dashboard persists without a foreground tab and an open dashboard keeps the daemon alive. `consensus.md` is a *living shared summary* refreshed by either agent via `update_notes` (not a signed gate); the turn cap (default 100, `MRC_ROOM_TURN_CAP`) is a periodic check-in that grants another window on resume.
+- **Rooms daemon + dashboard lifecycle** — one self-managing daemon serves all sessions (version-stamped, so it auto-refreshes when `room-daemon.js` changes; idle auto-shutdown). It also hosts the `mrc rooms dashboard` web UI, so the dashboard persists without a foreground tab and an open dashboard keeps the daemon alive. `consensus.md` is a *living shared summary* refreshed by either agent via `update_notes` (not a signed gate); the turn cap is **off by default** — set `MRC_ROOM_TURN_CAP=N` to opt into a periodic check-in every N turns (resume grants another window).
 
 ## CLI Reference
 
@@ -139,7 +139,7 @@ Environment:
                        (Legacy ANTHROPIC_API_KEY still works as a deprecated fallback.)
   OPENAI_API_KEY       OpenAI key (required for --agent codex)
   MRC_PORT_BASE        Starting port for proxy allocation (default: 7722)
-  MRC_ROOM_TURN_CAP    Room turn-cap window before a check-in pause (default: 100; 0 disables)
+  MRC_ROOM_TURN_CAP    Room turn-cap check-in pause every N turns (default: 0 = off; set N to enable)
   MRC_DASHBOARD_PORT   Room dashboard port (default: 8787; 0 disables the daemon-hosted dashboard)
   MRC_HOME             Override Docker context directory (advanced)
 ```

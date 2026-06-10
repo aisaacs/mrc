@@ -20,7 +20,7 @@ const catchupPrompt = (reason) =>
   `to the peer; (2) where things stand now; (3) exactly what you need from your human to get ` +
   `unblocked. Be concrete and skip preamble.`
 
-export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS }) {
+export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
   // Restore pairings a graceful restart dumped, so an in-flight room survives `mrc rooms restart`

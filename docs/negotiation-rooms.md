@@ -286,7 +286,7 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 
 **Env vars:** `MRC_ROOM_PORT` (daemon relay port), `MRC_ROOM_HOST` (`host.docker.internal`),
 `MRC_SESSION_ID` (the conversation UUID), `MRC_REPO_NAME`, `MRC_ROOM_LABEL` (display alias),
-`MRC_ROOM` (optional explicit `--room` name), `MRC_ROOM_TURN_CAP` (turn-cap window; `0` disables),
+`MRC_ROOM` (optional explicit `--room` name), `MRC_ROOM_TURN_CAP` (turn-cap check-in; off by default, set N to enable),
 `MRC_DASHBOARD_PORT` (dashboard port; default 8787, `0` disables).
 
 ## 8. Data flow — one ask
@@ -307,12 +307,12 @@ Daemon-applied framing: peer messages `Peer (<name>) says: …`; human steers `[
 ## 9. Pairing & control
 
 Per-pairing state in the daemon: `Running | Paused` + `pauseReason ∈ {brake,turnCap,stall}`,
-`turn`/`turnCap` (default 100; `MRC_ROOM_TURN_CAP`, `0` disables), `lastActivityAt`, and a FIFO
+`turn`/`turnCap` (off by default; `MRC_ROOM_TURN_CAP=N` enables), `lastActivityAt`, and a FIFO
 `held` queue.
 
 - **brake** → Paused, stop delivering, queue further messages (FIFO).
 - **turnCap** → a periodic *check-in*: Paused at `turn ≥ cap`; **resume grants another full window**
-  so a long-running channel isn't a per-turn wall (default 100; `MRC_ROOM_TURN_CAP`, `0` disables).
+  so a long-running channel isn't a per-turn wall (off by default; `MRC_ROOM_TURN_CAP=N` enables).
 - **stall** → idle > 10 min → Paused + notify, but **self-healing**: the next real message
   auto-resumes it (a slow peer composing a long reply is never swallowed).
 - **catch-up** → on a turnCap/stall pause (or the dashboard's **Catch-up now**) the daemon elicits
