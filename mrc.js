@@ -406,7 +406,7 @@ if (roomsActive) {
   // one, else the repo basename.
   let label = basename(repoPath)
   try { const nm = loadNames(resolve(repoPath, '.mrc'))[sessionId]; if (nm) label = nm } catch {}
-  envFlags.push(...roomSessionEnv({ daemonPort: daemon.port, sessionId, repoName: basename(repoPath), roomName: config.room, label }))
+  envFlags.push(...roomSessionEnv({ daemonPort: daemon.port, sessionId, repoName: basename(repoPath), repoPath, roomName: config.room, label, summonedBy: config.summonedBy }))
   volumes.push('-v', `${roomsRoot()}:/rooms`)
   roomInfo = { sessionId, roomName: config.room || '', label }
 }

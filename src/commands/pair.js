@@ -104,9 +104,11 @@ export async function stopRoomDaemon() {
 }
 
 // Env that connects a session's channel server to the daemon.
-export function roomSessionEnv({ daemonPort, sessionId, repoName, roomName, label }) {
+export function roomSessionEnv({ daemonPort, sessionId, repoName, repoPath, roomName, label, summonedBy }) {
   const env = ['-e', `MRC_ROOM_PORT=${daemonPort}`, '-e', `MRC_SESSION_ID=${sessionId}`, '-e', `MRC_REPO_NAME=${repoName}`]
+  if (repoPath) env.push('-e', `MRC_REPO_PATH=${repoPath}`)   // host path, so the daemon can summon an adversary onto this same repo
   if (label) env.push('-e', `MRC_ROOM_LABEL=${label}`)
   if (roomName) env.push('-e', `MRC_ROOM=${roomName}`)
+  if (summonedBy) env.push('-e', `MRC_SUMMONED_BY=${summonedBy}`)   // a spawned adversary reports this → daemon auto-pairs it with the summoner
   return env
 }

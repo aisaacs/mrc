@@ -132,6 +132,14 @@ if (existsSync(CODEX_SRC)) {
   linkOrMigrate(join(CODEX_SRC, 'command.md'), join(CLAUDE_DIR, 'commands', 'codex.md'))
 }
 
+// 1d. Seed red-team slash command (Tier 0 of the adversarial-rooms design — a one-shot grounded
+// adversary on demand; see docs/multiparty-adversarial-rooms.md). Symlinked so image updates
+// propagate; available in every session, no rooms required.
+const RT_SRC = '/opt/mrc-red-team'
+if (existsSync(RT_SRC)) {
+  linkOrMigrate(join(RT_SRC, 'command.md'), join(CLAUDE_DIR, 'commands', 'red-team.md'))
+}
+
 // 2. Restore claude.json from backup if missing
 if (!existsSync(CONFIG_FILE)) {
   const backupDir = join(CLAUDE_DIR, 'backups')

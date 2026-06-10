@@ -107,6 +107,7 @@ export function parseArgs(argv) {
     agent: 'claude',
     room: '',
     rooms: true,   // cross-session negotiation rooms are ON by default (disable with --no-rooms)
+    summonedBy: '', // internal: stamped by the daemon's summon launcher so a spawned adversary auto-pairs with its summoner
   }
   const remaining = []
   const claudeArgs = []
@@ -145,6 +146,9 @@ export function parseArgs(argv) {
         break
       case '--rooms': config.rooms = true; break
       case '--no-rooms': config.rooms = false; break
+      case '--summoned-by':   // internal (daemon-set): pair this session with the summoner once it registers
+        if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.summonedBy = argv[++i]
+        break
       default: remaining.push(arg)
     }
   }

@@ -117,6 +117,10 @@ COPY container/video-analysis-defaults.json /opt/mrc-video-analysis/defaults.jso
 # Codex slash command (seeded into ~/.claude/commands/ at runtime)
 COPY container/codex-command.md /opt/mrc-codex/command.md
 
+# Red-team slash command (seeded into ~/.claude/commands/ at runtime). Tier 0 of the
+# adversarial-rooms design — a one-shot grounded adversary on demand; see docs/multiparty-adversarial-rooms.md
+COPY container/red-team-command.md /opt/mrc-red-team/command.md
+
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
