@@ -242,8 +242,9 @@ function renderCatchups(cs) {
     + '</div>'
   // Show whatever's filed right away — even while pending — so a side that's already reported isn't
   // hidden behind the one that's still busy; offer a nudge for the missing side(s).
-  let body = ['a','b'].map(k => { const h = c.handoffs && c.handoffs[k]; if (!h) return ''
-    return '<div class="cu-side '+k+'"><div class="cu-name">'+esc(h.name||k)+'</div><div class="cu-text">'+esc(h.text||'')+'</div></div>' }).join('')
+  let body = Object.entries(c.handoffs||{}).map(([k,h],i) => { if (!h) return ''
+    const side = i % 2 === 0 ? 'a' : 'b'   // handoffs are keyed by participant (a/b legacy or session id); colour by slot
+    return '<div class="cu-side '+side+'"><div class="cu-name">'+esc(h.name||k)+'</div><div class="cu-text">'+esc(h.text||'')+'</div></div>' }).join('')
   if (c.status==='pending') {
     const waiting = Math.max(0, (c.expected||0) - Object.keys(c.handoffs||{}).length)
     body += '<div class="empty" style="margin:16px auto">⏳ waiting on '+waiting+' more handoff'+(waiting===1?'':'s')+' (a side may be busy) — <button onclick="requestCatchup()">nudge</button></div>'

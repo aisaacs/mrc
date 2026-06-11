@@ -33,16 +33,22 @@ USAGE
 COMMANDS
   status, ls                    Show connected sessions and active rooms.
                                   Sessions:  <name> (<repo>) [<session-id>]
-                                  Rooms:     <a> <-> <b> · <state> · turn N  [<room-id>]
+                                  Rooms:     <member> <-> <member> [<-> …] · <state> · turn N  [<room-id>]
   brake  [room-id]              Pause a room: the daemon stops delivering and HOLDS the next
                                   message. Use the moment it heads the wrong way.
   resume [room-id]              Resume: deliver any held message and continue.
-  steer  [--room <id>] [--target a|b] <text>
+  steer  [--room <id>] [--target <name>|both] <text>
                                 Inject a trusted "[Human directive]: <text>" into the room
-                                  (default: both sides). Course-corrects mid-negotiation and
-                                  drops a held wrong-path message.
-  end    [room-id]              Close a room. Both sides are notified; the transcript and
+                                  (default: both sides; --target <name> hits one member). Course-
+                                  corrects mid-negotiation and drops a held wrong-path message.
+  end    [room-id]              Close a room. All members are notified; the transcript and
                                   consensus are preserved on disk (the room can be resumed).
+  accept [room-id]             Consent to a fresh adversary joining one of YOUR rooms (a peer asked
+                                  for a 3-way red-team). Nothing joins until you run this; read the
+                                  brief at /rooms/<id>/adversary-brief.md first.
+  decline [room-id]            Refuse a pending adversary invite.
+  allow-adversary [id] [--off]  Pre-authorize THIS room for adversaries (or --off to revoke): future
+                                  invites join without a prompt. Room-scoped — never a stale global yes.
   restart                       Refresh the room daemon in place (same ports) so every connected
                                   session reconnects to current code. Run after updating mrc.
   stop                          Stop the room daemon (no respawn). It also auto-stops ~10 min
@@ -120,7 +126,9 @@ export async function roomsCommand(args) {
       console.log('  Pairings:')
       if (!s.pairings.length) console.log('    (none)')
       for (const p of s.pairings) {
-        console.log(`    ${p.a} <-> ${p.b}  ·  ${p.state}${p.pauseReason ? `(${p.pauseReason})` : ''}  ·  turn ${p.turn}  [${p.roomId}]`)
+        const who = (p.members && p.members.length ? p.members : [p.a, p.b].filter(Boolean)).join(' <-> ')
+        const flags = `${p.pendingInvite ? `  ·  ⏳ adversary invite pending from ${p.pendingInvite} (mrc rooms accept/decline ${p.roomId})` : ''}${p.openToAdversary ? '  ·  open-to-adversary' : ''}`
+        console.log(`    ${who}  ·  ${p.state}${p.pauseReason ? `(${p.pauseReason})` : ''}  ·  turn ${p.turn}  [${p.roomId}]${flags}`)
       }
       return
     }
@@ -137,6 +145,20 @@ export async function roomsCommand(args) {
         else console.log(`  closed${roomId ? ` ${roomId}` : ''} (transcript preserved).`)
         break
       }
+      case 'accept': case 'decline': {
+        const roomId = args[1] && !args[1].startsWith('-') ? args[1] : undefined
+        const r = await ctrl(port, sub, { roomId })
+        if (!r.ok) { console.error(`  ! ${r.error}`); break }
+        console.log(sub === 'accept' ? '  accepted — a fresh adversary is joining the room on the open brief.' : '  declined.')
+        break
+      }
+      case 'allow-adversary': {
+        const roomId = args[1] && !args[1].startsWith('-') ? args[1] : undefined
+        const on = !args.includes('--off')
+        const r = await ctrl(port, 'allowadversary', { roomId, on })
+        console.log(r.ok ? `  this room ${r.openToAdversary ? 'now accepts' : 'no longer accepts'} adversary invites without a per-invite prompt.` : `  ! ${r.error}`)
+        break
+      }
       case 'steer': {
         // mrc rooms steer [--room <id>] [--target a|b] <text>
         let parts = args.slice(1), target = 'both', rid
@@ -148,7 +170,7 @@ export async function roomsCommand(args) {
         console.log(r.ok ? `  steered (${target}).` : `  ! ${r.error}`)
         break
       }
-      default: console.error(`  unknown: mrc rooms ${sub}  (status | brake | resume | end | steer)`); process.exit(1)
+      default: console.error(`  unknown: mrc rooms ${sub}  (status | brake | resume | end | steer | accept | decline | allow-adversary)`); process.exit(1)
     }
   } catch (e) {
     console.error(`  ! ${e.message}`)
