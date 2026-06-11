@@ -1,12 +1,13 @@
 # Trustworthy low-touch progress — multiparty adversarial rooms (design)
 
-> **Status: thesis validated by a live pre-check (2026-06-10, N=1); not built.** The direction that
-> survived the parked crew exploration (see [`crew.md`](./crew.md)). Downtime work, off the critical
-> path. Substrate: [`negotiation-rooms.md`](./negotiation-rooms.md).
+> **Status (2026-06-11): Tiers 0 + 1 BUILT and verified live; Tier 2 is a costed design fork awaiting a
+> call.** The direction that survived the parked crew exploration (see [`crew.md`](./crew.md)). Substrate:
+> [`negotiation-rooms.md`](./negotiation-rooms.md).
 >
-> The build decision is now *informed* — see **[Pre-check verdict](#pre-check-verdict-2026-06-10)**: the
-> dialogue-grounding **value is real and reachable two-party, by hand, today**; the multiparty build buys
-> **autonomy, not the value**. So the next phase is to *dogfood* the workflow, not to build plumbing.
+> Validated twice: by a live pre-check ([verdict](#pre-check-verdict-2026-06-10)), then by the feature
+> *itself* — once Tier 1 was live we summoned the adversary (**Pierre**) onto Tier 2's own design, and he
+> found a silent bug, a consent hole, and a better shape ([Tier 2 red-team](#tier-2-red-team-pierre-2026-06-11)).
+> What's left is the **A/B fork** plus a shared first fix — see the build order.
 
 ## The north star
 
@@ -74,6 +75,54 @@ plumbing is when the context-holder is **already in a room** (the one-room-per-s
 the adversary to *join* it. So the build is narrowly that — and it's gated on whether low-touch is worth
 it, since the manual flow is a proven fallback.
 
+## Tier 2 red-team (Pierre, 2026-06-11)
+
+The feature dogfooded itself: once Tier 1 was live, we **summoned Pierre onto Tier 2's own design** (the
+"participant-set + broadcast" plan). He grounded every objection in the real `room-daemon.js`, the volley
+converged in good faith, and the result turned Tier 2 from "a plan" into a **costed fork**.
+
+**Grounded findings (verified against the code; conceded by both sides):**
+- **`ensurePairing` clobber — a silent bug.** The naïve join (Pierre registers with `--room <existing
+  roomId>` → `onAdversaryUp` → `ensurePairing(summoner, Pierre, roomId)`) hits a create path that
+  `pairings.set(roomId, {a,b})` and **overwrites the live {summoner, server} pairing**, evicting the server
+  to "[No open room]". A join must **mutate a participant list, never create-and-overwrite**.
+- **No turn arbitration.** `onMsg` just relays and the channel tells every agent to auto-reply. Two parties
+  self-serialize; **broadcast at N≥3 is a fan-out chain reaction** with only a human brake (turnCap off by
+  default). A daemon **speaking token** is the right fix *if* 3-party.
+- **The `{a,b}` welds run past the plan's six spots — and the misses are corruption, not CSS:** `onHandoff`'s
+  `a/b` role collision hangs the catch-up pane (expected=3, two keys); `savePairings`/`loadPairings` drop
+  the 3rd on restart; the named-room auto-pair blocks a 3rd via `!pairingFor`; the `mrc rooms` status/steer
+  surface is `a/b`-welded (you lose per-participant steering).
+- **Consent gap.** The server's human never opts the adversary in — `ensurePairing` just sends a notice and
+  proceeds. *"An adversary in someone's room without their human's yes isn't multiparty, it's trespass."*
+- **It's specifically `{client, server, Pierre}`, not general N** — so broadcast is overkill for "add one
+  adversary."
+
+**The costed fork (the human's product call, not a correctness call):**
+- **(A) Pairwise side-channel** — Pierre rooms *only* with the summoner; the server stays in its own room;
+  the summoner relays. Cost = the routing fix below, full stop. Keeps a private red-teamer **plus
+  summoner-mediated grilling of the server**, with strictly fewer failure classes (no storm, no consent
+  violation, no silent corruption).
+- **(B) True 3-party, done right** — (A)'s fix **plus** participant-set, broadcast, a speaking token,
+  handoff re-keying, N-party persistence, the N-party control surface, **and a real server-consent
+  handshake — the lead item, not the token; it does not exist today.** Buys the one thing pairwise can't:
+  **live, unmediated Pierre↔server cross-examination** (the migration-bug case).
+- **Decision rule:** *is unmediated cross-exam worth ~six builds plus conscripting another human's session
+  into an adversarial room they never opted into?* Yes → (B), with consent as the lead. No → (A).
+
+**Shared first step regardless of the fork — and a latent bug *today*:** fix `pairingFor`'s first-match
+(`room-daemon.js:87`) and `ensurePairing`'s create-clobber (`:142`). They mis-route and clobber the instant
+*any* session is in two rooms, Tier 2 or not. *"Don't pour the participant set onto a cracked slab."*
+
+**Still needs verifying (human/runtime):** (a) the server's-human consent = product call; (b) do real
+agents storm at N≥3 or self-throttle — untested, take one empirical run before trusting broadcast; (c) is
+mediated cross-exam genuinely insufficient for the motivating case, or just less satisfying — the hinge.
+
+*Meta: this exchange — summon → grounded volley → honest convergence → peer-written `consensus.md` — was the
+north star demonstrated live, on our own next design. The full verb set ran (summon / reply / update_notes),
+and Pierre stayed adversarial, updated on evidence, AND punted the product call to the human (all three
+pillars at once).*
+
 ## Pillars
 
 1. **Autonomy / async delivery** (low-touch) — mostly there today (a session runs unattended; long ops
@@ -136,25 +185,29 @@ it, since the manual flow is a proven fallback.
    grounding step. One action, no spin-up, no paste. Gives the *generation + pinned-unknowns* half
    turnkey; **not** live dialogue grounding. *Takes effect on the next image rebuild
    (`docker rmi mister-claude && node mrc.js <repo>`); usage is the N>1 + adoption test.*
-2. **✓ Tier 1 — `summon_adversary` (BUILT 2026-06-10, pending host test).** *Owner: the most appealing
-   tier — letting the adversary **pivot on empirical grounding** is "the whole point."* Built: a channel
-   verb `summon_adversary(brief)` → the daemon writes the brief to `/rooms/<id>/adversary-brief.md`,
-   **opens a new iTerm tab** (osascript, with a paste-the-command fallback) running a *normal* interactive
-   `mrc <yourRepo> --new --room <id> --summoned-by <you>`, then **auto-pairs** it back on register and
-   **primes** it via a channel directive (no detached/headless — it's a normal tab, so it volleys; no cost
-   cliff). Files: `config.js`/`pair.js`/`mrc.js` (`--summoned-by` + `MRC_REPO_PATH`), `mrc-channel-server.js`
-   (the verb + register fields), `room-daemon.js` (`onSummon` + opener + handshake, adapted from the parked
-   `onSpawn`; the spawn is **hard-constrained** — fixed adversary on your repo, no container args, one per
-   requester). **Pending host verification:** (a) the osascript opener under macOS TCC (else the paste
-   fallback / move to `mrc.js`), (b) whether a freshly-booted adversary acts on the priming directive.
-   **Deferred:** auth-volume clone (else a one-time OAuth in the adversary's tab). Needs an image rebuild
-   to pick up the channel verb.
-3. **Tier 2 — multiparty join (the owner's actual common case).** Let an adversary join a room whose
-   peers are *already* paired (lift one-room-per-session). *Owner (2026-06-10): "the workflow I'm in the
-   most — client+server are already roomed, so without it I'm just copying and pasting a bunch."* So this
-   is the real destination, **not** an "if frequent" maybe — Tiers 0–1 are the on-ramp to it. Also
-   entails: hardening the role-prompt for *longer* volleys (drift), and the trust-boundary /
-   knowing-when-to-stop problem the pre-check left untested.
+2. **✓ Tier 1 — `summon_adversary` (BUILT + VERIFIED LIVE 2026-06-11).** *Owner: the most appealing tier —
+   letting the adversary **pivot on empirical grounding** is "the whole point."* A channel verb
+   `summon_adversary(brief)` → the daemon writes the brief to `/rooms/<id>/adversary-brief.md`, **opens a
+   new iTerm tab** (osascript; paste-the-command fallback) running a *normal* interactive `mrc <repo>
+   --new Pierre --room <id> --summoned-by <you> [--web]`, **auto-pairs** it back on register, and primes it
+   via a **positional boot prompt**. (Key fix from live testing: a freshly-booted session *ignores* a
+   post-boot channel push — it only acts on a first-turn arg, so the kickoff rides the positional prompt,
+   not a directive.) **Verified in the wild:** opener works under TCC; Pierre boots and volleys unprompted;
+   summoned onto Tier 2 he delivered a full grounded red-team. Polish fixes from real use: **static name**
+   (`--new Pierre` → named sessions, no biometric), **`--web` inherited** from the summoner, **biometric
+   skipped** for summoned sessions (`skipOp` — no naming-key Touch ID), and **auth-clone** (`cloneVolume`
+   copies the repo's authed config volume → no OAuth re-prompt). Spawn is **hard-constrained** (fixed
+   adversary on your repo, no container-supplied args, one per requester). Files: `config.js` / `pair.js` /
+   `mrc.js` / `docker.js`, `container/mrc-channel-server.js`, `src/proxies/room-daemon.js`.
+3. **Tier 2 — a costed fork, red-teamed (see [Tier 2 red-team](#tier-2-red-team-pierre-2026-06-11)).** The
+   owner's actual everyday case (client + server already roomed, pull Pierre in as a third). Pierre's
+   teardown turned the "participant-set + broadcast" plan into a decision: **(A) pairwise side-channel**
+   (cheap, consent-clean, summoner-mediated server-grilling) vs **(B) true 3-party done right**
+   (participant-set + speaking token + a real server-consent handshake — buys live *unmediated*
+   cross-examination). **Shared first step either way:** fix the latent `pairingFor` / `ensurePairing`
+   routing bug (a real bug in the tree today). *Decision pending — the human's product call.* Also still
+   open beyond the fork: the trust-boundary / knowing-when-to-stop problem, and drift over *longer* volleys
+   (one good multi-turn volley so far — Pierre held).
 
 ## Best practices & ergonomics (for the built feature)
 

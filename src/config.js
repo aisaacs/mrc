@@ -18,7 +18,7 @@ export function readMrcrc(file) {
 }
 
 /** Load .env file, handling 1Password op:// references. Returns the API key or null. */
-export function loadEnv(scriptDir) {
+export function loadEnv(scriptDir, { skipOp = false } = {}) {
   const candidates = [
     join(scriptDir, '.env'),
     join(process.env.HOME || '/root', '.config', 'mrc', '.env'),
@@ -37,6 +37,7 @@ export function loadEnv(scriptDir) {
   }
 
   if (content.includes('op://')) {
+    if (skipOp) { dbg('skipping op:// resolution (summoned session needs no naming key — no biometric)'); return null }
     dbg('.env contains op:// references, using 1Password CLI')
     return loadOpEnv(envFile)
   }

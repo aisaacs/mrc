@@ -70,6 +70,20 @@ export function volumeName(repoPath, instanceId) {
   return instanceId > 1 ? `mrc-config-${hash}-${instanceId}` : `mrc-config-${hash}`
 }
 
+/** Clone an authed config volume into a new one so a summoned session reuses the login (no OAuth
+ *  re-prompt in its tab). Best-effort: skips if the destination already exists (a reused instance
+ *  volume keeps its auth) or the source is missing; the session just falls back to a normal login. */
+export function cloneVolume(srcName, dstName) {
+  try { execFileSync('docker', ['volume', 'inspect', dstName], { stdio: 'ignore' }); return false } catch {}  // dst exists → reuse it
+  try { execFileSync('docker', ['volume', 'inspect', srcName], { stdio: 'ignore' }) } catch { return false }  // no authed source → can't clone
+  try {
+    execFileSync('docker', ['volume', 'create', dstName], { stdio: 'ignore' })
+    execFileSync('docker', ['run', '--rm', '-v', `${srcName}:/from`, '-v', `${dstName}:/to`, IMAGE_NAME,
+      'sh', '-c', 'cp -a /from/. /to/ 2>/dev/null || true'], { stdio: 'ignore' })
+    return true
+  } catch { return false }
+}
+
 /** Run the Docker container. Returns a promise that resolves to the exit code.
  *  Uses spawn (not execFileSync) so the event loop stays free for the
  *  clipboard and notification proxy servers running in the same process. */

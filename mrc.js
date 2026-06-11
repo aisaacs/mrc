@@ -12,7 +12,7 @@ import { BANNER } from './src/constants.js'
 import { setVerbose, dbg } from './src/output.js'
 import { readMrcrc, loadEnv, parseArgs } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
-import { buildImage, checkImageAge, getExistingCount, volumeName, runContainer, startDaemon, showStatus } from './src/docker.js'
+import { buildImage, checkImageAge, getExistingCount, volumeName, cloneVolume, runContainer, startDaemon, showStatus } from './src/docker.js'
 import { processSandboxignores } from './src/sandboxignore.js'
 import { findFreePort } from './src/ports.js'
 import { startClipboardProxy } from './src/proxies/clipboard-proxy.js'
@@ -133,7 +133,7 @@ if (remaining[0] === 'rooms' || remaining[0] === 'room') {
 // MRC_SESSION_NAMING_ANTHROPIC_API_KEY is host-only (Haiku naming/summaries). Legacy
 // ANTHROPIC_API_KEY still works as a deprecated fallback (it collides with the key Claude Code
 // auto-detects). Neither is ever injected into the container — the session runs on Max/OAuth.
-loadEnv(SCRIPT_DIR)
+loadEnv(SCRIPT_DIR, { skipOp: !!config.summonedBy })   // a summoned adversary needs no naming key — skip op:// (no Touch ID)
 const apiKey = process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || ''
 const legacyKeyVar = !process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY && !!process.env.ANTHROPIC_API_KEY
 const openaiKey = process.env.OPENAI_API_KEY || ''
@@ -219,7 +219,7 @@ if (config.agent === 'codex' && !openaiKey) {
   process.exit(1)
 }
 
-if (config.agent === 'claude' && !apiKey) {
+if (config.agent === 'claude' && !apiKey && !config.summonedBy) {
   console.log(`
   ⚠ The Schwartz is not with you... no session-naming key found!
 
@@ -333,6 +333,14 @@ if (existingCount > 0) {
 
 const instanceId = existingCount > 0 ? existingCount + 1 : 1
 const volName = volumeName(repoPath, instanceId)
+// Summoned adversary: clone the repo's canonical authed config volume (instance 1) into this fresh
+// instance volume so it reuses your Claude login instead of re-prompting for OAuth in its tab.
+if (config.summonedBy) {
+  const authedSrc = volumeName(repoPath, 1)
+  if (authedSrc !== volName && cloneVolume(authedSrc, volName)) {
+    console.log('  ◎ Cloned your login into the summoned session (no re-auth).')
+  }
+}
 volumes.push('-v', `${volName}:/home/coder/.claude`)
 volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)
 

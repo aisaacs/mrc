@@ -203,7 +203,7 @@ function connect() {
   sock.on('connect', () => {
     connected = true
     log(`connected to daemon ${HOST}:${PORT}`)
-    sock.write(JSON.stringify({ type: 'register', sessionId: SESSION_ID, repo: REPO, label: LABEL, room: ROOM || undefined, summonedBy: SUMMONED_BY || undefined, repoPath: REPO_PATH || undefined, notifyPort: NOTIFY || undefined }) + '\n')
+    sock.write(JSON.stringify({ type: 'register', sessionId: SESSION_ID, repo: REPO, label: LABEL, room: ROOM || undefined, summonedBy: SUMMONED_BY || undefined, repoPath: REPO_PATH || undefined, web: process.env.ALLOW_WEB ? true : undefined, notifyPort: NOTIFY || undefined }) + '\n')
     while (outQ.length) sock.write(outQ.shift())
   })
   sock.on('data', (d) => {
