@@ -1,13 +1,17 @@
 # Trustworthy low-touch progress — multiparty adversarial rooms (design)
 
-> **Status (2026-06-11): Tiers 0 + 1 BUILT and verified live; Tier 2 is a costed design fork awaiting a
-> call.** The direction that survived the parked crew exploration (see [`crew.md`](./crew.md)). Substrate:
+> **Status (2026-06-12): Tiers 0 + 1 live; Tier 2 (A + B) BUILT + HARDENED — the 2-party + multi-room logic
+> is verified (35-check harness) and the spawn path is verified live; the consented 3-party join +
+> three-Claude convergence are the only unrun gate.**
+> The direction that survived the parked crew exploration (see [`crew.md`](./crew.md)). Substrate:
 > [`negotiation-rooms.md`](./negotiation-rooms.md).
 >
-> Validated twice: by a live pre-check ([verdict](#pre-check-verdict-2026-06-10)), then by the feature
-> *itself* — once Tier 1 was live we summoned the adversary (**Pierre**) onto Tier 2's own design, and he
-> found a silent bug, a consent hole, and a better shape ([Tier 2 red-team](#tier-2-red-team-pierre-2026-06-11)).
-> What's left is the **A/B fork** plus a shared first fix — see the build order.
+> Validated by a live pre-check ([verdict](#pre-check-verdict-2026-06-10)), then built + red-teamed by the
+> feature *itself*: Pierre was summoned across many grounded rounds — finding the A/B fork, then the
+> **"role, not memory"** leak, then **six more** in the built code (all fixed or routed to a human decision —
+> see *Security hardening*, below). The spawn path is verified live (tab opens, no re-auth, cold-start
+> kickoff fires); the consented 3-party join + convergence remain the gate — rebuild + the tests in
+> [`rooms-test-plan.md`](./rooms-test-plan.md), with a second session.
 
 ## The north star
 
@@ -123,6 +127,107 @@ north star demonstrated live, on our own next design. The full verb set ran (sum
 and Pierre stayed adversarial, updated on evidence, AND punted the product call to the human (all three
 pillars at once).*
 
+## Tier 2 BUILT — the deeper red-team + "role, not memory" (2026-06-11)
+
+The fork above got a decision and a second, harder red-team — Pierre summoned onto the *resolution* this
+time, five grounded rounds. **The owner chose both axes** (they're orthogonal): **A = multi-room** (one
+session in several rooms — "don't make me close the server room to talk to Pierre one-on-one") and
+**B = multiparty** (several members in one room — Pierre grilling the server directly). Both ride one
+foundation: kill `{a,b}` + `pairingFor`-first-match → a **participant set** (`members[]`) + broadcast.
+
+**The leak that survived the fold (the deep catch).** B's real risk was never routing or storms — it's
+**information / provenance asymmetry.** A privately-summoned adversary's *context* carries the summoner's
+off-record priors; fold that agent into the peer's room and the peer is cross-examined by a
+counterparty-seeded interrogator it can't see, introduced as a neutral "adversary." The fold protects the
+*log*, not the *information*; standing consent makes it worse (stale, unattended, counterparty-chosen).
+**Resolution — "role, not memory":** B never folds a seeded agent in. It spawns a **fresh** instance into
+the **shared** room on an **open brief** every member can read, so the adversary's knowledge == what the
+consenting party sees. The warm-up survives as a *sharper brief* (run a private Pierre → it improves the
+open brief → fresh spawn); only agent-continuity is lost — and continuity *was* the leak vector, so losing
+it is the cure. This makes standing consent **safe** (nothing to smuggle), recovering the original
+async / overnight 3-party requirement through the clean door.
+
+**Built** (`src/proxies/room-daemon.js`, `container/mrc-channel-server.js`, `src/commands/rooms.js`,
+`src/rooms-dashboard.html`):
+- **Participant set + broadcast** — `{a,b}` → `members[]`; `reply` broadcasts to all others; `a`/`b`
+  derived only at the CLI / dashboard edge.
+- **One-live-room invariant** — a session is live (unpaused) in at most its **highest-`seq`** room; brakes
+  are **recomputed from `seq`** on every create / close / register / disconnect (no `brakedBy` chain to
+  corrupt — the LIFO fix). Kills the confidentiality leak where a private aside could thrash into the
+  wrong room. "Which room wakes on close" is single-sourced by `seq` (promote the next-highest), never
+  "resume everything."
+- **Clean 3-party consent** — `summon_adversary_to_room` → a consent request that **carries the brief +
+  provenance** to the peer's human → on `mrc rooms accept`, a fresh adversary joins the shared room
+  (`members.push`, one mutation, no clobber). Decline / timeout → nothing joins.
+- **Room-scoped standing consent** — `mrc rooms allow-adversary` (not a stale global session flag); safe
+  because the adversary is clean.
+- **Storm-guard** — `>10` msgs / `20s` in a 3+-party room auto-pauses + catches up. (A round-robin
+  speaking-token is a deferred *quality* knob; post-fold it is not a correctness gate.)
+- **N-party welds fixed** — catch-up / handoff keyed by session id, `members` in save / restore / status,
+  steer-by-name, `end` notifies all. CLI: `accept` / `decline` / `allow-adversary`.
+
+**Pierre's five-round arc — the thesis validated again, live, on our own design:** clobber → a
+confidentiality routing-leak → the provenance leak (the deep one) → the LIFO chain → **ghost membership**
+(a pure-membership `away` froze a room when a multi-room member disconnected — the exact async "stepped
+away" case; fixed: liveness-aware `away` + recompute on disconnect *and* register). Every catch grounded in
+a file:line; Pierre signed off on the code **as written** but held the honest line throughout:
+*"sound on paper" ≠ "works."*
+
+**Status: BUILT, parse-clean, UNRUN.** The gate is a rebuild + `mrc rooms restart` + five tests — see
+[`rooms-test-plan.md`](./rooms-test-plan.md). **Deferred hardening (owner's call):** inline the brief at
+`mrc rooms accept` / `status` so informed consent is hard to rubber-stamp (provenance is already inline in
+the consent notice; the brief is currently a file pointer).
+
+## Security hardening — Pierre's red-team of the built code (2026-06-11→12)
+
+Once Tier 2 was built, the adversary was summoned onto the *implementation* (and the test coverage). Six
+more grounded findings, each verified against the code, then fixed (daemon logic) or routed to a human
+decision (the security boundary). All daemon fixes are covered by the 35-check harness (`test/rooms-daemon.test.mjs`).
+
+**Fixed in the daemon (logic — correctness, holds in any trust model):**
+- **#1 invariant reopened by resume/steer.** The one-live-room invariant recomputed on create/close/register/
+  disconnect but NOT after `mrc rooms resume` / `steer` — so a human command could leave two rooms live and
+  a bare `reply` (roomless by design) leak to the wrong peer. Fix: recompute after both.
+- **#2 consent TOCTOU + decoupled join.** `acceptInvite` cleared the pending flag and spawned, but the
+  adversary registered seconds later with members still 2, so a second summon slipped the guard (brief-swap;
+  with standing consent, a 4-party room) — and the join trusted a register frame with no proof an accept
+  happened. Fix: a per-room **reservation** set at accept, cleared only on the real join (or a boot-sized
+  timeout), persisted across restart — it gates the window AND is the token the join requires.
+- **#3 coverage gaps.** Reconnect lost `activeRoom` (→ route to the live room); catch-up hung 2/3 on an
+  adversary (→ exclude adversaries by a role flag, not the name "Pierre"); stormGuard had never fired (→ tested).
+- **ghost membership.** A departed multi-room member froze the room it was blocking (pure-membership
+  liveness). Fix: liveness-aware `away` + recompute on disconnect AND register.
+- **`:ro` mount [human-approved boundary change].** `/rooms` was read-write in every container, so any sandbox
+  could forge another room's append-only audit log or swap a consented brief. Now read-only — every write
+  goes through the daemon.
+
+**The threat-model reframe (Pierre's #6, verified against `init-firewall.sh`):** "web-off = safe" was false.
+Dropping `--web` kills the lazy HTTPS-exfil case, but **DNS exfil** (recursive resolution to an attacker's
+nameserver) and **multi-tenant SaaS sinks** (sentry/statsig on the allowlist) survive. The real close is a
+stricter firewall profile for the adversary — right, because a summoned adversary is the softest target
+(autonomous, reads the most attacker-reachable surfaces). Built [human-approved]:
+- **`--web` off** for summoned adversaries (the floor).
+- **Hardened firewall profile** (`MRC_ADVERSARY_FW`): minimal allowlist (model API only — drops
+  npm/openai/sentry/statsig) + **DNS-pin** (resolve once at boot → `/etc/hosts` → drop outbound 53). Normal
+  sessions untouched — *the tightest box for the softest target.* (Watch: dropping statsig/sentry could affect
+  Claude Code telemetry; surfaces on the first summon, add back if it bites.)
+
+**Trust-model decision (2026-06-12):** rooms are **always the user's own co-located sessions — one trust
+domain.** So **read-isolation** (a container reading *other* rooms) is documented, not built: it's the user's
+own data, and no-egress neuters exfil anyway. **Cross-machine rooms** is the deferred trigger that re-opens
+read-isolation + the provenance hardening's load-bearing-ness + a real transport/auth boundary — parked until
+a concrete workflow needs it (same discipline as crew).
+
+**Open (UX, calibrated to one trust domain):** consent currently requires the peer's human to run
+`mrc rooms accept <room>` — real friction (field-reported). In one trust domain that strict human-direct gate
+is over-calibrated; the fix is lower-friction consent — a **dashboard button** (human action, no injection
+exposure) and/or a **natural-language accept** the consenting agent relays (lowest friction, mild injection
+exposure). Build choice pending.
+
+**Still the gate:** every fix above is the plumbing *around* the feature. The consented 3-party join firing
+live + three Claudes actually converging (there is still no turn-taking / termination) is unproven — see
+`rooms-test-plan.md`, with a second session.
+
 ## Pillars
 
 1. **Autonomy / async delivery** (low-touch) — mostly there today (a session runs unattended; long ops
@@ -199,15 +304,16 @@ pillars at once).*
    copies the repo's authed config volume → no OAuth re-prompt). Spawn is **hard-constrained** (fixed
    adversary on your repo, no container-supplied args, one per requester). Files: `config.js` / `pair.js` /
    `mrc.js` / `docker.js`, `container/mrc-channel-server.js`, `src/proxies/room-daemon.js`.
-3. **Tier 2 — a costed fork, red-teamed (see [Tier 2 red-team](#tier-2-red-team-pierre-2026-06-11)).** The
-   owner's actual everyday case (client + server already roomed, pull Pierre in as a third). Pierre's
-   teardown turned the "participant-set + broadcast" plan into a decision: **(A) pairwise side-channel**
-   (cheap, consent-clean, summoner-mediated server-grilling) vs **(B) true 3-party done right**
-   (participant-set + speaking token + a real server-consent handshake — buys live *unmediated*
-   cross-examination). **Shared first step either way:** fix the latent `pairingFor` / `ensurePairing`
-   routing bug (a real bug in the tree today). *Decision pending — the human's product call.* Also still
-   open beyond the fork: the trust-boundary / knowing-when-to-stop problem, and drift over *longer* volleys
-   (one good multi-turn volley so far — Pierre held).
+3. **✓ Tier 2 — multi-room (A) + clean 3-party (B), BUILT 2026-06-11 (UNRUN).** The owner chose **both**
+   orthogonal axes; a second five-round Pierre red-team forced **"role, not memory"** — a 3-party adversary
+   is a *fresh* instance summoned into the shared room on an *open* brief, never a privately-seeded agent
+   folded in (which would grill the peer on priors it can't see). Built: participant-set + broadcast; the
+   one-live-room invariant (monotonic `seq` + recompute, no `brakedBy` chain); the consent handshake
+   (`summon_adversary_to_room` → brief + provenance → `mrc rooms accept`); room-scoped standing consent;
+   storm-guard; the N-party weld fixes; CLI `accept` / `decline` / `allow-adversary`. Full account in the
+   [Tier 2 BUILT](#tier-2-built--the-deeper-red-team--role-not-memory-2026-06-11) section above. **Gate = a
+   run:** [`rooms-test-plan.md`](./rooms-test-plan.md). Still open beyond the gate: knowing-when-to-stop,
+   drift over *longer* volleys, and the deferred brief-at-`accept` hardening.
 
 ## Best practices & ergonomics (for the built feature)
 

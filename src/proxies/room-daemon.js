@@ -53,10 +53,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
   let roomSeq = 0              // monotonic room counter — the NEWEST room a session is in wins its single "live" slot
+  const adversaries = new Set()       // session ids that are summoned red-teamers — excluded from catch-up; get the tightest sandbox
+  const summoningPrivate = new Set()  // issuer ids with a private summon in flight — block a 2nd until it registers or times out
   // Restore pairings a graceful restart dumped, so an in-flight room survives `mrc rooms restart`
   // (turn count / autoCatchup preserved). Sockets re-attach as the sessions reconnect + re-register.
   for (const sp of loadPairings()) pairings.set(sp.roomId, { ...sp, members: sp.members || [sp.a, sp.b].filter(Boolean), seq: sp.seq || (++roomSeq), held: [] })
   for (const p of pairings.values()) if ((p.seq || 0) > roomSeq) roomSeq = p.seq   // keep the counter above any restored seq
+  for (const p of pairings.values()) if (p.incomingAdversary) armInviteTimeout(p)   // re-arm the release timer for a consent reservation that survived a restart
 
   // Idle auto-shutdown: exit once no session has been connected for idleMs. A longer grace applies
   // before the FIRST session ever connects, so a slow image build doesn't kill the daemon
@@ -85,7 +88,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   }
   const online = (id) => { const s = sessions.get(id); return !!(s && s.sock && !s.sock.destroyed) }
   const repoOf = (id) => sessions.get(id)?.repo || '?'                       // basename — for clean room ids
-  const nameOf = (id) => { const s = sessions.get(id); return s ? (s.label || s.repo) : '?' }  // display / match
+  const knownNames = new Map()   // id -> last-seen display name, so a member who disconnects still renders by name, not "?"
+  const nameOf = (id) => { const s = sessions.get(id); if (s) { const n = s.label || s.repo; knownNames.set(id, n); return n } return knownNames.get(id) || '?' }  // refreshes the cache while online; falls back to it once the session is gone
   // A room holds a participant SET (members), not a fixed {a,b} pair — so a third (e.g. a summoned
   // Pierre) can join. 2-party rooms are just a 2-member set; a/b are derived (members[0/1]) only at the
   // CLI/dashboard edge for back-compat.
@@ -101,8 +105,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     const rooms = roomsContaining(id)
     if (rooms.length <= 1) return rooms[0] || null
     const s = sessions.get(id)
-    if (s && s.activeRoom) { const p = pairings.get(s.activeRoom); if (p && inRoom(p, id)) return p }
-    return rooms.reduce((best, p) => (!best || p.lastActivityAt > best.lastActivityAt ? p : best), null)
+    // explicit active room wins — but only if it's still LIVE (you can't be active in a braked room; a bare
+    // reply there would be silently held). A reconnected session loses activeRoom (sessions.set rebuilds it),
+    // so fall through to its single live room — which the one-live-room invariant keeps unambiguous.
+    if (s && s.activeRoom) { const p = pairings.get(s.activeRoom); if (p && inRoom(p, id) && p.state === 'Running') return p }
+    const live = rooms.filter((p) => p.state === 'Running')
+    const pool = live.length ? live : rooms
+    return pool.reduce((best, p) => (!best || p.lastActivityAt > best.lastActivityAt ? p : best), null)
   }
   // INVARIANT: a session is LIVE (unpaused) in at most ONE room — the HIGHEST-seq room it's in. Brakes
   // are RECOMPUTED purely from seq on every create/close (no brakedBy chain to corrupt when rooms close
@@ -264,7 +273,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   function elicitCatchup(p, reason, { manual = false } = {}) {
     // Ask EVERY live member (keyed by session id, so a 3rd party gets its own pane slot — the old
     // a/b keying collided the 3rd onto an existing role and hung the pane at expected=3, 2 keys).
-    const live = p.members.filter((id) => sessions.has(id))
+    const live = p.members.filter((id) => sessions.has(id) && !adversaries.has(id))   // a summoned adversary is a transient red-teamer, not a work-holder — don't wait on its handoff (by flag, not the name "Pierre")
     if (!live.length) return { ok: false, error: 'no live sessions to ask' }
     if (p.pendingCatchup) {
       if (!manual) return { ok: false, error: 'catch-up already pending' }
@@ -361,12 +370,15 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   function onAgentResume(sessionId) {
     const p = activeRoomFor(sessionId)
     if (!p) return send(sessionId, { type: 'notice', text: '[No active room to resume.]' })
-    doResume(p); send(sessionId, { type: 'notice', text: '[Room resumed.]' })
+    doResume(p); recomputeSidechannelBrakes()   // re-assert one-live-room: a resumed sidechannel room re-brakes (no two-live, no reply-leak)
+    send(sessionId, { type: 'notice', text: '[Room resumed.]' })
   }
 
   // --- summon an adversary (see the const block above for the model + constraint) ---------------
   function onAdversaryUp(summonerId, adversaryId, roomName) {
+    summoningPrivate.delete(summonerId)   // the in-flight private summon landed
     const s = sessions.get(adversaryId); if (s) s.label = 'Pierre'   // a summoned adversary shows as "Pierre" everywhere (status, dashboard, thread)
+    adversaries.add(adversaryId)          // mark as a transient red-teamer (excluded from catch-up; gets the tightest sandbox)
     const p = ensurePairing(summonerId, adversaryId, roomName)
     setActive(summonerId, p.roomId); setActive(adversaryId, p.roomId)
     // Pierre is primed by his BOOT prompt (the positional kickoff in onSummon), NOT a channel push — a
@@ -390,22 +402,26 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   // The launch line for a summoned adversary. Used by BOTH a private summon (A, into its own room) and
   // a consented 3-party invite (B, into the shared room) — same shape, different roomId. Role-not-memory:
   // it's always a FRESH session reading only /rooms/<roomId>/adversary-brief.md, never a pre-seeded one.
-  const adversaryLaunchCmd = (issuerId, roomId, repo, web) =>
-    [process.execPath, mrcEntry(), repo, '--new', 'Pierre', '--room', roomId, '--summoned-by', issuerId, ...(web ? ['--web'] : []), '--', adversaryPrime(roomId)].map(shq).join(' ')
+  const adversaryLaunchCmd = (issuerId, roomId, repo) =>
+    // No --web: a summoned adversary gets NO arbitrary egress (least privilege — it grounds in the repo and
+    // volleys; it never needs the open internet, and egress on a repo-reading agent is an exfil surface).
+    [process.execPath, mrcEntry(), repo, '--new', 'Pierre', '--room', roomId, '--summoned-by', issuerId, '--', adversaryPrime(roomId)].map(shq).join(' ')
   function onSummon(issuerId, brief, ackId) {
     const ack = (status) => { if (ackId != null) send(issuerId, { type: 'ack', id: ackId, status }) }
     const s = sessions.get(issuerId)
     if (!s) return ack('summon-error')
     // Cap: at most one Pierre per requester — but summoning NO LONGER requires closing your other
     // rooms. You can keep a live peer room open and pull Pierre into a separate side-room (multi-room).
-    if (roomsContaining(issuerId).some((p) => p.roomId.startsWith('adversary-'))) { send(issuerId, { type: 'notice', text: '[You already have Pierre in a room — close it with `mrc rooms end <room-id>` before summoning another.]' }); return ack('summon-busy') }
+    if (roomsContaining(issuerId).some((p) => p.roomId.startsWith('adversary-')) || summoningPrivate.has(issuerId)) { send(issuerId, { type: 'notice', text: '[You already have Pierre in a room (or one is booting) — close it with `mrc rooms end <room-id>` before summoning another.]' }); return ack('summon-busy') }
     const repo = s.hostRepo
     if (!repo) { send(issuerId, { type: 'notice', text: '[Cannot summon — no host repo path on record for this session. Relaunch it with a current mrc so it reports one.]' }); return ack('summon-error') }
     const roomId = `adversary-${createHash('sha1').update(`${issuerId}:${Date.now()}`).digest('hex').slice(0, 10)}`
     ensureRoom(roomId, nameOf(issuerId), 'Pierre')
     try { writeFileSync(join(roomsRoot(), roomId, 'adversary-brief.md'), adversaryBriefFile(brief)) }
     catch (e) { send(issuerId, { type: 'notice', text: `[Summon failed writing the brief: ${e.message}]` }); return ack('summon-error') }
-    openAdversaryTab(issuerId, adversaryLaunchCmd(issuerId, roomId, repo, s.web))   // inherit the summoner's web access
+    summoningPrivate.add(issuerId)   // in-flight: block a 2nd private summon until this one registers (onAdversaryUp) or times out
+    setTimeout(() => summoningPrivate.delete(issuerId), 90_000).unref?.()
+    openAdversaryTab(issuerId, adversaryLaunchCmd(issuerId, roomId, repo))
     appendThread(roomId, `${ts()} [${nameOf(issuerId)} is summoning Pierre → launching on ${repo}]`)
     send(issuerId, { type: 'notice', text: `[Summoning Pierre — your older step-brother — into room ${roomId}. He opens in a new tab, grounds in your repo, and barges into this room when he boots. Reply to his first message to volley. His brief: /rooms/${roomId}/adversary-brief.md]` })
     notify(`Summoning Pierre for ${nameOf(issuerId)} — knives out`)
@@ -424,7 +440,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     const p = roomId ? pairings.get(roomId) : activeRoomFor(issuerId)
     if (!p || !inRoom(p, issuerId)) { send(issuerId, { type: 'notice', text: '[Not in that room — open it (ask_peer) first, then invite an adversary into it.]' }); return ack('invite-error') }
     if (p.members.length >= 3) { send(issuerId, { type: 'notice', text: '[This room already has an adversary — one per room.]' }); return ack('invite-busy') }
-    if (p.pendingInvite) { send(issuerId, { type: 'notice', text: "[An adversary invite is already pending the other side's consent here.]" }); return ack('invite-busy') }
+    if (p.pendingInvite || p.incomingAdversary) { send(issuerId, { type: 'notice', text: '[An adversary is already pending consent or booting into this room — one at a time.]' }); return ack('invite-busy') }
     const repo = s.hostRepo
     if (!repo) { send(issuerId, { type: 'notice', text: '[Cannot summon — no host repo path on record for this session. Relaunch with a current mrc.]' }); return ack('invite-error') }
     try { writeFileSync(join(roomsRoot(), p.roomId, 'adversary-brief.md'), adversaryBriefFile(brief)) }
@@ -433,15 +449,27 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     // ROOM-SCOPED standing consent (not a global/stale session flag): auto-accept only if THIS room was
     // explicitly opened to adversaries. Safe precisely because the adversary is clean (open brief, no priors).
     if (p.openToAdversary) { send(issuerId, { type: 'notice', text: `[Room is pre-authorized for adversaries — summoning a fresh one into ${p.roomId} now.]` }); acceptInvite(p); return ack('invite-auto-accepted') }
-    for (const m of others(p, issuerId)) send(m, { type: 'notice', text: `[CONSENT NEEDED — ${nameOf(issuerId)} wants to bring a fresh red-team adversary (Pierre) into THIS room. Provenance: chosen & briefed by ${nameOf(issuerId)}, runs on their repo, and carries NO context beyond the open brief at /rooms/${p.roomId}/adversary-brief.md — read it and show your human. Allow: your human runs \`mrc rooms accept ${p.roomId}\` · refuse: \`mrc rooms decline ${p.roomId}\`. Nothing changes until they do.]` })
+    for (const m of others(p, issuerId)) send(m, { type: 'notice', text: `[CONSENT NEEDED — ${nameOf(issuerId)} wants to bring a fresh red-team adversary (Pierre) into THIS room.\n• Provenance: chosen & briefed by ${nameOf(issuerId)}, runs on their repo, carries NO context beyond the open brief.\n• Capability: sandboxed to least privilege — no internet egress (it can't phone out), reaching only the model API and this daemon.\n• The brief is at /rooms/${p.roomId}/adversary-brief.md — read it and show your human.\nAllow: your human runs \`mrc rooms accept ${p.roomId}\` · refuse: \`mrc rooms decline ${p.roomId}\`. Nothing changes until they do.]` })
     send(issuerId, { type: 'notice', text: `[Requested consent to add an adversary to ${p.roomId}; waiting on ${others(p, issuerId).map(nameOf).join(', ')}'s human. They'll see your brief (/rooms/${p.roomId}/adversary-brief.md). It joins only on their yes.]` })
     notify(`${nameOf(issuerId)} wants to add an adversary to ${p.roomId} — needs the other side's consent`)
     ack('invite-requested')
   }
+  const INVITE_BOOT_MS = 90_000   // generous — covers a cold Docker boot; if the adversary never registers, release the reservation
+  function armInviteTimeout(p) {
+    const at = p.incomingAdversary && p.incomingAdversary.at
+    if (!at) return
+    setTimeout(() => { if (p.incomingAdversary && p.incomingAdversary.at === at) { p.incomingAdversary = null; appendThread(p.roomId, `${ts()} [adversary boot timed out — invite reservation released]`) } }, INVITE_BOOT_MS).unref?.()
+  }
   function acceptInvite(p) {
     const inv = p.pendingInvite; if (!inv) return { ok: false, error: 'no adversary invite pending in this room' }
     p.pendingInvite = null
-    openAdversaryTab(inv.by, adversaryLaunchCmd(inv.by, p.roomId, inv.repo, inv.web))   // FRESH agent, into the SHARED room, on the OPEN brief
+    // RESERVATION: consent is now spent on ONE booting adversary. It blocks a second summon during the boot
+    // window (the TOCTOU) AND is the token addAdversaryToRoom requires — a register with no reservation is
+    // refused. Cleared on the actual join, or on a timeout if the spawn never lands (a failed launch or a
+    // mid-spawn restart can't wedge the room). Persisted in savePairings so a restart keeps the reservation.
+    p.incomingAdversary = { by: inv.by, at: Date.now() }
+    armInviteTimeout(p)
+    openAdversaryTab(inv.by, adversaryLaunchCmd(inv.by, p.roomId, inv.repo))   // FRESH agent, into the SHARED room, on the OPEN brief
     appendThread(p.roomId, `${ts()} [consent granted — summoning a fresh adversary into the room on the open brief]`)
     for (const m of p.members) send(m, { type: 'notice', text: `[Consent granted. A fresh red-team adversary is joining this room on the open brief (/rooms/${p.roomId}/adversary-brief.md). Its replies broadcast to everyone — in a 3+ room don't all pile on: reply if addressed or if you have a material point.]` })
     notify(`Adversary joining ${p.roomId} (consented) — going 3-party`)
@@ -457,12 +485,19 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   // A fresh adversary booted with --room = an EXISTING room → ADD it to that room's member set (3-party);
   // never create a new pairing (that was the clobber). It carries only the open brief — role, not memory.
   function addAdversaryToRoom(p, advId) {
+    // Join is tied to consent: only admit an adversary the room is actually EXPECTING (acceptInvite set the
+    // reservation). A register carrying summonedBy+room with NO reservation — a racing second spawn, or a
+    // hand-crafted launch — is refused, so consent→spawn→join is one path, not three open doors.
+    if (!p.incomingAdversary) { appendThread(p.roomId, `${ts()} [refused an unconsented adversary join (${nameOf(advId)}) — no accept on record]`); send(advId, { type: 'notice', text: '[No consent reservation for this room — not joining. The invite may have timed out or been superseded.]' }); return false }
+    p.incomingAdversary = null
     const s = sessions.get(advId); if (s) s.label = 'Pierre'
+    adversaries.add(advId)
     if (!inRoom(p, advId)) p.members.push(advId)
     setActive(advId, p.roomId)
     appendThread(p.roomId, `${ts()} [Pierre joined the room on the open brief — now ${p.members.length}-party]`)
     notify(`Pierre joined ${p.roomId} — now ${p.members.length}-party`)
     recomputeSidechannelBrakes()
+    return true
   }
 
   // --- relay server (channel servers connect here) ---
@@ -533,7 +568,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
         if (f.action === 'shutdown') {   // graceful stop (used by `mrc rooms restart` / version refresh)
           reply({ ok: true })
           // Dump live pairings so the next daemon can restore them — an in-flight room survives the restart.
-          savePairings([...pairings.values()].map((p) => ({ roomId: p.roomId, members: p.members, seq: p.seq, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, state: p.state, pauseReason: p.pauseReason, openToAdversary: p.openToAdversary })))
+          savePairings([...pairings.values()].map((p) => ({ roomId: p.roomId, members: p.members, seq: p.seq, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, state: p.state, pauseReason: p.pauseReason, openToAdversary: p.openToAdversary, incomingAdversary: p.incomingAdversary })))
           setTimeout(() => { try { server.close(); control.close() } catch {} ; process.exit(0) }, 50)
           continue
         }
@@ -541,7 +576,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
         if (!p) { reply({ ok: false, error: f.roomId ? `no open room "${f.roomId}" (see: mrc rooms status)` : (pairings.size ? 'multiple rooms open — pass a room id (see: mrc rooms status)' : 'no open room') }); continue }
         switch (f.action) {
           case 'brake': reply({ ok: true, held: doBrake(p, 'brake') }); break
-          case 'resume': doResume(p); reply({ ok: true }); break
+          case 'resume': doResume(p); recomputeSidechannelBrakes(); reply({ ok: true }); break
           case 'catchup': reply(elicitCatchup(p, 'requested', { manual: true })); break
           case 'autocatchup': p.autoCatchup = !!f.on; appendThread(p.roomId, `${ts()} [auto catch-up ${p.autoCatchup ? 'on' : 'off'} (human)]`); reply({ ok: true, autoCatchup: p.autoCatchup }); break
           case 'steer': {
@@ -555,6 +590,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
             if (p.pauseReason === 'turnCap' && turnCap > 0) p.turnCap = p.turn + turnCap
             if (p.held.length) appendThread(p.roomId, `${ts()} [steer dropped ${p.held.length} held]`)
             p.held = []; p.state = 'Running'; p.pauseReason = null; p.lastActivityAt = Date.now()
+            recomputeSidechannelBrakes()   // steering a sidechannel room delivers the directive but doesn't force it live (re-assert the invariant)
             appendThread(p.roomId, `${ts()} HUMAN->${f.target || 'both'}: ${f.text}`); reply({ ok: true }); break
           }
           case 'end': {

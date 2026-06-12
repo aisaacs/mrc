@@ -352,6 +352,7 @@ const envFlags = []
 if (openaiKey) envFlags.push('-e', 'OPENAI_API_KEY')
 if (config.agent !== 'claude') envFlags.push('-e', `MRC_AGENT=${config.agent}`)
 if (config.allowWeb) envFlags.push('-e', 'ALLOW_WEB=1')
+if (config.summonedBy) envFlags.push('-e', 'MRC_ADVERSARY_FW=1')   // summoned adversary → hardened firewall profile (minimal allowlist + DNS-pinned, no runtime DNS)
 if (config.resumeSession) envFlags.push('-e', `RESUME_SESSION=${config.resumeSession}`)
 if (config.newSession) envFlags.push('-e', 'NEW_SESSION=1')
 envFlags.push('-e', `CLAUDE_CODE_MAX_OUTPUT_TOKENS=${process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '128000'}`)
@@ -415,7 +416,7 @@ if (roomsActive) {
   let label = basename(repoPath)
   try { const nm = loadNames(resolve(repoPath, '.mrc'))[sessionId]; if (nm) label = nm } catch {}
   envFlags.push(...roomSessionEnv({ daemonPort: daemon.port, sessionId, repoName: basename(repoPath), repoPath, roomName: config.room, label, summonedBy: config.summonedBy }))
-  volumes.push('-v', `${roomsRoot()}:/rooms`)
+  volumes.push('-v', `${roomsRoot()}:/rooms:ro`)   // read-only: the container only READS briefs/thread/consensus; every write goes through the daemon (host-side), so rw was needless privilege that let any sandbox forge another room's audit log or swap a consented brief
   roomInfo = { sessionId, roomName: config.room || '', label }
 }
 

@@ -146,7 +146,7 @@ Environment:
 
 ## Development Workflow
 
-There is no build system, test suite, or linter. The project is Node.js modules (`mrc.js` + `src/`), a Dockerfile, shell scripts for the container entrypoint and firewall, and Node.js container scripts (`container/`).
+There is no build system or linter. The project is Node.js modules (`mrc.js` + `src/`), a Dockerfile, shell scripts for the container entrypoint and firewall, and Node.js container scripts (`container/`). The one test is an in-process integration harness for the room daemon — `node test/rooms-daemon.test.mjs` (drives the real wire protocol with mock clients; covers participant-set/broadcast, the one-live-room invariant, the consent flow, ghost-membership, out-of-order end, restore, stall — but not the host spawn path / real sessions). Run it after changing `src/proxies/room-daemon.js`.
 
 **To test changes:** run `mrc.js` against a target repo and verify behavior. Force an image rebuild after Dockerfile, entrypoint.sh, init-firewall.sh, or container script changes:
 

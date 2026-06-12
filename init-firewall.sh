@@ -38,30 +38,40 @@ fi
 iptables -A INPUT -i lo -j ACCEPT
 iptables -A OUTPUT -o lo -j ACCEPT
 
-# Allow DNS to Docker's embedded resolver (127.0.0.11)
-iptables -A OUTPUT -p udp -d 127.0.0.11 --dport 53 -j ACCEPT
-iptables -A INPUT -p udp -s 127.0.0.11 --sport 53 -j ACCEPT
+# Allow DNS to the resolver + system nameservers — EXCEPT for a summoned adversary (hardened profile),
+# which gets its allowlist pinned to /etc/hosts below and runtime DNS dropped, closing the DNS-exfil
+# channel. (Setup-time resolution still works: the default policy is ACCEPT until the DROP at the end.)
+if [ "${MRC_ADVERSARY_FW:-}" = "1" ]; then
+    echo "Adversary firewall profile: runtime DNS will be dropped (allowlist pinned to /etc/hosts)"
+else
+    # Allow DNS to Docker's embedded resolver (127.0.0.11)
+    iptables -A OUTPUT -p udp -d 127.0.0.11 --dport 53 -j ACCEPT
+    iptables -A INPUT -p udp -s 127.0.0.11 --sport 53 -j ACCEPT
 
-# Also allow DNS to system-configured nameservers (needed when Docker DNS NAT rules aren't present)
-for ns in $(awk '/^nameserver/ && $2 != "127.0.0.11" {print $2}' /etc/resolv.conf); do
-    echo "Allowing DNS to nameserver $ns"
-    iptables -A OUTPUT -p udp -d "$ns" --dport 53 -j ACCEPT
-    iptables -A INPUT -p udp -s "$ns" --sport 53 -j ACCEPT
-    iptables -A OUTPUT -p tcp -d "$ns" --dport 53 -j ACCEPT
-    iptables -A INPUT -p tcp -s "$ns" --sport 53 -j ACCEPT
-done
+    # Also allow DNS to system-configured nameservers (needed when Docker DNS NAT rules aren't present)
+    for ns in $(awk '/^nameserver/ && $2 != "127.0.0.11" {print $2}' /etc/resolv.conf); do
+        echo "Allowing DNS to nameserver $ns"
+        iptables -A OUTPUT -p udp -d "$ns" --dport 53 -j ACCEPT
+        iptables -A INPUT -p udp -s "$ns" --sport 53 -j ACCEPT
+        iptables -A OUTPUT -p tcp -d "$ns" --dport 53 -j ACCEPT
+        iptables -A INPUT -p tcp -s "$ns" --sport 53 -j ACCEPT
+    done
+fi
 
 # Create ipset with CIDR support
 ipset create allowed-domains hash:net
 
 # Resolve and add allowed domains. A resolution failure is a warning, not fatal —
 # a transient DNS hiccup on one domain shouldn't wedge container startup.
-for domain in \
-    "registry.npmjs.org" \
-    "api.anthropic.com" \
-    "api.openai.com" \
-    "sentry.io" \
-    "statsig.com"; do
+# A summoned adversary gets a MINIMAL allowlist (the model API only — it grounds in the repo and volleys
+# via the daemon's host proxy ports, which are IP-based below; it needs no npm/openai/sentry/statsig, and
+# dropping the multi-tenant SaaS sinks (sentry/statsig) closes those exfil channels).
+if [ "${MRC_ADVERSARY_FW:-}" = "1" ]; then
+    ALLOWED_DOMAINS=("api.anthropic.com")
+else
+    ALLOWED_DOMAINS=("registry.npmjs.org" "api.anthropic.com" "api.openai.com" "sentry.io" "statsig.com")
+fi
+for domain in "${ALLOWED_DOMAINS[@]}"; do
     echo "Resolving $domain..."
     ips=$(dig +noall +answer A "$domain" | awk '$4 == "A" {print $5}')
     if [ -z "$ips" ]; then
@@ -76,6 +86,9 @@ for domain in \
         fi
         echo "Adding $ip for $domain"
         ipset add allowed-domains "$ip" -exist
+        # Adversary profile: pin the IP into /etc/hosts so the agent resolves by NAME with no runtime DNS
+        # (we drop 53 for adversaries — the resolution happens here, once, at setup).
+        if [ "${MRC_ADVERSARY_FW:-}" = "1" ]; then echo "$ip $domain" >> /etc/hosts; fi
     done < <(echo "$ips")
 done
 
@@ -146,5 +159,14 @@ else
         exit 1
     else
         echo "Firewall verification passed - unable to reach https://example.com as expected"
+    fi
+    # Adversary profile: confirm the DNS-pinned model API is actually reachable — a stale/broken pin would
+    # silently break the agent, so surface it as a warning rather than a mysterious hang.
+    if [ "${MRC_ADVERSARY_FW:-}" = "1" ]; then
+        if curl --connect-timeout 5 https://api.anthropic.com >/dev/null 2>&1; then
+            echo "Adversary profile: api.anthropic.com reachable via pinned IP"
+        else
+            echo "WARNING: adversary profile — api.anthropic.com unreachable; the /etc/hosts pin may be stale"
+        fi
     fi
 fi
