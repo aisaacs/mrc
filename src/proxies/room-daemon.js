@@ -12,6 +12,7 @@ import { writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { ensureRoom, appendThread, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, roomsRoot } from '../rooms.js'
+import { loadNames } from '../sessions/manager.js'
 
 const norm = (s) => String(s || '').trim().replace(/\s+/g, ' ')
 const ts = () => new Date().toISOString()
@@ -137,12 +138,26 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   }
 
   function peerList(exceptId) {
+    const fmtIdle = (ms) => ms < 60_000 ? `active ${Math.max(1, Math.round(ms / 1000))}s` : ms < 3_600_000 ? `idle ${Math.round(ms / 60_000)}m` : `idle ${Math.round(ms / 3_600_000)}h`
     const raw = [...sessions.keys()].filter((id) => id !== exceptId).map((id) => ({ name: nameOf(id), repo: repoOf(id), id }))
-    // Give each peer a UNIQUE display handle so identical names (e.g. two unnamed sessions in the
-    // same repo) stay individually addressable instead of collapsing into one ambiguous string.
-    const counts = {}
-    for (const p of raw) { const k = p.name.toLowerCase(); counts[k] = (counts[k] || 0) + 1 }
-    for (const p of raw) p.display = counts[p.name.toLowerCase()] > 1 ? `${p.name} [${p.id.slice(-6)}]` : p.name
+    // Each peer's display carries at-a-glance metadata so a human can pick the right one of N same-repo
+    // sessions: fresh-vs-named (a fresh session still shows its repo basename, so name==repo ⇒ fresh; the
+    // generated/manual name is the has-content signal — the watcher only names after ~10KB), active/idle,
+    // and the web flag. The id-suffix is always shown as the unique addressable handle. `name` stays the
+    // bare name so ask_peer matching (resolvePeer) is unaffected.
+    for (const p of raw) {
+      const s = sessions.get(p.id)
+      // Name source, most-durable-first: an explicit in-memory label (a manual --new name seeded at
+      // register, or a name the relabel wire pushed) wins; else the on-disk names map the host watcher
+      // populates after ~10KB — durable, survives daemon restarts, and covers sessions launched before
+      // the wire; else the repo basename ⇒ genuinely fresh. So "(fresh)" means no name ANYWHERE, not
+      // merely "label not wired" (that was the bug: worked-in sessions read as fresh).
+      let nm = p.name
+      if (nm === p.repo && s?.hostRepo) { try { const mapped = loadNames(join(s.hostRepo, '.mrc'))[p.id]; if (mapped) nm = mapped } catch {} }
+      const bits = [p.repo, nm === p.repo ? '(fresh)' : nm, fmtIdle(Date.now() - (s?.lastFrameAt || 0))]
+      if (s?.web) bits.push('web')
+      p.display = `${bits.join(' · ')}  [${p.id.slice(-6)}]`
+    }
     return raw
   }
 
@@ -542,9 +557,10 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue
         let f; try { f = JSON.parse(line) } catch { continue }
+        if (sessionId) { const _s = sessions.get(sessionId); if (_s) _s.lastFrameAt = Date.now() }   // per-session activity stamp → active/idle in list_peers
         if (f.type === 'register' && f.sessionId) {
           sessionId = f.sessionId
-          sessions.set(sessionId, { sock, repo: f.repo || '?', label: f.label || f.repo || '?', room: f.room || null, hostRepo: f.repoPath || null, web: !!f.web, notifyPort: Number(f.notifyPort) || 0 })
+          sessions.set(sessionId, { sock, repo: f.repo || '?', label: f.label || f.repo || '?', room: f.room || null, hostRepo: f.repoPath || null, web: !!f.web, notifyPort: Number(f.notifyPort) || 0, lastFrameAt: Date.now() })
           noteSessions()
           if (f.room) {  // explicit named room: auto-pair with another session of the same name
             for (const [oid, ov] of sessions) {
@@ -606,6 +622,11 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
           savePairings([...pairings.values()].map((p) => ({ roomId: p.roomId, members: p.members, seq: p.seq, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, state: p.state, pauseReason: p.pauseReason, requireConsent: p.requireConsent, incomingAdversary: p.incomingAdversary })))
           setTimeout(() => { try { server.close(); control.close() } catch {} ; process.exit(0) }, 50)
           continue
+        }
+        if (f.action === 'relabel' && f.sessionId) {   // host nameWatcher pushes a session's generated/manual name → live daemon label
+          const s = sessions.get(f.sessionId)
+          if (s && f.label && s.label !== f.label) { s.label = f.label; knownNames.set(f.sessionId, f.label) }
+          reply({ ok: true }); continue
         }
         const p = pick(f.roomId)
         if (!p) { reply({ ok: false, error: f.roomId ? `no open room "${f.roomId}" (see: mrc rooms status)` : (pairings.size ? 'multiple rooms open — pass a room id (see: mrc rooms status)' : 'no open room') }); continue }

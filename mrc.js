@@ -18,6 +18,7 @@ import { findFreePort } from './src/ports.js'
 import { startClipboardProxy } from './src/proxies/clipboard-proxy.js'
 import { startNotifyProxy } from './src/proxies/notify-proxy.js'
 import { listSessions, nameSession, resolve as resolveSession, loadNames, resolveSessionId } from './src/sessions/manager.js'
+import net from 'node:net'
 import { summarize, generateName } from './src/sessions/api.js'
 import { pick, ensureNamesMigrated } from './src/sessions/picker.js'
 import { detectToolMisses } from './src/sessions/transcript.js'
@@ -417,6 +418,7 @@ if (roomsActive) {
   // one, else the repo basename.
   let label = basename(repoPath)
   try { const nm = loadNames(resolve(repoPath, '.mrc'))[sessionId]; if (nm) label = nm } catch {}
+  if (config.newSessionName) label = config.newSessionName   // an explicit --new <name> shows live in list_peers from register, not only on the next resume
   envFlags.push(...roomSessionEnv({ daemonPort: daemon.port, sessionId, repoName: basename(repoPath), repoPath, roomName: config.room, label, summonedBy: config.summonedBy }))
   volumes.push('-v', `${roomsRoot()}:/rooms:ro`)   // read-only: the container only READS briefs/thread/consensus; every write goes through the daemon (host-side), so rw was needless privilege that let any sandbox forge another room's audit log or swap a consented brief
   roomInfo = { sessionId, roomName: config.room || '', label }
@@ -446,13 +448,23 @@ if (config.agent === 'claude') {
 // Background name generator
 let nameWatcher = null
 if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && apiKey) {
+  // Push a freshly-generated name to the room daemon so list_peers reflects it LIVE (the on-disk names
+  // map alone never moved the daemon label — that was the missing wire). Best-effort, fire-and-forget.
+  const relabelDaemon = (uuid) => {
+    try {
+      const nm = loadNames(mrcDir)[uuid]
+      if (!nm || !roomDaemon?.controlPort) return
+      const c = net.connect(roomDaemon.controlPort, '127.0.0.1', () => { c.write(JSON.stringify({ action: 'relabel', sessionId: uuid, label: nm }) + '\n'); c.end() })
+      c.on('error', () => {})
+    } catch {}
+  }
   nameWatcher = (async () => {
     // For resumed sessions, name immediately if unnamed
     try {
       const files = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')).sort()
       if (files.length > 0) {
         const uuid = basename(files[files.length - 1], '.jsonl')
-        await generateName(mrcDir, uuid)
+        await generateName(mrcDir, uuid); relabelDaemon(uuid)
       }
     } catch {}
 
@@ -473,7 +485,7 @@ if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && 
             } catch {}
           }
           const uuid = basename(newFiles[0], '.jsonl')
-          await generateName(mrcDir, uuid)
+          await generateName(mrcDir, uuid); relabelDaemon(uuid)
           break
         }
       } catch {}
