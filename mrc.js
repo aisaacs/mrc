@@ -333,11 +333,13 @@ if (existingCount > 0) {
 
 const instanceId = existingCount > 0 ? existingCount + 1 : 1
 const volName = volumeName(repoPath, instanceId)
-// Summoned adversary: clone the repo's canonical authed config volume (instance 1) into this fresh
-// instance volume so it reuses your Claude login instead of re-prompting for OAuth in its tab.
+// Summoned adversary: re-seed the repo's canonical authed config volume (instance 1) into this fresh
+// instance volume so it reuses your Claude login instead of re-prompting for OAuth in its tab. overwrite:
+// true because a failed prior boot can leave this instance volume lingering (empty or stale) — without it
+// cloneVolume would skip the existing volume and the adversary would boot credential-less.
 if (config.summonedBy) {
   const authedSrc = volumeName(repoPath, 1)
-  if (authedSrc !== volName && cloneVolume(authedSrc, volName)) {
+  if (authedSrc !== volName && cloneVolume(authedSrc, volName, { overwrite: true })) {
     console.log('  ◎ Cloned your login into the summoned session (no re-auth).')
   }
 }

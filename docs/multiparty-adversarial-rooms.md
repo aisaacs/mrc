@@ -233,6 +233,31 @@ natural-language accept.
 live + three Claudes actually converging (there is still no turn-taking / termination) is unproven — see
 `rooms-test-plan.md`, with a second session.
 
+## Live gate run (2026-06-12) — auth saga, the design answer, the bug list
+
+First real summon into a *shared* room. The mechanical consent path fired (auto-accept → `acceptInvite` reservation → spawn) and the 2-party red-team was excellent — but the clean 3-party *measurement* was never reached, and that turned out to be the right call.
+
+**The auth saga (both fixed — a summoned adversary now boots clean on cloned creds):**
+- **Clone never delivered creds.** `cloneVolume` ran `docker run … mister-claude sh -c 'cp …'`, but the image has `ENTRYPOINT ["entrypoint.sh"]`, so `sh -c cp` was passed as *args to entrypoint.sh* — the copy never ran; every summon booted credential-less. The full firewall used to mask it (the adversary could just `/login`); the hardened profile unmasked it as fatal. Fix: `--entrypoint sh` (`src/docker.js`) + `{overwrite:true}` so a lingering instance volume doesn't skip the clone (`mrc.js`).
+- **Hardened firewall was missing a host.** Claude Code v2.1.175 authenticates via `platform.claude.com`; the minimal allowlist (api.anthropic.com only) + DNS-pin meant the adversary couldn't even *resolve* it → `ECONNREFUSED`. (Every other session reaches it only because the user runs `--web`; the adversary is the one `--web`-off session, so it was the only one exposed.) Fix: add `platform.claude.com` to the allowlist [human-approved] — same trust tier as api.anthropic.com; DNS-exfil + SaaS sinks stay closed.
+
+**The design answer (2-party red-team converged):** free-for-all broadcast + a *rate-based* stormGuard is wrong for N≥3. A polite ~3-msg/15s **slow loop threads between** stormGuard (>10/20s) and the stall timeout (600s, refreshed every message), so a non-converging room runs forever with no default backstop. Fix = a **count-based turn budget** for N≥3 (+ drain the `held` queue on resume + an **addressed-reply** convention). Not a speaking-token (kills "everyone weighs in").
+
+**The 3-party test was confounded (the adversary caught it):** two of three agents were Pierres primed with *"keep replying to keep it going"* (`room-daemon.js` adversary prime), so a slow loop would only prove they obeyed the prompt. The clean convergence test is **three *naive* sessions on a genuinely unsolvable question** — no adversary prime. (The tell: that the adversary tool *needs* "keep replying" is itself the case for a structural budget — agents don't reliably self-stop.)
+
+**Bugs fixed in the daemon (35-check harness green):**
+- **nametag collision** — both summoned adversaries got `label='Pierre'`, so `deliver` (`:212`) + the audit log (`:250`) showed two indistinguishable `Peer (Pierre)`. Fix: a room-scoped `displayIn()` that suffixes a colliding label, applied to the frame AND the audit (the `list_peers` disambiguator only touched the peer list).
+- **guard mismatch** — "one adversary per room" (`:442`) checked `members.length>=3` (a member-count); now counts *adversaries*, so a clean N-peer room takes exactly one.
+- **turnCap for N≥3** — arm `NPARTY_TURN_BUDGET` (20) when a room first goes 3-party, in `addAdversaryToRoom` (the count-budget above).
+- **resume sawtooth** — `doResume` dumped the whole `held` backlog at once → re-storm; now also resets the stormGuard window on resume.
+
+**Deferred (with reasons):**
+- **container-setup fresh-volume login.** The clone `cp -a`'s a *live* source volume; the churny 33 KB `claude.json` can be skipped mid-write, so a *fresh* adversary volume trips container-setup's "restore from backup" (`container-setup.js:144`) and lands at the login menu. Not patched: force-copying a live file risks a *corrupt* half-write (worse than the restore), and severity is now low (the login-menu fallback works post-firewall-fix = one manual login). Needs one data point: on a raced boot, is the fresh volume missing `.credentials.json`, `claude.json`, or both?
+- **session-name disambiguation.** Newly-spawned sessions default to the repo name, so multiple same-repo sessions are indistinguishable in `list_peers` (the `[id]` suffix is opaque to a human — you can't tell "the client" from "the right server"). Idea (user): have the daemon ask the **session to name itself on its own Max plan** (retire the separate `MRC_SESSION_NAMING_ANTHROPIC_API_KEY`). The "fresh session has nothing to name from" wrinkle is moot — only **fresh vs non-fresh** matters (two fresh sessions are interchangeable partners), so name from content once a session has any and leave fresh ones repo-named. Tractable; parked for build — see memory.
+- **zombie-room cleanup.** A *failed* adversary summon leaves an open `adversary-*` room that blocks the next summon (the liveness-blind guard) — hit live 2× this session. See `rooms-lifecycle-rethink`.
+
+**Net:** the summoned-adversary feature *proved itself* — it red-teamed the built code, found real bugs, and caught a flaw in its own test setup. The clean naive-3-party convergence measurement is the one thing still genuinely unrun.
+
 ## Pillars
 
 1. **Autonomy / async delivery** (low-touch) — mostly there today (a session runs unattended; long ops

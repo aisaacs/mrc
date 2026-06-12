@@ -71,15 +71,24 @@ export function volumeName(repoPath, instanceId) {
 }
 
 /** Clone an authed config volume into a new one so a summoned session reuses the login (no OAuth
- *  re-prompt in its tab). Best-effort: skips if the destination already exists (a reused instance
- *  volume keeps its auth) or the source is missing; the session just falls back to a normal login. */
-export function cloneVolume(srcName, dstName) {
-  try { execFileSync('docker', ['volume', 'inspect', dstName], { stdio: 'ignore' }); return false } catch {}  // dst exists → reuse it
+ *  re-prompt in its tab). With { overwrite:true } it re-seeds creds even when the destination already
+ *  exists — needed for summoned adversaries, whose instance volume can linger (empty or stale) from a
+ *  prior failed boot and would otherwise be reused credential-less. Without overwrite it skips an existing
+ *  dst (a real reused instance keeps its own auth). Returns false if the source is missing (the session
+ *  then falls back to a normal login). */
+export function cloneVolume(srcName, dstName, { overwrite = false } = {}) {
+  if (!overwrite) {
+    try { execFileSync('docker', ['volume', 'inspect', dstName], { stdio: 'ignore' }); return false } catch {}  // dst exists → reuse it
+  }
   try { execFileSync('docker', ['volume', 'inspect', srcName], { stdio: 'ignore' }) } catch { return false }  // no authed source → can't clone
   try {
-    execFileSync('docker', ['volume', 'create', dstName], { stdio: 'ignore' })
-    execFileSync('docker', ['run', '--rm', '-v', `${srcName}:/from`, '-v', `${dstName}:/to`, IMAGE_NAME,
-      'sh', '-c', 'cp -a /from/. /to/ 2>/dev/null || true'], { stdio: 'ignore' })
+    execFileSync('docker', ['volume', 'create', dstName], { stdio: 'ignore' })   // no-op if it already exists
+    // --entrypoint sh is REQUIRED: the image's ENTRYPOINT is entrypoint.sh (firewall + agent boot). Without
+    // overriding it, 'sh -c cp…' is passed as ARGS to entrypoint.sh and the copy never runs — entrypoint.sh
+    // instead tries to boot the firewall, fails (no NET_ADMIN in this one-off container), and exits non-zero.
+    // That was the clone's long-standing silent no-op: a summoned adversary booted credential-less.
+    execFileSync('docker', ['run', '--rm', '--entrypoint', 'sh', '-v', `${srcName}:/from`, '-v', `${dstName}:/to`, IMAGE_NAME,
+      '-c', 'cp -a /from/. /to/ 2>/dev/null || true'], { stdio: 'ignore' })
     return true
   } catch { return false }
 }

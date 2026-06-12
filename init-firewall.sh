@@ -63,13 +63,16 @@ ipset create allowed-domains hash:net
 
 # Resolve and add allowed domains. A resolution failure is a warning, not fatal —
 # a transient DNS hiccup on one domain shouldn't wedge container startup.
-# A summoned adversary gets a MINIMAL allowlist (the model API only — it grounds in the repo and volleys
-# via the daemon's host proxy ports, which are IP-based below; it needs no npm/openai/sentry/statsig, and
-# dropping the multi-tenant SaaS sinks (sentry/statsig) closes those exfil channels).
+# A summoned adversary gets a MINIMAL allowlist: Anthropic's own model + auth endpoints only
+# (api.anthropic.com + platform.claude.com — current Claude Code authenticates/validates the session via
+# platform.claude.com, and because this profile DNS-pins + drops port 53, a missing host can't even be
+# resolved → "Failed to connect to platform.claude.com: ECONNREFUSED"). It grounds in the repo and volleys
+# via the daemon's host proxy ports (IP-based below), so it still needs no npm/openai, and dropping the
+# multi-tenant SaaS sinks (sentry/statsig) keeps those exfil channels closed.
 if [ "${MRC_ADVERSARY_FW:-}" = "1" ]; then
-    ALLOWED_DOMAINS=("api.anthropic.com")
+    ALLOWED_DOMAINS=("api.anthropic.com" "platform.claude.com")
 else
-    ALLOWED_DOMAINS=("registry.npmjs.org" "api.anthropic.com" "api.openai.com" "sentry.io" "statsig.com")
+    ALLOWED_DOMAINS=("registry.npmjs.org" "api.anthropic.com" "platform.claude.com" "api.openai.com" "sentry.io" "statsig.com")
 fi
 for domain in "${ALLOWED_DOMAINS[@]}"; do
     echo "Resolving $domain..."

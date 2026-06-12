@@ -59,7 +59,7 @@ Lets two running `mrc` sessions consult each other through a host-mediated relay
 - **`src/commands/rooms.js`** — the `mrc rooms` CLI (`status` / `brake` / `resume` / `steer` / `end` / `restart` / `stop` / `dashboard`) over the daemon's control socket.
 - **`src/rooms.js`** — room-dir manager for `~/.local/share/mrc/rooms/<roomId>/`: `ensureRoom`, `appendThread`, `writeConsensus`, `listRooms`.
 - **`src/rooms-dashboard.js`** + **`src/rooms-dashboard.html`** — a dependency-free localhost web dashboard (served from inside the daemon) showing every room's full `thread.log` + summary (live & historical), paginated per-pause **catch-up panes** (agent-written handoffs captured when a room pauses, with explicit mark-reviewed), and pause/resume/steer/end controls.
-- **`container/mrc-channel-server.js`** — container-side MCP "channel" server (shipped as the `room` plugin in a baked-in local marketplace `mrc-marketplace/`; loaded via `--channels plugin:room@mrc`, allowlisted in managed-settings so there's no prompt). Connects to the daemon and exposes `list_peers`/`ask_peer`/`reply`/`update_notes`/`pause_room`/`resume_room`, pushing peer messages into the session as `<channel>` tags.
+- **`container/mrc-channel-server.js`** — container-side MCP "channel" server (shipped as the `room` plugin in a baked-in local marketplace `mrc-marketplace/`; loaded via `--channels plugin:room@mrc`, allowlisted in managed-settings so there's no prompt). Connects to the daemon and exposes `list_peers`/`ask_peer`/`reply`/`update_notes`/`pause_room`/`resume_room`/`submit_handoff` plus the **adversary** verbs — `summon_adversary` (a private red-team session, "Pierre"), `summon_adversary_to_room` (a fresh adversary into a shared room), and `accept_adversary`/`decline_adversary` (consent) — pushing peer messages into the session as `<channel>` tags. A summoned adversary launches under a hardened firewall profile (no `--web`, minimal allowlist, DNS-pinned).
 
 ### Legacy (deprecated — do not modify)
 
@@ -123,7 +123,9 @@ Commands:
   mrc rooms status                        Show the room daemon, sessions, and pairings
   mrc rooms dashboard                     Open the local web dashboard (daemon-hosted)
   mrc rooms brake|resume|end [room-id]    Pause / resume / close a room
-  mrc rooms steer [--target a|b] <text>   Inject a trusted [Human directive] into a room
+  mrc rooms steer [--target <name>] <text>  Inject a trusted [Human directive] into a room
+  mrc rooms accept|decline [room-id]      Approve / refuse a pending adversary invite (when consent is required)
+  mrc rooms auto-accept <room> [on|off]   Per-room adversary consent: default ON (joins immediately); off = require consent
   mrc rooms restart|stop                  Refresh / stop the room daemon
 
 Config files (~/.mrcrc or <repo>/.mrcrc, one flag per line):

@@ -207,9 +207,17 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     return p
   }
 
+  // Within a room two members can share a label (e.g. two summoned 'Pierre's). Disambiguate a sender's
+  // display name with a short id suffix when it collides with another member, so deliver frames AND the
+  // audit log stay readable — otherwise two 'Pierre's are indistinguishable in the very transcript and
+  // thread.log you measure from. (peerList does this for list_peers; deliver + audit need it too.)
+  const displayIn = (p, id) => {
+    const nm = nameOf(id)
+    return p.members.some((m) => m !== id && nameOf(m) === nm) ? `${nm} [${id.slice(-6)}]` : nm
+  }
   function deliver(p, toId, fromId, text) {
     setActive(toId, p.roomId)   // so the recipient's next bare reply routes back to THIS room
-    send(toId, { type: 'deliver', text: `Peer (${nameOf(fromId)}) says: "${text}" [turn ${p.turn}/${p.turnCap}]` })
+    send(toId, { type: 'deliver', text: `Peer (${displayIn(p, fromId)}) says: "${text}" [turn ${p.turn}/${p.turnCap}]` })
   }
 
   // A real message proves the room isn't dead, so a STALL pause (a timeout *guess* that the room
@@ -234,7 +242,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     const p = ensurePairing(askerId, r.peer.id)
     setActive(askerId, p.roomId)   // an explicit ask_peer switches the asker's active room to this peer
     p.turn += 1; p.lastActivityAt = Date.now()
-    appendThread(p.roomId, `${ts()} ${nameOf(askerId)}->${nameOf(r.peer.id)}: ${question}`)
+    appendThread(p.roomId, `${ts()} ${displayIn(p, askerId)}->${displayIn(p, r.peer.id)}: ${question}`)
     clearStallOnActivity(p)
     if (p.state === 'Paused') { p.held.push({ toId: r.peer.id, fromId: askerId, text: question }); appendThread(p.roomId, `${ts()} [held while ${p.pauseReason}]`); return }
     deliver(p, r.peer.id, askerId, question)
@@ -247,7 +255,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     // Broadcast to everyone else in the room (2-party → one recipient; N-party → all the others).
     const recips = others(p, fromId)
     p.turn += 1; p.lastActivityAt = Date.now()
-    appendThread(p.roomId, `${ts()} ${nameOf(fromId)}->${recips.map(nameOf).join(',') || '(nobody)'}: ${text}`)
+    appendThread(p.roomId, `${ts()} ${displayIn(p, fromId)}->${recips.map((r) => displayIn(p, r)).join(',') || '(nobody)'}: ${text}`)
     clearStallOnActivity(p)
     if (p.state === 'Paused') { for (const toId of recips) p.held.push({ toId, fromId, text }); appendThread(p.roomId, `${ts()} [held while ${p.pauseReason}]`); ack('held'); return }
     for (const toId of recips) deliver(p, toId, fromId, text)
@@ -332,6 +340,11 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   // PROPERTY: too many messages too fast auto-pauses the room for the human (+ a catch-up). 2-party
   // self-paces (strict ping-pong), so this only ever engages at N≥3.
   const STORM_MAX = 10, STORM_WINDOW_MS = 20_000
+  // Count-based backstop for N≥3. stormGuard is RATE-based, so a slow steady loop (~3 msgs/15s) threads
+  // clean between it and the stall timeout and never terminates without a human. When a room first goes
+  // 3-party we arm a turn budget if none is set; onMsg pauses for a human check-in at the cap (resume
+  // grants another window). A count budget structurally catches the slow loop a rate guard cannot.
+  const NPARTY_TURN_BUDGET = 20
   function stormGuard(p) {
     p.recent = (p.recent || []).filter((t) => Date.now() - t < STORM_WINDOW_MS)
     p.recent.push(Date.now())
@@ -356,6 +369,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     const queued = p.held; p.held = []
     for (const h of queued) deliver(p, h.toId, h.fromId, h.text)
     p.state = 'Running'; p.pauseReason = null; p.lastActivityAt = Date.now()
+    p.recent = []   // fresh stormguard window on resume so the drained backlog (and the replies it triggers)
+                    // doesn't instantly re-trip the storm and re-pause — that sawtooth made the human
+                    // babysit every resume. The N≥3 turn budget is the real loop backstop.
     appendThread(p.roomId, `${ts()} [resumed${queued.length ? `: delivered ${queued.length} held` : ''}]`)
   }
   // Agent-initiated pause/resume: the human tells their own session "pause"/"resume" and the
@@ -439,7 +455,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     if (!s) return ack('invite-error')
     const p = roomId ? pairings.get(roomId) : activeRoomFor(issuerId)
     if (!p || !inRoom(p, issuerId)) { send(issuerId, { type: 'notice', text: '[Not in that room — open it (ask_peer) first, then invite an adversary into it.]' }); return ack('invite-error') }
-    if (p.members.length >= 3) { send(issuerId, { type: 'notice', text: '[This room already has an adversary — one per room.]' }); return ack('invite-busy') }
+    if (p.members.some((m) => adversaries.has(m))) { send(issuerId, { type: 'notice', text: '[This room already has an adversary — one per room. (The guard counts adversaries, not members, so a clean N-peer room can still take exactly one.)]' }); return ack('invite-busy') }
     if (p.pendingInvite || p.incomingAdversary) { send(issuerId, { type: 'notice', text: '[An adversary is already pending consent or booting into this room — one at a time.]' }); return ack('invite-busy') }
     const repo = s.hostRepo
     if (!repo) { send(issuerId, { type: 'notice', text: '[Cannot summon — no host repo path on record for this session. Relaunch with a current mrc.]' }); return ack('invite-error') }
@@ -509,7 +525,10 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     adversaries.add(advId)
     if (!inRoom(p, advId)) p.members.push(advId)
     setActive(advId, p.roomId)
-    appendThread(p.roomId, `${ts()} [Pierre joined the room on the open brief — now ${p.members.length}-party]`)
+    // Now that the room is N≥3, arm the count-based backstop if no turn budget is set (see NPARTY_TURN_BUDGET):
+    // the slow non-converging loop has no other terminator.
+    if (!p.turnCap) p.turnCap = p.turn + NPARTY_TURN_BUDGET
+    appendThread(p.roomId, `${ts()} [Pierre joined the room on the open brief — now ${p.members.length}-party${p.turnCap ? `; turn check-in at ${p.turnCap}` : ''}]`)
     notify(`Pierre joined ${p.roomId} — now ${p.members.length}-party`)
     recomputeSidechannelBrakes()
     return true
