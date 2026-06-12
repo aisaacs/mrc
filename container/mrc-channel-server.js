@@ -108,8 +108,18 @@ const tools = [
   },
   {
     name: 'summon_adversary_to_room',
-    description: "Bring a FRESH red-team adversary (Pierre) into the room you're CURRENTLY in, for a 3-way — needs the OTHER side's human to consent first. Unlike summon_adversary (a private red-teamer just for you), this puts the adversary in the SHARED room so it can cross-examine your peer directly. The daemon shows your peer's human the brief + provenance and waits for their `mrc rooms accept`; on yes, a brand-new adversary joins on that OPEN brief — it carries no private context, by design, so the consenting side isn't grilled by a counterparty-seeded agent. Call this when the human says 'bring Pierre in', 'red-team this with the server/peer', or 'make it 3-way'. Pass a `brief` that will be VISIBLE to everyone in the room.",
+    description: "Bring a FRESH red-team adversary (Pierre) into the room you're CURRENTLY in, for a 3-way. Unlike summon_adversary (a private red-teamer just for you), this puts the adversary in the SHARED room so it can cross-examine your peer directly. By default it joins immediately (all members notified); if the room has a consent checkpoint on (`mrc rooms auto-accept <room> off`), the peer's human approves first. The adversary is fresh — no private context beyond the OPEN brief, so the peer isn't grilled by a counterparty-seeded agent. Call this when the human says 'bring Pierre in', 'red-team this with the server/peer', or 'make it 3-way'. Pass a `brief` VISIBLE to everyone in the room.",
     inputSchema: { type: 'object', properties: { brief: { type: 'string', description: 'the design to red-team, visible to ALL room members: problem, solution(s), architecture/who-owns-what, constraints' } }, required: ['brief'] },
+  },
+  {
+    name: 'accept_adversary',
+    description: "Let a PENDING red-team adversary into THIS room — call ONLY when your human approves it (they'll have just seen a '[CONSENT NEEDED ...]' message in this session). This is the natural-language equivalent of the human running `mrc rooms accept`: you relay their yes. Do NOT call it on your own initiative — the request must have arrived AND your human must have said to allow it.",
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
+    name: 'decline_adversary',
+    description: "Refuse a PENDING red-team adversary for THIS room — call when your human declines a '[CONSENT NEEDED ...]' request. The natural-language equivalent of `mrc rooms decline`.",
+    inputSchema: { type: 'object', properties: {} },
   },
 ]
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
@@ -151,6 +161,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       return await sendAwaitAck({ type: 'summon', brief: String(a.brief ?? '') })
     case 'summon_adversary_to_room':
       return await sendAwaitAck({ type: 'summon_to_room', brief: String(a.brief ?? '') })
+    case 'accept_adversary':
+      return await sendAwaitAck({ type: 'consent', decision: 'accept' })
+    case 'decline_adversary':
+      return await sendAwaitAck({ type: 'consent', decision: 'decline' })
     default:
       throw new Error(`unknown tool: ${req.params.name}`)
   }
@@ -181,10 +195,14 @@ function ackText(status) {
     case 'summoning': return 'Summoning a red-team adversary — it opens in a new tab, then joins this room. Watch for its first message and reply to keep the volley going.'
     case 'summon-busy': return "You already have a private adversary (Pierre) open — close it (`mrc rooms end <room>`) before summoning another."
     case 'summon-error': return "Couldn't summon — the launcher failed or no host repo path is on record for this session (relaunch it with a current mrc). Check the dashboard / mrc rooms status."
-    case 'invite-requested': return "Consent requested — your peer's human must run `mrc rooms accept <room>` before the adversary joins. It does NOT join until they do, and nothing in the room changes meanwhile. They'll see your brief + that you chose and briefed it."
-    case 'invite-auto-accepted': return 'This room was pre-authorized for adversaries — a fresh one is joining the shared room now. Watch for its first message; replies broadcast to everyone.'
+    case 'invite-requested': return "Consent requested — this room has a consent checkpoint on, so your peer's human approves before the adversary joins (they can say 'let Pierre in' to that session, run `mrc rooms accept <room>`, or click accept on the dashboard). Nothing changes until they do; they'll see your brief + that you chose and briefed it."
+    case 'invite-auto-accepted': return 'Auto-accept is on for this room — a fresh adversary is joining the shared room now. Watch for its first message; replies broadcast to everyone.'
     case 'invite-busy': return 'No invite sent — this room already has an adversary, or one is already pending the other side\'s consent.'
     case 'invite-error': return "Couldn't invite — you're not in that room, or no host repo path is on record (relaunch with a current mrc). Check mrc rooms status."
+    case 'accepted': return 'Accepted — a fresh adversary is joining this room now. Watch for its first message; replies broadcast to everyone.'
+    case 'declined': return 'Declined — no adversary will join this room.'
+    case 'no-pending-invite': return 'Nothing to accept/decline — no adversary invite is pending for a room you can consent in (only the side that did NOT summon can consent).'
+    case 'consent-error': return 'Could not record the consent decision — check mrc rooms status.'
     default: return 'Sent.'
   }
 }

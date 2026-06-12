@@ -68,46 +68,50 @@ async function main() {
   V.clear(); W.clear(); S.send({ type: 'msg', text: 'to-active', id: 2 }); await sleep(150)
   check('2c bare reply went to W (active), not V', W.has('deliver', 'to-active') && !V.has('deliver', 'to-active'))
 
-  // 3 — clean 3-party: summon_to_room → consent (carries brief) → accept → fresh adversary joins → broadcast
-  console.log('\n[3] clean 3-party consent flow')
+  // 3 — clean 3-party, AUTO-ACCEPT DEFAULT: summon_to_room joins immediately → fresh adversary → broadcast
+  console.log('\n[3] clean 3-party (auto-accept default)')
   const A = mkClient(port, 'A'), B = mkClient(port, 'B'); A.register(); B.register(); await sleep(100)
   A.send({ type: 'ask', question: 'design X', peer: 'B' }); await sleep(150)
   st = await status(controlPort); const abId = roomBy(st, 'A', 'B').roomId
-  B.clear(); A.send({ type: 'summon_to_room', brief: 'red-team design X' }); await sleep(150)
+  B.clear(); A.send({ type: 'summon_to_room', brief: 'red-team design X', id: 30 }); await sleep(150)
   st = await status(controlPort); let ab = roomBy(st, 'A', 'B')
-  check('3a consent request sent to B (carries provenance)', B.has('notice', 'CONSENT NEEDED'))
-  check('3b pendingInvite recorded, no 3rd member yet', ab.pendingInvite === 'A' && ab.members.length === 2, JSON.stringify({ pi: ab.pendingInvite, m: ab.members }))
-  const acc = await control(controlPort, 'accept', { roomId: abId }); await sleep(120)
-  check('3c accept ok', acc.ok === true, JSON.stringify(acc))
+  check('3a summon auto-accepted (default, no consent prompt)', A.frames.some((f) => f.type === 'ack' && f.id === 30 && f.status === 'invite-auto-accepted'), JSON.stringify(A.frames.filter((f) => f.type === 'ack')))
+  check('3b no consent request to B; nothing pending', !B.has('notice', 'CONSENT NEEDED') && !ab.pendingInvite)
   // simulate the FRESH adversary booting into the shared room (what openAdversaryTab would have launched)
   const P = mkClient(port, 'Pierre'); P.register({ summonedBy: 'A', room: abId }); await sleep(150)
   st = await status(controlPort); ab = roomBy(st, 'A', 'B')
-  check('3d adversary added → 3-party', ab && ab.members.length === 3 && ab.members.includes('Pierre'), ab && JSON.stringify(ab.members))
+  check('3c adversary joined → 3-party', ab && ab.members.length === 3 && ab.members.includes('Pierre'), ab && JSON.stringify(ab.members))
   A.clear(); B.clear(); P.send({ type: 'msg', text: 'your premise is wrong', id: 9 }); await sleep(150)
-  check('3e adversary reply broadcasts to BOTH A and B', A.has('deliver', 'premise') && B.has('deliver', 'premise'))
+  check('3d adversary reply broadcasts to BOTH A and B', A.has('deliver', 'premise') && B.has('deliver', 'premise'))
 
-  // 4 — decline
-  console.log('\n[4] decline path')
+  // 4 — require-consent mode (auto-accept OFF) + decline
+  console.log('\n[4] require-consent + decline')
   const C = mkClient(port, 'C'), Dd = mkClient(port, 'D'); C.register(); Dd.register(); await sleep(100)
   C.send({ type: 'ask', question: 'q', peer: 'D' }); await sleep(120)
   st = await status(controlPort); const cdId = roomBy(st, 'C', 'D').roomId
-  C.clear(); C.send({ type: 'summon_to_room', brief: 'b' }); await sleep(120)
+  await control(controlPort, 'autoaccept', { roomId: cdId, on: false }); await sleep(60)   // add a consent checkpoint to this room
+  Dd.clear(); C.clear(); C.send({ type: 'summon_to_room', brief: 'b' }); await sleep(120)
+  st = await status(controlPort); let cd = roomBy(st, 'C', 'D')
+  check('4a consent required → request sent to D, pending recorded', Dd.has('notice', 'CONSENT NEEDED') && cd.pendingInvite === 'C')
   await control(controlPort, 'decline', { roomId: cdId }); await sleep(120)
-  st = await status(controlPort); const cd = roomBy(st, 'C', 'D')
-  check('4a invite cleared, room still 2-party', !cd.pendingInvite && cd.members.length === 2)
-  check('4b issuer notified of decline', C.has('notice', 'declined'))
+  st = await status(controlPort); cd = roomBy(st, 'C', 'D')
+  check('4b declined → invite cleared, room still 2-party', !cd.pendingInvite && cd.members.length === 2)
+  check('4c issuer notified of decline', C.has('notice', 'declined'))
 
-  // 5 — room-scoped standing consent → auto-accept
-  console.log('\n[5] standing consent (allow-adversary)')
+  // 5 — require-consent + NATURAL-LANGUAGE accept (the consenting peer relays its human's yes)
+  console.log('\n[5] require-consent + natural-language accept')
   const E = mkClient(port, 'E'), F = mkClient(port, 'F'); E.register(); F.register(); await sleep(100)
   E.send({ type: 'ask', question: 'q', peer: 'F' }); await sleep(120)
   st = await status(controlPort); const efId = roomBy(st, 'E', 'F').roomId
-  const al = await control(controlPort, 'allowadversary', { roomId: efId, on: true }); await sleep(80)
-  check('5a allow-adversary set', al.ok && al.openToAdversary === true)
-  E.clear(); E.send({ type: 'summon_to_room', brief: 'b' }); await sleep(150)
-  st = await status(controlPort); const ef = roomBy(st, 'E', 'F')
-  check('5b auto-accepted (no lingering pendingInvite)', !ef.pendingInvite)
-  check('5c issuer told it was pre-authorized', E.has('notice', 'pre-authorized'))
+  await control(controlPort, 'autoaccept', { roomId: efId, on: false }); await sleep(60)
+  E.send({ type: 'summon_to_room', brief: 'b' }); await sleep(120)
+  F.clear(); F.send({ type: 'consent', decision: 'accept', id: 55 }); await sleep(120)   // F is the consenting peer, not the summoner
+  check('5a consenting peer accepted via natural language', F.frames.some((f) => f.type === 'ack' && f.id === 55 && f.status === 'accepted'), JSON.stringify(F.frames.filter((f) => f.type === 'ack')))
+  st = await status(controlPort)
+  check('5b invite cleared after accept', !roomBy(st, 'E', 'F').pendingInvite)
+  const Pe = mkClient(port, 'Pierre5'); Pe.register({ summonedBy: 'E', room: efId }); await sleep(150)
+  st = await status(controlPort)
+  check('5c adversary joined → 3-party', roomBy(st, 'E', 'F').members.length === 3, roomBy(st, 'E', 'F') && JSON.stringify(roomBy(st, 'E', 'F').members))
 
   // 6 — ghost membership: disconnect a multi-room member → the OTHER room thaws (doesn't freeze forever)
   console.log('\n[6] ghost membership thaw on disconnect')
@@ -173,9 +177,7 @@ async function main() {
   console.log('\n[11] double-summon rejected by the reservation')
   const A2 = mkClient(port, 'A2'), B2 = mkClient(port, 'B2'); A2.register(); B2.register(); await sleep(100)
   A2.send({ type: 'ask', question: 'q', peer: 'B2' }); await sleep(120)
-  st = await status(controlPort); const ab2 = roomBy(st, 'A2', 'B2').roomId
-  await control(controlPort, 'allowadversary', { roomId: ab2, on: true }); await sleep(60)
-  A2.clear(); A2.send({ type: 'summon_to_room', brief: 'b', id: 70 }); await sleep(120)   // auto-accepts → reservation set, adversary "booting"
+  A2.clear(); A2.send({ type: 'summon_to_room', brief: 'b', id: 70 }); await sleep(120)   // auto-accepts (default) → reservation set, adversary "booting"
   A2.send({ type: 'summon_to_room', brief: 'b', id: 77 }); await sleep(120)               // 2nd during the boot window
   check('11a 1st summon auto-accepted', A2.frames.some((f) => f.type === 'ack' && f.id === 70 && f.status === 'invite-auto-accepted'), JSON.stringify(A2.frames.filter((f) => f.type === 'ack')))
   check('11b 2nd summon rejected (invite-busy)', A2.frames.some((f) => f.type === 'ack' && f.id === 77 && f.status === 'invite-busy'))
@@ -206,8 +208,7 @@ async function main() {
   const A4 = mkClient(port, 'A4'), B4 = mkClient(port, 'B4'); A4.register(); B4.register(); await sleep(100)
   A4.send({ type: 'ask', question: 'q', peer: 'B4' }); await sleep(120)
   st = await status(controlPort); const ab4 = roomBy(st, 'A4', 'B4').roomId
-  A4.send({ type: 'summon_to_room', brief: 'b' }); await sleep(120)
-  await control(controlPort, 'accept', { roomId: ab4 }); await sleep(120)
+  A4.send({ type: 'summon_to_room', brief: 'b' }); await sleep(120)   // auto-accepts (default)
   const P4 = mkClient(port, 'Pierre4'); P4.register({ summonedBy: 'A4', room: ab4 }); await sleep(150)
   st = await status(controlPort)
   check('14a room is 3-party', roomBy(st, 'A4', 'B4').members.length === 3, roomBy(st, 'A4', 'B4') && JSON.stringify(roomBy(st, 'A4', 'B4').members))
@@ -224,7 +225,7 @@ async function main() {
   check('15a 3-party flood tripped stormguard (auto-paused)', roomBy(st, 'A4', 'B4') && roomBy(st, 'A4', 'B4').pauseReason === 'stormguard', roomBy(st, 'A4', 'B4') && `${roomBy(st, 'A4', 'B4').state}/${roomBy(st, 'A4', 'B4').pauseReason}`)
 
   console.log(`\n${'='.repeat(40)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(40)}`)
-  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4].forEach((c) => { try { c.close() } catch {} })
+  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4].forEach((c) => { try { c.close() } catch {} })
   await sleep(80)
   process.exit(fail ? 1 : 0)
 }

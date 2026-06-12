@@ -199,6 +199,8 @@ function renderDetail() {
         <button class="danger" ${live?'':'disabled'} onclick="endRoom()">⏹ End</button>
         <button ${live?'':'disabled'} onclick="requestCatchup()">📋 Catch-up now</button>
         <button class="${room.autoCatchup===false?'auto-off':''}" ${live?'':'disabled'} title="Auto-elicit a catch-up when this room pauses. Turn off while you're watching live." onclick="toggleAutoCatchup()">${room.autoCatchup===false?'🔕 auto off':'🔔 auto on'}</button>
+        <button class="${room.requireConsent?'auto-off':''}" ${live?'':'disabled'} title="Auto-accept summoned adversaries into this room (default). Off = require explicit consent per summon." onclick="toggleAutoAccept()">${room.requireConsent?'🛂 consent req':'🤝 auto-accept'}</button>
+        ${room.pendingInvite?`<button class="danger" onclick="consent('accept')" title="Let the pending adversary into this room">✅ Let ${esc(room.pendingInvite)}'s adversary in</button><button onclick="consent('decline')">🚫 Decline</button>`:''}
         <span style="width:8px"></span>
         <select id="steerTarget" ${live?'':'disabled'}>
           <option value="both">steer: both</option>
@@ -267,6 +269,17 @@ async function toggleAutoCatchup() {
   const cur = roomById(SELECTED)?.autoCatchup !== false   // currently on?
   const r = await api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ roomId: SELECTED, action:'autocatchup', on: !cur }) })
   toast(r.ok ? ('auto catch-up '+(!cur?'on':'off')) : ('✗ '+(r.error||'failed')))
+  await refresh()
+}
+async function toggleAutoAccept() {
+  const reqNow = roomById(SELECTED)?.requireConsent === true   // consent currently required? clicking flips it
+  const r = await api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ roomId: SELECTED, action:'autoaccept', on: reqNow }) })
+  toast(r.ok ? ('auto-accept '+(r.autoAccept?'on':'off — consent required')) : ('✗ '+(r.error||'failed')))
+  await refresh()
+}
+async function consent(decision) {
+  const r = await api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ roomId: SELECTED, action: decision }) })   // 'accept' | 'decline'
+  toast(r.ok ? ('adversary '+(decision==='accept'?'accepted ✓':'declined')) : ('✗ '+(r.error||'failed')))
   await refresh()
 }
 

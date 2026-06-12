@@ -218,11 +218,16 @@ own data, and no-egress neuters exfil anyway. **Cross-machine rooms** is the def
 read-isolation + the provenance hardening's load-bearing-ness + a real transport/auth boundary — parked until
 a concrete workflow needs it (same discipline as crew).
 
-**Open (UX, calibrated to one trust domain):** consent currently requires the peer's human to run
-`mrc rooms accept <room>` — real friction (field-reported). In one trust domain that strict human-direct gate
-is over-calibrated; the fix is lower-friction consent — a **dashboard button** (human action, no injection
-exposure) and/or a **natural-language accept** the consenting agent relays (lowest friction, mild injection
-exposure). Build choice pending.
+**Consent UX — BUILT (2026-06-12); default inverted to auto-accept.** The strict per-summon
+`mrc rooms accept` was calibrated for cross-trust parties; in one trust domain it's over-friction (the
+consenting human *is* the summoning human, asked to confirm twice). So **auto-accept is now the default** —
+a summon joins immediately, all members notified — with a per-room **consent checkpoint** you switch on when
+you want it (`mrc rooms auto-accept <room> off`, or the dashboard toggle). When the checkpoint is on, the peer
+approves via **natural language** ("let Pierre in" → the agent's `accept_adversary` tool), the **dashboard**
+accept/decline buttons, or the CLI. ⚠ The auto-accept default is **coupled to one trust domain** — cross-machine
+rooms MUST flip it back to require-consent (a comment sits at the decision point in `onSummonToRoom`, and it's
+called out in the cross-machine deferred-trigger). 35-check harness covers auto-accept, decline, and the
+natural-language accept.
 
 **Still the gate:** every fix above is the plumbing *around* the feature. The consented 3-party join firing
 live + three Claudes actually converging (there is still no turn-taking / termination) is unproven — see

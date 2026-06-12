@@ -57,6 +57,8 @@ async function buildState() {
       turn: lp?.turn ?? null,
       turnCap: lp?.turnCap ?? null,
       autoCatchup: lp?.autoCatchup ?? true,
+      requireConsent: lp?.requireConsent ?? false,
+      pendingInvite: lp?.pendingInvite || null,
       unreviewed,
       createdAt: r.meta?.createdAt || 0,
       updatedAt,
@@ -92,7 +94,7 @@ async function handle(req, res) {
       req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
       req.on('end', async () => {
         let j; try { j = JSON.parse(body || '{}') } catch { return sendJSON(res, 400, { ok: false, error: 'bad json' }) }
-        if (!['brake', 'resume', 'steer', 'end', 'review', 'catchup', 'autocatchup'].includes(j.action)) return sendJSON(res, 400, { ok: false, error: 'action not allowed' })
+        if (!['brake', 'resume', 'steer', 'end', 'review', 'catchup', 'autocatchup', 'autoaccept', 'accept', 'decline'].includes(j.action)) return sendJSON(res, 400, { ok: false, error: 'action not allowed' })
         if (j.roomId && !knownRoom(j.roomId)) return sendJSON(res, 404, { ok: false, error: 'unknown room' })
         // 'review' is a local catchups.json write (we run inside the daemon process), not a control action.
         if (j.action === 'review') {
@@ -101,7 +103,7 @@ async function handle(req, res) {
         }
         const extra = { roomId: j.roomId }
         if (j.action === 'steer') { extra.target = ['a', 'b', 'both'].includes(j.target) ? j.target : 'both'; extra.text = String(j.text || '').slice(0, 8000) }
-        if (j.action === 'autocatchup') extra.on = !!j.on
+        if (j.action === 'autocatchup' || j.action === 'autoaccept') extra.on = !!j.on
         return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, j.action, extra))
       })
       return

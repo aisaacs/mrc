@@ -448,7 +448,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     p.pendingInvite = { by: issuerId, repo, web: !!s.web, requestedAt: Date.now() }
     // ROOM-SCOPED standing consent (not a global/stale session flag): auto-accept only if THIS room was
     // explicitly opened to adversaries. Safe precisely because the adversary is clean (open brief, no priors).
-    if (p.openToAdversary) { send(issuerId, { type: 'notice', text: `[Room is pre-authorized for adversaries — summoning a fresh one into ${p.roomId} now.]` }); acceptInvite(p); return ack('invite-auto-accepted') }
+    // DEFAULT = auto-accept: in ONE trust domain the summoner already owns getting the adversary into the
+    // right room and the consenting human IS the summoning human, so a per-join gate is just double-confirm.
+    // The summon joins immediately; all members are notified. Opt INTO a checkpoint: `mrc rooms auto-accept <room> off`.
+    // ⚠ CROSS-TRUST: auto-accept is safe ONLY because rooms are one trust domain. If cross-machine rooms
+    // (different humans) are ever built, this default MUST flip to require-consent — else it's trespass.
+    if (!p.requireConsent) { send(issuerId, { type: 'notice', text: `[Auto-accept is on for ${p.roomId} — bringing a fresh adversary in now (all members are notified). Add a consent checkpoint with \`mrc rooms auto-accept ${p.roomId} off\`.]` }); acceptInvite(p); return ack('invite-auto-accepted') }
     for (const m of others(p, issuerId)) send(m, { type: 'notice', text: `[CONSENT NEEDED — ${nameOf(issuerId)} wants to bring a fresh red-team adversary (Pierre) into THIS room.\n• Provenance: chosen & briefed by ${nameOf(issuerId)}, runs on their repo, carries NO context beyond the open brief.\n• Capability: sandboxed to least privilege — no internet egress (it can't phone out), reaching only the model API and this daemon.\n• The brief is at /rooms/${p.roomId}/adversary-brief.md — read it and show your human.\nAllow: your human runs \`mrc rooms accept ${p.roomId}\` · refuse: \`mrc rooms decline ${p.roomId}\`. Nothing changes until they do.]` })
     send(issuerId, { type: 'notice', text: `[Requested consent to add an adversary to ${p.roomId}; waiting on ${others(p, issuerId).map(nameOf).join(', ')}'s human. They'll see your brief (/rooms/${p.roomId}/adversary-brief.md). It joins only on their yes.]` })
     notify(`${nameOf(issuerId)} wants to add an adversary to ${p.roomId} — needs the other side's consent`)
@@ -481,6 +486,16 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     appendThread(p.roomId, `${ts()} [adversary invite declined]`)
     send(inv.by, { type: 'notice', text: `[Your request to add an adversary to ${p.roomId} was declined. Summon a private one (summon_adversary) if you want a red-teamer just for yourself.]` })
     return { ok: true }
+  }
+  // The consenting agent relays its human's yes/no for a pending adversary invite in ITS room (natural
+  // language — "let Pierre in" — instead of a CLI command). Valid only for a member who is NOT the inviter,
+  // so the summoner can't self-accept.
+  function onConsentDecision(sessionId, decision, ackId) {
+    const ack = (status) => { if (ackId != null) send(sessionId, { type: 'ack', id: ackId, status }) }
+    const p = roomsContaining(sessionId).find((q) => q.pendingInvite && q.pendingInvite.by !== sessionId)
+    if (!p) return ack('no-pending-invite')
+    const r = decision === 'decline' ? declineInvite(p) : acceptInvite(p)
+    ack(r.ok ? (decision === 'decline' ? 'declined' : 'accepted') : 'consent-error')
   }
   // A fresh adversary booted with --room = an EXISTING room → ADD it to that room's member set (3-party);
   // never create a new pairing (that was the clobber). It carries only the open brief — role, not memory.
@@ -538,6 +553,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
         else if (f.type === 'resume' && sessionId) onAgentResume(sessionId)
         else if (f.type === 'summon' && sessionId) onSummon(sessionId, String(f.brief ?? ''), f.id)
         else if (f.type === 'summon_to_room' && sessionId) onSummonToRoom(sessionId, f.room || null, String(f.brief ?? ''), f.id)
+        else if (f.type === 'consent' && sessionId) onConsentDecision(sessionId, f.decision, f.id)
       }
     })
     sock.on('error', () => {})
@@ -561,14 +577,14 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
             ok: true,
             version,
             sessions: [...sessions.entries()].map(([id, v]) => ({ id, repo: v.repo, name: v.label || v.repo })),
-            pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, members: p.members.map(nameOf), a: nameOf(p.members[0]), b: nameOf(p.members[1]), pendingInvite: p.pendingInvite ? nameOf(p.pendingInvite.by) : null, openToAdversary: !!p.openToAdversary })),
+            pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, members: p.members.map(nameOf), a: nameOf(p.members[0]), b: nameOf(p.members[1]), pendingInvite: p.pendingInvite ? nameOf(p.pendingInvite.by) : null, requireConsent: !!p.requireConsent })),
           })
           continue
         }
         if (f.action === 'shutdown') {   // graceful stop (used by `mrc rooms restart` / version refresh)
           reply({ ok: true })
           // Dump live pairings so the next daemon can restore them — an in-flight room survives the restart.
-          savePairings([...pairings.values()].map((p) => ({ roomId: p.roomId, members: p.members, seq: p.seq, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, state: p.state, pauseReason: p.pauseReason, openToAdversary: p.openToAdversary, incomingAdversary: p.incomingAdversary })))
+          savePairings([...pairings.values()].map((p) => ({ roomId: p.roomId, members: p.members, seq: p.seq, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, state: p.state, pauseReason: p.pauseReason, requireConsent: p.requireConsent, incomingAdversary: p.incomingAdversary })))
           setTimeout(() => { try { server.close(); control.close() } catch {} ; process.exit(0) }, 50)
           continue
         }
@@ -604,7 +620,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
           }
           case 'accept': reply(p.pendingInvite ? acceptInvite(p) : { ok: false, error: 'no adversary invite pending in this room' }); break
           case 'decline': reply(p.pendingInvite ? declineInvite(p) : { ok: false, error: 'no adversary invite pending in this room' }); break
-          case 'allowadversary': p.openToAdversary = f.on !== false; appendThread(p.roomId, `${ts()} [room ${p.openToAdversary ? 'opened to' : 'closed to'} adversaries (human)]`); reply({ ok: true, openToAdversary: p.openToAdversary }); break
+          case 'autoaccept': p.requireConsent = (f.on === false); appendThread(p.roomId, `${ts()} [auto-accept ${p.requireConsent ? 'OFF — consent now required' : 'on'} (human)]`); reply({ ok: true, autoAccept: !p.requireConsent }); break
           default: reply({ ok: false, error: 'unknown action' })
         }
       }

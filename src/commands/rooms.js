@@ -43,12 +43,12 @@ COMMANDS
                                   corrects mid-negotiation and drops a held wrong-path message.
   end    [room-id]              Close a room. All members are notified; the transcript and
                                   consensus are preserved on disk (the room can be resumed).
-  accept [room-id]             Consent to a fresh adversary joining one of YOUR rooms (a peer asked
-                                  for a 3-way red-team). Nothing joins until you run this; read the
-                                  brief at /rooms/<id>/adversary-brief.md first.
-  decline [room-id]            Refuse a pending adversary invite.
-  allow-adversary [id] [--off]  Pre-authorize THIS room for adversaries (or --off to revoke): future
-                                  invites join without a prompt. Room-scoped — never a stale global yes.
+  auto-accept [id] [on|off]    Whether adversaries join THIS room without a consent prompt. DEFAULT ON
+                                  (one trust domain — the summoner owns getting them into the right room).
+                                  Set "off" to add a consent checkpoint for the room.
+  accept / decline [room-id]   Approve / refuse a pending adversary invite (only relevant when a room has
+                                  auto-accept OFF). You can also just say "let Pierre in" in that session,
+                                  or use the dashboard. Read /rooms/<id>/adversary-brief.md first.
   restart                       Refresh the room daemon in place (same ports) so every connected
                                   session reconnects to current code. Run after updating mrc.
   stop                          Stop the room daemon (no respawn). It also auto-stops ~10 min
@@ -127,7 +127,7 @@ export async function roomsCommand(args) {
       if (!s.pairings.length) console.log('    (none)')
       for (const p of s.pairings) {
         const who = (p.members && p.members.length ? p.members : [p.a, p.b].filter(Boolean)).join(' <-> ')
-        const flags = `${p.pendingInvite ? `  ·  ⏳ adversary invite pending from ${p.pendingInvite} (mrc rooms accept/decline ${p.roomId})` : ''}${p.openToAdversary ? '  ·  open-to-adversary' : ''}`
+        const flags = `${p.pendingInvite ? `  ·  ⏳ adversary invite pending from ${p.pendingInvite} (accept in that session, or \`mrc rooms accept/decline ${p.roomId}\`)` : ''}${p.requireConsent ? '  ·  consent-required' : ''}`
         console.log(`    ${who}  ·  ${p.state}${p.pauseReason ? `(${p.pauseReason})` : ''}  ·  turn ${p.turn}  [${p.roomId}]${flags}`)
       }
       return
@@ -152,11 +152,12 @@ export async function roomsCommand(args) {
         console.log(sub === 'accept' ? '  accepted — a fresh adversary is joining the room on the open brief.' : '  declined.')
         break
       }
-      case 'allow-adversary': {
-        const roomId = args[1] && !args[1].startsWith('-') ? args[1] : undefined
-        const on = !args.includes('--off')
-        const r = await ctrl(port, 'allowadversary', { roomId, on })
-        console.log(r.ok ? `  this room ${r.openToAdversary ? 'now accepts' : 'no longer accepts'} adversary invites without a per-invite prompt.` : `  ! ${r.error}`)
+      case 'auto-accept': {
+        // mrc rooms auto-accept <room> [on|off]  — DEFAULT on; "off" adds a consent checkpoint to the room
+        const roomId = args.slice(1).find((a) => !a.startsWith('-') && a !== 'on' && a !== 'off')
+        const on = !(args.includes('off') || args.includes('--off'))
+        const r = await ctrl(port, 'autoaccept', { roomId, on })
+        console.log(r.ok ? `  auto-accept ${r.autoAccept ? 'ON — adversaries join this room immediately' : 'OFF — adversaries need consent (say "let Pierre in" in the room, the dashboard, or mrc rooms accept)'}.` : `  ! ${r.error}`)
         break
       }
       case 'steer': {
@@ -170,7 +171,7 @@ export async function roomsCommand(args) {
         console.log(r.ok ? `  steered (${target}).` : `  ! ${r.error}`)
         break
       }
-      default: console.error(`  unknown: mrc rooms ${sub}  (status | brake | resume | end | steer | accept | decline | allow-adversary)`); process.exit(1)
+      default: console.error(`  unknown: mrc rooms ${sub}  (status | brake | resume | end | steer | accept | decline | auto-accept)`); process.exit(1)
     }
   } catch (e) {
     console.error(`  ! ${e.message}`)
