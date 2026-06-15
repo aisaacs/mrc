@@ -8,7 +8,7 @@
 import net from 'node:net'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { writeFileSync } from 'node:fs'
+import { writeFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { ensureRoom, appendThread, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, roomsRoot } from '../rooms.js'
@@ -153,8 +153,15 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
       // the wire; else the repo basename ⇒ genuinely fresh. So "(fresh)" means no name ANYWHERE, not
       // merely "label not wired" (that was the bug: worked-in sessions read as fresh).
       let nm = p.name
-      if (nm === p.repo && s?.hostRepo) { try { const mapped = loadNames(join(s.hostRepo, '.mrc'))[p.id]; if (mapped) nm = mapped } catch {} }
-      const bits = [p.repo, nm === p.repo ? '(fresh)' : nm, fmtIdle(Date.now() - (s?.lastFrameAt || 0))]
+      let lastActive = s?.lastFrameAt || 0
+      if (s?.hostRepo) {
+        const dir = join(s.hostRepo, '.mrc')
+        if (nm === p.repo) { try { const mapped = loadNames(dir)[p.id]; if (mapped) nm = mapped } catch {} }
+        // active/idle from the TRANSCRIPT mtime, not just room frames: a session busy in its own Claude Code
+        // turn sends no room frames, but its .jsonl keeps growing — frame-only activity read "idle" mid-turn.
+        try { const m = statSync(join(dir, `${p.id}.jsonl`)).mtimeMs; if (m > lastActive) lastActive = m } catch {}
+      }
+      const bits = [p.repo, nm === p.repo ? '(fresh)' : nm, fmtIdle(Date.now() - lastActive)]
       if (s?.web) bits.push('web')
       p.display = `${bits.join(' · ')}  [${p.id.slice(-6)}]`
     }
@@ -170,8 +177,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     const h = norm(hint).toLowerCase()
     if (h) {
       const tiers = [
-        others.filter((o) => o.id === hint),                                   // exact session id
-        others.filter((o) => (o.display || o.name).toLowerCase() === h),       // exact display handle
+        others.filter((o) => o.id === hint || h.replace(/[^a-z0-9]/g, '').endsWith(o.id.slice(-6))),  // full session id, OR the [xxxxxx] suffix the list advertises (bare "4af355" or bracketed "RP-Diet [4af355]")
         others.filter((o) => o.name.toLowerCase() === h),                      // exact name
         others.filter((o) => o.name.toLowerCase().includes(h)),                // name substring
         others.filter((o) => `${o.name} ${o.repo}`.toLowerCase().includes(h)), // name+repo substring (loosest)
@@ -443,7 +449,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     if (!s) return ack('summon-error')
     // Cap: at most one Pierre per requester — but summoning NO LONGER requires closing your other
     // rooms. You can keep a live peer room open and pull Pierre into a separate side-room (multi-room).
-    if (roomsContaining(issuerId).some((p) => p.roomId.startsWith('adversary-')) || summoningPrivate.has(issuerId)) { send(issuerId, { type: 'notice', text: '[You already have Pierre in a room (or one is booting) — close it with `mrc rooms end <room-id>` before summoning another.]' }); return ack('summon-busy') }
+    if (roomsContaining(issuerId).some((p) => p.roomId.startsWith('adversary-') && p.members.some((m) => m !== issuerId && online(m))) || summoningPrivate.has(issuerId)) { send(issuerId, { type: 'notice', text: '[You already have a LIVE Pierre in a room (or one is booting) — close it with `mrc rooms end <room-id>`, or just let it disconnect, before summoning another.]' }); return ack('summon-busy') }
     const repo = s.hostRepo
     if (!repo) { send(issuerId, { type: 'notice', text: '[Cannot summon — no host repo path on record for this session. Relaunch it with a current mrc so it reports one.]' }); return ack('summon-error') }
     const roomId = `adversary-${createHash('sha1').update(`${issuerId}:${Date.now()}`).digest('hex').slice(0, 10)}`
@@ -470,7 +476,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     if (!s) return ack('invite-error')
     const p = roomId ? pairings.get(roomId) : activeRoomFor(issuerId)
     if (!p || !inRoom(p, issuerId)) { send(issuerId, { type: 'notice', text: '[Not in that room — open it (ask_peer) first, then invite an adversary into it.]' }); return ack('invite-error') }
-    if (p.members.some((m) => adversaries.has(m))) { send(issuerId, { type: 'notice', text: '[This room already has an adversary — one per room. (The guard counts adversaries, not members, so a clean N-peer room can still take exactly one.)]' }); return ack('invite-busy') }
+    if (p.members.some((m) => adversaries.has(m) && online(m))) { send(issuerId, { type: 'notice', text: '[This room already has a live adversary — one per room. (Counts connected adversaries, so a clean N-peer room can still take one, and a disconnected ghost no longer blocks.)]' }); return ack('invite-busy') }
     if (p.pendingInvite || p.incomingAdversary) { send(issuerId, { type: 'notice', text: '[An adversary is already pending consent or booting into this room — one at a time.]' }); return ack('invite-busy') }
     const repo = s.hostRepo
     if (!repo) { send(issuerId, { type: 'notice', text: '[Cannot summon — no host repo path on record for this session. Relaunch with a current mrc.]' }); return ack('invite-error') }
