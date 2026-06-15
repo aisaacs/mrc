@@ -1,12 +1,19 @@
 // Room-directory manager (host-side). Rooms live at ~/.local/share/mrc/rooms/<roomId>/,
 // distinct from each repo's project-local .mrc/. Each room holds consensus.md (a living shared
 // summary), thread.log (append-only transcript), and room.json (metadata).
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, appendFileSync, unlinkSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, appendFileSync, unlinkSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, basename } from 'node:path'
 
 export function roomsRoot() { return join(homedir(), '.local', 'share', 'mrc', 'rooms') }
 export function roomDir(roomId) { return join(roomsRoot(), roomId) }
+
+// Reap a room directory (the never-connected-orphan reaper + the dashboard delete). Total removal —
+// used for adversary failed-boot zombies (no transcript) and explicit human deletes; recoverable
+// peer-room history is only ever removed on an explicit human request.
+export function removeRoomDir(roomId) {
+  try { rmSync(roomDir(roomId), { recursive: true, force: true }); return true } catch { return false }
+}
 
 export function makeRoomId(repoA, repoB, stamp = Date.now()) {
   const clean = (p) => basename(p).replace(/[^A-Za-z0-9_-]/g, '') || 'repo'

@@ -8,10 +8,10 @@
 import net from 'node:net'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { writeFileSync, statSync } from 'node:fs'
+import { writeFileSync, statSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { ensureRoom, appendThread, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, roomsRoot } from '../rooms.js'
+import { ensureRoom, appendThread, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, roomsRoot, removeRoomDir } from '../rooms.js'
 import { loadNames } from '../sessions/manager.js'
 
 const norm = (s) => String(s || '').trim().replace(/\s+/g, ' ')
@@ -88,6 +88,11 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     if (s && s.sock && !s.sock.destroyed) s.sock.write(JSON.stringify(frame) + '\n')
   }
   const online = (id) => { const s = sessions.get(id); return !!(s && s.sock && !s.sock.destroyed) }
+  // KEYSTONE (rooms-end deprecation): a room is a LIVE aside for `self` iff it has a CONNECTED member
+  // other than self. Derives liveness from connectivity, not from `state` (which recompute mutates) or a
+  // mutable label. Used by both the brake and the routing so a dormant room (the other member gone) can
+  // neither brake a live room nor swallow a bare reply into the grave.
+  const hasOtherConnected = (room, self) => room.members.some((o) => o !== self && online(o))
   const repoOf = (id) => sessions.get(id)?.repo || '?'                       // basename — for clean room ids
   const knownNames = new Map()   // id -> last-seen display name, so a member who disconnects still renders by name, not "?"
   const nameOf = (id) => { const s = sessions.get(id); if (s) { const n = s.label || s.repo; knownNames.set(id, n); return n } return knownNames.get(id) || '?' }  // refreshes the cache while online; falls back to it once the session is gone
@@ -109,8 +114,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     // explicit active room wins — but only if it's still LIVE (you can't be active in a braked room; a bare
     // reply there would be silently held). A reconnected session loses activeRoom (sessions.set rebuilds it),
     // so fall through to its single live room — which the one-live-room invariant keeps unambiguous.
-    if (s && s.activeRoom) { const p = pairings.get(s.activeRoom); if (p && inRoom(p, id) && p.state === 'Running') return p }
-    const live = rooms.filter((p) => p.state === 'Running')
+    if (s && s.activeRoom) { const p = pairings.get(s.activeRoom); if (p && inRoom(p, id) && p.state === 'Running' && hasOtherConnected(p, id)) return p }
+    const live = rooms.filter((p) => p.state === 'Running' && hasOtherConnected(p, id))
     const pool = live.length ? live : rooms
     return pool.reduce((best, p) => (!best || p.lastActivityAt > best.lastActivityAt ? p : best), null)
   }
@@ -126,7 +131,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
       // Only an ONLINE member can hold the brake: the brake exists to stop a LIVE member's private aside
       // from mis-routing here, and an offline member has no live aside. Without `sessions.has(m)` a
       // departed multi-room member is a tombstone that freezes this room forever (Pierre's ghost-membership).
-      const away = q.members.some((m) => sessions.has(m) && roomsContaining(m).some((r) => r !== q && r.seq > q.seq))
+      const away = q.members.some((m) => sessions.has(m) && roomsContaining(m).some((r) => r !== q && r.seq > q.seq && hasOtherConnected(r, m)))
       if (away && q.state === 'Running') {
         q.state = 'Paused'; q.pauseReason = 'sidechannel'
         appendThread(q.roomId, `${ts()} [paused: a member opened a newer room — held so a private aside can't leak here; resumes when that room ends]`)
@@ -252,6 +257,16 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     }
   }
 
+  // Count a DELIVERED turn + apply the periodic turn-cap check-in / 3-party stormguard. Called
+  // post-deliver from BOTH onMsg and onAsk — never on a held message. (Was inlined in onMsg with the
+  // increment BEFORE the hold gate, so a held message wrongly burned a turn and could cross the cap
+  // silently; onAsk incremented but never checked the cap at all.)
+  function countTurn(p) {
+    p.turn += 1
+    if (p.turnCap > 0 && p.turn >= p.turnCap) { p.state = 'Paused'; p.pauseReason = 'turnCap'; notify(`Room ${p.roomId}: turn-cap check-in at ${p.turn} (resume to grant ${turnCap} more)`); maybeCatchup(p, 'turnCap') }
+    else if (p.members.length >= 3) stormGuard(p)   // contain a 3-party broadcast storm (no-op at 2)
+  }
+
   function onAsk(askerId, question, hint) {
     const r = resolvePeer(askerId, hint)
     if (r.none) return send(askerId, { type: 'notice', text: '[No other room-enabled session is connected. Ask the human to launch one (mrc <repo>) and try again.]' })
@@ -262,11 +277,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     })
     const p = ensurePairing(askerId, r.peer.id)
     setActive(askerId, p.roomId)   // an explicit ask_peer switches the asker's active room to this peer
-    p.turn += 1; p.lastActivityAt = Date.now()
+    p.lastActivityAt = Date.now()   // a held message is still activity (stall/recency); only a DELIVERED turn counts → countTurn below
     appendThread(p.roomId, `${ts()} ${displayIn(p, askerId)}->${displayIn(p, r.peer.id)}: ${question}`)
     clearStallOnActivity(p)
     if (p.state === 'Paused') { p.held.push({ toId: r.peer.id, fromId: askerId, text: question }); appendThread(p.roomId, `${ts()} [held while ${p.pauseReason}]`); return }
     deliver(p, r.peer.id, askerId, question)
+    countTurn(p)
   }
 
   function onMsg(fromId, text, ackId) {
@@ -275,14 +291,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     if (!p) { send(fromId, { type: 'notice', text: '[No open room to reply into — the daemon may have just restarted and lost this pairing. Re-open it with ask_peer (the room id + full history are preserved); a plain reply needs an active pairing.]' }); ack('no-pairing'); return }
     // Broadcast to everyone else in the room (2-party → one recipient; N-party → all the others).
     const recips = others(p, fromId)
-    p.turn += 1; p.lastActivityAt = Date.now()
+    p.lastActivityAt = Date.now()   // a held message is still activity; only a DELIVERED turn counts → countTurn below
     appendThread(p.roomId, `${ts()} ${displayIn(p, fromId)}->${recips.map((r) => displayIn(p, r)).join(',') || '(nobody)'}: ${text}`)
     clearStallOnActivity(p)
     if (p.state === 'Paused') { for (const toId of recips) p.held.push({ toId, fromId, text }); appendThread(p.roomId, `${ts()} [held while ${p.pauseReason}]`); ack('held'); return }
     for (const toId of recips) deliver(p, toId, fromId, text)
     ack(recips.some(online) ? 'delivered' : 'peer-offline')
-    if (p.turnCap > 0 && p.turn >= p.turnCap) { p.state = 'Paused'; p.pauseReason = 'turnCap'; notify(`Room ${p.roomId}: turn-cap check-in at ${p.turn} (resume to grant ${turnCap} more)`); maybeCatchup(p, 'turnCap') }
-    else if (p.members.length >= 3) stormGuard(p)   // contain a 3-party broadcast storm (no-op at 2)
+    countTurn(p)
   }
 
   // Shared running summary: either side may refresh consensus.md at any time. It's living notes,
@@ -634,6 +649,15 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
           if (s && f.label && s.label !== f.label) { s.label = f.label; knownNames.set(f.sessionId, f.label) }
           reply({ ok: true }); continue
         }
+        if (f.action === 'delete' && f.roomId) {   // dashboard manual prune (rooms-end deprecation): FULL
+          // removal — the daemon pairing (if any) AND the dir (thread.log + consensus.md). Handled pre-pick
+          // so it works on a DORMANT/history room with no live pairing too (just removes the dir). This is
+          // the only sanctioned delete now that liveness is connectivity-derived; `end` below is vestigial.
+          const dp = pairings.get(f.roomId)
+          if (dp) { for (const m of dp.members) send(m, { type: 'notice', text: '[Room deleted by the human — its transcript + consensus were removed.]' }); pairings.delete(f.roomId); recomputeSidechannelBrakes() }
+          removeRoomDir(f.roomId)
+          reply({ ok: true }); continue
+        }
         const p = pick(f.roomId)
         if (!p) { reply({ ok: false, error: f.roomId ? `no open room "${f.roomId}" (see: mrc rooms status)` : (pairings.size ? 'multiple rooms open — pass a room id (see: mrc rooms status)' : 'no open room') }); continue }
         switch (f.action) {
@@ -676,7 +700,27 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   control.listen(controlPort, '127.0.0.1')
   control.on('error', () => process.exit(1))
 
+  // --- failed-boot orphan reap (rooms-end deprecation) ---------------------------------------------
+  // A summon that NEVER connected (failed boot) leaves an orphaned adversary-<sha> dir with no pairing;
+  // the disconnect path can't see it (no socket ever opened). Reap such dirs once past the boot window —
+  // but ONLY if they never connected (thread.log has no "[connected" line), so a real red-team
+  // transcript/consensus is never lost. Connected-then-dormant adversary rooms are KEPT (the keystone
+  // already makes them inert; the human prunes them via the dashboard). This is the only auto-reaper.
+  const ORPHAN_BOOT_MS = 120_000
+  function reapFailedSummonDirs() {
+    let root; try { root = roomsRoot() } catch { return }
+    let dirs; try { dirs = readdirSync(root) } catch { return }
+    for (const d of dirs) {
+      if (!d.startsWith('adversary-') || pairings.has(d)) continue           // live/restored pairing → keep
+      let m = 0; try { m = statSync(join(root, d)).mtimeMs } catch {}
+      if (!m || Date.now() - m <= ORPHAN_BOOT_MS) continue                   // recent → may still be booting
+      let log = ''; try { log = readFileSync(join(root, d, 'thread.log'), 'utf8') } catch {}
+      if (!log.includes('[connected')) removeRoomDir(d)                      // never connected → nothing to lose
+    }
+  }
+
   const stallTimer = setInterval(() => {
+    reapFailedSummonDirs()
     for (const p of pairings.values()) {
       if (p.state === 'Running' && p.members.filter((id) => sessions.has(id)).length >= 2 && Date.now() - p.lastActivityAt > stallMs) {
         // Soft, self-healing pause: flag a quiet room for the human, but the next real message
