@@ -4,7 +4,7 @@
 // Launch Claude Code in a sandboxed Docker container with network firewall.
 //
 import { resolve, basename, dirname } from 'node:path'
-import { readdirSync, existsSync, readFileSync } from 'node:fs'
+import { readdirSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
@@ -338,6 +338,8 @@ const volName = volumeName(repoPath, instanceId)
 // instance volume so it reuses your Claude login instead of re-prompting for OAuth in its tab. overwrite:
 // true because a failed prior boot can leave this instance volume lingering (empty or stale) — without it
 // cloneVolume would skip the existing volume and the adversary would boot credential-less.
+// NOTE (2026-06-15): the regular-multi-instance clone-widening (`if instanceId > 1`) is HELD/reverted
+// pending the cloned-token 401 root — see triage. Re-apply once token-validity is solved.
 if (config.summonedBy) {
   const authedSrc = volumeName(repoPath, 1)
   if (authedSrc !== volName && cloneVolume(authedSrc, volName, { overwrite: true })) {
@@ -406,6 +408,7 @@ if (!config.noNotify) {
 // Room participation (default-on for interactive Claude; see roomsActive above). The daemon was
 // booted earlier (roomDaemon); here we just wire this session's channel to it.
 let roomInfo = null
+let roomSessionId = null   // the pinned conversation UUID (rooms only) so the name-watcher names THIS session's .jsonl, not a peer's
 if (roomsActive) {
   const { roomSessionEnv } = await import('./src/commands/pair.js')
   const { roomsRoot } = await import('./src/rooms.js')
@@ -414,6 +417,7 @@ if (roomsActive) {
   // (rooms between the same two conversations resume) while a new conversation gets a fresh id —
   // pinned via `claude --session-id` in the entrypoint when RESUME_FLAG is empty.
   const sessionId = resolveSessionId(resolve(repoPath, '.mrc'), { resumeSession: config.resumeSession, newSession: config.newSession })
+  roomSessionId = sessionId   // hoisted so the name-watcher (below, outside this block) targets this session's own .jsonl
   // Human-readable label (alias) for `mrc rooms` + ask_peer matching: the session's name if it has
   // one, else the repo basename.
   let label = basename(repoPath)
@@ -459,6 +463,23 @@ if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && 
     } catch {}
   }
   nameWatcher = (async () => {
+    // Rooms pins THIS session's conversation UUID — name its OWN .jsonl directly. The heuristics below
+    // (files[last] / newFiles[0]) mis-name under concurrent same-repo sessions: a fresh session grabs a
+    // peer's .jsonl. Wait for ~10KB of content, then name + relabel. Non-rooms sessions (no pinned id)
+    // fall through to the heuristic.
+    if (roomSessionId) {
+      const file = resolve(mrcDir, `${roomSessionId}.jsonl`)
+      let big = false
+      for (let j = 0; j < 120; j++) {
+        try { if (statSync(file).size >= 10240) { big = true; break } } catch {}
+        await new Promise((r) => setTimeout(r, 5000))
+      }
+      // Only name once there's enough transcript to extract a real name from. The 10KB threshold is a
+      // GUARD, not just a wait: a session opened and left idle never crosses it, so it stays unnamed
+      // instead of firing on an empty transcript (which the namer rejects as "no transcript provided").
+      if (big) { await generateName(mrcDir, roomSessionId); relabelDaemon(roomSessionId) }
+      return
+    }
     // For resumed sessions, name immediately if unnamed
     try {
       const files = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')).sort()
@@ -475,17 +496,18 @@ if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && 
         const after = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl'))
         const newFiles = after.filter(f => !beforeSessions.includes(f))
         if (newFiles.length > 0) {
-          // Wait for enough conversation (~10KB)
+          // Wait for enough conversation (~10KB) — and only name if it actually gets there, so an
+          // idle/empty new session doesn't fire naming on an empty transcript.
           const newFile = resolve(mrcDir, newFiles[0])
+          let big = false
           for (let j = 0; j < 60; j++) {
             await new Promise(r => setTimeout(r, 5000))
-            try {
-              const { statSync } = await import('node:fs')
-              if (statSync(newFile).size >= 10240) break
-            } catch {}
+            try { if (statSync(newFile).size >= 10240) { big = true; break } } catch {}
           }
-          const uuid = basename(newFiles[0], '.jsonl')
-          await generateName(mrcDir, uuid); relabelDaemon(uuid)
+          if (big) {
+            const uuid = basename(newFiles[0], '.jsonl')
+            await generateName(mrcDir, uuid); relabelDaemon(uuid)
+          }
           break
         }
       } catch {}

@@ -74,6 +74,10 @@ export async function generateName(mrcDir, uuid) {
   }
 
   const transcript = extractTranscript(mrcDir, uuid, 2000)
+  // Floor: don't ask the namer to name an empty/near-empty session — it replies "no transcript
+  // provided", which fails the kebab-case check below and surfaces as a confusing "bad format" error.
+  // The watcher already gates on ~10KB of .jsonl, but this guards manual/resumed callers too.
+  if (!transcript || transcript.trim().length < 200) return
 
   const text = await callHaiku(apiKey, [{
     role: 'user',
