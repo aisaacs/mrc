@@ -56,25 +56,6 @@ export function checkImageAge(repoPath) {
   } catch {}
 }
 
-/** Get count of running REGULAR mrc containers for a repo (excludes summoned adversaries). */
-export function getExistingCount(repoPath) {
-  try {
-    // ONE snapshot — NOT two separate `docker ps` calls. With two calls, a Pierre transitioning to running
-    // between them would skew the subtraction (all-count misses it, adversary-count catches it → count too
-    // low) and could collide a NEW regular session's instance number onto a LIVE regular volume. One snapshot
-    // can't skew. Each line is "<id> <mrc.adversary-value>"; the id keeps every line non-empty so the count
-    // is exact, and a regular session's empty label just isn't "1".
-    const out = execFileSync('docker', [
-      'ps', '--filter', 'label=mrc=1', '--filter', `label=mrc.repo=${repoPath}`, '--format', '{{.ID}} {{.Label "mrc.adversary"}}',
-    ], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim()
-    if (!out) return 0
-    const lines = out.split('\n')
-    // Adversaries (their `-pierre-N` pool must not bump regular instance numbering) — subtract off the SAME snapshot.
-    const adversaries = lines.filter((l) => l.split(' ')[1] === '1').length
-    return Math.max(0, lines.length - adversaries)
-  } catch { return 0 }
-}
-
 // A claim file only has to bridge [the atomic claim] → [the container's slot label becoming visible to the
 // next summon's `docker ps`]. That label appears at `docker run` START (~1-4s), INDEPENDENT of how long
 // /login takes — so this is NOT a login-length TTL. Erring LONG is benign (a stale claim merely bumps the
@@ -82,32 +63,18 @@ export function getExistingCount(repoPath) {
 const ADV_CLAIM_TTL_MS = 45_000
 const ADV_DOCKER_TIMEOUT_MS = 8_000  // hard-bound `docker ps`; on timeout it throws → fail closed (below).
 const ADV_MAX_SLOTS = 256            // sanity cap so a persistent write error can't spin the claim loop forever.
-// Both racing summons derive this from the SAME repoPath → SAME md5 → SAME dir; lives under the mrc data dir.
-const advSlotsDir = (repoPath) => join(homedir(), '.local', 'share', 'mrc', 'pierre-slots', createHash('md5').update(repoPath).digest('hex').slice(0, 12))
+// Both racing claimers derive this from the SAME repoPath → SAME md5 → SAME dir; lives under the mrc data dir.
+const slotsDir = (sub, repoPath) => join(homedir(), '.local', 'share', 'mrc', sub, createHash('md5').update(repoPath).digest('hex').slice(0, 12))
 
-/** Lowest free "Pierre" slot for a repo's summoned-adversary pool. Serialization is STRUCTURAL, not locked:
- *  the claim is an atomic O_EXCL create, so two concurrent same-repo summons that both read an empty slot set
- *  STILL can't land on the same slot — one wins the create, the other gets EEXIST and walks on. No mutex, no
- *  fence, no read→commit gap to freeze in (this is a macOS+Colima laptop tool — it sleeps; an atomic claim has
- *  no lease to expire mid-freeze). "In use" = RUNNING adversaries (docker ps slot label) ∪ existing claim files
- *  (each bridges run→label-visible, then GC'd at TTL). FAILS CLOSED (null) on any lost signal — docker
- *  unreachable, or a non-EEXIST write error — so the caller aborts rather than risk two Pierres on one volume.
- *  Summoner is structurally safe regardless (disjoint volume names). High-water-mark login: log into a slot
- *  once, then every future Pierre on it is free + immortal (its own independent grant). */
-export function nextAdversarySlot(repoPath) {
-  const dir = advSlotsDir(repoPath)
+// Shared claim step: GC stale claim files, then take the lowest free slot via an ATOMIC O_EXCL create — the
+// create IS the pick, so two concurrent claimers that both computed the same `used` set STILL can't land on the
+// same slot (the kernel lets exactly one create it; the other gets EEXIST and walks on). No lock, no fence, no
+// read→commit gap to freeze in (a laptop sleeping mid-claim has no lease to expire). EEXIST = taken (or a claim
+// still bridging run→visible) → next slot; any OTHER write error (ENOSPC/EROFS/EACCES) is a lost signal → null
+// (fail closed). Claim files bridge the window until a just-launched container is visible to the next claimer's
+// oracle, then GC at TTL; erring TTL long just bumps a slot, never collides.
+function claimLowestFree(dir, used) {
   try { mkdirSync(dir, { recursive: true }) } catch {}
-  // Oracle: slots with a RUNNING adversary. A THROW (docker down / timeout) is a lost liveness signal — a Pierre
-  // alive past its claim's TTL exists ONLY as this label — so fail closed; never treat "can't tell" as "free".
-  const used = new Set()
-  try {
-    const out = execFileSync('docker', [
-      'ps', '--filter', 'label=mrc.adversary=1', '--filter', `label=mrc.repo=${repoPath}`,
-      '--format', '{{.Label "mrc.adversary.slot"}}',
-    ], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim()
-    for (const s of (out ? out.split('\n') : [])) { const n = parseInt(s, 10); if (n > 0) used.add(n) }
-  } catch { return null }
-  // GC claim files older than the TTL so a long-dead summon's claim doesn't falsely block a slot.
   const now = Date.now()
   try {
     for (const f of readdirSync(dir)) {
@@ -115,15 +82,62 @@ export function nextAdversarySlot(repoPath) {
       try { if (now - statSync(join(dir, f)).mtimeMs >= ADV_CLAIM_TTL_MS) rmSync(join(dir, f), { force: true }) } catch {}
     }
   } catch {}
-  // The atomic claim IS the pick: `wx` (O_EXCL) create-or-fail. Two racers both try slot 1; the kernel lets
-  // exactly one create it, the other gets EEXIST and walks to 2 — no lock, no gap. EEXIST = taken (or a claim
-  // still bridging run→visible) → next slot. Any OTHER write error (ENOSPC/EROFS/EACCES) is a lost signal → null.
   for (let n = 1; n <= ADV_MAX_SLOTS; n++) {
     if (used.has(n)) continue
     try { writeFileSync(join(dir, String(n)), '', { flag: 'wx' }); return n }
     catch (e) { if (e && e.code === 'EEXIST') continue; return null }
   }
   return null   // exhausted the (absurd) cap → fail closed rather than spin
+}
+
+/** Lowest free "Pierre" slot for a repo's summoned-adversary pool (volumes `mrc-config-<hash>-pierre-N`).
+ *  Race-free + fail-closed via claimLowestFree. "In use" = RUNNING adversaries (their mrc.adversary.slot label).
+ *  The summoner is structurally safe regardless (disjoint volume names); this just keeps two concurrent Pierres
+ *  off one slot (which would re-create the shared-refreshToken orphan between them). High-water-mark login: log
+ *  into a slot once, then every future Pierre on it is free + immortal (its own independent grant). */
+export function nextAdversarySlot(repoPath) {
+  const used = new Set()
+  try {
+    const out = execFileSync('docker', [
+      'ps', '--filter', 'label=mrc.adversary=1', '--filter', `label=mrc.repo=${repoPath}`,
+      '--format', '{{.Label "mrc.adversary.slot"}}',
+    ], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim()
+    for (const s of (out ? out.split('\n') : [])) { const n = parseInt(s, 10); if (n > 0) used.add(n) }
+  } catch { return null }   // lost liveness oracle (docker down/timeout) → fail closed
+  return claimLowestFree(slotsDir('pierre-slots', repoPath), used)
+}
+
+/** Lowest free REGULAR config-volume slot for a repo (`mrc-config-<hash>` = slot 1, `-N` = slot N). Replaces the
+ *  old `getExistingCount()+1`, which (a) RACED — two concurrent launches read the same count and grabbed the same
+ *  `-N` volume → two real sessions sharing one ~/.claude + its refresh token → a session logged out; (b) failed
+ *  OPEN — a docker hiccup made the count 0 → a new session collided onto the live instance-1 volume; (c) mis-picked
+ *  across gaps — count+1 could equal a still-running higher slot. Race-free + fail-closed via the same atomic
+ *  claim. "In use" is derived from running containers' ACTUAL config-volume MOUNTS, not a label, so it counts
+ *  sessions started BEFORE this change too (no migration gap). Adversary `-pierre-N` and codex `mrc-codex-*`
+ *  mounts don't match the regular pattern, so they're naturally excluded. */
+export function nextInstanceSlot(repoPath) {
+  const hash = createHash('md5').update(repoPath).digest('hex').slice(0, 12)
+  const base = `mrc-config-${hash}`
+  const used = new Set()
+  try {
+    const ids = execFileSync('docker', ['ps', '-q', '--filter', 'label=mrc=1', '--filter', `label=mrc.repo=${repoPath}`], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim()
+    if (ids) {
+      const names = execFileSync('docker', ['inspect', '--format', '{{range .Mounts}}{{.Name}} {{end}}', ...ids.split('\n')], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS })
+      const re = new RegExp('^' + base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '-(\\d+)$')   // `-N` for N>=2 (not -pierre-, not -codex-)
+      for (const t of names.split(/\s+/)) {
+        if (!t) continue
+        if (t === base) used.add(1)                                          // base (no suffix) = instance 1
+        else { const m = t.match(re); if (m) used.add(parseInt(m[1], 10)) }
+      }
+    }
+  } catch { return null }   // lost liveness oracle → fail closed (never collide a new session onto a live volume)
+  const slot = claimLowestFree(slotsDir('instance-slots', repoPath), used)
+  // Return the slot AND how many OTHER regular sessions are already running (= |used|, the same fail-closed
+  // mount-derived set). The caller uses `others` for the "N running" warning + the auto-new-session force,
+  // replacing getExistingCount's `catch{return 0}` fail-open (which on a docker hiccup let a 2nd session
+  // `--continue` the shared /workspace/.mrc transcript and interleave it). NOT instanceId>1: a freed low slot
+  // + a live high slot gives slot 1 yet others ARE running — |used| catches that, the slot number doesn't.
+  return slot ? { slot, others: used.size } : null
 }
 
 /** Compute a per-repo config volume name. */
