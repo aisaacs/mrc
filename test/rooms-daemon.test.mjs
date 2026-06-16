@@ -8,10 +8,12 @@
 import net from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 const here = dirname(fileURLToPath(import.meta.url))
 const { startRoomDaemon } = await import(join(here, '../src/proxies/room-daemon.js'))
 const { findFreePort } = await import(join(here, '../src/ports.js'))
-const { savePairings } = await import(join(here, '../src/rooms.js'))
+const { savePairings, removeRoomDir } = await import(join(here, '../src/rooms.js'))
 
 process.env.MRC_SUMMON_OPEN_CMD = 'true'   // no-op opener; we simulate the adversary booting by connecting a client
 
@@ -224,8 +226,47 @@ async function main() {
   st = await status(controlPort)
   check('15a 3-party flood tripped stormguard (auto-paused)', roomBy(st, 'A4', 'B4') && roomBy(st, 'A4', 'B4').pauseReason === 'stormguard', roomBy(st, 'A4', 'B4') && `${roomBy(st, 'A4', 'B4').state}/${roomBy(st, 'A4', 'B4').pauseReason}`)
 
+  // 16 — #15: a 2nd PRIVATE summon REUSES the live Pierre instead of spawning a second (detect-and-reuse).
+  // The ONLY test of the private onSummon path (others use summon_to_room). Pierre's room id is generated
+  // from issuer:Date.now(), so it's discovered from the summon notice, then "booted" by registering a client.
+  console.log('\n[16] private summon detect-and-reuse')
+  const SS = mkClient(port, 'SS'); SS.register(); await sleep(100)
+  SS.clear(); SS.send({ type: 'summon', brief: 'first brief', id: 80 }); await sleep(150)
+  check('16a 1st private summon acks summoning', SS.frames.some((f) => f.type === 'ack' && f.id === 80 && f.status === 'summoning'), JSON.stringify(SS.frames.filter((f) => f.type === 'ack')))
+  const advNote = SS.frames.find((f) => f.type === 'notice' && /room (adversary-[0-9a-f]+)/.test(f.text || ''))
+  const advRoom = advNote && advNote.text.match(/room (adversary-[0-9a-f]+)/)[1]
+  check('16b summon created an adversary room', !!advRoom, advRoom || 'no room id in notice')
+  const Pr = mkClient(port, 'PrivPierre'); Pr.register({ summonedBy: 'SS', room: advRoom }); await sleep(150)
+  st = await status(controlPort)
+  // match by roomId, not member name: onAdversaryUp relabels the adversary to 'Pierre', so status members are ['SS','Pierre']
+  const advPairing = (st.pairings || []).find((p) => p.roomId === advRoom)
+  check('16c Pierre paired into the adversary room (2-party)', advPairing && advPairing.members.length === 2, JSON.stringify(advPairing ? advPairing.members : null))
+  SS.clear(); Pr.clear(); SS.send({ type: 'summon', brief: 'second brief', id: 81 }); await sleep(150)
+  check('16d 2nd private summon acks summon-reused (not summoning/busy)', SS.frames.some((f) => f.type === 'ack' && f.id === 81 && f.status === 'summon-reused'), JSON.stringify(SS.frames.filter((f) => f.type === 'ack')))
+  check('16e the new brief was forwarded to the existing Pierre', Pr.has('deliver', 'second brief'))
+  st = await status(controlPort)
+  const advRooms = (st.pairings || []).filter((p) => (p.members || []).includes('SS') && p.roomId.startsWith('adversary-'))
+  check('16f still exactly ONE adversary room (no second spawn)', advRooms.length === 1, JSON.stringify(advRooms.map((p) => p.roomId)))
+
+  // 17 — #15: list_peers shows SESSION AGE (read from the transcript's birthtime), not time-since-write.
+  // A freshly-created transcript ⇒ "just started"; a session with NO transcript ⇒ the age token is omitted.
+  console.log('\n[17] list_peers shows session age')
+  const ageRepo = join(tmpdir(), 'mrc-agetest-' + port)
+  mkdirSync(join(ageRepo, '.mrc'), { recursive: true })
+  writeFileSync(join(ageRepo, '.mrc', 'AGE1.jsonl'), '{"type":"user","timestamp":"2026-06-15T00:00:00.000Z"}\n')   // birthtime ≈ now ⇒ "just started"
+  const AG = mkClient(port, 'AGE1'); AG.register({ repoPath: ageRepo }); await sleep(60)
+  const VIEW = mkClient(port, 'VIEWER'); VIEW.register(); await sleep(60)
+  VIEW.clear(); VIEW.send({ type: 'list' }); await sleep(120)
+  const pl = VIEW.frames.find((f) => f.type === 'peerlist')
+  const ageEntry = pl && (pl.peers || []).find((p) => p.id === 'AGE1')
+  check('17a entry with a transcript shows a session-age token', !!ageEntry && /just started|\d+[mhd] old/.test(ageEntry.display || ''), ageEntry ? ageEntry.display : JSON.stringify(pl))
+  const ssDisplay = (pl?.peers || []).find((p) => p.id === 'SS')?.display || ''   // SS (from [16]) has repoPath /tmp/repo-SS but no transcript file there
+  check('17b entry with NO transcript omits the age token (no crash)', !!ssDisplay && !/old|just started|idle|active \d/.test(ssDisplay), ssDisplay)
+
   console.log(`\n${'='.repeat(40)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(40)}`)
-  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4].forEach((c) => { try { c.close() } catch {} })
+  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW].forEach((c) => { try { c.close() } catch {} })
+  if (advRoom) try { removeRoomDir(advRoom) } catch {}   // private summons use a Date.now()-based id → clean it so runs don't accumulate
+  try { rmSync(ageRepo, { recursive: true, force: true }) } catch {}
   await sleep(80)
   process.exit(fail ? 1 : 0)
 }

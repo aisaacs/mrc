@@ -142,8 +142,21 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     }
   }
 
+  // Session AGE (how long ago the conversation began) — the human's anchor for telling sessions apart;
+  // NOT time-since-last-write (they can't track per-session writes, and read the old metric as age anyway).
+  // Source: the transcript's birthtime, which survives `--continue` resumes — so a resumed session shows
+  // its true multi-day age, not "just reconnected". Immutable per session ⇒ cache it; 0 ⇒ unknown (omit).
+  const bornAt = new Map()
+  function sessionBornAt(id, s) {
+    if (bornAt.has(id)) return bornAt.get(id)
+    let born = 0
+    if (s?.hostRepo) { try { born = statSync(join(s.hostRepo, '.mrc', `${id}.jsonl`)).birthtimeMs || 0 } catch {} }
+    if (born) bornAt.set(id, born)
+    return born
+  }
+
   function peerList(exceptId) {
-    const fmtIdle = (ms) => ms < 60_000 ? `active ${Math.max(1, Math.round(ms / 1000))}s` : ms < 3_600_000 ? `idle ${Math.round(ms / 60_000)}m` : `idle ${Math.round(ms / 3_600_000)}h`
+    const fmtAge = (ms) => ms < 90_000 ? 'just started' : ms < 3_600_000 ? `${Math.floor(ms / 60_000)}m old` : ms < 86_400_000 ? `${Math.floor(ms / 3_600_000)}h old` : `${Math.floor(ms / 86_400_000)}d old`
     const raw = [...sessions.keys()].filter((id) => id !== exceptId).map((id) => ({ name: nameOf(id), repo: repoOf(id), id }))
     // Each peer's display carries at-a-glance metadata so a human can pick the right one of N same-repo
     // sessions: fresh-vs-named (a fresh session still shows its repo basename, so name==repo ⇒ fresh; the
@@ -158,15 +171,10 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
       // the wire; else the repo basename ⇒ genuinely fresh. So "(fresh)" means no name ANYWHERE, not
       // merely "label not wired" (that was the bug: worked-in sessions read as fresh).
       let nm = p.name
-      let lastActive = s?.lastFrameAt || 0
-      if (s?.hostRepo) {
-        const dir = join(s.hostRepo, '.mrc')
-        if (nm === p.repo) { try { const mapped = loadNames(dir)[p.id]; if (mapped) nm = mapped } catch {} }
-        // active/idle from the TRANSCRIPT mtime, not just room frames: a session busy in its own Claude Code
-        // turn sends no room frames, but its .jsonl keeps growing — frame-only activity read "idle" mid-turn.
-        try { const m = statSync(join(dir, `${p.id}.jsonl`)).mtimeMs; if (m > lastActive) lastActive = m } catch {}
-      }
-      const bits = [p.repo, nm === p.repo ? '(fresh)' : nm, fmtIdle(Date.now() - lastActive)]
+      if (s?.hostRepo && nm === p.repo) { try { const mapped = loadNames(join(s.hostRepo, '.mrc'))[p.id]; if (mapped) nm = mapped } catch {} }
+      const born = sessionBornAt(p.id, s)
+      const bits = [p.repo, nm === p.repo ? '(fresh)' : nm]
+      if (born) bits.push(fmtAge(Date.now() - born))
       if (s?.web) bits.push('web')
       p.display = `${bits.join(' · ')}  [${p.id.slice(-6)}]`
     }
@@ -464,7 +472,26 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     if (!s) return ack('summon-error')
     // Cap: at most one Pierre per requester — but summoning NO LONGER requires closing your other
     // rooms. You can keep a live peer room open and pull Pierre into a separate side-room (multi-room).
-    if (roomsContaining(issuerId).some((p) => p.roomId.startsWith('adversary-') && p.members.some((m) => m !== issuerId && online(m))) || summoningPrivate.has(issuerId)) { send(issuerId, { type: 'notice', text: '[You already have a LIVE Pierre in a room (or one is booting) — close it with `mrc rooms end <room-id>`, or just let it disconnect, before summoning another.]' }); return ack('summon-busy') }
+    // A private summon is still booting — can't reuse one that hasn't registered yet; hold off a double-spawn.
+    if (summoningPrivate.has(issuerId)) { send(issuerId, { type: 'notice', text: '[Your Pierre is still booting — give him a moment to barge in, then volley. Summon again only if he never shows.]' }); return ack('summon-busy') }
+    // REUSE, don't re-spawn: a LIVE Pierre already in a side-room means route to HIM, not open a second tab.
+    // Forward the new brief (if any) as your next message and make his room active so your reply lands there.
+    // (Was a hard block telling you to close him first — but reusing him is what you actually wanted.)
+    const liveAdv = roomsContaining(issuerId).find((p) => p.roomId.startsWith('adversary-') && hasOtherConnected(p, issuerId))
+    if (liveAdv) {
+      const advId = others(liveAdv, issuerId).find((m) => online(m))
+      setActive(issuerId, liveAdv.roomId)
+      const q = (brief || '').trim()
+      if (q && advId) {
+        liveAdv.lastActivityAt = Date.now()
+        appendThread(liveAdv.roomId, `${ts()} ${displayIn(liveAdv, issuerId)}->${displayIn(liveAdv, advId)}: ${q}`)
+        clearStallOnActivity(liveAdv)
+        if (liveAdv.state === 'Paused') { liveAdv.held.push({ toId: advId, fromId: issuerId, text: q }); appendThread(liveAdv.roomId, `${ts()} [held while ${liveAdv.pauseReason}]`) }
+        else { deliver(liveAdv, advId, issuerId, q); countTurn(liveAdv) }
+      }
+      send(issuerId, { type: 'notice', text: `[You already have Pierre live in ${liveAdv.roomId} — reusing him (one Pierre at a time). ${q && advId ? 'Forwarded your brief to him; reply to his answer to keep volleying.' : 'His room is now active — send your question with the reply tool.'} To start fresh instead, let him disconnect (close his tab) and summon again.]` })
+      return ack('summon-reused')
+    }
     const repo = s.hostRepo
     if (!repo) { send(issuerId, { type: 'notice', text: '[Cannot summon — no host repo path on record for this session. Relaunch it with a current mrc so it reports one.]' }); return ack('summon-error') }
     const roomId = `adversary-${createHash('sha1').update(`${issuerId}:${Date.now()}`).digest('hex').slice(0, 10)}`
@@ -578,7 +605,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue
         let f; try { f = JSON.parse(line) } catch { continue }
-        if (sessionId) { const _s = sessions.get(sessionId); if (_s) _s.lastFrameAt = Date.now() }   // per-session activity stamp → active/idle in list_peers
+        if (sessionId) { const _s = sessions.get(sessionId); if (_s) _s.lastFrameAt = Date.now() }   // per-session last-frame stamp (liveness/debug; list_peers shows session age now, not idle)
         if (f.type === 'register' && f.sessionId) {
           sessionId = f.sessionId
           sessions.set(sessionId, { sock, repo: f.repo || '?', label: f.label || f.repo || '?', room: f.room || null, hostRepo: f.repoPath || null, web: !!f.web, notifyPort: Number(f.notifyPort) || 0, lastFrameAt: Date.now() })
