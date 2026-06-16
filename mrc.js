@@ -358,7 +358,11 @@ if (config.summonedBy) {
   }
 }
 volumes.push('-v', `${volName}:/home/coder/.claude`)
-volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)
+// Codex config volume — skip it for summoned adversaries: Pierre always runs Claude (never codex), so the
+// `mrc-codex-<…>-pierre-N` twin was only ever an empty, unused volume per Pierre slot. Regular sessions keep
+// it (they may `--agent codex` on that slot later). Nothing in the container needs /home/coder/.codex unless
+// the agent IS codex or OPENAI_API_KEY triggers a login (entrypoint.sh) — neither applies to a Claude Pierre.
+if (!config.summonedBy) volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)
 
 // Environment flags
 const envFlags = []
