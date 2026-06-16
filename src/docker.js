@@ -1,6 +1,8 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { basename, join } from 'node:path'
+import { mkdirSync, statSync, rmSync, readdirSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dbg } from './output.js'
 import { IMAGE_NAME } from './constants.js'
 
@@ -54,43 +56,80 @@ export function checkImageAge(repoPath) {
   } catch {}
 }
 
-/** Get count of running mrc containers for a given repo path. */
+/** Get count of running REGULAR mrc containers for a repo (excludes summoned adversaries). */
 export function getExistingCount(repoPath) {
   try {
-    const ids = execFileSync('docker', [
-      'ps', '--filter', 'label=mrc=1', '--filter', `label=mrc.repo=${repoPath}`, '--format', '{{.ID}}',
-    ], { encoding: 'utf8' }).trim()
-    return ids ? ids.split('\n').length : 0
+    // ONE snapshot — NOT two separate `docker ps` calls. With two calls, a Pierre transitioning to running
+    // between them would skew the subtraction (all-count misses it, adversary-count catches it → count too
+    // low) and could collide a NEW regular session's instance number onto a LIVE regular volume. One snapshot
+    // can't skew. Each line is "<id> <mrc.adversary-value>"; the id keeps every line non-empty so the count
+    // is exact, and a regular session's empty label just isn't "1".
+    const out = execFileSync('docker', [
+      'ps', '--filter', 'label=mrc=1', '--filter', `label=mrc.repo=${repoPath}`, '--format', '{{.ID}} {{.Label "mrc.adversary"}}',
+    ], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim()
+    if (!out) return 0
+    const lines = out.split('\n')
+    // Adversaries (their `-pierre-N` pool must not bump regular instance numbering) — subtract off the SAME snapshot.
+    const adversaries = lines.filter((l) => l.split(' ')[1] === '1').length
+    return Math.max(0, lines.length - adversaries)
   } catch { return 0 }
+}
+
+// A claim file only has to bridge [the atomic claim] → [the container's slot label becoming visible to the
+// next summon's `docker ps`]. That label appears at `docker run` START (~1-4s), INDEPENDENT of how long
+// /login takes — so this is NOT a login-length TTL. Erring LONG is benign (a stale claim merely bumps the
+// next summon to a higher slot — never a collision); erring short risks a gap, so keep it generous.
+const ADV_CLAIM_TTL_MS = 45_000
+const ADV_DOCKER_TIMEOUT_MS = 8_000  // hard-bound `docker ps`; on timeout it throws → fail closed (below).
+const ADV_MAX_SLOTS = 256            // sanity cap so a persistent write error can't spin the claim loop forever.
+// Both racing summons derive this from the SAME repoPath → SAME md5 → SAME dir; lives under the mrc data dir.
+const advSlotsDir = (repoPath) => join(homedir(), '.local', 'share', 'mrc', 'pierre-slots', createHash('md5').update(repoPath).digest('hex').slice(0, 12))
+
+/** Lowest free "Pierre" slot for a repo's summoned-adversary pool. Serialization is STRUCTURAL, not locked:
+ *  the claim is an atomic O_EXCL create, so two concurrent same-repo summons that both read an empty slot set
+ *  STILL can't land on the same slot — one wins the create, the other gets EEXIST and walks on. No mutex, no
+ *  fence, no read→commit gap to freeze in (this is a macOS+Colima laptop tool — it sleeps; an atomic claim has
+ *  no lease to expire mid-freeze). "In use" = RUNNING adversaries (docker ps slot label) ∪ existing claim files
+ *  (each bridges run→label-visible, then GC'd at TTL). FAILS CLOSED (null) on any lost signal — docker
+ *  unreachable, or a non-EEXIST write error — so the caller aborts rather than risk two Pierres on one volume.
+ *  Summoner is structurally safe regardless (disjoint volume names). High-water-mark login: log into a slot
+ *  once, then every future Pierre on it is free + immortal (its own independent grant). */
+export function nextAdversarySlot(repoPath) {
+  const dir = advSlotsDir(repoPath)
+  try { mkdirSync(dir, { recursive: true }) } catch {}
+  // Oracle: slots with a RUNNING adversary. A THROW (docker down / timeout) is a lost liveness signal — a Pierre
+  // alive past its claim's TTL exists ONLY as this label — so fail closed; never treat "can't tell" as "free".
+  const used = new Set()
+  try {
+    const out = execFileSync('docker', [
+      'ps', '--filter', 'label=mrc.adversary=1', '--filter', `label=mrc.repo=${repoPath}`,
+      '--format', '{{.Label "mrc.adversary.slot"}}',
+    ], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim()
+    for (const s of (out ? out.split('\n') : [])) { const n = parseInt(s, 10); if (n > 0) used.add(n) }
+  } catch { return null }
+  // GC claim files older than the TTL so a long-dead summon's claim doesn't falsely block a slot.
+  const now = Date.now()
+  try {
+    for (const f of readdirSync(dir)) {
+      const n = parseInt(f, 10); if (!(n > 0)) continue
+      try { if (now - statSync(join(dir, f)).mtimeMs >= ADV_CLAIM_TTL_MS) rmSync(join(dir, f), { force: true }) } catch {}
+    }
+  } catch {}
+  // The atomic claim IS the pick: `wx` (O_EXCL) create-or-fail. Two racers both try slot 1; the kernel lets
+  // exactly one create it, the other gets EEXIST and walks to 2 — no lock, no gap. EEXIST = taken (or a claim
+  // still bridging run→visible) → next slot. Any OTHER write error (ENOSPC/EROFS/EACCES) is a lost signal → null.
+  for (let n = 1; n <= ADV_MAX_SLOTS; n++) {
+    if (used.has(n)) continue
+    try { writeFileSync(join(dir, String(n)), '', { flag: 'wx' }); return n }
+    catch (e) { if (e && e.code === 'EEXIST') continue; return null }
+  }
+  return null   // exhausted the (absurd) cap → fail closed rather than spin
 }
 
 /** Compute a per-repo config volume name. */
 export function volumeName(repoPath, instanceId) {
   const hash = createHash('md5').update(repoPath).digest('hex').slice(0, 12)
   return instanceId > 1 ? `mrc-config-${hash}-${instanceId}` : `mrc-config-${hash}`
-}
-
-/** Clone an authed config volume into a new one so a summoned session reuses the login (no OAuth
- *  re-prompt in its tab). With { overwrite:true } it re-seeds creds even when the destination already
- *  exists — needed for summoned adversaries, whose instance volume can linger (empty or stale) from a
- *  prior failed boot and would otherwise be reused credential-less. Without overwrite it skips an existing
- *  dst (a real reused instance keeps its own auth). Returns false if the source is missing (the session
- *  then falls back to a normal login). */
-export function cloneVolume(srcName, dstName, { overwrite = false } = {}) {
-  if (!overwrite) {
-    try { execFileSync('docker', ['volume', 'inspect', dstName], { stdio: 'ignore' }); return false } catch {}  // dst exists → reuse it
-  }
-  try { execFileSync('docker', ['volume', 'inspect', srcName], { stdio: 'ignore' }) } catch { return false }  // no authed source → can't clone
-  try {
-    execFileSync('docker', ['volume', 'create', dstName], { stdio: 'ignore' })   // no-op if it already exists
-    // --entrypoint sh is REQUIRED: the image's ENTRYPOINT is entrypoint.sh (firewall + agent boot). Without
-    // overriding it, 'sh -c cp…' is passed as ARGS to entrypoint.sh and the copy never runs — entrypoint.sh
-    // instead tries to boot the firewall, fails (no NET_ADMIN in this one-off container), and exits non-zero.
-    // That was the clone's long-standing silent no-op: a summoned adversary booted credential-less.
-    execFileSync('docker', ['run', '--rm', '--entrypoint', 'sh', '-v', `${srcName}:/from`, '-v', `${dstName}:/to`, IMAGE_NAME,
-      '-c', 'cp -a /from/. /to/ 2>/dev/null || true'], { stdio: 'ignore' })
-    return true
-  } catch { return false }
 }
 
 /** Run the Docker container. Returns a promise that resolves to the exit code.

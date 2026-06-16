@@ -12,7 +12,7 @@ import { BANNER } from './src/constants.js'
 import { setVerbose, dbg } from './src/output.js'
 import { readMrcrc, loadEnv, parseArgs } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
-import { buildImage, checkImageAge, getExistingCount, volumeName, cloneVolume, runContainer, startDaemon, showStatus } from './src/docker.js'
+import { buildImage, checkImageAge, getExistingCount, nextAdversarySlot, volumeName, runContainer, startDaemon, showStatus } from './src/docker.js'
 import { processSandboxignores } from './src/sandboxignore.js'
 import { findFreePort } from './src/ports.js'
 import { startClipboardProxy } from './src/proxies/clipboard-proxy.js'
@@ -333,18 +333,29 @@ if (existingCount > 0) {
 }
 
 const instanceId = existingCount > 0 ? existingCount + 1 : 1
-const volName = volumeName(repoPath, instanceId)
-// Summoned adversary: re-seed the repo's canonical authed config volume (instance 1) into this fresh
-// instance volume so it reuses your Claude login instead of re-prompting for OAuth in its tab. overwrite:
-// true because a failed prior boot can leave this instance volume lingering (empty or stale) — without it
-// cloneVolume would skip the existing volume and the adversary would boot credential-less.
-// NOTE (2026-06-15): the regular-multi-instance clone-widening (`if instanceId > 1`) is HELD/reverted
-// pending the cloned-token 401 root — see triage. Re-apply once token-validity is solved.
+let volName = volumeName(repoPath, instanceId)
+// Summoned adversary ("Pierre") config volume — a DEDICATED per-repo Pierre pool (`-pierre-N`), NOT a clone
+// of your login. Why this shape (full rationale: the 401 red-team in docs/ + the rooms memory): cloning your
+// volume shared your refresh token, so when Pierre refreshed he rotated it and logged YOU out (the live
+// orphan we hit), and it copied your working memory into the firewalled-because-untrusted adversary. A
+// dedicated pool instead rides the SAME persist-and-reuse model regular sessions already use: log into a
+// Pierre slot once, and every later Pierre on it is free + immortal — its own independent grant, so it can
+// never orphan you. SLOT-keyed (lowest free N among running adversaries), not summoner-keyed, gives the
+// high-water-mark model: one login per concurrency level you've ever reached, shared across all summoners;
+// distinct slots keep two concurrent Pierres from colliding. (Pierre still reads the shared /workspace/.mrc
+// transcripts — hard isolation of that is a separate, human-gated mount change, deliberately deferred.)
+let adversarySlot = 0
 if (config.summonedBy) {
-  const authedSrc = volumeName(repoPath, 1)
-  if (authedSrc !== volName && cloneVolume(authedSrc, volName, { overwrite: true })) {
-    console.log('  ◎ Cloned your login into the summoned session (no re-auth).')
+  adversarySlot = nextAdversarySlot(repoPath)
+  // FAIL CLOSED: nextAdversarySlot returns null if it can't serialize (lock busy) or its liveness oracle
+  // (docker ps) threw. Booting on a guessed slot could drop this Pierre onto a live one's volume (shared
+  // refreshToken → orphan). Abort instead — the summon is cheap to retry.
+  if (!adversarySlot) {
+    console.error('  ✗ Couldn\'t safely claim a Pierre slot (docker unreachable, or the slot lock is busy). Nothing launched — try the summon again in a moment.')
+    process.exit(1)
   }
+  volName = `${volumeName(repoPath, 1)}-pierre-${adversarySlot}`
+  console.log(`  ⓘ Summoned adversary on Pierre slot ${adversarySlot} — reuses this slot's login if you've used it before, else a one-time login makes it permanent (no clone; it can't log you out).`)
 }
 volumes.push('-v', `${volName}:/home/coder/.claude`)
 volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)
@@ -519,6 +530,9 @@ if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && 
 const roomLabels = roomInfo
   ? ['--label', 'mrc.room=1', '--label', `mrc.room.session=${roomInfo.sessionId}`]
   : []
+// Tag summoned adversaries with their Pierre-pool slot, so nextAdversarySlot() can see which slots are in
+// use (concurrency + freed-slot reuse) and getExistingCount() can exclude them from regular numbering.
+if (adversarySlot) roomLabels.push('--label', 'mrc.adversary=1', '--label', `mrc.adversary.slot=${adversarySlot}`)
 const exitCode = await runContainer({
   repoPath,
   envFlags,
