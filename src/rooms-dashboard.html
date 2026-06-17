@@ -196,7 +196,6 @@ function renderDetail() {
       <div class="controls">
         <button ${live && room.state!=='Paused'?'':'disabled'} onclick="act('brake')">⏸ Pause</button>
         <button ${live && room.state==='Paused'?'':'disabled'} onclick="act('resume')">▶ Resume</button>
-        <button class="danger" ${live?'':'disabled'} onclick="endRoom()">⏹ End</button>
         <button class="danger" ${!room.live && STATE?.daemon?.running?'':'disabled'} onclick="deleteRoom()" title="Permanently delete this dormant room's saved history (thread.log + consensus.md) from disk.">🗑 Delete</button>
         <button ${live?'':'disabled'} onclick="requestCatchup()">📋 Catch-up now</button>
         <button class="${room.autoCatchup===false?'auto-off':''}" ${live?'':'disabled'} title="Auto-elicit a catch-up when this room pauses. Turn off while you're watching live." onclick="toggleAutoCatchup()">${room.autoCatchup===false?'🔕 auto off':'🔔 auto on'}</button>
@@ -322,10 +321,6 @@ async function act(action) {
   const r = await api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ roomId: SELECTED, action }) })
   toast(r.ok ? action+' ✓' : ('✗ '+(r.error||'failed')))
   await refresh()
-}
-async function endRoom() {
-  if (!confirm('Close this room? Both sessions are notified; thread.log + consensus.md are kept on disk.')) return
-  await act('end')
 }
 async function deleteRoom() {
   if (!confirm('Permanently delete this room from disk (thread.log + consensus.md)? A peer room can still re-open if both sessions reconnect — this only removes the saved history.')) return

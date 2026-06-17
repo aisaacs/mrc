@@ -1,6 +1,6 @@
 // Local web dashboard for negotiation rooms. Host-only, binds to 127.0.0.1. Shows every room's
 // thread.log + consensus.md (live and historical, polled in near-real-time) and exposes the
-// room-level controls (pause/resume/steer/end) by proxying to the daemon's control socket. No
+// room-level controls (pause/resume/steer + dormant-room delete) by proxying to the daemon's control socket. No
 // external dependencies — http + fs + the existing control protocol. It deliberately cannot post
 // into a chat; the only writes are the room controls and marking a catch-up reviewed.
 import http from 'node:http'
@@ -94,7 +94,7 @@ async function handle(req, res) {
       req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
       req.on('end', async () => {
         let j; try { j = JSON.parse(body || '{}') } catch { return sendJSON(res, 400, { ok: false, error: 'bad json' }) }
-        if (!['brake', 'resume', 'steer', 'end', 'delete', 'review', 'catchup', 'autocatchup', 'autoaccept', 'accept', 'decline'].includes(j.action)) return sendJSON(res, 400, { ok: false, error: 'action not allowed' })
+        if (!['brake', 'resume', 'steer', 'delete', 'review', 'catchup', 'autocatchup', 'autoaccept', 'accept', 'decline'].includes(j.action)) return sendJSON(res, 400, { ok: false, error: 'action not allowed' })
         if (j.roomId && !knownRoom(j.roomId)) return sendJSON(res, 404, { ok: false, error: 'unknown room' })
         // 'review' is a local catchups.json write (we run inside the daemon process), not a control action.
         if (j.action === 'review') {

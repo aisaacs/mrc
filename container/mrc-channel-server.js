@@ -55,8 +55,9 @@ const mcp = new Server(
       'consensus.md) so there is a skimmable record — it is living notes, not a contract: you do ' +
       'not need to match the peer or "finish" the room.\n' +
       '5. CONTROL. If the human tells you to pause/hold the room, call `pause_room`; to continue, ' +
-      '`resume_room`. You may NOT close a room — only the human can, by running `mrc rooms end`. ' +
-      'Never end, abandon, or self-close a room.',
+      '`resume_room`. There is no "close a room" action — a room simply goes dormant when a session ' +
+      'leaves (the human closes the tab); the human prunes saved history from the dashboard. Never ' +
+      'claim to close, end, or self-close a room.',
   },
 )
 
@@ -77,6 +78,20 @@ const tools = [
     },
   },
   {
+    name: 'invite_peer',
+    description: "Pull another live session INTO the room you're currently in, making it a 3+ way (everyone's messages broadcast to everyone). The human picks who from list_peers — call this only after they choose. `peer` must be an exact name/handle from list_peers. Unlike ask_peer (which opens a fresh 1:1 room), this ADDS a third (or fourth…) to the EXISTING room so all members see each other. Use when the human says 'bring <peer> into this room' / 'make this a 3-way with <peer>' / 'add <peer>'.",
+    inputSchema: {
+      type: 'object',
+      properties: { peer: { type: 'string', description: 'exact peer name/handle from list_peers' } },
+      required: ['peer'],
+    },
+  },
+  {
+    name: 'leave_room',
+    description: "Leave the room you're CURRENTLY in — finish an aside and return to your other conversations. Removes only YOU (the room's history + the remaining members stay); your next room, if any, auto-resumes. Unlike closing the tab (which drops ALL your rooms), this leaves just this one, non-destructively. Call when the human says 'leave this room' / 'I'm done here' / 'drop this aside' / 'go back to <other>'.",
+    inputSchema: { type: 'object', properties: {} },
+  },
+  {
     name: 'reply',
     description: 'Reply to the peer in the current room conversation.',
     inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
@@ -88,7 +103,7 @@ const tools = [
   },
   {
     name: 'pause_room',
-    description: 'Pause the live room when the human asks to pause/hold/stop the back-and-forth. Relaying is held until resumed. You cannot close a room — only the human can, via `mrc rooms end`.',
+    description: 'Pause the live room when the human asks to pause/hold/stop the back-and-forth. Relaying is held until resumed. There is no close/end action — a room goes dormant when a session leaves (the human closes the tab).',
     inputSchema: { type: 'object', properties: {} },
   },
   {
@@ -145,6 +160,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     case 'ask_peer':
       send({ type: 'ask', question: String(a.question ?? ''), peer: a.peer || '' })
       return { content: [{ type: 'text', text: `Sent to "${a.peer}". Their reply will arrive as a <channel source="room"> message — relay only that, faithfully.` }] }
+    case 'invite_peer':
+      return await sendAwaitAck({ type: 'invite', peer: a.peer || '' })
+    case 'leave_room':
+      return await sendAwaitAck({ type: 'leave' })
     case 'reply':
       return await sendAwaitAck({ type: 'msg', text: String(a.text ?? '') })
     case 'update_notes':
@@ -193,7 +212,7 @@ function ackText(status) {
     case 'recorded': return 'Handoff recorded for your human.'
     case 'no-pane': return 'Nothing to record — no catch-up was waiting (only relevant right after a catch-up request).'
     case 'summoning': return 'Summoning a red-team adversary — it opens in a new tab, then joins this room. Watch for its first message and reply to keep the volley going.'
-    case 'summon-busy': return "You already have a private adversary (Pierre) open — close it (`mrc rooms end <room>`) before summoning another."
+    case 'summon-busy': return "You already have a private adversary (Pierre) open — let it finish or close its tab before summoning another."
     case 'summon-error': return "Couldn't summon — the launcher failed or no host repo path is on record for this session (relaunch it with a current mrc). Check the dashboard / mrc rooms status."
     case 'invite-requested': return "Consent requested — this room has a consent checkpoint on, so your peer's human approves before the adversary joins (they can say 'let Pierre in' to that session, run `mrc rooms accept <room>`, or click accept on the dashboard). Nothing changes until they do; they'll see your brief + that you chose and briefed it."
     case 'invite-auto-accepted': return 'Auto-accept is on for this room — a fresh adversary is joining the shared room now. Watch for its first message; replies broadcast to everyone.'
@@ -203,6 +222,15 @@ function ackText(status) {
     case 'declined': return 'Declined — no adversary will join this room.'
     case 'no-pending-invite': return 'Nothing to accept/decline — no adversary invite is pending for a room you can consent in (only the side that did NOT summon can consent).'
     case 'consent-error': return 'Could not record the consent decision — check mrc rooms status.'
+    case 'invited': return "Added them to this room — it's now 3+ way. Everyone's messages broadcast to all members; reply with the reply tool to keep the volley going."
+    case 'invite-no-room': return 'No live room to invite into — open one with ask_peer first (and have a connected peer), then invite a third into it.'
+    case 'invite-none': return 'No matching session — call list_peers and use an exact handle.'
+    case 'invite-ambiguous': return 'Several sessions match that — see the list just shown; call invite_peer again with the exact handle.'
+    case 'invite-already': return 'That session is already in this room.'
+    case 'invite-paused': return 'This room is paused — resume it first (say "resume" or `mrc rooms resume <id>`), then invite. Inviting into a paused room would strand everyone.'
+    case 'invite-adversary': return "That's a summoned adversary (Pierre) — use summon_adversary_to_room for a FRESH one (role-not-memory + consent), not invite_peer."
+    case 'left': return 'Left the room — its history is preserved and the others stay; your next room (if any) resumed. (Closing the tab would have dropped them all; this dropped just this one.)'
+    case 'leave-none': return 'Not in any room to leave.'
     default: return 'Sent.'
   }
 }

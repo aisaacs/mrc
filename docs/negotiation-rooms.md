@@ -118,8 +118,11 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 - **Channel is dormant + human-initiated.** The channel loads connected to the daemon but relays
   nothing until a human says "ask the \<peer>…". Agents don't autonomously *open* rooms (but once
   opened, they *do* continue the volley autonomously — Decision 2).
-- **Closing is human-only.** Agents have `pause_room`/`resume_room` (reversible) but **no**
-  close/end tool; ending a room is a human action (`mrc rooms end`).
+- **No close/end action.** Agents have `pause_room`/`resume_room` (reversible) but **no** close
+  tool — and `mrc rooms end` is gone too (2026-06-17): room liveness is connectivity-derived, so a
+  room goes dormant when a session leaves (close the tab); the human prunes history via the dashboard `delete`.
+  A member can also `leave_room` to drop just ITSELF from one room (history kept, its next room auto-promotes) —
+  the granular, non-destructive way to finish one aside without dropping all your rooms (the dual of `invite_peer`).
 - **Max auth, not API credits.** No Anthropic key is ever injected into the container — the
   sandboxed session authenticates via the user's Max/OAuth login. The host-only
   `MRC_SESSION_NAMING_ANTHROPIC_API_KEY` powers the Haiku session-naming/summary calls, which run
@@ -144,7 +147,7 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
    genuinely identical names disambiguate via unique `[id]` handles. Human-initiated; the agent
    never opens a room unprompted or fabricates a peer.
 4. **Monitoring** = the **`mrc rooms dashboard`** web UI (Decision 13) for the full live/historical
-   transcript + summary and one-click pause/resume/steer/end; plus `mrc rooms status` (daemon
+   transcript + summary and one-click pause/resume/steer + a dormant-room delete; plus `mrc rooms status` (daemon
    version + sessions + pairings), `tail -f /rooms/<id>/thread.log`, editing `consensus.md` (itself
    a steering mechanism), and desktop notifications on turn-cap/stall (via the notify proxy).
 5. **Unified "Paused" state + daemon-enforced brake.** One Paused state reached three ways (human
@@ -180,7 +183,7 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
     (which serves the UI on `127.0.0.1`) and just opens the browser, then exits — no foreground tab
     to babysit, and it works even if the daemon had idle-shut-down. The page shows every room's
     full, untruncated `thread.log` + summary (live and historical, polled) and exposes
-    pause/resume/steer/end. It's the practical way to *read* a relay: the in-session TUI only
+    pause/resume/steer. It's the practical way to *read* a relay: the in-session TUI only
     renders a collapsed one-line preview of each `<channel>` message. An **open dashboard counts as
     keep-alive**, so the daemon won't idle-shutdown out from under a viewer. Read-mostly and
     localhost-only — room ids whitelisted against the rooms dir (no path traversal), actions an
@@ -234,9 +237,9 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
   (`<labels>-<hash(ids)>`); per-pairing relay with untrusted framing, brake, turn-cap check-in,
   self-healing stall, and a FIFO held-queue; shared-summary writes (`update_notes`); per-pause
   catch-up elicitation (Decision 14) via `catchup_request`→`handoff` into `catchups.json`; relay
-  frames `register/list/ask/msg/note/handoff/pause/resume` (each `msg`/`note`/`handoff` is `ack`ed
-  back to the sender with its true outcome — delivered/held/not-delivered); control frames
-  `status(+version)/shutdown/brake/resume/steer/end/catchup/autocatchup`; idle auto-shutdown; notify-proxy
+  frames `register/list/ask/msg/note/handoff/pause/resume/invite/leave` (each `msg`/`note`/`handoff`/`invite`/`leave`
+  is `ack`ed back to the sender with its true outcome — delivered/held/not-delivered, invited/already, left); control
+  frames `status(+version)/shutdown/brake/resume/steer/catchup/autocatchup`; idle auto-shutdown; notify-proxy
   notifications (fired via any currently-connected session's proxy); **hosts the dashboard**
   (Decision 13) on its own port; detached entrypoint that
   records `room-daemon.json` (`{port, controlPort, notifyPort, dashboardPort, pid, version}`).
@@ -250,7 +253,7 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
   `update_notes`, control (pause/resume via agent; closing is human-CLI-only).
 - **`src/commands/pair.js`** — `ensureRoomDaemon()` (version-checked reuse / in-place refresh /
   fresh boot), `restartRoomDaemon()`, `stopRoomDaemon()`, `roomSessionEnv()` (per-session env).
-- **`src/commands/rooms.js`** — `mrc rooms status|brake|resume|steer|end|restart|stop|dashboard` via
+- **`src/commands/rooms.js`** — `mrc rooms status|brake|resume|steer|restart|stop|dashboard` via
   the daemon control port; `status` shows the daemon code version.
 - **`src/rooms.js`** — room-dir manager (`ensureRoom`, `appendThread`, `writeConsensus`,
   `readCatchups`/`appendCatchup`/`updateCatchup`, …) at `~/.local/share/mrc/rooms/<roomId>/`
@@ -259,7 +262,7 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
   (Decision 13): a localhost HTTP server (no deps), **started inside the daemon process**, serving
   room state from the daemon control socket + the rooms dir, plus a single-page app that renders the
   full thread + summary, the **paginated catch-up panes** (Decision 14) with explicit mark-reviewed
-  + unreviewed triage, and the pause/resume/steer/end controls. `mrc rooms dashboard` boots-or-reuses
+  + unreviewed triage, and the pause/resume/steer controls. `mrc rooms dashboard` boots-or-reuses
   the daemon and opens the browser (then exits).
 
 **Modified:**
@@ -330,7 +333,7 @@ Per-pairing state in the daemon: `Running | Paused` + `pauseReason ∈ {brake,tu
 
 Control surfaces:
 - **CLI** (`mrc rooms`, any terminal): `status` (daemon version + sessions + pairings),
-  `brake|resume|end [roomId]`, `steer [--room id] [--target a|b] <text>`, `restart` (refresh the
+  `brake|resume [roomId]`, `steer [--room id] [--target a|b] <text>`, `restart` (refresh the
   daemon in place), `stop` (stop it), `dashboard` (the web UI, Decision 13). **`end` is human-only**
   (no agent self-close).
 - **In-chat** (the human tells their own session): the agent calls `pause_room`/`resume_room`

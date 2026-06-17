@@ -1,6 +1,6 @@
 # Spec — deprecating `mrc rooms end` (connectivity-derived room liveness)
 
-Status: **FINALIZED 2026-06-15** — Pierre-reviewed; #7 (the human hard-stop) resolved to **pure-C**. This is the build spec for Phase 1. Supersedes the 2026-06-12 draft.
+Status: **FINALIZED 2026-06-15; Phase 1 fully BUILT by 2026-06-17** — Pierre-reviewed; #7 (the human hard-stop) resolved to **pure-C**. The keystone + reapers + dashboard delete + `countTurn` landed in the deprecation Phase 1 commit; **removing `mrc rooms end` itself (CLI subcommand + `end` control action + dashboard ⏹ End button + agent framing) landed 2026-06-17** (it was deferred to the image rebuild). Supersedes the 2026-06-12 draft.
 
 ## Why
 
@@ -77,5 +77,7 @@ Pierre's #7: removing `end` drops the human's *irreversible* hard-stop for a LIV
 4. **Peer rooms: kept forever as history** + a dashboard delete for on-demand pruning.
 5. **#7 human hard-stop: pure-C — dropped, no replacement.** The stop is close-the-tab/disconnect. The 1-line "human-brake-is-authoritative" guard is deferred until a real need is observed.
 
-## Not yet built
-Phase 1 is **spec'd, not implemented** as of 2026-06-15. Only the #4 connectivity-aware guards are done + committed. Everything else (keystone, both reapers, dashboard delete, remove-`end`, `countTurn`) is the Phase 1 build.
+## Status (2026-06-17)
+Phase 1 is **fully built**. The keystone, both reapers, dashboard delete, and `countTurn` landed in the deprecation Phase 1 commit; **`mrc rooms end` is now removed** — CLI subcommand, `end` control action, dashboard ⏹ End button + its allow-list entry, and the agent-facing "only the human can end a room" framing are all gone (a room goes dormant when a session leaves; the dashboard `delete` prunes history). Phase 2/3 (status/dashboard liveness wording, optional dormancy prune, multi-session load verification under real load) remain.
+
+**Update — `leave_room` added 2026-06-17 (Pierre's #B in the invite_peer red-team):** removing `end` left no non-destructive, stay-connected way to finish ONE aside and promote your main room (`delete` destroys history; closing the tab drops ALL your rooms; `brake` doesn't promote — it's a no-op on a sidechannel room). The granular replacement — explicitly NOT the #7 human-hard-stop, which stays pure-C — is a member-self-leave channel verb `leave_room`: the member drops ITSELF from its current room, `recomputeSidechannelBrakes` promotes its next room, history is preserved (the pairing is dropped to disk-only history if it falls below 2 members, exactly what `end` did, now member-triggered). The true dual of the in-band `invite_peer`.

@@ -1,4 +1,4 @@
-// `mrc rooms [status|brake|resume|steer|end]` — observe and steer ambient pairings by talking
+// `mrc rooms [status|brake|resume|steer]` — observe and steer ambient pairings by talking
 // to the room daemon's control socket (port recorded in ~/.local/share/mrc/room-daemon.json).
 import net from 'node:net'
 import { readFileSync } from 'node:fs'
@@ -41,8 +41,6 @@ COMMANDS
                                 Inject a trusted "[Human directive]: <text>" into the room
                                   (default: both sides; --target <name> hits one member). Course-
                                   corrects mid-negotiation and drops a held wrong-path message.
-  end    [room-id]              Close a room. All members are notified; the transcript and
-                                  consensus are preserved on disk (the room can be resumed).
   auto-accept [id] [on|off]    Whether adversaries join THIS room without a consent prompt. DEFAULT ON
                                   (one trust domain — the summoner owns getting them into the right room).
                                   Set "off" to add a consent checkpoint for the room.
@@ -55,12 +53,12 @@ COMMANDS
                                   after the last session disconnects; the next session reboots it.
   dashboard, ui                 Open a local web dashboard (127.0.0.1) to read every room's full
                                   thread.log + consensus.md (live & historical, untruncated) and
-                                  pause / resume / steer / end them with buttons.
+                                  pause / resume / steer them with buttons.
   help, --help                  Show this.
 
 ROOM IDS
-  Listed by 'mrc rooms status' (e.g. "RP-Diet--rp"). brake / resume / end take an OPTIONAL id;
-  with none they act on the sole open room and refuse when several are open — never "close all".
+  Listed by 'mrc rooms status' (e.g. "RP-Diet--rp"). brake / resume take an OPTIONAL id; with
+  none they act on the sole open room and refuse when several are open.
 
 FILES  (per room, on the host; also mounted at /rooms/<id>/ inside both containers)
   ~/.local/share/mrc/rooms/<id>/thread.log     full relayed transcript — 'tail -f' to watch live
@@ -77,8 +75,7 @@ EXAMPLES
   mrc rooms status
   mrc rooms brake RP-Diet--rp
   mrc rooms steer --target b "the refund is async via webhook — re-approach"
-  mrc rooms resume RP-Diet--rp
-  mrc rooms end RP-Diet--rp`)
+  mrc rooms resume RP-Diet--rp`)
 }
 
 export async function roomsCommand(args) {
@@ -134,15 +131,13 @@ export async function roomsCommand(args) {
     }
 
     switch (sub) {
-      // brake | resume | end take an optional room id (from `mrc rooms status`); without one
-      // they act on the sole open room and refuse if several are open (no "close all").
-      case 'brake': case 'resume': case 'end': {
+      // brake | resume take an optional room id (from `mrc rooms status`); without one they act
+      // on the sole open room and refuse if several are open.
+      case 'brake': case 'resume': {
         const roomId = args[1] && !args[1].startsWith('-') ? args[1] : undefined
         const r = await ctrl(port, sub, { roomId })
         if (!r.ok) { console.error(`  ! ${r.error}`); break }
-        if (sub === 'brake') console.log(`  braked.${r.held ? `\n  held: ${r.held}` : ''}`)
-        else if (sub === 'resume') console.log('  resumed.')
-        else console.log(`  closed${roomId ? ` ${roomId}` : ''} (transcript preserved).`)
+        console.log(sub === 'brake' ? `  braked.${r.held ? `\n  held: ${r.held}` : ''}` : '  resumed.')
         break
       }
       case 'accept': case 'decline': {
@@ -171,7 +166,7 @@ export async function roomsCommand(args) {
         console.log(r.ok ? `  steered (${target}).` : `  ! ${r.error}`)
         break
       }
-      default: console.error(`  unknown: mrc rooms ${sub}  (status | brake | resume | end | steer | accept | decline | auto-accept)`); process.exit(1)
+      default: console.error(`  unknown: mrc rooms ${sub}  (status | brake | resume | steer | accept | decline | auto-accept)`); process.exit(1)
     }
   } catch (e) {
     console.error(`  ! ${e.message}`)

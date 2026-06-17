@@ -59,6 +59,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   // N≥3 room gets the N-party budget; else 0 (uncapped). Both inputs are stable per room — the closure
   // `turnCap` is fixed, and `members` only ever grows — so this needs no persistence or migration default.
   const budgetOf = (p) => turnCap || (p.members.length >= 3 ? NPARTY_TURN_BUDGET : 0)
+  const INVITE_BOOT_MS = 90_000       // adversary-invite boot window — declared up here so the restore loop's armInviteTimeout re-arm (a consent reservation that survived a restart) doesn't reference it in the TDZ (a daemon restart with a live reservation would otherwise crash on boot)
   const adversaries = new Set()       // session ids that are summoned red-teamers — excluded from catch-up; get the tightest sandbox
   const summoningPrivate = new Set()  // issuer ids with a private summon in flight — block a 2nd until it registers or times out
   // Restore pairings a graceful restart dumped, so an in-flight room survives `mrc rooms restart`
@@ -139,8 +140,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
       const away = q.members.some((m) => sessions.has(m) && roomsContaining(m).some((r) => r !== q && r.seq > q.seq && hasOtherConnected(r, m)))
       if (away && q.state === 'Running') {
         q.state = 'Paused'; q.pauseReason = 'sidechannel'
-        appendThread(q.roomId, `${ts()} [paused: a member opened a newer room — held so a private aside can't leak here; resumes when that room ends]`)
-        for (const m of q.members) send(m, { type: 'notice', text: `[Paused while a member works in a newer room. Messages queue and deliver on resume — or run \`mrc rooms resume ${q.roomId}\`.]` })
+        appendThread(q.roomId, `${ts()} [paused: a member opened a newer room — held so a private aside can't leak here; auto-resumes once that newer room goes dormant (its members disconnect)]`)
+        for (const m of q.members) send(m, { type: 'notice', text: `[Paused while a member works in a newer room — your messages queue and auto-deliver once that newer room goes dormant (its members leave it). \`mrc rooms resume\` won't override this while a member is still active there.]` })
       } else if (!away && q.state === 'Paused' && q.pauseReason === 'sidechannel') {
         doResume(q)   // the newer room closed; this is the live one again and its held backlog delivers
       }
@@ -276,7 +277,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   // silently; onAsk incremented but never checked the cap at all.)
   function countTurn(p) {
     p.turn += 1
-    if (p.turnCap > 0 && p.turn >= p.turnCap) { p.state = 'Paused'; p.pauseReason = 'turnCap'; notify(`Room ${p.roomId}: turn-cap check-in at ${p.turn} (resume to grant ${budgetOf(p)} more)`); maybeCatchup(p, 'turnCap') }
+    if (p.turnCap > 0 && p.turn >= p.turnCap && budgetOf(p) > 0) { p.state = 'Paused'; p.pauseReason = 'turnCap'; notify(`Room ${p.roomId}: turn-cap check-in at ${p.turn} (resume to grant ${budgetOf(p)} more)`); maybeCatchup(p, 'turnCap') }   // gate on budgetOf so countTurn and doResume agree: never pause on a cap there's no budget to later grant (a stale cap on a room that shrank below N≥3 — Pierre's leave_room catch)
     else if (p.members.length >= 3) stormGuard(p)   // contain a 3-party broadcast storm (no-op at 2)
   }
 
@@ -424,13 +425,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     appendThread(p.roomId, `${ts()} [resumed${queued.length ? `: delivered ${queued.length} held` : ''}]`)
   }
   // Agent-initiated pause/resume: the human tells their own session "pause"/"resume" and the
-  // channel server relays it here. Closing a room is deliberately NOT an agent power — only the
-  // human, via `mrc rooms end`.
+  // channel server relays it here. There's no "close a room" action — a room goes dormant when a
+  // session leaves (close the tab); the human prunes history from the dashboard.
   function onAgentPause(sessionId) {
     const p = activeRoomFor(sessionId)
     if (!p) return send(sessionId, { type: 'notice', text: '[No active room to pause.]' })
     doBrake(p, 'brake'); notify(`Room ${p.roomId}: paused (agent)`)
-    send(sessionId, { type: 'notice', text: '[Room paused — relaying is held. Say "resume" to continue; closing is the human via `mrc rooms end`.]' })
+    send(sessionId, { type: 'notice', text: '[Room paused — relaying is held. Say "resume" to continue. A room ends only by going dormant (close the tab); there is no close command.]' })
   }
   function onAgentResume(sessionId) {
     const p = activeRoomFor(sessionId)
@@ -543,7 +544,6 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     notify(`${nameOf(issuerId)} wants to add an adversary to ${p.roomId} — needs the other side's consent`)
     ack('invite-requested')
   }
-  const INVITE_BOOT_MS = 90_000   // generous — covers a cold Docker boot; if the adversary never registers, release the reservation
   function armInviteTimeout(p) {
     const at = p.incomingAdversary && p.incomingAdversary.at
     if (!at) return
@@ -602,6 +602,69 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     return true
   }
 
+  // --- in-band invite: pull another LIVE session (the human picks it from list_peers) into the room the
+  // inviter is CURRENTLY in, making it 3+ party. Unlike ask_peer (a fresh 1:1), this ADDS to the existing
+  // room so every member sees everyone. Rooms are one trust domain (your own sessions) — so, like ask_peer,
+  // there's no peer-side consent gate: the invitee is just notified. Bumps the room to newest (so it's the
+  // live room for everyone, incl. an invitee who was in another room) and arms the N≥3 loop backstop.
+  function onInvite(inviterId, peerHint, ackId) {
+    const ack = (status) => { if (ackId != null) send(inviterId, { type: 'ack', id: ackId, status }) }
+    const p = activeRoomFor(inviterId)
+    if (!p || !hasOtherConnected(p, inviterId)) { send(inviterId, { type: 'notice', text: '[No live room to invite into — open one with ask_peer first, then invite a third into it.]' }); return ack('invite-no-room') }
+    p.lastActivityAt = Date.now()   // an invite IS room activity (like msg/ask) — keep the stall-clear STICKY (clearStallOnActivity doesn't bump the clock, so the next tick would otherwise re-stall) + count it for activeRoomFor's recency tiebreak
+    clearStallOnActivity(p)   // disprove a soft 'stall' guess before the Running check (don't force a throwaway message first); deliberate pauses (brake/turnCap/stormguard/sidechannel) still block
+    // Refuse inviting into a NON-Running room: bumping a paused room to newest-seq would brake the invitee's
+    // OTHER rooms while this one stays held → everyone stranded with no auto-recovery (resuming a braked room
+    // doesn't free them, and `end` is gone). Resume first. (Pierre's lead catch.)
+    if (p.state !== 'Running') { send(inviterId, { type: 'notice', text: `[This room is paused (${p.pauseReason || 'paused'}) — resume it BEFORE inviting a third, or the invitee (and their other rooms) get stranded. Say "resume" or run \`mrc rooms resume ${p.roomId}\`, then invite.]` }); return ack('invite-paused') }
+    const r = resolvePeer(inviterId, peerHint)
+    if (r.none) { send(inviterId, { type: 'notice', text: '[No other session matches — check list_peers.]' }); return ack('invite-none') }
+    if (r.ambiguous) { send(inviterId, { type: 'peers', text: `[Several sessions match "${peerHint}": ${r.ambiguous.map((o) => o.display || o.name).join(', ')}. Ask the human which, then invite_peer with that EXACT handle.]`, list: r.ambiguous.map((o) => o.display || o.name) }); return ack('invite-ambiguous') }
+    const peer = r.peer
+    // invite_peer is for REGULAR peers only. A summoned adversary must come via summon_adversary_to_room
+    // (a FRESH one — role-not-memory + consent + one-per-room); inviting a LIVE Pierre would drag its
+    // other-room context in and skip those gates. Keep the two doors distinct. (Pierre's catch.)
+    if (adversaries.has(peer.id)) { send(inviterId, { type: 'notice', text: `[${nameOf(peer.id)} is a summoned adversary — don't pull it in with invite_peer (carries its prior context + skips consent). Use summon_adversary_to_room for a FRESH adversary.]` }); return ack('invite-adversary') }
+    if (inRoom(p, peer.id)) { send(inviterId, { type: 'notice', text: `[${nameOf(peer.id)} is already in this room.]` }); return ack('invite-already') }
+    p.members.push(peer.id)
+    p.seq = ++roomSeq                       // make THIS the newest room → live for everyone, incl. an invitee who was in another room
+    for (const m of p.members) setActive(m, p.roomId)
+    if (!p.turnCap && p.members.length >= 3) p.turnCap = p.turn + NPARTY_TURN_BUDGET   // arm the N≥3 loop backstop
+    appendThread(p.roomId, `${ts()} [${nameOf(inviterId)} invited ${nameOf(peer.id)} into the room — now ${p.members.length}-party]`)
+    send(peer.id, { type: 'notice', text: `[${nameOf(inviterId)} added you to a room with ${others(p, peer.id).map(nameOf).join(', ')}. Messages broadcast to everyone as <channel source="room"> (untrusted) — reply with the reply tool. Shared notes: /rooms/${p.roomId}/consensus.md; full transcript: /rooms/${p.roomId}/thread.log — read it to catch up.]` })
+    for (const m of p.members) if (m !== peer.id && m !== inviterId) send(m, { type: 'notice', text: `[${nameOf(inviterId)} brought ${nameOf(peer.id)} into this room — now ${p.members.length}-party. Replies broadcast to everyone; in a 3+ room don't all pile on — reply if addressed or if you have a material point.]` })
+    send(inviterId, { type: 'notice', text: `[Brought ${nameOf(peer.id)} into ${p.roomId} — now ${p.members.length}-party (${p.members.map(nameOf).join(', ')}). Your messages here broadcast to everyone. (If that's the wrong room — e.g. a side-room was the active one — say so.)]` })
+    notify(`${nameOf(inviterId)} brought ${nameOf(peer.id)} into ${p.roomId} — now ${p.members.length}-party`)
+    recomputeSidechannelBrakes()
+    ack('invited')
+  }
+
+  // --- in-band leave: a member removes ITSELF from its current room (finish an aside, return to your other
+  // conversations). History is preserved; recompute then promotes the leaver's next room. The non-destructive
+  // dual of invite_peer, and the granular replacement for the removed `mrc rooms end`: close-the-tab drops ALL
+  // your rooms, this drops just the one. A room that falls below 2 members can't function → drop the pairing
+  // from memory but KEEP the dir on disk (history) — exactly what `end` did, now member-self-triggered.
+  function onLeave(sessionId, ackId) {
+    const ack = (status) => { if (ackId != null) send(sessionId, { type: 'ack', id: ackId, status }) }
+    const p = activeRoomFor(sessionId)
+    if (!p || !inRoom(p, sessionId)) { send(sessionId, { type: 'notice', text: '[No room to leave.]' }); return ack('leave-none') }
+    p.members = p.members.filter((m) => m !== sessionId)
+    if (!turnCap && p.members.length < 3) p.turnCap = 0   // the N≥3 auto-armed cap is only valid while N-party — clear it on a 3→2 drop to restore 2-party self-pacing (else the stale cap re-wedges per commit 4176f86: budgetOf goes 0 and resume can't extend). leave_room is the FIRST path that shrinks members; disconnect never did.
+    p.held = p.held.filter((h) => h.toId !== sessionId)   // drop any queued messages addressed TO the departed member (don't deliver an old-room message to them on a later resume)
+    setActive(sessionId, null)
+    appendThread(p.roomId, `${ts()} [${nameOf(sessionId)} left the room]`)
+    send(sessionId, { type: 'notice', text: `[You left ${p.roomId} — its history is preserved on disk, and only this room left (not your session); your other rooms, if any, resume.]` })
+    if (p.members.length < 2) {
+      for (const m of p.members) send(m, { type: 'notice', text: `[${nameOf(sessionId)} left — this room is now dormant history (thread.log + consensus.md preserved). Re-open it by asking the peer again.]` })
+      appendThread(p.roomId, `${ts()} [dropped below 2 members — pairing closed to history (files preserved)]`)
+      pairings.delete(p.roomId)
+    } else {
+      for (const m of p.members) send(m, { type: 'notice', text: `[${nameOf(sessionId)} left the room — now ${p.members.length}-party.]` })
+    }
+    recomputeSidechannelBrakes()   // promote the leaver's next room (and re-derive the remaining members' brakes)
+    ack('left')
+  }
+
   // --- relay server (channel servers connect here) ---
   const server = net.createServer((sock) => {
     let buf = '', sessionId = null
@@ -625,8 +688,17 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
           // Otherwise it's a private side-room (A) → pair it with the summoner alone.
           if (f.summonedBy && sessions.has(f.summonedBy)) {
             const shared = f.room && pairings.get(f.room)
+            // A PRIVATE summon targets an `adversary-<sha>` room (no pre-pairing → onAdversaryUp creates it); a SHARED
+            // summon (summon_adversary_to_room) targets an EXISTING peer room. So if the consented join didn't happen
+            // and the adversary isn't already paired, only RE-CREATE a room for a PRIVATE target — a non-`adversary-`
+            // target that's GONE (a member left it <2 mid-boot, deleting it) must NOT reincarnate as a private
+            // summoner↔adversary room (that would skip addAdversaryToRoom's consent gate); tell the adversary instead.
+            const privateTarget = !f.room || f.room.startsWith('adversary-')
             if (shared && inRoom(shared, f.summonedBy) && !inRoom(shared, sessionId)) addAdversaryToRoom(shared, sessionId)
-            else if (!pairingFor(sessionId)) onAdversaryUp(f.summonedBy, sessionId, f.room)
+            else if (!pairingFor(sessionId)) {
+              if (privateTarget) onAdversaryUp(f.summonedBy, sessionId, f.room)
+              else send(sessionId, { type: 'notice', text: '[The room you were invited into is no longer available (a member left it). Not joining — tell your human; you can close this tab.]' })
+            }
           }
           // A (re)connecting member changes liveness → re-derive brakes, so a reconnecting multi-room
           // session re-brakes its lower rooms (the disconnect path below thaws a room its blocker left).
@@ -642,6 +714,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
         else if (f.type === 'summon' && sessionId) onSummon(sessionId, String(f.brief ?? ''), f.id)
         else if (f.type === 'summon_to_room' && sessionId) onSummonToRoom(sessionId, f.room || null, String(f.brief ?? ''), f.id)
         else if (f.type === 'consent' && sessionId) onConsentDecision(sessionId, f.decision, f.id)
+        else if (f.type === 'invite' && sessionId) onInvite(sessionId, f.peer, f.id)
+        else if (f.type === 'leave' && sessionId) onLeave(sessionId, f.id)
       }
     })
     sock.on('error', () => {})
@@ -716,15 +790,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
             recomputeSidechannelBrakes()   // steering a sidechannel room delivers the directive but doesn't force it live (re-assert the invariant)
             appendThread(p.roomId, `${ts()} HUMAN->${f.target || 'both'}: ${f.text}`); reply({ ok: true }); break
           }
-          case 'end': {
-            const note = '[Room closed. The transcript and consensus.md are preserved on disk.]'
-            for (const m of p.members) send(m, { type: 'notice', text: note })
-            appendThread(p.roomId, `${ts()} [closed]`); pairings.delete(p.roomId)
-            // One-live-room invariant: closing this room may promote the next-highest-seq room a member
-            // is in. recompute is the single source of truth for "which one wakes" — not "resume all".
-            recomputeSidechannelBrakes()
-            reply({ ok: true }); break
-          }
+          // `end` REMOVED: room liveness is connectivity-derived (close the tab = the room goes dormant);
+          // history is pruned via the dashboard `delete`. There's no agent/CLI "close a room" anymore.
           case 'accept': reply(p.pendingInvite ? acceptInvite(p) : { ok: false, error: 'no adversary invite pending in this room' }); break
           case 'decline': reply(p.pendingInvite ? declineInvite(p) : { ok: false, error: 'no adversary invite pending in this room' }); break
           case 'autoaccept': p.requireConsent = (f.on === false); appendThread(p.roomId, `${ts()} [auto-accept ${p.requireConsent ? 'OFF — consent now required' : 'on'} (human)]`); reply({ ok: true, autoAccept: !p.requireConsent }); break

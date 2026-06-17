@@ -308,8 +308,101 @@ async function main() {
   check('18d the post-resume turn reached the peers', z1.has('deliver', 'after-resume') && z3.has('deliver', 'after-resume'))
   d3.stop()
 
+  // 19 — #13: in-band invite_peer pulls a 3rd REGULAR session into the CURRENT room (the naive-3-party
+  // vehicle). Exercises the daemon's onInvite; the container tool just sends {type:'invite', peer}.
+  console.log('\n[19] in-band invite_peer → 3 regular sessions, one room')
+  const I1 = mkClient(port, 'I1'), I2 = mkClient(port, 'I2'), I3 = mkClient(port, 'I3')
+  I1.register(); I2.register(); I3.register(); await sleep(120)
+  I1.send({ type: 'invite', peer: 'I3', id: 60 }); await sleep(120)   // no live room yet
+  check('19a invite with no live room → invite-no-room', I1.frames.some((f) => f.type === 'ack' && f.id === 60 && f.status === 'invite-no-room'), JSON.stringify(I1.frames.filter((f) => f.type === 'ack')))
+  I1.send({ type: 'ask', question: 'q', peer: 'I2' }); await sleep(150)   // open I1<->I2
+  I3.clear(); I1.clear(); I1.send({ type: 'invite', peer: 'I3', id: 61 }); await sleep(150)
+  check('19b invite acked invited', I1.frames.some((f) => f.type === 'ack' && f.id === 61 && f.status === 'invited'), JSON.stringify(I1.frames.filter((f) => f.type === 'ack')))
+  st = await status(controlPort); const iRoom = roomBy(st, 'I1', 'I2')
+  check('19c room is now 3-party (I1, I2, I3)', iRoom && iRoom.members.length === 3 && iRoom.members.includes('I3'), iRoom && JSON.stringify(iRoom.members))
+  check('19d invitee I3 got the "added you" notice', I3.has('notice', 'added you to a room'))
+  I1.clear(); I2.clear(); I3.send({ type: 'msg', text: 'hi all', id: 62 }); await sleep(150)
+  check('19e invitee reply broadcasts to BOTH I1 and I2', I1.has('deliver', 'hi all') && I2.has('deliver', 'hi all'))
+  I1.send({ type: 'invite', peer: 'I3', id: 63 }); await sleep(120)
+  check('19f re-inviting a current member → invite-already', I1.frames.some((f) => f.type === 'ack' && f.id === 63 && f.status === 'invite-already'))
+  // 19g — invite into a PAUSED room is REFUSED (Pierre's lead catch: would strand the invitee + their other rooms)
+  const I4 = mkClient(port, 'I4'), I5 = mkClient(port, 'I5'); I4.register(); I5.register(); await sleep(100)
+  await control(controlPort, 'brake', { roomId: iRoom.roomId }); await sleep(80)
+  I1.send({ type: 'invite', peer: 'I4', id: 64 }); await sleep(120)
+  check('19g invite into a paused room → invite-paused', I1.frames.some((f) => f.type === 'ack' && f.id === 64 && f.status === 'invite-paused'), JSON.stringify(I1.frames.filter((f) => f.id === 64)))
+  st = await status(controlPort)
+  check('19g2 the paused room did NOT gain the invitee', !(roomBy(st, 'I1', 'I2').members || []).includes('I4'))
+  await control(controlPort, 'resume', { roomId: iRoom.roomId }); await sleep(80)
+  // 19h — inviting a peer who's in ANOTHER live room pulls it in AND sidechannel-pauses that room (one-live-room, by design)
+  I4.send({ type: 'ask', question: 'q', peer: 'I5' }); await sleep(150)
+  I1.send({ type: 'invite', peer: 'I4', id: 65 }); await sleep(150)
+  st = await status(controlPort)
+  const iRoom2 = (st.pairings || []).find((p) => p.roomId === iRoom.roomId)
+  check('19h invitee joined (now 4-party)', iRoom2 && iRoom2.members.includes('I4') && iRoom2.members.length === 4, iRoom2 && JSON.stringify(iRoom2.members))
+  check('19h2 invitee\'s OTHER room sidechannel-paused (one-live-room)', roomBy(st, 'I4', 'I5') && roomBy(st, 'I4', 'I5').pauseReason === 'sidechannel', roomBy(st, 'I4', 'I5') && `${roomBy(st, 'I4', 'I5').state}/${roomBy(st, 'I4', 'I5').pauseReason}`)
+  // 19i — invite_peer REFUSES a summoned adversary (Pierre4 from [14]); must use summon_adversary_to_room
+  I1.send({ type: 'invite', peer: 'Pierre4', id: 66 }); await sleep(120)
+  check('19i invite a summoned adversary → invite-adversary', I1.frames.some((f) => f.type === 'ack' && f.id === 66 && f.status === 'invite-adversary'), JSON.stringify(I1.frames.filter((f) => f.id === 66)))
+
+  // 20 — #B: leave_room (member self-leave) — non-destructive dual of invite_peer / granular replacement for `end`.
+  // Leaving an aside promotes your next room and PRESERVES history (drops the pairing only if it falls below 2).
+  console.log('\n[20] leave_room: self-leave promotes your next room, keeps history')
+  const L1 = mkClient(port, 'L1'), L2 = mkClient(port, 'L2'), L3 = mkClient(port, 'L3'), L4 = mkClient(port, 'L4')
+  L1.register(); L2.register(); L3.register(); L4.register(); await sleep(120)
+  L1.send({ type: 'leave', id: 70 }); await sleep(100)   // not in any room yet
+  check('20a leave with no room → leave-none', L1.frames.some((f) => f.type === 'ack' && f.id === 70 && f.status === 'leave-none'), JSON.stringify(L1.frames.filter((f) => f.id === 70)))
+  L1.send({ type: 'ask', question: 'q', peer: 'L2' }); await sleep(120)
+  L1.send({ type: 'invite', peer: 'L3', id: 71 }); await sleep(120)   // L1<->L2 + L3 = 3-party
+  st = await status(controlPort); const lRoomId = roomBy(st, 'L1', 'L2').roomId
+  L3.send({ type: 'leave', id: 72 }); await sleep(120)
+  check('20b L3 self-leave acked left', L3.frames.some((f) => f.type === 'ack' && f.id === 72 && f.status === 'left'), JSON.stringify(L3.frames.filter((f) => f.id === 72)))
+  st = await status(controlPort)
+  check('20c room back to 2-party (L3 gone, room + history kept)', roomBy(st, 'L1', 'L2') && roomBy(st, 'L1', 'L2').members.length === 2 && !roomBy(st, 'L1', 'L2').members.includes('L3'), roomBy(st, 'L1', 'L2') && JSON.stringify(roomBy(st, 'L1', 'L2').members))
+  L1.send({ type: 'ask', question: 'q', peer: 'L4' }); await sleep(150)   // L1<->L4 newest → main L1<->L2 sidechannel-pauses
+  st = await status(controlPort)
+  check('20d opening the aside L1<->L4 sidechannel-paused the main L1<->L2', roomBy(st, 'L1', 'L2') && roomBy(st, 'L1', 'L2').pauseReason === 'sidechannel', roomBy(st, 'L1', 'L2') && `${roomBy(st, 'L1', 'L2').state}/${roomBy(st, 'L1', 'L2').pauseReason}`)
+  L1.send({ type: 'leave', id: 73 }); await sleep(150)   // leave the aside → main auto-promotes
+  st = await status(controlPort)
+  check('20e leaving the aside auto-promoted the main room (L1<->L2 Running)', roomBy(st, 'L1', 'L2') && roomBy(st, 'L1', 'L2').state === 'Running', roomBy(st, 'L1', 'L2') && `${roomBy(st, 'L1', 'L2').state}/${roomBy(st, 'L1', 'L2').pauseReason}`)
+  check('20f the aside (dropped below 2) closed to history — pairing gone, not destroyed-via-delete', !roomBy(st, 'L1', 'L4'), JSON.stringify((st.pairings || []).filter((p) => (p.members || []).includes('L4'))))
+
+  // 21 — #6 (Pierre): a 3→2 leave must clear the stale N-party turn-cap, else it re-opens the 4176f86
+  // resume-wedge through the members-shrink door (leave_room is the first path that shrinks members).
+  console.log('\n[21] leave 3→2 clears the stale N-party turn-cap (no re-wedge)')
+  const p21 = await findFreePort(port + 90), c21 = await findFreePort(p21 + 1)
+  ensureRoom('leavecap', 'm1', 'm2')
+  savePairings([{ roomId: 'leavecap', members: ['m1', 'm2', 'm3'], seq: 9, turn: 2, turnCap: 3, autoCatchup: true, state: 'Running', pauseReason: null }])
+  const d21 = startRoomDaemon({ port: p21, controlPort: c21, notifyPort: 0, version: 'test21', idleMs: 9e8, tickMs: 9e8, stallMs: 9e8 })
+  await sleep(150)
+  const m1 = mkClient(p21, 'm1'), m2 = mkClient(p21, 'm2'), m3 = mkClient(p21, 'm3'); m1.register(); m2.register(); m3.register(); await sleep(150)
+  m3.send({ type: 'leave', id: 80 }); await sleep(120)   // 3 → 2: the stale cap (3) must be cleared
+  let lcst = await status(c21); let lcr = (lcst.pairings || []).find((p) => p.roomId === 'leavecap')
+  check('21a room is 2-party after leave', lcr && lcr.members.length === 2, lcr && JSON.stringify(lcr.members))
+  m1.send({ type: 'msg', text: 'past-cap', id: 81 }); await sleep(120)   // turn 2 → 3 == old cap; must NOT pause
+  lcst = await status(c21); lcr = (lcst.pairings || []).find((p) => p.roomId === 'leavecap')
+  check('21b 2-party room does NOT re-wedge at the stale N-party cap', lcr && lcr.state === 'Running', lcr && `${lcr.state}/${lcr.pauseReason} turn=${lcr.turn}/${lcr.turnCap}`)
+  d21.stop()
+
+  // 22 — #7 (Pierre): a member leaving a SHARED room <2 mid-adversary-boot deletes it; the booting adversary
+  // must NOT reincarnate the gone shared room as a PRIVATE summoner↔adversary room (skipping the consent gate).
+  console.log('\n[22] leave deletes a shared room mid-adversary-boot → adversary refused, not mis-homed')
+  const p22 = await findFreePort(port + 95), c22 = await findFreePort(p22 + 1)
+  ensureRoom('sharedtgt', 's1', 's2')
+  savePairings([{ roomId: 'sharedtgt', members: ['s1', 's2'], seq: 9, turn: 1, autoCatchup: true, state: 'Running', pauseReason: null, incomingAdversary: { by: 's1', at: 1 } }])
+  const d22 = startRoomDaemon({ port: p22, controlPort: c22, notifyPort: 0, version: 'test22', idleMs: 9e8, tickMs: 9e8, stallMs: 9e8 })
+  await sleep(150)
+  const s1 = mkClient(p22, 's1'), s2 = mkClient(p22, 's2'); s1.register(); s2.register(); await sleep(150)
+  s2.send({ type: 'leave', id: 90 }); await sleep(120)   // 2 → 1: 'sharedtgt' drops <2 → deleted, reservation gone
+  let s22 = await status(c22)
+  check('22a shared room deleted on a <2 leave', !(s22.pairings || []).some((p) => p.roomId === 'sharedtgt'))
+  const advX = mkClient(p22, 'advX'); advX.register({ summonedBy: 's1', room: 'sharedtgt' }); await sleep(150)
+  s22 = await status(c22)
+  check('22b adversary did NOT reincarnate the gone shared room (no private mis-home)', !(s22.pairings || []).some((p) => p.roomId === 'sharedtgt' || (p.members || []).includes('advX')), JSON.stringify((s22.pairings || []).map((p) => p.roomId)))
+  check('22c adversary got a "no longer available" notice', advX.has('notice', 'no longer available'))
+  d22.stop()
+
   console.log(`\n${'='.repeat(40)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(40)}`)
-  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3].forEach((c) => { try { c.close() } catch {} })
+  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3, I1, I2, I3, I4, I5, L1, L2, L3, L4, m1, m2, m3, s1, s2, advX].forEach((c) => { try { c.close() } catch {} })
   if (advRoom) try { removeRoomDir(advRoom) } catch {}   // private summons use a Date.now()-based id → clean it so runs don't accumulate
   try { rmSync(ageRepo, { recursive: true, force: true }) } catch {}
   await sleep(80)
