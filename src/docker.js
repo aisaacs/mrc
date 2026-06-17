@@ -1,7 +1,7 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { basename, join } from 'node:path'
-import { mkdirSync, statSync, rmSync, readdirSync, writeFileSync } from 'node:fs'
+import { mkdirSync, statSync, rmSync, readdirSync, writeFileSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { dbg } from './output.js'
 import { IMAGE_NAME } from './constants.js'
@@ -56,36 +56,71 @@ export function checkImageAge(repoPath) {
   } catch {}
 }
 
-// A claim file only has to bridge [the atomic claim] → [the container's slot label becoming visible to the
-// next summon's `docker ps`]. That label appears at `docker run` START (~1-4s), INDEPENDENT of how long
-// /login takes — so this is NOT a login-length TTL. Erring LONG is benign (a stale claim merely bumps the
-// next summon to a higher slot — never a collision); erring short risks a gap, so keep it generous.
-const ADV_CLAIM_TTL_MS = 45_000
+// A claim file holds the launching process's PID and is GC'd by PID-LIVENESS, not a wall-clock TTL. The GC
+// reaps a claim ONLY when that PID is affirmatively DEAD (process.kill(pid,0) → ESRCH). A slept/frozen launcher
+// is ALIVE (slept ≠ dead) → its claim is KEPT → its slot can't be reclaimed mid-launch. (A WALL-CLOCK TTL here
+// was an orphan: a laptop sleep > TTL in the claim→mount window made a live launcher's claim "stale", a racer
+// GC'd it + saw no mount yet → both took the slot → shared volume → silent logout.) The dead-branch is the ONLY
+// branch that deletes, so it's the only one that can orphan: everything ambiguous — empty/half-written (the
+// O_EXCL open→write gap) / non-integer PID / EPERM / alive — reads as KEEP. The asymmetry IS the safety: a kept
+// stale claim is a needless login; a wrongly-reaped live claim is a logged-out session.
+const ADV_CLAIM_BACKSTOP_MS = 172_800_000  // 48h: reclaim a PID-REUSE leak (a recycled PID reads alive forever) —
+                                           // NOT the liveness signal. Err LONG: the backstop is a TIMED reap, and a
+                                           // reap is the only branch that can orphan. A FROZEN launcher is alive-
+                                           // but-mount-down (a laptop slept overnight > any short backstop), so a
+                                           // short backstop reaps its LIVE claim → a racer reclaims the slot → the
+                                           // orphan. A >48h freeze landing in the ~1-4s claim→mount window is fantasy;
+                                           // the reuse-leak this reclaims is a benign needless-login, fine for days.
+                                           // (Airtight-later: stamp the PID's START-TIME too → reap on dead OR
+                                           // start-time-mismatch, no wall-clock backstop at all; costs a per-claim
+                                           // /proc-or-ps read, not free cross-platform — so it's the later, not the now.)
 const ADV_DOCKER_TIMEOUT_MS = 8_000  // hard-bound `docker ps`; on timeout it throws → fail closed (below).
 const ADV_MAX_SLOTS = 256            // sanity cap so a persistent write error can't spin the claim loop forever.
 // Both racing claimers derive this from the SAME repoPath → SAME md5 → SAME dir; lives under the mrc data dir.
 const slotsDir = (sub, repoPath) => join(homedir(), '.local', 'share', 'mrc', sub, createHash('md5').update(repoPath).digest('hex').slice(0, 12))
 
-// Shared claim step: GC stale claim files, then take the lowest free slot via an ATOMIC O_EXCL create — the
-// create IS the pick, so two concurrent claimers that both computed the same `used` set STILL can't land on the
-// same slot (the kernel lets exactly one create it; the other gets EEXIST and walks on). No lock, no fence, no
-// read→commit gap to freeze in (a laptop sleeping mid-claim has no lease to expire). EEXIST = taken (or a claim
-// still bridging run→visible) → next slot; any OTHER write error (ENOSPC/EROFS/EACCES) is a lost signal → null
-// (fail closed). Claim files bridge the window until a just-launched container is visible to the next claimer's
-// oracle, then GC at TTL; erring TTL long just bumps a slot, never collides.
+// Shared claim step: GC dead claims (PID-liveness, see above), then take the lowest free slot via an ATOMIC
+// O_EXCL create — the create IS the pick, so two concurrent claimers that both computed the same `used` set
+// STILL can't land on the same slot (the kernel lets exactly one create it; the other gets EEXIST and walks on).
+// EEXIST = taken (or a claim still bridging run→visible) → next slot; any OTHER write error
+// (ENOSPC/EROFS/EACCES) is a lost signal → null (fail closed). A claim bridges the window until a just-launched
+// container is visible to the next claimer's oracle, then is GC'd when its launcher process dies — so a frozen
+// launcher's claim survives the freeze (no wall-clock lease to expire and re-open the slot under it).
 function claimLowestFree(dir, used) {
   try { mkdirSync(dir, { recursive: true }) } catch {}
   const now = Date.now()
   try {
     for (const f of readdirSync(dir)) {
-      const n = parseInt(f, 10); if (!(n > 0)) continue
-      try { if (now - statSync(join(dir, f)).mtimeMs >= ADV_CLAIM_TTL_MS) rmSync(join(dir, f), { force: true }) } catch {}
+      if (!/^\d+$/.test(f)) continue            // only slot-numbered claim files
+      const claim = join(dir, f)
+      try {
+        // Backstop FIRST: a very old claim is reclaimed regardless — a PID-reuse leak, or a long-running session
+        // whose MOUNT already holds the slot (so dropping the redundant claim is safe).
+        if (now - statSync(claim).mtimeMs >= ADV_CLAIM_BACKSTOP_MS) { rmSync(claim, { force: true }); continue }
+        // Otherwise reap ONLY on AFFIRMATIVE death. Empty/half-written (O_EXCL open→write gap) / malformed → KEEP.
+        const m = readFileSync(claim, 'utf8').match(/^(\d+)\n$/)   // require the trailing-newline SENTINEL: it's the
+        if (!m) continue   // last byte written, so its presence proves the whole PID landed. A torn/empty/partial
+                           // read (even on a network homedir with no single-write atomicity) lacks it → KEEP, never
+                           // reap. (Don't rent atomicity from the FS when a byte makes it ours.)
+        try { process.kill(parseInt(m[1], 10), 0) }                       // alive → no throw → KEEP; EPERM → KEEP
+        catch (e) { if (e && e.code === 'ESRCH') rmSync(claim, { force: true }) }   // affirmatively dead → reap
+      } catch {}
     }
   } catch {}
+  // `sawClaim` = we walked past a slot whose claim file exists but whose container ISN'T in `used` — i.e. a
+  // CONCURRENT sibling launch (claim on disk, mount not up yet) or a just-died launch's claim (<TTL, not yet
+  // GC'd). The mount-oracle is blind to both; this EEXIST-walk is the only thing that sees them. The caller
+  // folds it into "others present" so two simultaneous launches don't both --continue the shared transcript.
+  // Over-counting the just-died case is the SAFE direction (forces a fresh conversation, not a shared one).
+  let sawClaim = false
   for (let n = 1; n <= ADV_MAX_SLOTS; n++) {
     if (used.has(n)) continue
-    try { writeFileSync(join(dir, String(n)), '', { flag: 'wx' }); return n }
-    catch (e) { if (e && e.code === 'EEXIST') continue; return null }
+    // The claim BODY is our PID + a trailing-newline SENTINEL (for the PID-liveness GC). The O_EXCL create is
+    // atomic (the slot is won at open); the body lands a syscall later — a concurrent GC reading that gap sees an
+    // incomplete body (no sentinel) → KEEPS it, so the open→write gap can't orphan. (We DON'T temp-file-then-rename
+    // to close the gap: rename clobbers, which would forfeit the O_EXCL atomic claim. Keep O_EXCL; make the gap safe.)
+    try { writeFileSync(join(dir, String(n)), `${process.pid}\n`, { flag: 'wx' }); return { slot: n, sawClaim } }
+    catch (e) { if (e && e.code === 'EEXIST') { sawClaim = true; continue }; return null }
   }
   return null   // exhausted the (absurd) cap → fail closed rather than spin
 }
@@ -104,7 +139,8 @@ export function nextAdversarySlot(repoPath) {
     ], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim()
     for (const s of (out ? out.split('\n') : [])) { const n = parseInt(s, 10); if (n > 0) used.add(n) }
   } catch { return null }   // lost liveness oracle (docker down/timeout) → fail closed
-  return claimLowestFree(slotsDir('pierre-slots', repoPath), used)
+  const r = claimLowestFree(slotsDir('pierre-slots', repoPath), used)
+  return r ? r.slot : null   // adversaries always --new, so sawClaim/others is irrelevant here — just the slot
 }
 
 /** Lowest free REGULAR config-volume slot for a repo (`mrc-config-<hash>` = slot 1, `-N` = slot N). Replaces the
@@ -131,13 +167,16 @@ export function nextInstanceSlot(repoPath) {
       }
     }
   } catch { return null }   // lost liveness oracle → fail closed (never collide a new session onto a live volume)
-  const slot = claimLowestFree(slotsDir('instance-slots', repoPath), used)
-  // Return the slot AND how many OTHER regular sessions are already running (= |used|, the same fail-closed
-  // mount-derived set). The caller uses `others` for the "N running" warning + the auto-new-session force,
-  // replacing getExistingCount's `catch{return 0}` fail-open (which on a docker hiccup let a 2nd session
-  // `--continue` the shared /workspace/.mrc transcript and interleave it). NOT instanceId>1: a freed low slot
-  // + a live high slot gives slot 1 yet others ARE running — |used| catches that, the slot number doesn't.
-  return slot ? { slot, others: used.size } : null
+  const r = claimLowestFree(slotsDir('instance-slots', repoPath), used)
+  if (!r) return null
+  // `others` = OTHER regular sessions, used by the caller for the "N running" warning + the auto-new-session
+  // force (so two sessions don't both `--continue` the shared /workspace/.mrc transcript and interleave it).
+  // TWO fail-closed sources: |used| = sessions whose container is already RUNNING (mount visible), and
+  // r.sawClaim = a CONCURRENT sibling whose claim is on disk but whose mount isn't up yet — the mount-oracle
+  // can't see it, the EEXIST-walk did. Without the sawClaim term two simultaneous launches both read used={}
+  // and both --continue. (NOT instanceId>1: a freed low slot + a live high slot gives slot 1 yet others ARE
+  // running — |used| catches that. Over-count from a just-died <TTL claim is the safe direction.)
+  return { slot: r.slot, others: used.size + (r.sawClaim ? 1 : 0) }
 }
 
 /** Compute a per-repo config volume name. */
@@ -193,6 +232,12 @@ export function startDaemon({ repoPath, envFlags, volumes, allowWeb }) {
     ...envFlags, ...volumes,
     IMAGE_NAME,
   ]
+  // LOAD-BEARING: `docker run -d` BLOCKS until the container is started and visible to `docker ps`. On the daemon
+  // path mrc.js process.exit(0)s right after this returns, so its slot-claim's PID dies almost immediately — the
+  // mount-oracle (nextInstanceSlot) MUST already see this container by then, or a racer's PID-liveness GC would
+  // reap the dead-PID claim, see no mount, and reclaim the slot → a shared-volume orphan. The blocking gives that
+  // handoff (claim → mount) zero gap. Do NOT switch this to spawn-detached-without-waiting without restoring the
+  // overlap some other way (e.g. keep a holder process alive, or stamp the claim with the container id).
   return execFileSync('docker', args, { encoding: 'utf8' }).trim()
 }
 
