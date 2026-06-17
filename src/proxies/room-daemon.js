@@ -54,6 +54,11 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
   let roomSeq = 0              // monotonic room counter — the NEWEST room a session is in wins its single "live" slot
+  const NPARTY_TURN_BUDGET = 20       // N≥3 count-based loop backstop (see stormGuard): turns between human check-ins
+  // The turn-budget (turns granted per turn-cap window) is DERIVED, not stored: an env cap wins; else an
+  // N≥3 room gets the N-party budget; else 0 (uncapped). Both inputs are stable per room — the closure
+  // `turnCap` is fixed, and `members` only ever grows — so this needs no persistence or migration default.
+  const budgetOf = (p) => turnCap || (p.members.length >= 3 ? NPARTY_TURN_BUDGET : 0)
   const adversaries = new Set()       // session ids that are summoned red-teamers — excluded from catch-up; get the tightest sandbox
   const summoningPrivate = new Set()  // issuer ids with a private summon in flight — block a 2nd until it registers or times out
   // Restore pairings a graceful restart dumped, so an in-flight room survives `mrc rooms restart`
@@ -271,7 +276,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   // silently; onAsk incremented but never checked the cap at all.)
   function countTurn(p) {
     p.turn += 1
-    if (p.turnCap > 0 && p.turn >= p.turnCap) { p.state = 'Paused'; p.pauseReason = 'turnCap'; notify(`Room ${p.roomId}: turn-cap check-in at ${p.turn} (resume to grant ${turnCap} more)`); maybeCatchup(p, 'turnCap') }
+    if (p.turnCap > 0 && p.turn >= p.turnCap) { p.state = 'Paused'; p.pauseReason = 'turnCap'; notify(`Room ${p.roomId}: turn-cap check-in at ${p.turn} (resume to grant ${budgetOf(p)} more)`); maybeCatchup(p, 'turnCap') }
     else if (p.members.length >= 3) stormGuard(p)   // contain a 3-party broadcast storm (no-op at 2)
   }
 
@@ -388,7 +393,6 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   // clean between it and the stall timeout and never terminates without a human. When a room first goes
   // 3-party we arm a turn budget if none is set; onMsg pauses for a human check-in at the cap (resume
   // grants another window). A count budget structurally catches the slow loop a rate guard cannot.
-  const NPARTY_TURN_BUDGET = 20
   function stormGuard(p) {
     p.recent = (p.recent || []).filter((t) => Date.now() - t < STORM_WINDOW_MS)
     p.recent.push(Date.now())
@@ -405,9 +409,10 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     return p.held.length ? p.held.map((h) => h.text).join(' / ') : null   // pending queued message(s), for the human
   }
   function doResume(p) {
-    // A turn-cap pause is a periodic check-in, not a wall: resuming grants another full window so a
-    // long-running consult channel doesn't re-pause on the very next message.
-    if (p.pauseReason === 'turnCap' && turnCap > 0) p.turnCap = p.turn + turnCap
+    // A turn-cap pause is a periodic check-in, not a wall: resuming grants another full window — the
+    // room's DERIVED budget (budgetOf), so it works even with the daemon-level cap off (the auto-armed
+    // N≥3 budget was unresumable when this keyed off the closure `turnCap`, re-pausing on the next message).
+    if (p.pauseReason === 'turnCap' && budgetOf(p) > 0) p.turnCap = p.turn + budgetOf(p)
     // Deliver the FULL backlog in arrival order — held is a FIFO queue, so a brake that spanned
     // several messages no longer drops all but the last one on resume.
     const queued = p.held; p.held = []
@@ -640,7 +645,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
       }
     })
     sock.on('error', () => {})
-    sock.on('close', () => { if (sessionId) { sessions.delete(sessionId); noteSessions(); recomputeSidechannelBrakes() } })   // a departing member must not freeze a room it was side-channel-blocking (ghost membership)
+    // A departing member must not freeze a room it was side-channel-blocking (ghost membership). Guard on
+    // socket IDENTITY: only the CURRENT socket may evict its session — ignore a STALE close whose id was
+    // already re-registered on a NEWER socket. An UNCLEAN disconnect (laptop sleep, partition, kill) fires
+    // the old socket's close on TCP-keepalive timeout, which can land AFTER the wake-reconnect; without
+    // this it would delete the live reconnected session and ghost it offline.
+    sock.on('close', () => { if (sessionId && sessions.get(sessionId)?.sock === sock) { sessions.delete(sessionId); noteSessions(); recomputeSidechannelBrakes() } })
   })
   server.listen(port, '127.0.0.1')
   server.on('error', () => process.exit(1))   // e.g. EADDRINUSE on an in-place restart → let the caller fall back
@@ -660,7 +670,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
             ok: true,
             version,
             sessions: [...sessions.entries()].map(([id, v]) => ({ id, repo: v.repo, name: v.label || v.repo })),
-            pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, members: p.members.map(nameOf), a: nameOf(p.members[0]), b: nameOf(p.members[1]), pendingInvite: p.pendingInvite ? nameOf(p.pendingInvite.by) : null, requireConsent: !!p.requireConsent })),
+            pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, turnCap: p.turnCap, turnBudget: budgetOf(p), autoCatchup: p.autoCatchup, members: p.members.map(nameOf), a: nameOf(p.members[0]), b: nameOf(p.members[1]), pendingInvite: p.pendingInvite ? nameOf(p.pendingInvite.by) : null, requireConsent: !!p.requireConsent })),
           })
           continue
         }
@@ -700,7 +710,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
             for (const t of targets) send(t, { type: 'directive', text: `[Human directive]: ${f.text}` })
             // Steering is a deliberate human override of the conversation's direction, so the held
             // backlog is intentionally dropped (not delivered) — but log how much, so it's traceable.
-            if (p.pauseReason === 'turnCap' && turnCap > 0) p.turnCap = p.turn + turnCap
+            if (p.pauseReason === 'turnCap' && budgetOf(p) > 0) p.turnCap = p.turn + budgetOf(p)
             if (p.held.length) appendThread(p.roomId, `${ts()} [steer dropped ${p.held.length} held]`)
             p.held = []; p.state = 'Running'; p.pauseReason = null; p.lastActivityAt = Date.now()
             recomputeSidechannelBrakes()   // steering a sidechannel room delivers the directive but doesn't force it live (re-assert the invariant)

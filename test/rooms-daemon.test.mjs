@@ -13,7 +13,7 @@ import { mkdirSync, writeFileSync, rmSync } from 'node:fs'
 const here = dirname(fileURLToPath(import.meta.url))
 const { startRoomDaemon } = await import(join(here, '../src/proxies/room-daemon.js'))
 const { findFreePort } = await import(join(here, '../src/ports.js'))
-const { savePairings, removeRoomDir } = await import(join(here, '../src/rooms.js'))
+const { savePairings, removeRoomDir, ensureRoom } = await import(join(here, '../src/rooms.js'))
 
 process.env.MRC_SUMMON_OPEN_CMD = 'true'   // no-op opener; we simulate the adversary booting by connecting a client
 
@@ -42,6 +42,8 @@ const rpc = (controlPort, msg) => new Promise((resolve) => {
 const status = (cp) => rpc(cp, { action: 'status' })
 const control = (cp, action, extra = {}) => rpc(cp, { action, ...extra })
 const roomBy = (st, ...names) => (st.pairings || []).find((p) => names.every((n) => (p.members || []).includes(n)))
+// Poll daemon status until a predicate holds (bounded) — replaces sleep-and-pray for state handoffs.
+const waitUntil = async (cp, pred, tries = 80) => { let s; for (let i = 0; i < tries; i++) { s = await status(cp); if (pred(s)) return s; await sleep(25) } return s }
 
 async function main() {
   const port = await findFreePort(41700)
@@ -195,15 +197,27 @@ async function main() {
   st = await status(controlPort)
   check('12a rogue adversary refused — room still 2-party', roomBy(st, 'A3', 'B3').members.length === 2, JSON.stringify(roomBy(st, 'A3', 'B3').members))
 
-  // 13 — #3a: a reconnected multi-room session routes its bare reply to the LIVE room, not a braked one
+  // 13 — #3a: a reconnected multi-room session routes its bare reply to the LIVE room, not a braked one.
+  // Dedicated daemon (stall OFF) + state-polling so the close→reconnect handoff is deterministic. The
+  // sleep-timed version flaked under load: a late socket close could delete the reconnected session, and
+  // the stall timer could pause X<->Z while the disconnect-thaw bumped X<->Y's recency — so the bare
+  // reply's fallback occasionally picked the braked room. None of that is what this test is about.
   console.log('\n[13] reconnect routes to the live room')
-  let X = mkClient(port, 'X'); const Y = mkClient(port, 'Y'), Z = mkClient(port, 'Z'); X.register(); Y.register(); Z.register(); await sleep(120)
-  X.send({ type: 'ask', question: 'q', peer: 'Y' }); await sleep(100)
-  X.send({ type: 'ask', question: 'q', peer: 'Z' }); await sleep(150)   // X<->Y braked, X<->Z live
-  X.close(); await sleep(150)                                          // X drops → loses its activeRoom
-  X = mkClient(port, 'X'); X.register(); await sleep(150)              // X reconnects (fresh session object, no activeRoom)
-  Y.clear(); Z.clear(); X.send({ type: 'msg', text: 'after-reconnect', id: 5 }); await sleep(150)
+  const p13 = await findFreePort(port + 65), c13 = await findFreePort(p13 + 1)
+  const d13 = startRoomDaemon({ port: p13, controlPort: c13, notifyPort: 0, version: 'test13', idleMs: 9e8, tickMs: 9e8, stallMs: 9e8 })
+  await sleep(100)
+  let X = mkClient(p13, 'X'); const Y = mkClient(p13, 'Y'), Z = mkClient(p13, 'Z'); X.register(); Y.register(); Z.register(); await sleep(120)
+  X.send({ type: 'ask', question: 'q', peer: 'Y' }); await sleep(80)
+  X.send({ type: 'ask', question: 'q', peer: 'Z' })                    // X<->Y braked, X<->Z live
+  const oneLive = (s) => { const y = roomBy(s, 'X', 'Y'), z = roomBy(s, 'X', 'Z'); return y && z && z.state === 'Running' && y.state === 'Paused' }
+  await waitUntil(c13, oneLive)
+  X.close()
+  await waitUntil(c13, (s) => !(s.sessions || []).some((se) => se.id === 'X'))   // close fully processed BEFORE reconnect (no register-vs-close race)
+  X = mkClient(p13, 'X'); X.register()                                // reconnect: fresh session object, no activeRoom
+  await waitUntil(c13, oneLive)                                       // settled back into the one-live-room state
+  Y.clear(); Z.clear(); X.send({ type: 'msg', text: 'after-reconnect', id: 5 }); await sleep(120)
   check('13a reconnected reply went to the LIVE room (Z), not the braked one (Y)', Z.has('deliver', 'after-reconnect') && !Y.has('deliver', 'after-reconnect'))
+  d13.stop()
 
   // 14 — #3b: a summoned adversary is excluded from the catch-up expectation (no 2/3 hang)
   console.log('\n[14] catch-up excludes the adversary')
@@ -263,8 +277,39 @@ async function main() {
   const ssDisplay = (pl?.peers || []).find((p) => p.id === 'SS')?.display || ''   // SS (from [16]) has repoPath /tmp/repo-SS but no transcript file there
   check('17b entry with NO transcript omits the age token (no crash)', !!ssDisplay && !/old|just started|idle|active \d/.test(ssDisplay), ssDisplay)
 
+  // 18 — N≥3 turn-budget backstop: arms, fires, and grants a fresh window on resume (the slow-loop
+  // terminator #13 leans on; stormGuard [15] is the fast-flood one). Regression for the bug where an
+  // AUTO-ARMED budget (daemon cap off) wedged the room unresumably at the cap — doResume/steer only
+  // extended when the daemon-level cap was set, so a default 3-party room re-paused on the next turn.
+  console.log('\n[18] N≥3 turn-budget arms + fires + resumable')
+  const TB = mkClient(port, 'TB'), TC = mkClient(port, 'TC'); TB.register(); TC.register(); await sleep(100)
+  TB.send({ type: 'ask', question: 'q', peer: 'TC' }); await sleep(120)
+  st = await status(controlPort); const tbId = roomBy(st, 'TB', 'TC').roomId
+  TB.send({ type: 'summon_to_room', brief: 'b' }); await sleep(120)   // auto-accepts (default)
+  const TP = mkClient(port, 'Pierre18'); TP.register({ summonedBy: 'TB', room: tbId }); await sleep(150)
+  st = await status(controlPort); const tbRoom = roomBy(st, 'TB', 'TC')
+  check('18a going 3-party auto-armed a turn budget (cap>0, budget=20)', tbRoom && tbRoom.members.length === 3 && tbRoom.turnCap > 0 && tbRoom.turnBudget === 20, tbRoom && `cap=${tbRoom.turnCap} budget=${tbRoom.turnBudget} n=${tbRoom.members.length}`)
+
+  // (b)+(c) on a DEDICATED daemon with the daemon cap OFF (the bug condition), via a restored room one
+  // turn short of a small cap — so we hit it without tripping the rate-based stormGuard.
+  const p3 = await findFreePort(port + 80), c3 = await findFreePort(p3 + 1)
+  ensureRoom('tbudget', 'z1', 'z2')   // restored pairings don't create the dir; appendThread needs it
+  savePairings([{ roomId: 'tbudget', members: ['z1', 'z2', 'z3'], seq: 7, turn: 2, turnCap: 3, autoCatchup: true, state: 'Running', pauseReason: null }])
+  const d3 = startRoomDaemon({ port: p3, controlPort: c3, notifyPort: 0, version: 'test3', idleMs: 9e8, tickMs: 9e8 })
+  await sleep(150)
+  const z1 = mkClient(p3, 'z1'), z2 = mkClient(p3, 'z2'), z3 = mkClient(p3, 'z3'); z1.register(); z2.register(); z3.register(); await sleep(150)
+  z1.send({ type: 'msg', text: 'to-the-cap', id: 1 }); await sleep(150)   // turn 2 -> 3 == cap -> pause turnCap
+  let zst = await status(c3); let zr = (zst.pairings || []).find((p) => p.roomId === 'tbudget')
+  check('18b reaching the budget paused the room (turnCap)', zr && zr.state === 'Paused' && zr.pauseReason === 'turnCap', zr && `${zr.state}/${zr.pauseReason} ${zr.turn}/${zr.turnCap}`)
+  await control(c3, 'resume', { roomId: 'tbudget' }); await sleep(120)
+  z2.send({ type: 'msg', text: 'after-resume', id: 2 }); await sleep(150)   // a fresh window must absorb this without re-wedging
+  zst = await status(c3); zr = (zst.pairings || []).find((p) => p.roomId === 'tbudget')
+  check('18c resume granted a fresh window (not re-wedged at the cap)', zr && zr.state === 'Running', zr && `${zr.state}/${zr.pauseReason} ${zr.turn}/${zr.turnCap}`)
+  check('18d the post-resume turn reached the peers', z1.has('deliver', 'after-resume') && z3.has('deliver', 'after-resume'))
+  d3.stop()
+
   console.log(`\n${'='.repeat(40)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(40)}`)
-  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW].forEach((c) => { try { c.close() } catch {} })
+  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3].forEach((c) => { try { c.close() } catch {} })
   if (advRoom) try { removeRoomDir(advRoom) } catch {}   // private summons use a Date.now()-based id → clean it so runs don't accumulate
   try { rmSync(ageRepo, { recursive: true, force: true }) } catch {}
   await sleep(80)
