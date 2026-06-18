@@ -260,7 +260,7 @@ function connect() {
   sock.on('connect', () => {
     connected = true
     log(`connected to daemon ${HOST}:${PORT}`)
-    sock.write(JSON.stringify({ type: 'register', sessionId: SESSION_ID, repo: REPO, label: LABEL, room: ROOM || undefined, summonedBy: SUMMONED_BY || undefined, repoPath: REPO_PATH || undefined, web: process.env.ALLOW_WEB ? true : undefined, notifyPort: NOTIFY || undefined }) + '\n')
+    sock.write(JSON.stringify({ type: 'register', sessionId: SESSION_ID, repo: REPO, label: LABEL, room: ROOM || undefined, summonedBy: SUMMONED_BY || undefined, repoPath: REPO_PATH || undefined, web: process.env.ALLOW_WEB ? true : undefined, adversary: process.env.MRC_ADVERSARY ? true : undefined, notifyPort: NOTIFY || undefined }) + '\n')   // `adversary` = IDENTITY bit (MRC_ADVERSARY), distinct from the cage env: forwarded on every adversary launch incl. --open-adversary-unsafe, so the daemon (room-daemon.js:680 `summonedBy || adversary`) re-classifies a resumed adversary the firewall already caged — closes the #32 split-brain.
     while (outQ.length) sock.write(outQ.shift())
   })
   sock.on('data', (d) => {

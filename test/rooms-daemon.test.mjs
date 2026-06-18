@@ -420,6 +420,22 @@ async function main() {
   W1.send({ type: 'invite', peer: 'wadv', id: 101 }); await sleep(120)
   check('23c a non-summonedBy re-register un-flags the UUID → invite_peer accepts', W1.frames.some((f) => f.type === 'ack' && f.id === 101 && f.status === 'invited'), JSON.stringify(W1.frames.filter((f) => f.id === 101)))
 
+  // 24 — #32 TRUST half: a re-sandboxed adversary RESUME carries the `adversary` IDENTITY bit (MRC_ADVERSARY)
+  // but NO summonedBy (the resume path drops --summoned-by). Without the `|| f.adversary` clause at :680 it
+  // hits the else → DECLASSIFIED while still firewall-caged = the split-brain found live. The identity bit
+  // must re-flag it so invite_peer refuses it, even with no summonedBy and no onAdversaryUp.
+  console.log('\n[24] adversary IDENTITY bit (resume: adversary, no summonedBy) re-flags → invite_peer refused')
+  const Y1 = mkClient(port, 'Y1'), Y2 = mkClient(port, 'Y2'); Y1.register(); Y2.register(); await sleep(100)
+  const yadv = mkClient(port, 'yadv'); yadv.register({ adversary: true }); await sleep(120)   // resumed adversary: identity bit set, summonedBy absent
+  Y1.send({ type: 'ask', question: 'q', peer: 'Y2' }); await sleep(120)
+  Y1.send({ type: 'invite', peer: 'yadv', id: 110 }); await sleep(120)
+  check('24a identity-bit-only register is flagged → invite_peer refused', Y1.frames.some((f) => f.type === 'ack' && f.id === 110 && f.status === 'invite-adversary'), JSON.stringify(Y1.frames.filter((f) => f.id === 110)))
+  // 24b — neither signal (a normal session, AND the forward-compat pre-rebuild case where no `adversary`
+  // field is sent) → un-flagged → invite accepts.
+  yadv.register({}); await sleep(120)
+  Y1.send({ type: 'invite', peer: 'yadv', id: 111 }); await sleep(120)
+  check('24b neither signal → un-flagged → invite accepts (forward-compat)', Y1.frames.some((f) => f.type === 'ack' && f.id === 111 && f.status === 'invited'), JSON.stringify(Y1.frames.filter((f) => f.id === 111)))
+
   console.log(`\n${'='.repeat(40)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(40)}`)
   d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3, I1, I2, I3, I4, I5, L1, L2, L3, L4, m1, m2, m3, s1, s2, advX, W1, W2, wadv].forEach((c) => { try { c.close() } catch {} })
   if (advRoom) try { removeRoomDir(advRoom) } catch {}   // private summons use a Date.now()-based id → clean it so runs don't accumulate

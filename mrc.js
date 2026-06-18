@@ -17,7 +17,9 @@ import { processSandboxignores } from './src/sandboxignore.js'
 import { findFreePort } from './src/ports.js'
 import { startClipboardProxy } from './src/proxies/clipboard-proxy.js'
 import { startNotifyProxy } from './src/proxies/notify-proxy.js'
-import { listSessions, nameSession, resolve as resolveSession, loadNames, resolveSessionId } from './src/sessions/manager.js'
+import { listSessions, nameSession, resolve as resolveSession, loadNames, loadMeta, saveMeta, getSessions, resolveSessionId } from './src/sessions/manager.js'
+import { saveSessionRecord, isAdversarySession, loadSessionRecord } from './src/session-record.js'
+import { createInterface } from 'node:readline'
 import net from 'node:net'
 import { summarize, generateName } from './src/sessions/api.js'
 import { pick, ensureNamesMigrated } from './src/sessions/picker.js'
@@ -40,9 +42,26 @@ for (const arg of process.argv.slice(2)) {
 }
 const { flags: repoFlags, envs: repoEnvs } = readMrcrc(resolve(repoHint, '.mrcrc'))
 
+// --- Belt 0 (security): <repo>/.mrcrc is the bind-mounted, sandbox-WRITABLE workspace. A contained
+// session could write egress/containment flags or envs there to escalate its OWN next launch (the
+// firewall opens 443 on --web / ALLOW_WEB=1; MRC_ADVERSARY_FW + MRC_SUMMONED_BY drive the cage, and
+// repo envs are passed straight to `docker run -e` below). Honor those ONLY from argv or the host-only
+// ~/.mrcrc — never the repo file. Stripped (not fatal) with a notice, so a stray entry is ignored
+// rather than silently obeyed.
+const REPO_FORBIDDEN_FLAGS = new Set(['-w', '--web', '--summoned-by', '--open-adversary-unsafe'])
+const REPO_FORBIDDEN_ENVS = new Set(['ALLOW_WEB', 'MRC_ADVERSARY_FW', 'MRC_SUMMONED_BY'])
+const repoFlagsSafe = repoFlags.filter((f) => {
+  if (REPO_FORBIDDEN_FLAGS.has(f.split(/\s+/)[0])) { console.error(`  ⚠ Ignoring flag "${f}" from <repo>/.mrcrc — egress/containment flags only come from the CLI or ~/.mrcrc.`); return false }
+  return true
+})
+const repoEnvsSafe = repoEnvs.filter((e) => {
+  if (REPO_FORBIDDEN_ENVS.has(e.split('=')[0])) { console.error(`  ⚠ Ignoring env "${e.split('=')[0]}" from <repo>/.mrcrc — egress/containment envs only come from the CLI or ~/.mrcrc.`); return false }
+  return true
+})
+
 // Merge: config flags first, then CLI args (CLI overrides)
-const configEnvs = [...globalEnvs, ...repoEnvs]
-const allArgs = [...globalFlags, ...repoFlags, ...process.argv.slice(2)]
+const configEnvs = [...globalEnvs, ...repoEnvsSafe]
+const allArgs = [...globalFlags, ...repoFlagsSafe, ...process.argv.slice(2)]
 const { config, remaining, claudeArgs, help } = parseArgs(allArgs)
 
 if (help) {
@@ -141,17 +160,38 @@ const openaiKey = process.env.OPENAI_API_KEY || ''
 dbg(`Naming key: ${apiKey ? `set (${apiKey.length} chars)${legacyKeyVar ? ' [legacy ANTHROPIC_API_KEY]' : ''}` : 'NOT SET'}`)
 dbg(`OpenAI key: ${openaiKey ? `set (${openaiKey.length} chars)` : 'NOT SET'}`)
 
+// --- Adversary-aware session selection (#25) ---
+// The picker LABELS adversary sessions; these gate actually OPENING one. Reconnecting to a summoned
+// adversary (Pierre) is a legitimate, deliberate act (crash / restart / keep-context) — but never an
+// accident, so we confirm. A non-TTY caller can't confirm, so it fails safe (NO).
+async function askYesNo(q) {
+  if (!process.stdin.isTTY) return false
+  const rl = createInterface({ input: process.stdin, output: process.stderr })
+  try { return /^y(es)?$/i.test((await new Promise((r) => rl.question(`${q} [y/N] `, r))).trim()) }
+  finally { rl.close() }
+}
+async function confirmIfAdversary(mrcDir, uuid) {
+  if (!isAdversarySession(uuid)) return true
+  const rec = loadSessionRecord(uuid)
+  const issuer = loadNames(mrcDir)[rec.summonedBy] || (rec.summonedBy || '').slice(0, 8) || 'a prior session'
+  const self = loadNames(mrcDir)[uuid] || 'this session'
+  return askYesNo(`  ⚔  "${self}" is a RED-TEAM (adversary) session you summoned for "${issuer}". Reopen it?`)
+}
+// Apply a picker result to config: 'NEW' → fresh; a uuid → resume (confirming first if it's an
+// adversary). Returns false if the human declined (caller should exit).
+async function applyPickResult(result, mrcDir) {
+  if (result === 'NEW') { config.newSession = true; return true }
+  config.resumeSession = result   // a picked adversary is already confirmed inside the picker's TUI (confirmIfAdversary still guards the non-picker `sessions resume` path)
+  return true
+}
+
 // --- Subcommand: mrc pick ---
 if (remaining[0] === 'pick') {
   const repoPath = resolve(remaining[1] || '.')
   const result = await pick(resolve(repoPath, '.mrc'))
   if (!result) process.exit(0)
   config.allowWeb = true
-  if (result === 'NEW') {
-    config.newSession = true
-  } else {
-    config.resumeSession = result
-  }
+  if (!(await applyPickResult(result, resolve(repoPath, '.mrc')))) process.exit(0)
   remaining.length = 0
 }
 
@@ -181,6 +221,7 @@ if (remaining[0] === 'sessions') {
       if (!query) { console.error('Usage: mrc sessions resume <name-or-#> [path]'); process.exit(1) }
       const uuid = resolveSession(resolve(repoPath, '.mrc'), query)
       if (!uuid) { console.error(`Session not found: ${query}`); process.exit(1) }
+      if (!(await confirmIfAdversary(resolve(repoPath, '.mrc'), uuid))) process.exit(0)   // adversary resume is deliberate on every path, not just the picker
       config.resumeSession = uuid
       remaining.length = 0
       break
@@ -190,8 +231,7 @@ if (remaining[0] === 'sessions') {
       const result = await pick(resolve(repoPath, '.mrc'))
       if (!result) process.exit(0)
       config.allowWeb = true
-      if (result === 'NEW') config.newSession = true
-      else config.resumeSession = result
+      if (!(await applyPickResult(result, resolve(repoPath, '.mrc')))) process.exit(0)
       remaining.length = 0
       break
     }
@@ -297,6 +337,47 @@ if (config.room && !roomsEligible) {
 }
 const roomsActive = roomsEligible && (config.room || config.rooms)
 
+// --- Adversary auto-resume guard (#25) + containment re-apply (#32) ---
+// Runs BEFORE the volume claim (below) so a resumed adversary reattaches a Pierre slot + the cage,
+// not a normal volume; and before the daemon boot/build so a declined picker exits cheaply.
+//
+// (a) Silent guard: a bare `mrc .` auto-continues the NEWEST session (by file mtime — getSessions is
+//     mtime-primary to track what `claude --continue` actually resumes). If that's a summoned
+//     adversary, never resume it silently — interactive surfaces the picker (reconnect is deliberate),
+//     non-interactive starts fresh. RESIDUAL (documented, accepted with the lightweight choice): the
+//     host's "newest" can still diverge from the container's own --continue oracle; on divergence an
+//     adversary could AUTO-resume — but only onto the NORMAL sandbox, never a web escape (the cage in
+//     (b) fires only on an EXPLICIT resume). The airtight closure (transcript isolation) was dropped.
+if (config.agent === 'claude' && !config.newSession && !config.resumeSession) {
+  const md = resolve(repoPath, '.mrc')
+  const newest = getSessions(md)[0]
+  if (newest && isAdversarySession(newest.uuid)) {
+    if (process.stdin.isTTY && !config.json && !config.daemon) {
+      console.error('  ⚔  Your most recent session here is a red-team (adversary) session — not auto-continuing it.')
+      const result = await pick(md)
+      if (!result) process.exit(0)
+      if (!(await applyPickResult(result, md))) process.exit(0)
+    } else {
+      console.error('  ⚔  Most recent session here is a red-team (adversary) session — starting fresh instead of auto-resuming it. Use `mrc pick` to reconnect to it.')
+      config.newSession = true
+    }
+  }
+}
+// (b) #32 re-apply: an EXPLICIT resume of a summoned adversary (the resume path carries no
+//     --summoned-by) re-applies the cage + reattaches a Pierre volume, from the durable host-only
+//     record. --open-adversary-unsafe opts out (loud; belt 0 keeps it argv/~/.mrcrc-only). Cage =
+//     belt 1 (allowWeb=false) + MRC_ADVERSARY_FW, set in the env-flags block. DECLASSIFICATION caveat:
+//     deleting ~/.local/share/mrc/session-meta/ drops the adversary flag → that resume comes back uncaged.
+if (!config.summonedBy && config.resumeSession && isAdversarySession(config.resumeSession)) {
+  config.resumeIsAdversary = true
+  if (config.openAdversaryUnsafe) {
+    console.error('  ⚠  --open-adversary-unsafe: reopening this adversary session WITHOUT the cage (full egress). Its Pierre volume is reattached.')
+  } else {
+    config.cageAdversary = true
+    console.error('  ⚔  Re-sandboxing this adversary session (hardened firewall, no web). Pass --open-adversary-unsafe to open it normally.')
+  }
+}
+
 // Boot the room daemon BEFORE the (slow) image build so its "ready" log stays visible during the
 // build instead of flashing by right before the container clears the screen. Ports are allocated
 // once here and reused by the proxies below.
@@ -329,14 +410,22 @@ volumes.push(...processSandboxignores(repoPath))
 // memory); regulars keep the ordinal `-N` model (slot 1 = the base `mrc-config-<hash>`). Log into a slot once,
 // reuse it free thereafter (its own independent grant, so it can never orphan another session).
 let volName, instanceId = 0, adversarySlot = 0
-if (config.summonedBy) {
-  adversarySlot = nextAdversarySlot(repoPath)
+if (config.summonedBy || config.resumeIsAdversary) {
+  // RACE-FREE O_EXCL claim for BOTH a fresh summon AND an adversary resume. Login-reuse: a resume PREFERS
+  // its OWN stored Pierre slot, but claimed through the SAME race-free gate (used-check + O_EXCL) — so a
+  // stored slot that's mounted-live or claimed by a sibling just falls through to lowest-free. No naive
+  // reattach (that bypass collided concurrent resumes onto one ~/.claude → the #9 silent-logout); no #9.
+  const preferredSlot = (config.resumeIsAdversary && config.resumeSession)
+    ? (loadSessionRecord(config.resumeSession).slot || 0) : 0
+  adversarySlot = nextAdversarySlot(repoPath, preferredSlot)
   if (!adversarySlot) {
-    console.error('  ✗ Couldn\'t safely claim a Pierre slot (docker unreachable, or the slot dir is busy). Nothing launched — try the summon again in a moment.')
+    console.error('  ✗ Couldn\'t safely claim a Pierre slot (docker unreachable, or the slot dir is busy). Nothing launched — try again in a moment.')
     process.exit(1)
   }
   volName = `${volumeName(repoPath, 1)}-pierre-${adversarySlot}`
-  console.log(`  ⓘ Summoned adversary on Pierre slot ${adversarySlot} — reuses this slot's login if you've used it before, else a one-time login makes it permanent (no clone; it can't log you out).`)
+  console.log(config.resumeIsAdversary
+    ? `  ⓘ Resuming adversary on Pierre slot ${adversarySlot}${adversarySlot === preferredSlot ? ' (its own slot)' : ''} — reuses this slot's login if it's been used, else a one-time login. Transcript rides the shared store.`
+    : `  ⓘ Summoned adversary on Pierre slot ${adversarySlot} — reuses this slot's login if you've used it before, else a one-time login makes it permanent (no clone; it can't log you out).`)
 } else {
   const claim = nextInstanceSlot(repoPath)
   if (!claim) {
@@ -371,8 +460,13 @@ const envFlags = []
 // is host-only (Haiku naming/summaries in src/sessions/api.js); it never crosses into the sandbox.
 if (openaiKey) envFlags.push('-e', 'OPENAI_API_KEY')
 if (config.agent !== 'claude') envFlags.push('-e', `MRC_AGENT=${config.agent}`)
+// Belt 1 + (d): a summoned OR re-sandboxed-on-resume adversary NEVER gets web egress — overrides a
+// --web from argv or ~/.mrcrc (a summon has no legit web use; belt 0 already blocks repo .mrcrc). The
+// --open-adversary-unsafe path leaves cageAdversary unset, so it (and only it) keeps web.
+if (config.summonedBy || config.cageAdversary) config.allowWeb = false
 if (config.allowWeb) envFlags.push('-e', 'ALLOW_WEB=1')
-if (config.summonedBy) envFlags.push('-e', 'MRC_ADVERSARY_FW=1')   // summoned adversary → hardened firewall profile (minimal allowlist + DNS-pinned, no runtime DNS)
+if (config.summonedBy || config.cageAdversary) envFlags.push('-e', 'MRC_ADVERSARY_FW=1')   // CAGE bit → firewall (minimal allowlist + DNS-pinned). Summon OR re-sandboxed resume; NOT --open-adversary-unsafe.
+if (config.summonedBy || config.resumeIsAdversary) envFlags.push('-e', 'MRC_ADVERSARY=1')   // IDENTITY bit → daemon classification. Set whenever THIS launch is an adversary, INCLUDING --open-adversary-unsafe (uncaged but still consent-protected). channel-server forwards it to the register; DECOUPLED from the cage bit so unsafe-open stays daemon-classified.
 if (config.resumeSession) envFlags.push('-e', `RESUME_SESSION=${config.resumeSession}`)
 if (config.newSession) envFlags.push('-e', 'NEW_SESSION=1')
 envFlags.push('-e', `CLAUDE_CODE_MAX_OUTPUT_TOKENS=${process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '128000'}`)
@@ -433,10 +527,34 @@ if (roomsActive) {
   // pinned via `claude --session-id` in the entrypoint when RESUME_FLAG is empty.
   const sessionId = resolveSessionId(resolve(repoPath, '.mrc'), { resumeSession: config.resumeSession, newSession: config.newSession })
   roomSessionId = sessionId   // hoisted so the name-watcher (below, outside this block) targets this session's own .jsonl
-  // Human-readable label (alias) for `mrc rooms` + ask_peer matching: the session's name if it has
-  // one, else the repo basename.
+  // Per-session metadata record (single source of truth, keyed by the conversation UUID). Written here
+  // because a rooms session has a PINNED uuid at launch (entrypoint --session-id); created once, merged
+  // on every launch. The name is filled in later by the watcher / post-exit namer.
+  const mrcDirRec = resolve(repoPath, '.mrc')
+  try {
+    const existing = loadMeta(mrcDirRec, sessionId)
+    saveMeta(mrcDirRec, sessionId, { repoName: basename(repoPath), repoPath, createdAt: existing.createdAt || new Date().toISOString() })
+  } catch {}
+  // Host-only containment record (tamper-proof; the single source of truth for containment). Written for
+  // EVERY session, every launch — `adversary:false` for a normal session is the KEYSTONE that makes
+  // ABSENCE anomalous, which is what lets the resume guard fail CLOSED on a missing record. The adversary
+  // flag is NEVER downgraded on resume (a resume carries no --summoned-by): it's true if THIS launch is a
+  // summon, a re-opened adversary (resumeIsAdversary, incl. --open-adversary-unsafe), OR the existing
+  // record already says so. Stores repoPath (for the transcript-coupled prune) + the Pierre slot (login-reuse).
+  try {
+    const existingSec = loadSessionRecord(sessionId)
+    const isAdv = !!config.summonedBy || !!config.resumeIsAdversary || !!existingSec.adversary
+    saveSessionRecord(sessionId, {
+      adversary: isAdv,
+      summonedBy: config.summonedBy || existingSec.summonedBy || null,
+      repoPath,
+      ...(isAdv && adversarySlot ? { slot: adversarySlot } : {}),
+    })
+  } catch {}
+  // Human-readable label (alias) for `mrc rooms` + ask_peer matching: the record's name (source of
+  // truth), then the legacy session-names projection (transitional fallback), else the repo basename.
   let label = basename(repoPath)
-  try { const nm = loadNames(resolve(repoPath, '.mrc'))[sessionId]; if (nm) label = nm } catch {}
+  try { const nm = loadMeta(mrcDirRec, sessionId).name || loadNames(mrcDirRec)[sessionId]; if (nm) label = nm } catch {}
   if (config.newSessionName) label = config.newSessionName   // an explicit --new <name> shows live in list_peers from register, not only on the next resume
   envFlags.push(...roomSessionEnv({ daemonPort: daemon.port, sessionId, repoName: basename(repoPath), repoPath, roomName: config.room, label, summonedBy: config.summonedBy }))
   volumes.push('-v', `${roomsRoot()}:/rooms:ro`)   // read-only: the container only READS briefs/thread/consensus; every write goes through the daemon (host-side), so rw was needless privilege that let any sandbox forge another room's audit log or swap a consented brief

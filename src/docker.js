@@ -86,7 +86,7 @@ const slotsDir = (sub, repoPath) => join(homedir(), '.local', 'share', 'mrc', su
 // (ENOSPC/EROFS/EACCES) is a lost signal → null (fail closed). A claim bridges the window until a just-launched
 // container is visible to the next claimer's oracle, then is GC'd when its launcher process dies — so a frozen
 // launcher's claim survives the freeze (no wall-clock lease to expire and re-open the slot under it).
-function claimLowestFree(dir, used) {
+function claimLowestFree(dir, used, preferredStart = 0) {
   try { mkdirSync(dir, { recursive: true }) } catch {}
   const now = Date.now()
   try {
@@ -113,15 +113,31 @@ function claimLowestFree(dir, used) {
   // folds it into "others present" so two simultaneous launches don't both --continue the shared transcript.
   // Over-counting the just-died case is the SAFE direction (forces a fresh conversation, not a shared one).
   let sawClaim = false
-  for (let n = 1; n <= ADV_MAX_SLOTS; n++) {
-    if (used.has(n)) continue
-    // The claim BODY is our PID + a trailing-newline SENTINEL (for the PID-liveness GC). The O_EXCL create is
-    // atomic (the slot is won at open); the body lands a syscall later — a concurrent GC reading that gap sees an
-    // incomplete body (no sentinel) → KEEPS it, so the open→write gap can't orphan. (We DON'T temp-file-then-rename
-    // to close the gap: rename clobbers, which would forfeit the O_EXCL atomic claim. Keep O_EXCL; make the gap safe.)
-    try { writeFileSync(join(dir, String(n)), `${process.pid}\n`, { flag: 'wx' }); return { slot: n, sawClaim } }
-    catch (e) { if (e && e.code === 'EEXIST') { sawClaim = true; continue }; return null }
+  // Attempt ONE slot through the FULL gate: skip if a live mount holds it (`used`), else win it via the
+  // atomic O_EXCL create. The claim BODY is our PID + a trailing-newline SENTINEL (for the PID-liveness GC):
+  // the O_EXCL create is atomic (the slot is won at open); the body lands a syscall later — a concurrent GC
+  // reading that gap sees an incomplete body (no sentinel) → KEEPS it, so the open→write gap can't orphan.
+  // Returns the slot, null (taken by a mount or a sibling's O_EXCL → walk on), or THROWS on any other write
+  // error (ENOSPC/EROFS/EACCES) → the caller fails closed.
+  const attempt = (n) => {
+    if (used.has(n)) return null
+    try { writeFileSync(join(dir, String(n)), `${process.pid}\n`, { flag: 'wx' }); return n }
+    catch (e) { if (e && e.code === 'EEXIST') { sawClaim = true; return null }; throw e }
   }
+  try {
+    // Login-reuse: try the caller's PREFERRED slot first (a resume's stored Pierre slot) through the SAME
+    // gate — so a preferred slot that's mounted-live (`used`) or claimed by a sibling (EEXIST) just falls
+    // through to the lowest-free walk. No file-exists shortcut, no #9 collision: two concurrent resumes both
+    // preferring slot S → O_EXCL hands S to exactly one, the other walks on.
+    if (preferredStart > 0 && preferredStart <= ADV_MAX_SLOTS) {
+      const got = attempt(preferredStart)
+      if (got) return { slot: got, sawClaim }
+    }
+    for (let n = 1; n <= ADV_MAX_SLOTS; n++) {
+      const got = attempt(n)
+      if (got) return { slot: got, sawClaim }
+    }
+  } catch { return null }   // non-EEXIST write error → lost signal → fail closed
   return null   // exhausted the (absurd) cap → fail closed rather than spin
 }
 
@@ -130,7 +146,7 @@ function claimLowestFree(dir, used) {
  *  The summoner is structurally safe regardless (disjoint volume names); this just keeps two concurrent Pierres
  *  off one slot (which would re-create the shared-refreshToken orphan between them). High-water-mark login: log
  *  into a slot once, then every future Pierre on it is free + immortal (its own independent grant). */
-export function nextAdversarySlot(repoPath) {
+export function nextAdversarySlot(repoPath, preferredSlot = 0) {
   const used = new Set()
   try {
     const out = execFileSync('docker', [
@@ -139,7 +155,7 @@ export function nextAdversarySlot(repoPath) {
     ], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim()
     for (const s of (out ? out.split('\n') : [])) { const n = parseInt(s, 10); if (n > 0) used.add(n) }
   } catch { return null }   // lost liveness oracle (docker down/timeout) → fail closed
-  const r = claimLowestFree(slotsDir('pierre-slots', repoPath), used)
+  const r = claimLowestFree(slotsDir('pierre-slots', repoPath), used, preferredSlot)   // preferredSlot: a resume reuses its own stored slot (login reuse) when free, else lowest — same race-free gate
   return r ? r.slot : null   // adversaries always --new, so sawClaim/others is irrelevant here — just the slot
 }
 

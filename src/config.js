@@ -109,6 +109,7 @@ export function parseArgs(argv) {
     room: '',
     rooms: true,   // cross-session negotiation rooms are ON by default (disable with --no-rooms)
     summonedBy: '', // internal: stamped by the daemon's summon launcher so a spawned adversary auto-pairs with its summoner
+    openAdversaryUnsafe: false, // --open-adversary-unsafe: reopen a summoned adversary UNCAGED (full egress). Loud + deliberate; belt 0 keeps it argv/~/.mrcrc-only (never repo .mrcrc).
   }
   const remaining = []
   const claudeArgs = []
@@ -150,6 +151,7 @@ export function parseArgs(argv) {
       case '--summoned-by':   // internal (daemon-set): pair this session with the summoner once it registers
         if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.summonedBy = argv[++i]
         break
+      case '--open-adversary-unsafe': config.openAdversaryUnsafe = true; break   // reopen a summoned adversary WITHOUT its cage (full egress) — deliberate; belt 0 blocks it from repo .mrcrc
       default: remaining.push(arg)
     }
   }

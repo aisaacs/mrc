@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline'
 import { getSessions, loadNames, getSummaryPreview } from './manager.js'
+import { loadSessionRecord } from '../session-record.js'
 import { generateName } from './api.js'
 
 const ESC = '\x1b'
@@ -68,11 +69,17 @@ export async function pick(mrcDir) {
   const rows = [{ action: 'NEW', num: '', ts: '', name: 'New session', preview: '' }]
   for (let i = 0; i < sessions.length; i++) {
     const { uuid, lastUpdated, preview } = sessions[i]
+    const rec = loadSessionRecord(uuid)
+    const issuer = rec.summonedBy ? (names[rec.summonedBy] || rec.summonedBy.slice(0, 8)) : ''
+    const base = names[uuid] || (rec.summonedBy ? 'adversary' : '(unnamed)')
     rows.push({
       action: uuid,
       num: String(i + 1),
       ts: formatTs(lastUpdated),
-      name: names[uuid] || '(unnamed)',
+      name: rec.summonedBy ? `⚔ ${base} — red-team for ${issuer}` : base,
+      adversary: !!rec.summonedBy,   // selecting this row triggers an inline confirm (it reopens re-sandboxed)
+      selfName: base,
+      issuer,
       preview: getSummaryPreview(mrcDir, uuid) || preview,
     })
   }
@@ -91,10 +98,21 @@ export async function pick(mrcDir) {
   const write = s => ttyOut.write(s)
 
   let selected = 0
+  let confirming = false   // when an adversary row is picked: confirm INLINE in the managed TUI (on the
+                           // rendered screen, single keypress) — not a lone prompt after the screen-clear,
+                           // which scrolled off-screen with the cursor hidden.
   const cols = process.stdout.columns || 120
 
   function render() {
     write(CLEAR_SCREEN)
+    if (confirming) {
+      const row = rows[selected]
+      write(`\n  ${BOLD}⚔  Reopen a RED-TEAM (adversary) session?${RESET}\n\n`)
+      write(`  "${row.selfName}" — the adversary you summoned for "${row.issuer}".\n`)
+      write(`  ${DIM}It reopens re-sandboxed (hardened firewall, no web) by default.${RESET}\n\n`)
+      write(`  ${BOLD}y${RESET} reopen it   ·   ${BOLD}any other key${RESET} go back\n`)
+      return
+    }
     write(`  ${BOLD}Use the Schwartz to pick a session${RESET}\n`)
     write(`  ${DIM}↑/↓ navigate · Enter select · q quit${RESET}\n`)
     write(`  ${'━'.repeat(Math.min(cols - 4, 70))}\n\n`)
@@ -155,6 +173,11 @@ export async function pick(mrcDir) {
 
     input.on('data', key => {
       const k = key.toString()
+      if (confirming) {   // adversary confirm: single keypress, rendered in the managed TUI (never off-screen)
+        if (k === 'y' || k === 'Y') finish(rows[selected].action)
+        else { confirming = false; render() }   // n / Esc / any other key → back to the list
+        return
+      }
       if (k === '\x1b[A' || k === 'k') { // up
         selected = Math.max(0, selected - 1)
         render()
@@ -162,7 +185,8 @@ export async function pick(mrcDir) {
         selected = Math.min(rows.length - 1, selected + 1)
         render()
       } else if (k === '\r' || k === '\n' || k === '\x1b[C') { // enter / right
-        finish(rows[selected].action)
+        if (rows[selected].adversary) { confirming = true; render() }   // confirm before opening an adversary
+        else finish(rows[selected].action)
       } else if (k === 'q' || k === '\x1b' || k === '\x03') { // quit / Ctrl-C
         finish(null)
       }

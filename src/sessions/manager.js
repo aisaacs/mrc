@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, readdirSync, existsSync, mkdirSync, renameSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
@@ -29,11 +29,21 @@ export function getSessions(mrcDir) {
           if (content.length > 60) preview += '...'
         }
       }
-      if (lastTs) sessions.push({ uuid, lastUpdated: lastTs, preview })
-    } catch {}
+    } catch { continue }
+
+    // Recency = FILE mtime, not the last in-transcript `timestamp`. Metadata lines (ai-title,
+    // agent-name, snapshots, mode, …) advance the file mtime WITHOUT carrying a timestamp, so the
+    // in-transcript ts runs stale relative to mtime by hours-to-days. `claude --continue` resumes by
+    // file recency, so getSessions must rank by mtime too — else the host's "newest" disagrees with
+    // what the container actually resumes (the #25 silent-guard divergence). max(mtime, ts) so a
+    // never-touched-since-write file still works; numeric key, never NaN (a NaN comparator is UB).
+    let mtimeMs = 0
+    try { mtimeMs = statSync(join(mrcDir, file)).mtimeMs } catch {}
+    const recencyMs = Math.max(mtimeMs, Date.parse(lastTs) || 0)
+    if (recencyMs > 0) sessions.push({ uuid, lastUpdated: new Date(recencyMs).toISOString(), recencyMs, preview })
   }
 
-  sessions.sort((a, b) => b.lastUpdated.localeCompare(a.lastUpdated))
+  sessions.sort((a, b) => b.recencyMs - a.recencyMs)
   return sessions
 }
 
@@ -59,6 +69,32 @@ export function saveNames(mrcDir, names) {
   const file = join(mrcDir, 'session-names')
   const content = Object.entries(names).map(([uuid, name]) => `${uuid}=${name}`).join('\n') + '\n'
   writeFileSync(file, content)
+}
+
+// --- Per-session metadata record (single source of truth, keyed by conversation UUID) ---
+// One atomic file per session at <mrcDir>/session-meta/<uuid>.json, generalizing the legacy
+// `session-names` map. One file per uuid (not one shared file), so concurrent writers can't
+// lose-update each other. NOTE: <mrcDir> is the repo bind mount — WRITABLE by the sandbox — so the
+// security-critical adversary/containment flag must NOT live here; it belongs in a host-only store.
+function metaDir(mrcDir) { return join(mrcDir, 'session-meta') }
+function metaPath(mrcDir, uuid) { return join(metaDir(mrcDir), `${uuid}.json`) }
+
+/** Load a session's metadata record, or {} if none/unreadable. */
+export function loadMeta(mrcDir, uuid) {
+  try { return JSON.parse(readFileSync(metaPath(mrcDir, uuid), 'utf8')) } catch { return {} }
+}
+
+/** Merge a patch into a session's record and persist it atomically — temp file + rename in the SAME
+ *  dir, so a torn or concurrent write can never leave a half-written record (last-writer-wins per
+ *  uuid; the uuid field is always authoritative, never overwritable by a stale patch). */
+export function saveMeta(mrcDir, uuid, patch) {
+  mkdirSync(metaDir(mrcDir), { recursive: true })
+  const merged = { ...loadMeta(mrcDir, uuid), ...patch, uuid }
+  const file = metaPath(mrcDir, uuid)
+  const tmp = `${file}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify(merged, null, 2) + '\n')
+  renameSync(tmp, file)
+  return merged
 }
 
 /** Resolve a name or list number to a UUID. Returns UUID or null. */
@@ -147,6 +183,7 @@ export function nameSession(mrcDir, name, target = '1') {
   }
   const names = loadNames(mrcDir)
   names[uuid] = name
-  saveNames(mrcDir, names)
+  saveNames(mrcDir, names)            // transitional projection (retired in Phase 2)
+  saveMeta(mrcDir, uuid, { name })     // record = source of truth
   console.log(`Named session ${uuid} → "${name}"`)
 }

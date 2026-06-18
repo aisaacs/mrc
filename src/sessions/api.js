@@ -1,6 +1,6 @@
 import { HAIKU_MODEL } from '../constants.js'
 import { extractTranscript } from './transcript.js'
-import { loadNames, saveNames } from './manager.js'
+import { loadNames, saveNames, saveMeta } from './manager.js'
 
 // Host-only key for the Haiku naming/summary calls. Renamed from ANTHROPIC_API_KEY so it never
 // collides with the key Claude Code auto-detects inside the sandbox; the legacy name still works
@@ -101,7 +101,8 @@ export async function generateName(mrcDir, uuid) {
   const fresh = loadNames(mrcDir)
   if (!fresh[uuid]) {
     fresh[uuid] = name
-    saveNames(mrcDir, fresh)
+    saveNames(mrcDir, fresh)                 // transitional projection (retired in Phase 2)
+    saveMeta(mrcDir, uuid, { name })          // record = source of truth
     process.stderr.write(`\x1b[1;36m  ✦ Session named → \x1b[1;33m${name}\x1b[0m\n`)
   }
 }
