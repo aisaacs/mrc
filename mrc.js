@@ -18,11 +18,11 @@ import { findFreePort } from './src/ports.js'
 import { startClipboardProxy } from './src/proxies/clipboard-proxy.js'
 import { startNotifyProxy } from './src/proxies/notify-proxy.js'
 import { listSessions, nameSession, resolve as resolveSession, loadNames, loadMeta, saveMeta, getSessions, resolveSessionId } from './src/sessions/manager.js'
-import { saveSessionRecord, isAdversarySession, loadSessionRecord } from './src/session-record.js'
+import { saveSessionRecord, isAdversarySession, loadSessionRecord, classifySession, pruneSessionRecords } from './src/session-record.js'
 import { createInterface } from 'node:readline'
 import net from 'node:net'
 import { summarize, generateName } from './src/sessions/api.js'
-import { pick, ensureNamesMigrated } from './src/sessions/picker.js'
+import { pick, ensureNamesMigrated, ensureSecurityRecordsMigrated } from './src/sessions/picker.js'
 import { detectToolMisses } from './src/sessions/transcript.js'
 import { resolveContextDir } from './src/context.js'
 
@@ -338,18 +338,35 @@ const roomsActive = roomsEligible && (config.room || config.rooms)
 //     host's "newest" can still diverge from the container's own --continue oracle; on divergence an
 //     adversary could AUTO-resume — but only onto the NORMAL sandbox, never a web escape (the cage in
 //     (b) fires only on an EXPLICIT resume). The airtight closure (transcript isolation) was dropped.
+pruneSessionRecords()   // host-only record dir grows one file per session; drop stale adversary:false records whose transcript is gone (NEVER an adversary; keep-on-ambiguity). Runs before this launch writes its own record, so it only touches PRIOR sessions.
 if (config.agent === 'claude' && !config.newSession && !config.resumeSession) {
   const md = resolve(repoPath, '.mrc')
+  // One-time legacy vouch (interactive): stamp pre-record sessions NORMAL so the guard below doesn't
+  // picker-spam them. No-op once done / when there are none; only consumes the one-time on a TTY launch.
+  if (process.stdin.isTTY && !config.json && !config.daemon) await ensureSecurityRecordsMigrated(md, repoPath)
   const newest = getSessions(md)[0]
-  if (newest && isAdversarySession(newest.uuid)) {
-    if (process.stdin.isTTY && !config.json && !config.daemon) {
-      console.error('  ⚔  Your most recent session here is a red-team (adversary) session — not auto-continuing it.')
-      const result = await pick(md)
-      if (!result) process.exit(0)
-      if (!(await applyPickResult(result, md))) process.exit(0)
-    } else {
-      console.error('  ⚔  Most recent session here is a red-team (adversary) session — starting fresh instead of auto-resuming it. Use `mrc pick` to reconnect to it.')
-      config.newSession = true
+  if (newest) {
+    // 3-STATE fail-closed, keyed on record PRESENCE (not the 2-state isAdversarySession, which would
+    // collapse "no record" into "normal" and never fire the keystone): an `adversary` record NEVER
+    // auto-resumes (even under --no-rooms — a recorded adversary must not silently reopen); an `unknown`
+    // (no record) fails closed ONLY under roomsActive (a --no-rooms/--json/--daemon launch writes no
+    // record and can't be an adversary — a summon needs the daemon — so failing it closed would lose
+    // auto-resume for scripted/non-TTY callers for zero safety); a `normal` record auto-resumes as before.
+    // TTY → picker; non-TTY → fresh (fresh beats uncaged).
+    const cls = classifySession(newest.uuid)
+    if (cls === 'adversary' || (cls === 'unknown' && roomsActive)) {
+      const why = cls === 'adversary'
+        ? 'a red-team (adversary) session'
+        : "a session with no security record — can't confirm it's safe to silently resume"
+      if (process.stdin.isTTY && !config.json && !config.daemon) {
+        console.error(`  ⚔  Your most recent session here is ${why} — not auto-continuing it; pick one instead.`)
+        const result = await pick(md)
+        if (!result) process.exit(0)
+        if (!(await applyPickResult(result, md))) process.exit(0)
+      } else {
+        console.error(`  ⚔  Most recent session here is ${why} — starting fresh instead of auto-resuming. Use \`mrc pick\` to reconnect.`)
+        config.newSession = true
+      }
     }
   }
 }

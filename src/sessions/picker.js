@@ -1,6 +1,6 @@
 import { createInterface } from 'node:readline'
 import { getSessions, loadNames, getSummaryPreview } from './manager.js'
-import { loadSessionRecord } from '../session-record.js'
+import { loadSessionRecord, saveSessionRecord } from '../session-record.js'
 import { generateName } from './api.js'
 
 const ESC = '\x1b'
@@ -57,6 +57,48 @@ export async function ensureNamesMigrated(mrcDir) {
 }
 
 /**
+ * One-time SECURITY-record migration for legacy sessions (created before per-session records existed).
+ * A name is NOT a containment signal, so the ONLY thing that grants a legacy session the NORMAL stamp is
+ * an explicit, per-session-visible human vouch — never a name/transcript heuristic (a heuristic that
+ * MISSED a legacy adversary would stamp it normal → resume it UNCAGED; the false-negative is the only
+ * thing that can uncage a legacy Pierre, so it adds risk for zero benefit). Without the vouch, legacy
+ * sessions keep NO security record → the bare-resume guard fails CLOSED (picker) for them, declassifying
+ * nobody. Runs once (a `security-migrated` flag), and only consumes that one-time vouch on a TTY launch.
+ */
+export async function ensureSecurityRecordsMigrated(mrcDir, repoPath) {
+  const { existsSync, writeFileSync, mkdirSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const flag = join(mrcDir, 'security-migrated')
+  if (existsSync(flag)) return
+
+  // Legacy = a session with no host-only security record (records began with the records feature). A
+  // going-forward session always has one (written at launch), so this set only ever shrinks toward empty.
+  const legacy = getSessions(mrcDir).filter((s) => loadSessionRecord(s.uuid).uuid === undefined)
+  const stamp = () => { mkdirSync(mrcDir, { recursive: true }); writeFileSync(flag, new Date().toISOString() + '\n') }
+  if (!legacy.length) { stamp(); return }      // nothing to migrate → done forever
+  if (!process.stdin.isTTY) return              // no human to vouch → wait for an interactive launch (don't burn the one-time)
+
+  const names = loadNames(mrcDir)
+  process.stderr.write(`\n  \x1b[1;36m✦ One-time session check\x1b[0m — ${legacy.length} session(s) here predate per-session security records.\n`)
+  process.stderr.write(`  \x1b[2mA red-team (adversary) session must stay sandboxed when reopened. Names aren't proof, so confirm by eye:\x1b[0m\n\n`)
+  for (const { uuid, preview } of legacy) {
+    const nm = names[uuid] || '(unnamed)'
+    const pv = (getSummaryPreview(mrcDir, uuid) || preview || '').replace(/\s+/g, ' ').slice(0, 76)
+    process.stderr.write(`    • \x1b[1m${nm}\x1b[0m  \x1b[2m${pv}\x1b[0m\n`)
+  }
+  const rl = createInterface({ input: process.stdin, output: process.stderr })
+  const ans = await new Promise((r) => rl.question(`\n  Are ALL of the above NORMAL sessions — none of them red-team / adversary? [y/N] `, r))
+  rl.close()
+  if (/^y(es)?$/i.test(ans.trim())) {
+    for (const { uuid } of legacy) saveSessionRecord(uuid, { adversary: false, summonedBy: null, repoPath })
+    process.stderr.write(`  \x1b[1;32m✓\x1b[0m Stamped ${legacy.length} normal — they'll resume without a prompt.\n\n`)
+  } else {
+    process.stderr.write(`  \x1b[2m  Left unstamped — each asks once via the picker on resume (declassifies nothing).\x1b[0m\n\n`)
+  }
+  stamp()
+}
+
+/**
  * Interactive session picker. Returns selected UUID, 'NEW', or null (quit).
  */
 export async function pick(mrcDir) {
@@ -77,7 +119,7 @@ export async function pick(mrcDir) {
       num: String(i + 1),
       ts: formatTs(lastUpdated),
       name: rec.summonedBy ? `⚔ ${base} — red-team for ${issuer}` : base,
-      adversary: !!rec.summonedBy,   // selecting this row triggers an inline confirm (it reopens re-sandboxed)
+      adversary: !!(rec.adversary || rec.summonedBy),   // keystone-aligned: selecting this row triggers an inline confirm (it reopens re-sandboxed)
       selfName: base,
       issuer,
       preview: getSummaryPreview(mrcDir, uuid) || preview,
