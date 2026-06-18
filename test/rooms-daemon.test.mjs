@@ -401,8 +401,27 @@ async function main() {
   check('22c adversary got a "no longer available" notice', advX.has('notice', 'no longer available'))
   d22.stop()
 
+  // 23 — #30: the adversary flag must be DURABLE — re-derived from the summonedBy register signal, not only
+  // from onAdversaryUp/addAdversaryToRoom (which skip if the summoner isn't connected, e.g. a reconnect after a
+  // daemon restart wiped the in-memory `adversaries` Set). A summonedBy register with the summoner OFFLINE must
+  // still flag the adversary so invite_peer refuses it. (Caught live post-rebuild: a re-summoned Pierre got invited in.)
+  console.log('\n[23] adversary flag is durable — re-flagged from summonedBy on register')
+  const W1 = mkClient(port, 'W1'), W2 = mkClient(port, 'W2'); W1.register(); W2.register(); await sleep(100)
+  const wadv = mkClient(port, 'wadv'); wadv.register({ summonedBy: 'ghost-summoner-never-connected' }); await sleep(120)   // simulates the reconnect path: onAdversaryUp can't fire (summoner offline), only the durable register flag should
+  st = await status(controlPort)
+  check('23a the summonedBy session registered (summoner offline)', (st.sessions || []).some((s) => s.id === 'wadv'))
+  W1.send({ type: 'ask', question: 'q', peer: 'W2' }); await sleep(120)
+  W1.send({ type: 'invite', peer: 'wadv', id: 100 }); await sleep(120)
+  check('23b invite_peer refuses it (flagged from summonedBy alone, no onAdversaryUp)', W1.frames.some((f) => f.type === 'ack' && f.id === 100 && f.status === 'invite-adversary'), JSON.stringify(W1.frames.filter((f) => f.id === 100)))
+  // 23c — Pierre ATTACK-2: the flag must track the CURRENT launch, not stick. Re-register the SAME UUID
+  // WITHOUT summonedBy (resuming an ex-adversary's transcript as yourself) → the `else delete` un-flags it →
+  // invite_peer ACCEPTS again. (A real adversary always re-sends summonedBy, so it never hits the else.)
+  wadv.register({}); await sleep(120)
+  W1.send({ type: 'invite', peer: 'wadv', id: 101 }); await sleep(120)
+  check('23c a non-summonedBy re-register un-flags the UUID → invite_peer accepts', W1.frames.some((f) => f.type === 'ack' && f.id === 101 && f.status === 'invited'), JSON.stringify(W1.frames.filter((f) => f.id === 101)))
+
   console.log(`\n${'='.repeat(40)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(40)}`)
-  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3, I1, I2, I3, I4, I5, L1, L2, L3, L4, m1, m2, m3, s1, s2, advX].forEach((c) => { try { c.close() } catch {} })
+  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3, I1, I2, I3, I4, I5, L1, L2, L3, L4, m1, m2, m3, s1, s2, advX, W1, W2, wadv].forEach((c) => { try { c.close() } catch {} })
   if (advRoom) try { removeRoomDir(advRoom) } catch {}   // private summons use a Date.now()-based id → clean it so runs don't accumulate
   try { rmSync(ageRepo, { recursive: true, force: true }) } catch {}
   await sleep(80)

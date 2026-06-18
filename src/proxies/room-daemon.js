@@ -677,6 +677,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
         if (f.type === 'register' && f.sessionId) {
           sessionId = f.sessionId
           sessions.set(sessionId, { sock, repo: f.repo || '?', label: f.label || f.repo || '?', room: f.room || null, hostRepo: f.repoPath || null, web: !!f.web, notifyPort: Number(f.notifyPort) || 0, lastFrameAt: Date.now() })
+          if (f.summonedBy) adversaries.add(sessionId); else adversaries.delete(sessionId)   // adversary flag tracks the CURRENT launch. The in-memory set is wiped on a daemon restart, so re-derive it from the one durable signal: a summoned adversary's container always re-sends summonedBy (→ add re-flags it on reconnect; it NEVER hits the else). A non-summoned register of the same conversation UUID (resuming an ex-adversary's transcript as yourself, no restart) hits the else and clears the stale flag. add-only would either drop a reconnected adversary's flag (→ got invite_peer'd in, found live) OR stick it on a now-regular session (over-restriction). Defeats invite_peer #3 / catch-up exclusion / one-per-room when wrong.
           noteSessions()
           if (f.room) {  // explicit named room: auto-pair with another session of the same name
             for (const [oid, ov] of sessions) {
