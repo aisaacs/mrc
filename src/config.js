@@ -17,6 +17,53 @@ export function readMrcrc(file) {
   return { flags, envs }
 }
 
+// --- Belt 0 (security): <repo>/.mrcrc is the bind-mounted, sandbox-WRITABLE workspace, so a contained
+// session can write to it to escalate its OWN next launch. It is therefore the LEAST-trusted config
+// source and gets an ALLOWLIST (deny-by-default) — NOT a denylist, which fails open on the next
+// flag/env nobody remembered to add (that bug bit twice: a missing MRC_ADVERSARY let a contained
+// adversary self-declassify; a missing --room let a repo force-pair cloners into a room). The trusted
+// surfaces — CLI argv and host-only ~/.mrcrc — are UNRESTRICTED; only the repo file is filtered.
+//
+// FLAGS — a repo .mrcrc may set ONLY these local-UX flags; EVERYTHING else (incl. any flag added later)
+// is denied and must come from argv or ~/.mrcrc. Adding a flag here requires the same threat-review.
+// Denied by NOT being listed: egress/containment/trust (-w/--web, --room, --rooms, --agent,
+// --summoned-by, --open-adversary-unsafe), host-global resource (--colima-*, -r/--rebuild), mode
+// (--daemon, -j/--json), and CLI-hijack (the `--` separator, -h/--help).
+//
+// NOTE: this is a per-TOKEN filter — a value-flag's value token (e.g. 'myname' in a two-line `--new`
+// then `myname`) is itself checked and dropped (it isn't an allowed flag). Fine today: the only allowed
+// value-flag is --new and losing its OPTIONAL name is safe-direction (a repo can force a fresh session
+// but never a misleading NAME). A value-REQUIRED repo flag would need a value-aware filter, not this one.
+const REPO_ALLOWED_FLAGS = new Set([
+  '--no-sound', '--no-notify', '--no-summary', '--no-rooms', '--verbose', '-v', '--new', '-n',
+])
+// ENVS — mrc's own control surface is reserved from the repo file: ALLOW_WEB and any MRC_* env (all of
+// which are host-SET or host-READ; none is legitimately repo-sourced). Everything else passes through —
+// a repo legitimately needs arbitrary non-mrc envs (app config), so this is a namespace-RESERVE, NOT a
+// closed allowlist like the flags. INVARIANT (or the next env re-opens the class a denylist would):
+// every new containment/egress env MUST be MRC_-prefixed (auto-covered here) OR added to this check like
+// the lone non-prefixed exception ALLOW_WEB. (The flag side has no such residual — deny-by-default
+// already covers any future flag; only the env reserve carries this one convention.)
+const repoEnvForbidden = (key) => key === 'ALLOW_WEB' || key.startsWith('MRC_')
+
+/**
+ * Belt 0: filter a repo .mrcrc's parsed flags/envs down to the safe allowlist. PURE — `warn(msg)` is
+ * called once per dropped entry so the caller owns the notice. Returns { flags, envs }.
+ */
+export function sanitizeRepoConfig(repoFlags, repoEnvs, warn = () => {}) {
+  const flags = repoFlags.filter((f) => {
+    if (REPO_ALLOWED_FLAGS.has(f.split(/\s+/)[0])) return true
+    warn(`flag "${f}" from <repo>/.mrcrc — only local-UX flags are honored there; egress/containment/mode flags come from the CLI or ~/.mrcrc`)
+    return false
+  })
+  const envs = repoEnvs.filter((e) => {
+    if (!repoEnvForbidden(e.split('=')[0])) return true
+    warn(`env "${e.split('=')[0]}" from <repo>/.mrcrc — MRC_* and ALLOW_WEB are reserved (host-only control surface); set them via the CLI or ~/.mrcrc`)
+    return false
+  })
+  return { flags, envs }
+}
+
 /** Load .env file, handling 1Password op:// references. Returns the API key or null. */
 export function loadEnv(scriptDir, { skipOp = false } = {}) {
   const candidates = [

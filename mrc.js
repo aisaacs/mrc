@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 
 import { BANNER } from './src/constants.js'
 import { setVerbose, dbg } from './src/output.js'
-import { readMrcrc, loadEnv, parseArgs } from './src/config.js'
+import { readMrcrc, loadEnv, parseArgs, sanitizeRepoConfig } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
 import { buildImage, checkImageAge, nextAdversarySlot, nextInstanceSlot, volumeName, runContainer, startDaemon, showStatus } from './src/docker.js'
 import { processSandboxignores } from './src/sandboxignore.js'
@@ -42,22 +42,12 @@ for (const arg of process.argv.slice(2)) {
 }
 const { flags: repoFlags, envs: repoEnvs } = readMrcrc(resolve(repoHint, '.mrcrc'))
 
-// --- Belt 0 (security): <repo>/.mrcrc is the bind-mounted, sandbox-WRITABLE workspace. A contained
-// session could write egress/containment flags or envs there to escalate its OWN next launch (the
-// firewall opens 443 on --web / ALLOW_WEB=1; MRC_ADVERSARY_FW + MRC_SUMMONED_BY drive the cage, and
-// repo envs are passed straight to `docker run -e` below). Honor those ONLY from argv or the host-only
-// ~/.mrcrc — never the repo file. Stripped (not fatal) with a notice, so a stray entry is ignored
-// rather than silently obeyed.
-const REPO_FORBIDDEN_FLAGS = new Set(['-w', '--web', '--summoned-by', '--open-adversary-unsafe'])
-const REPO_FORBIDDEN_ENVS = new Set(['ALLOW_WEB', 'MRC_ADVERSARY_FW', 'MRC_SUMMONED_BY'])
-const repoFlagsSafe = repoFlags.filter((f) => {
-  if (REPO_FORBIDDEN_FLAGS.has(f.split(/\s+/)[0])) { console.error(`  ⚠ Ignoring flag "${f}" from <repo>/.mrcrc — egress/containment flags only come from the CLI or ~/.mrcrc.`); return false }
-  return true
-})
-const repoEnvsSafe = repoEnvs.filter((e) => {
-  if (REPO_FORBIDDEN_ENVS.has(e.split('=')[0])) { console.error(`  ⚠ Ignoring env "${e.split('=')[0]}" from <repo>/.mrcrc — egress/containment envs only come from the CLI or ~/.mrcrc.`); return false }
-  return true
-})
+// --- Belt 0 (security): <repo>/.mrcrc is sandbox-WRITABLE, so it's the least-trusted config source.
+// sanitizeRepoConfig (config.js) ALLOWLISTS it (deny-by-default) HERE, BEFORE the merge below — so no
+// unsanitized repo flag/env can reach parseArgs or `docker run -e`. CLI + host-only ~/.mrcrc are trusted
+// and never pass through it. Stripped (not fatal) with a notice, so a stray entry is ignored not obeyed.
+const { flags: repoFlagsSafe, envs: repoEnvsSafe } =
+  sanitizeRepoConfig(repoFlags, repoEnvs, (msg) => console.error(`  ⚠ Ignoring ${msg}.`))
 
 // Merge: config flags first, then CLI args (CLI overrides)
 const configEnvs = [...globalEnvs, ...repoEnvsSafe]
