@@ -356,8 +356,8 @@ if (config.agent === 'claude' && !config.newSession && !config.resumeSession) {
     const cls = classifySession(newest.uuid)
     if (cls === 'adversary' || (cls === 'unknown' && roomsActive)) {
       const why = cls === 'adversary'
-        ? 'a red-team (adversary) session'
-        : "a session with no security record — can't confirm it's safe to silently resume"
+        ? 'a red-team (adversary)'
+        : 'unverified (no security record)'
       if (process.stdin.isTTY && !config.json && !config.daemon) {
         console.error(`  ⚔  Your most recent session here is ${why} — not auto-continuing it; pick one instead.`)
         const result = await pick(md)
@@ -478,7 +478,14 @@ if (config.resumeSession) envFlags.push('-e', `RESUME_SESSION=${config.resumeSes
 if (config.newSession) envFlags.push('-e', 'NEW_SESSION=1')
 envFlags.push('-e', `CLAUDE_CODE_MAX_OUTPUT_TOKENS=${process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '128000'}`)
 envFlags.push('-e', `MRC_REPO_NAME=${basename(repoPath)}`)
-for (const env of configEnvs) envFlags.push('-e', env)
+for (const env of configEnvs) {
+  // belt-1 complement to belt 2: a caged adversary must not even CARRY ALLOW_WEB — it can leak from the
+  // TRUSTED global ~/.mrcrc (belt 0 only filters the repo file; belt 1's flag-check misses the env form),
+  // and configEnvs is pushed straight to `docker -e`. Drop it here so the caged container never sees it.
+  // belt 2 (the firewall) is the hard guarantee; this kills the leak host-side too + keeps the env honest.
+  if ((config.summonedBy || config.cageAdversary) && env.split('=')[0] === 'ALLOW_WEB') continue
+  envFlags.push('-e', env)
+}
 for (const key of Object.keys(process.env)) {
   if (key.startsWith('MRC_VIDEO_')) envFlags.push('-e', `${key}=${process.env[key]}`)
 }

@@ -24,6 +24,13 @@ const RESET = '\x1b[0m'
 
 function lookupSessionName(projectDir, sessionId) {
   if (!projectDir || !sessionId) return ''
+  // Source of truth: the per-session display record (.mrc/session-meta/<uuid>.json, written at launch and
+  // updated by the namer). Fall back to the legacy session-names projection during the transition — a
+  // not-yet-migrated legacy session may still live only there.
+  try {
+    const rec = JSON.parse(readFileSync(join(projectDir, '.mrc', 'session-meta', `${sessionId}.json`), 'utf8'))
+    if (rec && rec.name) return String(rec.name).trim()
+  } catch {}
   try {
     const lines = readFileSync(join(projectDir, '.mrc', 'session-names'), 'utf8').split('\n')
     for (const line of lines) {

@@ -133,10 +133,17 @@ iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 # Allow outbound traffic to whitelisted domains only
 iptables -A OUTPUT -m set --match-set allowed-domains dst -j ACCEPT
 
-# If ALLOW_WEB is set, open outbound HTTPS (port 443) to any destination
-if [ "${ALLOW_WEB:-}" = "1" ]; then
+# If ALLOW_WEB is set, open outbound HTTPS (443) to any host — UNLESS this is a caged adversary.
+# belt 2 (the hard guarantee): the host already forces ALLOW_WEB off for a summoned/re-sandboxed adversary
+# (belt 1, mrc.js), but gating on MRC_ADVERSARY_FW here means the FIREWALL ITSELF refuses 443 for a caged
+# adversary even if ALLOW_WEB leaked in by another path — e.g. an `ALLOW_WEB=1` env line in the TRUSTED
+# global ~/.mrcrc, which belt 0 doesn't filter and belt 1's flag-check misses. Enforced, not derived.
+# (--open-adversary-unsafe leaves MRC_ADVERSARY_FW UNSET, so it's intentionally NOT gated — uncaged by design.)
+if [ "${ALLOW_WEB:-}" = "1" ] && [ "${MRC_ADVERSARY_FW:-}" != "1" ]; then
     echo "Web access enabled — allowing outbound HTTPS (port 443)"
     iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT
+elif [ "${ALLOW_WEB:-}" = "1" ]; then
+    echo "Adversary firewall profile: ALLOW_WEB ignored — 443 stays closed (belt 2)"
 fi
 
 # Explicitly REJECT all other outbound traffic for immediate feedback
@@ -149,8 +156,8 @@ iptables -P OUTPUT DROP
 
 echo "Firewall configuration complete"
 echo "Verifying firewall rules..."
-if [ "${ALLOW_WEB:-}" = "1" ]; then
-    # With web access enabled, verify whitelisted domains work
+if [ "${ALLOW_WEB:-}" = "1" ] && [ "${MRC_ADVERSARY_FW:-}" != "1" ]; then
+    # With web access enabled (and not a caged adversary), verify whitelisted domains work
     if curl --connect-timeout 5 https://api.anthropic.com >/dev/null 2>&1; then
         echo "Firewall verification passed — HTTPS outbound open, whitelisted domains reachable"
     else
@@ -170,6 +177,20 @@ else
             echo "Adversary profile: api.anthropic.com reachable via pinned IP"
         else
             echo "WARNING: adversary profile — api.anthropic.com unreachable; the /etc/hosts pin may be stale"
+        fi
+        # belt 2 self-check: an arbitrary host on 443 by LITERAL IP (1.1.1.1 — bypasses the DNS drop so this
+        # tests the 443 GATE itself, not name resolution; not in the allowlist; it serves 443) MUST be blocked,
+        # even if ALLOW_WEB leaked in. rc 7 (REJECT) / 28 (DROP-timeout) = blocked; a real connection returns 0
+        # or a post-handshake TLS/cert code (≠7,28) → the cage is OPEN → abort the launch closed. The `|| rc=$?`
+        # keeps `set -e` from aborting on the expected non-zero. (The example.com check above passes via the DNS
+        # drop, NOT this gate — so this is the only probe that actually exercises belt 2.)
+        rc=0
+        curl --connect-timeout 5 -o /dev/null -s https://1.1.1.1 2>/dev/null || rc=$?
+        if [ "$rc" = "7" ] || [ "$rc" = "28" ]; then
+            echo "Adversary profile: arbitrary 443 (1.1.1.1) blocked as expected — belt 2 / cage holds"
+        else
+            echo "ERROR: adversary profile — reached 1.1.1.1:443 (curl rc=$rc); the 443 cage is OPEN. Aborting."
+            exit 1
         fi
     fi
 fi
