@@ -237,7 +237,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
       roomId = `${roomId}-${createHash('sha1').update([aId, bId].sort().join('\x00')).digest('hex').slice(0, 6)}`
     }
     ensureRoom(roomId, nameOf(aId), nameOf(bId))
-    const p = { roomId, members: [aId, bId], seq: ++roomSeq, state: 'Running', pauseReason: null, turn: 0, turnCap, lastActivityAt: Date.now(), held: [], autoCatchup: true }
+    const p = { roomId, members: [aId, bId], seq: ++roomSeq, state: 'Running', pauseReason: null, turn: 0, turnCap, lastActivityAt: Date.now(), held: [], autoCatchup: false }   // default OFF: a pause doesn't interrupt the agents for a handoff unless the human opts in (🔔 in the dashboard / `autocatchup on`). Catch-up now still works on demand. The gate at maybeCatchup() keys off `=== false`, so the literal false here = skip.
     pairings.set(roomId, p)
     appendThread(roomId, `${ts()} [connected: ${nameOf(aId)} <-> ${nameOf(bId)}]`)
     send(aId, { type: 'notice', text: `[Now connected to ${nameOf(bId)}. Shared notes: /rooms/${roomId}/consensus.md. Full transcript incl. any earlier history with this peer: /rooms/${roomId}/thread.log — read it to catch up if this room is being resumed.]` })

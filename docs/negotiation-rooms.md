@@ -200,9 +200,10 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
     the oldest unreviewed, and tracks an explicit `reviewedAt` — opening a pane never marks it, only
     the "Mark reviewed" button does. Unreviewed counts drive room-list triage, and Resume
     soft-confirms when a room still has unreviewed panes. A per-room **auto catch-up** toggle
-    (🔔/🔕 in the dashboard, control `autocatchup`) suppresses the *pause-triggered* elicitation
-    while you're watching live — the room still pauses, the agents just aren't interrupted for a
-    handoff (skips are logged to `thread.log`, and **Catch-up now** still works on demand).
+    (🔔/🔕 in the dashboard, control `autocatchup`) governs the *pause-triggered* elicitation.
+    It is **off by default** — a pause doesn't interrupt the agents for a handoff; turn it on
+    (🔔) to auto-capture one when you're away. The room still pauses either way (skips are logged
+    to `thread.log`, and **Catch-up now** still works on demand).
 
 ## 6. Transport — why channels (condensed findings)
 

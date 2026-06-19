@@ -56,7 +56,7 @@ async function buildState() {
       pauseReason: lp?.pauseReason || null,
       turn: lp?.turn ?? null,
       turnCap: lp?.turnCap ?? null,
-      autoCatchup: lp?.autoCatchup ?? true,
+      autoCatchup: lp?.autoCatchup ?? false,
       requireConsent: lp?.requireConsent ?? false,
       pendingInvite: lp?.pendingInvite || null,
       unreviewed,
