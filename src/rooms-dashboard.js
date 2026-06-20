@@ -5,6 +5,7 @@
 // into a chat; the only writes are the room controls and marking a catch-up reviewed.
 import http from 'node:http'
 import net from 'node:net'
+import { randomBytes } from 'node:crypto'
 import { readFileSync, existsSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -74,12 +75,23 @@ async function buildState() {
 
 function sendJSON(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)) }
 
-async function handle(req, res) {
+async function handle(req, res, ctx) {
+  // H/#46: reject any request whose Host header isn't the loopback dashboard authority — kills DNS-rebind.
+  // A rebind page loads from evil.com:<port>, so the browser sends `Host: evil.com:<port>`; the page CANNOT
+  // override it (fetch forbids setting Host), so only 127.0.0.1/localhost on our own port get through.
+  const hostHdr = req.headers.host || ''
+  // Fail CLOSED on a missing ctx too (symmetric with the CSRF check below) — not the fail-open `ctx && …`
+  // pattern this project is killing. ctx is always set today, so this is belt-and-suspenders.
+  if (!ctx || (hostHdr !== `127.0.0.1:${ctx.port}` && hostHdr !== `localhost:${ctx.port}`)) {
+    res.writeHead(403, { 'content-type': 'text/plain' }); return res.end('forbidden host')
+  }
   const url = new URL(req.url, 'http://127.0.0.1')
   try {
     if (req.method === 'GET' && url.pathname === '/') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-      return res.end(readFileSync(HTML_FILE))   // re-read each load so the page can be edited live
+      // Inject the per-process CSRF token into the page; the dashboard JS echoes it as a custom header on
+      // every state-changing POST (see api() in the HTML). Re-read each load so the page can be edited live.
+      return res.end(readFileSync(HTML_FILE, 'utf8').replace('__MRC_CSRF_TOKEN__', ctx?.csrfToken || ''))
     }
     if (req.method === 'GET' && url.pathname === '/api/state') return sendJSON(res, 200, await buildState())
     if (req.method === 'GET' && url.pathname === '/api/room') {
@@ -90,6 +102,10 @@ async function handle(req, res) {
       return sendJSON(res, 200, { roomId: id, meta, thread: readIf(join(dir, 'thread.log')), consensus: readIf(join(dir, 'consensus.md')), catchups: readCatchups(id) })
     }
     if (req.method === 'POST' && url.pathname === '/api/action') {
+      // H/#46: require the CSRF token (served into the page) as a CUSTOM header. A cross-origin page can't
+      // set a custom header without a CORS preflight, which we never grant — so a malicious page the human
+      // visits can neither forge a [Human directive] steer nor delete a room nor consent an adversary in.
+      if (!ctx || req.headers['x-mrc-csrf'] !== ctx.csrfToken) return sendJSON(res, 403, { ok: false, error: 'bad or missing CSRF token' })
       let body = ''
       req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
       req.on('end', async () => {
@@ -118,9 +134,12 @@ export async function startDashboard({ port, onActivity } = {}) {
   if (!existsSync(roomsRoot())) { /* no rooms yet — the page will just show an empty list */ }
   const base = port || Number(process.env.MRC_DASHBOARD_PORT) || 8787
   const free = await findFreePort(base)
+  // H/#46: per-process CSRF token + the bound port, threaded into every request for the Host check and the
+  // /api/action token check. A fresh token per daemon boot means a stale token from an old page can't act.
+  const ctx = { csrfToken: randomBytes(24).toString('hex'), port: free }
   // onActivity fires per request; the daemon uses it as a keep-alive so an open dashboard
   // prevents idle-shutdown (you won't lose the view mid-browse).
-  const server = http.createServer((req, res) => { try { onActivity?.() } catch {} handle(req, res) })
+  const server = http.createServer((req, res) => { try { onActivity?.() } catch {} handle(req, res, ctx) })
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(free, '127.0.0.1', resolve) })
   return { server, port: free, url: `http://127.0.0.1:${free}/` }
 }

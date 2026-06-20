@@ -47,18 +47,29 @@ export function getSessions(mrcDir) {
   return sessions
 }
 
-/** Load session-names file into an object { uuid: name }. */
+/** uuid → name, read SOURCE-FIRST: the per-uuid record's `.name` (the single source of truth, #32) wins
+ *  over the legacy `session-names` projection. Overlaying here means every reader of loadNames is
+ *  source-first with no per-caller change and no stale-projection reads — the projection is just the
+ *  transitional fallback for pre-#32 sessions that have no record yet (retired entirely in #32 Phase 2). */
 export function loadNames(mrcDir) {
   const names = {}
-  const file = join(mrcDir, 'session-names')
+  // 1) legacy projection (fallback / transitional)
   try {
-    for (const line of readFileSync(file, 'utf8').split('\n')) {
+    for (const line of readFileSync(join(mrcDir, 'session-names'), 'utf8').split('\n')) {
       const eq = line.indexOf('=')
       if (eq > 0) {
         const uuid = line.slice(0, eq)
         const name = line.slice(eq + 1)
         if (uuid && name) names[uuid] = name
       }
+    }
+  } catch {}
+  // 2) source-of-truth overlay: each record's .name wins over the projection
+  try {
+    for (const f of readdirSync(metaDir(mrcDir))) {
+      if (!f.endsWith('.json')) continue
+      const nm = loadMeta(mrcDir, f.slice(0, -5)).name
+      if (nm) names[f.slice(0, -5)] = nm
     }
   } catch {}
   return names

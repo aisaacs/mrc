@@ -2,6 +2,21 @@
 set -euo pipefail
 IFS=$'\n\t'
 
+# C/#38: derive the cage profile from a ROOT-OWNED file, not the (caller-influenceable) env. This script now
+# runs ONLY as root at container boot — the container starts as root and drops to the unprivileged `coder`
+# user for the agent, and coder has no sudo — so a sandboxed session can't re-run it to weaken its cage. The
+# file is the immutable source of truth + belt-and-suspenders: written ONCE from the launcher env, then 0444
+# root-owned. Absent/garbage → HARDEN (fail-closed: over-caging only loses npm/sentry, still reaches the
+# model). Downstream gates read MRC_ADVERSARY_FW, so we point it at the file value here in ONE place.
+CAGE_FILE=/etc/mrc-cage-profile
+if [ ! -f "$CAGE_FILE" ]; then
+    want="${MRC_ADVERSARY_FW:-0}"; [ "$want" = "1" ] || want="0"
+    { printf '%s' "$want" > "$CAGE_FILE" && chmod 0444 "$CAGE_FILE"; } || echo "WARNING: could not pin cage profile file (will fail closed)"
+fi
+CAGE=$(cat "$CAGE_FILE" 2>/dev/null || echo 1)
+[ "$CAGE" = "0" ] || CAGE=1   # anything but an explicit 0 → harden
+MRC_ADVERSARY_FW="$CAGE"
+
 # 1. Extract Docker DNS info BEFORE any flushing
 DOCKER_DNS_RULES=$(iptables-save -t nat | grep "127\.0\.0\.11" || true)
 
@@ -110,7 +125,18 @@ echo "Host network detected as: $HOST_NETWORK"
 CLIP_PORT="${MRC_CLIPBOARD_PORT:-7722}"
 NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}"
 ROOM_PORT="${MRC_ROOM_PORT:-}"
-for port in $CLIP_PORT $NOTIFY_PORT ${ROOM_PORT:+$ROOM_PORT}; do
+# F/#41: a caged adversary reaches ONLY the room relay port — NOT the clipboard proxy (which serves the
+# human's clipboard contents) or the notification proxy (a desktop-toast phishing surface). It still volleys
+# via the room daemon, so the room port stays open. A normal session keeps all three.
+# NB: this script sets IFS=$'\n\t' (no space), so a space-joined string would NOT word-split in `for` —
+# use a bash ARRAY so the ports iterate regardless of IFS (the original code relied on each port being a
+# separate $var token; collapsing them into one string broke that).
+if [ "$CAGE" = "1" ]; then
+    HOST_PORTS=(${ROOM_PORT:+$ROOM_PORT})
+else
+    HOST_PORTS=("$CLIP_PORT" "$NOTIFY_PORT" ${ROOM_PORT:+$ROOM_PORT})
+fi
+for port in "${HOST_PORTS[@]}"; do
     iptables -A OUTPUT -d "$HOST_NETWORK" -p tcp --dport "$port" -j ACCEPT
     iptables -A INPUT -s "$HOST_NETWORK" -p tcp --sport "$port" -j ACCEPT
 done
@@ -120,7 +146,7 @@ done
 HDINT_IP=$(getent hosts host.docker.internal 2>/dev/null | awk '{print $1}')
 if [ -n "$HDINT_IP" ] && [ "$HDINT_IP" != "$HOST_IP" ]; then
     echo "Allowing host.docker.internal ($HDINT_IP) on proxy ports only"
-    for port in $CLIP_PORT $NOTIFY_PORT ${ROOM_PORT:+$ROOM_PORT}; do
+    for port in "${HOST_PORTS[@]}"; do
         iptables -A OUTPUT -d "$HDINT_IP" -p tcp --dport "$port" -j ACCEPT
         iptables -A INPUT -s "$HDINT_IP" -p tcp --sport "$port" -j ACCEPT
     done
@@ -134,11 +160,12 @@ iptables -A OUTPUT -m state --state ESTABLISHED,RELATED -j ACCEPT
 iptables -A OUTPUT -m set --match-set allowed-domains dst -j ACCEPT
 
 # If ALLOW_WEB is set, open outbound HTTPS (443) to any host — UNLESS this is a caged adversary.
-# belt 2 (the hard guarantee): the host already forces ALLOW_WEB off for a summoned/re-sandboxed adversary
-# (belt 1, mrc.js), but gating on MRC_ADVERSARY_FW here means the FIREWALL ITSELF refuses 443 for a caged
-# adversary even if ALLOW_WEB leaked in by another path — e.g. an `ALLOW_WEB=1` env line in the TRUSTED
-# global ~/.mrcrc, which belt 0 doesn't filter and belt 1's flag-check misses. Enforced, not derived.
-# (--open-adversary-unsafe leaves MRC_ADVERSARY_FW UNSET, so it's intentionally NOT gated — uncaged by design.)
+# belt 2: the host forces ALLOW_WEB off for a summoned/re-sandboxed adversary (belt 1, mrc.js), but gating on
+# the cage profile HERE means the FIREWALL ITSELF refuses 443 for a caged adversary even if ALLOW_WEB leaked
+# in by another path — e.g. an `ALLOW_WEB=1` env line in the TRUSTED global ~/.mrcrc that belt 0 doesn't
+# filter. The cage value now comes from the root-owned /etc/mrc-cage-profile (resolved at the top), and this
+# script runs only as root at boot (coder has no sudo, C/#38) — so it's genuinely ENFORCED now, not a
+# caller-settable derivation. (--open-adversary-unsafe leaves the cage at 0 → intentionally NOT gated.)
 if [ "${ALLOW_WEB:-}" = "1" ] && [ "${MRC_ADVERSARY_FW:-}" != "1" ]; then
     echo "Web access enabled — allowing outbound HTTPS (port 443)"
     iptables -A OUTPUT -p tcp --dport 443 -j ACCEPT
@@ -191,6 +218,24 @@ else
         else
             echo "ERROR: adversary profile — reached 1.1.1.1:443 (curl rc=$rc); the 443 cage is OPEN. Aborting."
             exit 1
+        fi
+        # A/#40 (DOWNGRADED — REFUTED in live test, see docs/adversary-containment-hardening.md): the cage pins
+        # egress by IP, but api.anthropic.com is a SHARED Cloudflare edge, so the IP-pin does NOT seal egress by
+        # NAME — a foreign SNI aimed at the pinned IP completes a real TLS handshake and rides to another CF
+        # tenant (proven: a foreign cert was served off this IP). The L3/L4 firewall is SNI-blind and CANNOT fix
+        # this; the real seal is a HOST SNI-pinning egress proxy (TODO — the "option 1" follow-up). This probe is
+        # DIAGNOSTIC ONLY — it seals nothing, and it does NOT abort. Correct signal: a COMPLETED handshake (curl
+        # rc=0) to a foreign SNI = the ride is OPEN; a connection-layer refusal (rc 7/28/35) = sealed. (Earlier
+        # this aborted on a 4xx HTTP code — a false-green: a 4xx with rc=0 is the foreign origin ANSWERING.)
+        PINNED_IP=$(getent hosts api.anthropic.com 2>/dev/null | awk '{print $1; exit}')
+        if [ -n "$PINNED_IP" ]; then
+            rc=0
+            curl -k --resolve "example.com:443:$PINNED_IP" --connect-timeout 5 -o /dev/null -s https://example.com/ 2>/dev/null || rc=$?
+            if [ "$rc" = "0" ]; then
+                echo "WARNING: adversary cage is NOT exfil-sealed — a foreign SNI rode the pinned IP ($PINNED_IP) to a full TLS handshake (shared CDN edge). A malicious adversary could exfil to a Cloudflare-fronted host. Real fix pending: host SNI-pinning egress proxy. Do NOT treat this cage as exfil-proof."
+            else
+                echo "Adversary profile: foreign SNI to the pinned IP refused at the connection layer (rc=$rc) — no SNI-ride"
+            fi
         fi
     fi
 fi

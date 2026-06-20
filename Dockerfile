@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ripgrep \
     jq \
     file \
-    sudo \
+    gosu \
     iptables \
     ipset \
     iproute2 \
@@ -90,11 +90,12 @@ RUN mkdir -p /etc/claude-code \
 RUN mkdir -p /workspace && \
     ln -sf /home/coder/.claude/claude.json /home/coder/.claude.json
 
-# Firewall script + sudoers so coder can run it without password
+# Firewall script. C/#38: the firewall runs ONLY as root at container boot (the entrypoint's root pass), after
+# which the container drops to the unprivileged `coder` user for config setup + the agent. coder has NO sudo
+# grant; the `sudo` package is removed entirely (above) and coder's password is locked (useradd default), so a
+# sandboxed session has NO escalation path at all — no way to invoke, let alone weaken, its own firewall.
 COPY init-firewall.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/init-firewall.sh \
-    && echo 'coder ALL=(root) NOPASSWD: SETENV: /usr/local/bin/init-firewall.sh' > /etc/sudoers.d/coder-firewall \
-    && chmod 0440 /etc/sudoers.d/coder-firewall
+RUN chmod +x /usr/local/bin/init-firewall.sh
 
 # Clipboard shim (stays bash — mimics xclip interface)
 COPY clipboard-shim.sh /usr/local/bin/xclip
@@ -104,9 +105,11 @@ RUN chmod +x /usr/local/bin/xclip
 COPY container/mrc-notify-hook.js /usr/local/bin/
 COPY container/mrc-statusline.js /usr/local/bin/
 COPY container/container-setup.js /usr/local/bin/
+COPY container/mrc-rename.js /usr/local/bin/
 RUN chmod +x /usr/local/bin/mrc-notify-hook.js \
     /usr/local/bin/mrc-statusline.js \
-    /usr/local/bin/container-setup.js
+    /usr/local/bin/container-setup.js \
+    /usr/local/bin/mrc-rename.js
 
 # Video analysis script + slash command (staged for runtime seeding)
 COPY container/video-analysis.sh /usr/local/bin/video-analysis
@@ -121,6 +124,10 @@ COPY container/codex-command.md /opt/mrc-codex/command.md
 # adversarial-rooms design — a one-shot grounded adversary on demand; see docs/multiparty-adversarial-rooms.md
 COPY container/red-team-command.md /opt/mrc-red-team/command.md
 
+# Rename slash command (seeded into ~/.claude/commands/ at runtime). Lets the human ask the session to
+# rename itself ("/rename" or "/rename a-better-name"); runs the mrc-rename helper above.
+COPY container/rename-command.md /opt/mrc-rename/command.md
+
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
@@ -128,7 +135,10 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 # and the firewall may block npm CDN hosts needed for updates.
 ENV DISABLE_AUTOUPDATER=1
 
-USER coder
+# C/#38: start the container as ROOT so the entrypoint can apply the firewall, then drop to `coder` (gosu)
+# for config setup + the agent. coder has no sudo, so the cage is untouchable from inside the session. The
+# coder pass of the entrypoint runs with the matched UID/GID, so bind-mount file ownership is unchanged.
+USER root
 WORKDIR /workspace
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

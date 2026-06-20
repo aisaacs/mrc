@@ -140,6 +140,13 @@ if (existsSync(RT_SRC)) {
   linkOrMigrate(join(RT_SRC, 'command.md'), join(CLAUDE_DIR, 'commands', 'red-team.md'))
 }
 
+// 1e. Seed the /rename slash command — lets the human ask the session to rename itself (it runs the
+// baked mrc-rename helper). Symlinked so image updates propagate; available in every session.
+const RN_SRC = '/opt/mrc-rename'
+if (existsSync(RN_SRC)) {
+  linkOrMigrate(join(RN_SRC, 'command.md'), join(CLAUDE_DIR, 'commands', 'rename.md'))
+}
+
 // 2. Restore claude.json from backup if missing
 if (!existsSync(CONFIG_FILE)) {
   const backupDir = join(CLAUDE_DIR, 'backups')
@@ -165,26 +172,35 @@ if (process.env.ANTHROPIC_API_KEY) {
   }
 }
 
-// 4. Symlink project store into /workspace/.mrc/
-try {
-  let alreadyLinked = false
-  try { alreadyLinked = lstatSync(PROJECT_STORE).isSymbolicLink() } catch {}
+// 4. Project store. Normally symlinked into /workspace/.mrc/ so memory/history live in the repo. But a
+// CAGED ADVERSARY (#45) runs with /workspace READ-ONLY and must not write the summoner's tree — so keep its
+// store in the (RW) config volume instead: skip the symlink, just ensure the real dir exists. Its
+// transcript is then fully isolated (it can't touch the repo's .mrc or any other session's history).
+const cagedAdversary = process.env.MRC_ADVERSARY_FW === '1'
+if (cagedAdversary) {
+  try { mkdirSync(PROJECT_STORE, { recursive: true }) } catch (e) { console.error('Warning: project store mkdir failed:', e.message) }
+} else {
+  try {
+    let alreadyLinked = false
+    try { alreadyLinked = lstatSync(PROJECT_STORE).isSymbolicLink() } catch {}
 
-  if (!alreadyLinked) {
-    mkdirSync(MRC_LOCAL, { recursive: true })
-    mkdirSync(dirname(PROJECT_STORE), { recursive: true })
-    if (existsSync(PROJECT_STORE)) {
-      cpSync(PROJECT_STORE, MRC_LOCAL, { recursive: true })
-      rmSync(PROJECT_STORE, { recursive: true, force: true })
+    if (!alreadyLinked) {
+      mkdirSync(MRC_LOCAL, { recursive: true })
+      mkdirSync(dirname(PROJECT_STORE), { recursive: true })
+      if (existsSync(PROJECT_STORE)) {
+        cpSync(PROJECT_STORE, MRC_LOCAL, { recursive: true })
+        rmSync(PROJECT_STORE, { recursive: true, force: true })
+      }
+      symlinkSync(MRC_LOCAL, PROJECT_STORE)
     }
-    symlinkSync(MRC_LOCAL, PROJECT_STORE)
+  } catch (e) {
+    console.error('Warning: project store symlink failed:', e.message)
   }
-} catch (e) {
-  console.error('Warning: project store symlink failed:', e.message)
 }
 
-// 5. Seed .gitignore entry for .mrc/
-if (existsSync('/workspace/.git')) {
+// 5. Seed .gitignore entry for .mrc/ (skipped for a caged adversary — /workspace is read-only, and it
+// keeps no store in the repo anyway).
+if (!cagedAdversary && existsSync('/workspace/.git')) {
   const gitignore = '/workspace/.gitignore'
   try {
     const content = existsSync(gitignore) ? readFileSync(gitignore, 'utf8') : ''

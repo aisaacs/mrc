@@ -107,7 +107,14 @@ let lastThread = '', lastConsensus = '', lastCatchups = ''
 const fmtTime = (ms) => { if (!ms) return ''; const d = new Date(ms); return d.toLocaleString() }
 const ago = (ms) => { if (!ms) return ''; const s = Math.round((Date.now()-ms)/1000); if (s<60) return s+'s ago'; if (s<3600) return Math.round(s/60)+'m ago'; if (s<86400) return Math.round(s/3600)+'h ago'; return Math.round(s/86400)+'d ago' }
 
-async function api(path, opts) { const r = await fetch(path, opts); return r.json() }
+const CSRF = '__MRC_CSRF_TOKEN__'   // injected by the server per page load (H/#46)
+async function api(path, opts={}) {
+  // Echo the CSRF token as a custom header on state-changing requests. A custom header forces a CORS
+  // preflight for any cross-origin caller, which the server never grants — so only this same-origin page
+  // can POST actions. (GET reads are already same-origin-protected by the browser.)
+  if ((opts.method||'GET').toUpperCase() !== 'GET') opts.headers = { ...(opts.headers||{}), 'x-mrc-csrf': CSRF }
+  const r = await fetch(path, opts); return r.json()
+}
 function toast(t) { const el = $('#toast'); el.textContent = t; el.classList.add('show'); clearTimeout(el._t); el._t = setTimeout(()=>el.classList.remove('show'), 1800) }
 
 function badge(room) {

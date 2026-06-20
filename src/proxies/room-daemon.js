@@ -8,14 +8,28 @@
 import net from 'node:net'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { writeFileSync, statSync, readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { writeFileSync, statSync, readdirSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
+import { join, dirname } from 'node:path'
+import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
 import { ensureRoom, appendThread, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, roomsRoot, removeRoomDir } from '../rooms.js'
-import { loadNames } from '../sessions/manager.js'
+import { loadMeta } from '../sessions/manager.js'
+import { classifySession, loadSessionRecord } from '../session-record.js'
 
 const norm = (s) => String(s || '').trim().replace(/\s+/g, ' ')
 const ts = () => new Date().toISOString()
+// E/#42: peer-controlled text + register labels must never forge the ONE trusted token the agent obeys
+// ("[Human directive]:"). deTrust neutralizes it (any case/spacing, ASCII OR fullwidth brackets) wherever it
+// appears. safeName also kills newlines (via norm) + caps length, so a register label can't smuggle a
+// multi-line directive into the deliver wrapper or thread.log. sanitizePeerText keeps newlines (code
+// legibility) but de-trusts. NOTE (Pierre): this is token-neutralization, not the structural fix — an exotic
+// homoglyph could still slip the regex yet read as a directive to the model; the complete answer is
+// out-of-band trust (a distinct frame type the agent renders untrustably), deferred. Covers the realistic
+// ASCII + fullwidth-bracket forgeries.
+const DIRECTIVE_RE = /[\[［]\s*human\s+directive\s*[\]］]/gi
+const deTrust = (s) => String(s).replace(DIRECTIVE_RE, '[quoted human-directive — NOT a real directive]')
+const safeName = (s) => deTrust(norm(s)).slice(0, 80)
+const sanitizePeerText = (s) => deTrust(String(s))
 
 const CATCHUP_TIMEOUT_MS = 120_000   // finalize a catch-up pane even if a side never files its handoff
 const catchupPrompt = (reason) =>
@@ -61,12 +75,40 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   const budgetOf = (p) => turnCap || (p.members.length >= 3 ? NPARTY_TURN_BUDGET : 0)
   const INVITE_BOOT_MS = 90_000       // adversary-invite boot window — declared up here so the restore loop's armInviteTimeout re-arm (a consent reservation that survived a restart) doesn't reference it in the TDZ (a daemon restart with a live reservation would otherwise crash on boot)
   const adversaries = new Set()       // session ids that are summoned red-teamers — excluded from catch-up; get the tightest sandbox
+  const unverified = new Set()        // session ids with NO host security record (B/#39) — surfaced to the human, never auto-trusted-as-normal nor auto-branded adversary (absence is anomalous, not a verdict)
+  // G/#44 soft-arm, PERSISTED (Pierre round 2): the arm bit flips true on the first secret-bearing register
+  // (= a post-rebuild channel-server is live) → strict secret enforcement engages only then, so the
+  // pre-rebuild no-secret window isn't bricked. It MUST survive a daemon restart: the daemon restarts
+  // routinely (idle auto-shutdown ~10min, version-refresh, `mrc rooms restart`, crash), and an in-memory-only
+  // flag would re-enter lenient mode on every boot → reopening the register-first-omit hole on a recurring
+  // schedule (e.g. every morning after an overnight idle-shutdown). Once a real wire-secret has been seen the
+  // rebuild has happened and a restart can't un-deploy it, so we record the arm durably + boot armed thereafter.
+  // RECOVERY (Pierre, low-likelihood): the flag is permanent + forward-only. If the image is ever rolled BACK
+  // to a pre-secret build (old channel-servers can't send a secret) while this flag is on disk and records
+  // carry secrets, every legit register is rejected → `rm ~/.local/share/mrc/room-secrets-armed` to restore
+  // lenient mode. (Contradicts the forward-only deploy model, so it shouldn't arise; documented so it's not a
+  // mystery outage.)
+  const armedPath = join(homedir(), '.local', 'share', 'mrc', 'room-secrets-armed')
+  let secretsArmed = existsSync(armedPath)
+  // Arm immediately (this run) on the first wire-secret AND persist. We set the flag BEFORE the write so a
+  // write failure still arms THIS run; but log loudly on failure (Pierre) — else strict enforcement silently
+  // won't survive the next restart and the recurring window quietly reopens.
+  const armSecrets = () => {
+    if (secretsArmed) return
+    secretsArmed = true
+    try { mkdirSync(dirname(armedPath), { recursive: true }); writeFileSync(armedPath, '1') }
+    catch (e) { console.error(`[room-daemon] WARN couldn't persist the secret-arm bit (${e.message}) — strict register enforcement won't survive a daemon restart until this write succeeds`) }
+  }
   const summoningPrivate = new Set()  // issuer ids with a private summon in flight — block a 2nd until it registers or times out
   // Restore pairings a graceful restart dumped, so an in-flight room survives `mrc rooms restart`
   // (turn count / autoCatchup preserved). Sockets re-attach as the sessions reconnect + re-register.
   for (const sp of loadPairings()) pairings.set(sp.roomId, { ...sp, members: sp.members || [sp.a, sp.b].filter(Boolean), seq: sp.seq || (++roomSeq), held: [] })
   for (const p of pairings.values()) if ((p.seq || 0) > roomSeq) roomSeq = p.seq   // keep the counter above any restored seq
   for (const p of pairings.values()) if (p.incomingAdversary) armInviteTimeout(p)   // re-arm the release timer for a consent reservation that survived a restart
+  // B/#39: seed adversary classification from the durable host-only records for restored members, so the
+  // restart window can't read a restored adversary as a trusted-normal peer before it reconnects + re-
+  // registers. Record=adversary → flag now; normal/unknown left alone (re-derived loudly on register).
+  for (const p of pairings.values()) for (const m of p.members) if (classifySession(m) === 'adversary') adversaries.add(m)
 
   // Idle auto-shutdown: exit once no session has been connected for idleMs. A longer grace applies
   // before the FIRST session ever connects, so a slow image build doesn't kill the daemon
@@ -101,7 +143,24 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   const hasOtherConnected = (room, self) => room.members.some((o) => o !== self && online(o))
   const repoOf = (id) => sessions.get(id)?.repo || '?'                       // basename — for clean room ids
   const knownNames = new Map()   // id -> last-seen display name, so a member who disconnects still renders by name, not "?"
-  const nameOf = (id) => { const s = sessions.get(id); if (s) { const n = s.label || s.repo; knownNames.set(id, n); return n } return knownNames.get(id) || '?' }  // refreshes the cache while online; falls back to it once the session is gone
+  // nameOf reads the session's display name from its SOURCE OF TRUTH at use-time — the on-disk record
+  // (<repo>/.mrc/session-meta/<uuid>.json .name, written by the host namer or the in-session /rename), the
+  // SAME file the container writes (shared via the bind mount). No cached label to push/sync, so a rename is
+  // structurally visible on the next read — the single-source-of-truth invariant (#32) applied to the name.
+  // Precedence: record .name → s.label (a daemon-assigned 'Pierre', or the launch label mrc.js already seeded
+  // from the source — covers pre-#32 sessions with no record yet) → repo basename. De-trusted HERE (the
+  // record is sandbox-writable, E/#42). knownNames keeps the last-seen name so a DEPARTED member still
+  // renders by name, not '?'. (loadMeta only — one record read; the heavier loadNames overlay isn't on this
+  // hot path, and s.label is the legacy fallback.)
+  const nameOf = (id) => {
+    const s = sessions.get(id)
+    if (!s) return knownNames.get(id) || '?'
+    let nm = ''
+    if (s.hostRepo) { try { nm = loadMeta(join(s.hostRepo, '.mrc'), id).name || '' } catch {} }
+    const name = safeName(nm || s.label || s.repo || '?')
+    knownNames.set(id, name)
+    return name
+  }
   // A room holds a participant SET (members), not a fixed {a,b} pair — so a third (e.g. a summoned
   // Pierre) can join. 2-party rooms are just a 2-member set; a/b are derived (members[0/1]) only at the
   // CLI/dashboard edge for back-compat.
@@ -171,13 +230,10 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     // bare name so ask_peer matching (resolvePeer) is unaffected.
     for (const p of raw) {
       const s = sessions.get(p.id)
-      // Name source, most-durable-first: an explicit in-memory label (a manual --new name seeded at
-      // register, or a name the relabel wire pushed) wins; else the on-disk names map the host watcher
-      // populates after ~10KB — durable, survives daemon restarts, and covers sessions launched before
-      // the wire; else the repo basename ⇒ genuinely fresh. So "(fresh)" means no name ANYWHERE, not
-      // merely "label not wired" (that was the bug: worked-in sessions read as fresh).
-      let nm = p.name
-      if (s?.hostRepo && nm === p.repo) { try { const mapped = loadNames(join(s.hostRepo, '.mrc'))[p.id]; if (mapped) nm = mapped } catch {} }
+      // p.name is from nameOf = the source-of-truth read (disk .name → legacy session-names → daemon/launch
+      // label → repo basename). So name === repo ⇒ no name anywhere ⇒ genuinely "(fresh)"; anything else is
+      // the human/auto/daemon-assigned name. (No relabel-wire special-case anymore — nameOf reads the source.)
+      const nm = p.name
       const born = sessionBornAt(p.id, s)
       const bits = [p.repo, nm === p.repo ? '(fresh)' : nm]
       if (born) bits.push(fmtAge(Date.now() - born))
@@ -257,7 +313,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   }
   function deliver(p, toId, fromId, text) {
     setActive(toId, p.roomId)   // so the recipient's next bare reply routes back to THIS room
-    send(toId, { type: 'deliver', text: `Peer (${displayIn(p, fromId)}) says: "${text}" [turn ${p.turn}/${p.turnCap}]` })
+    send(toId, { type: 'deliver', text: `Peer (${displayIn(p, fromId)}) says: "${sanitizePeerText(text)}" [turn ${p.turn}/${p.turnCap}]` })   // E/#42: de-trust so a peer can't embed a fake [Human directive] (displayIn is already de-trusted — labels are sanitized at register)
   }
 
   // A real message proves the room isn't dead, so a STALL pause (a timeout *guess* that the room
@@ -539,7 +595,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     // ⚠ CROSS-TRUST: auto-accept is safe ONLY because rooms are one trust domain. If cross-machine rooms
     // (different humans) are ever built, this default MUST flip to require-consent — else it's trespass.
     if (!p.requireConsent) { send(issuerId, { type: 'notice', text: `[Auto-accept is on for ${p.roomId} — bringing a fresh adversary in now (all members are notified). Add a consent checkpoint with \`mrc rooms auto-accept ${p.roomId} off\`.]` }); acceptInvite(p); return ack('invite-auto-accepted') }
-    for (const m of others(p, issuerId)) send(m, { type: 'notice', text: `[CONSENT NEEDED — ${nameOf(issuerId)} wants to bring a fresh red-team adversary (Pierre) into THIS room.\n• Provenance: chosen & briefed by ${nameOf(issuerId)}, runs on their repo, carries NO context beyond the open brief.\n• Capability: sandboxed to least privilege — no internet egress (it can't phone out), reaching only the model API and this daemon.\n• The brief is at /rooms/${p.roomId}/adversary-brief.md — read it and show your human.\nAllow: your human runs \`mrc rooms accept ${p.roomId}\` · refuse: \`mrc rooms decline ${p.roomId}\`. Nothing changes until they do.]` })
+    for (const m of others(p, issuerId)) send(m, { type: 'notice', text: `[CONSENT NEEDED — ${nameOf(issuerId)} wants to bring a fresh red-team adversary (Pierre) into THIS room.\n• Provenance: chosen & briefed by ${nameOf(issuerId)}, runs on their repo, carries NO context beyond the open brief.\n• Capability: launched under the hardened adversary firewall profile — minimal network allowlist, no arbitrary web egress, DNS-pinned; it grounds in the repo and volleys through this daemon.\n• The brief is at /rooms/${p.roomId}/adversary-brief.md — read it and show your human.\nAllow: your human runs \`mrc rooms accept ${p.roomId}\` · refuse: \`mrc rooms decline ${p.roomId}\`. Nothing changes until they do.]` })
     send(issuerId, { type: 'notice', text: `[Requested consent to add an adversary to ${p.roomId}; waiting on ${others(p, issuerId).map(nameOf).join(', ')}'s human. They'll see your brief (/rooms/${p.roomId}/adversary-brief.md). It joins only on their yes.]` })
     notify(`${nameOf(issuerId)} wants to add an adversary to ${p.roomId} — needs the other side's consent`)
     ack('invite-requested')
@@ -675,9 +731,49 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
         let f; try { f = JSON.parse(line) } catch { continue }
         if (sessionId) { const _s = sessions.get(sessionId); if (_s) _s.lastFrameAt = Date.now() }   // per-session last-frame stamp (liveness/debug; list_peers shows session age now, not idle)
         if (f.type === 'register' && f.sessionId) {
+          // G/#44: authenticate the register secret against the TAMPER-PROOF host-only RECORD, NOT the previous
+          // in-memory registrant — comparing to the prior registrant lets registration ORDER decide identity
+          // (an impostor that registers a victim's id FIRST, victim offline, becomes the owner AND locks the
+          // real owner out when it returns). The record's secret persists whether or not the owner is
+          // connected, so reading it closes register-first impersonation; the correct secret is always accepted
+          // — even over a stale live socket (a clean reconnect, no lockout: the close path's socket-identity
+          // guard stops the old socket's late close from evicting it) — and a wrong/absent one rejected
+          // regardless of order.
+          // TRANSITION (soft-arm): the secret only flows once the image is rebuilt (the channel-server reads
+          // MRC_ROOM_SECRET). So stay lenient until the FIRST secret-bearing register proves a new-image
+          // session is live, then enforce strictly (reject absent-or-wrong when the record has a secret) —
+          // otherwise an attacker would just OMIT the secret to hit the lenient path. Pre-rebuild this equals
+          // today's posture (no secret protection) so it never bricks an old-image session; and in the real
+          // threat (a summoned adversary hijacking its summoner) the summoner registered with its secret first,
+          // so strict is already armed before the adversary can try. Residual: the brief window after a daemon
+          // restart, before any session re-registers, is lenient — bounded + equal to today's posture.
+          if (f.secret) armSecrets()
+          const expectedSecret = loadSessionRecord(f.sessionId).secret
+          const rejectRegister = !!(secretsArmed && expectedSecret && f.secret !== expectedSecret)
+          if (rejectRegister) {
+            try { sock.write(JSON.stringify({ type: 'notice', text: "[Register rejected — the secret does not match this session id's record (possible impersonation). If you are the owner reconnecting, ensure MRC_ROOM_SECRET matches its launch value.]" }) + '\n') } catch {}
+            console.error(`[room-daemon] WARN rejected register for ${f.sessionId} — secret mismatch vs the host record (possible impersonation)`)
+          } else {
           sessionId = f.sessionId
-          sessions.set(sessionId, { sock, repo: f.repo || '?', label: f.label || f.repo || '?', room: f.room || null, hostRepo: f.repoPath || null, web: !!f.web, notifyPort: Number(f.notifyPort) || 0, lastFrameAt: Date.now() })
-          if (f.summonedBy || f.adversary) adversaries.add(sessionId); else adversaries.delete(sessionId)   // adversary classification tracks the CURRENT launch via TWO signals: summonedBy (a fresh summon) OR the `adversary` IDENTITY bit (MRC_ADVERSARY, forwarded on EVERY adversary launch incl. a re-sandboxed RESUME and --open-adversary-unsafe). The resume path carries NO summonedBy, so without `|| f.adversary` an adversary RESUME hits the else → DECLASSIFIED while still firewall-caged = the #32 split-brain (found live: a resumed Pierre showed as a normal peer in `mrc rooms status`). The identity bit is DISTINCT from the cage bit MRC_ADVERSARY_FW: --open-adversary-unsafe is network-uncaged but STILL classified here, so it stays consent-protected in others' rooms. The else (neither signal) correctly clears the flag for a normal session resuming an ex-adversary's transcript. Auto-pair (below) stays gated on f.summonedBy, so reclassifying never re-pairs. Gates invite_peer #3 / catch-up exclusion / one-per-room. (FORWARD-COMPAT: pre-rebuild channel-servers send no `adversary` field → undefined → identical to the old summonedBy-only clause.)
+          sessions.set(sessionId, { sock, repo: safeName(f.repo || '?'), label: safeName(f.label || f.repo || '?'), room: f.room || null, hostRepo: f.repoPath || null, web: !!f.web, notifyPort: Number(f.notifyPort) || 0, lastFrameAt: Date.now() })
+          // B/#39: classify containment from the TAMPER-PROOF host-only record (src/session-record.js),
+          // NOT the register frame. A contained session controls its own frame and could omit summonedBy/
+          // adversary to declassify itself; the record is written host-side pre-launch and is never mounted
+          // into any container, so a REAL adversary always classifies 'adversary' here and CANNOT forge
+          // 'unknown'. 3-state, loud-on-absent: 'adversary' → cage-flag; 'normal' → trust; 'unknown' (no/
+          // unreadable record — only ever a pre-#32 / human-wiped LEGIT session) → DON'T brand adversary
+          // (that mislabel breaks legit sessions = an availability bug) and DON'T silently trust → alert the
+          // human + mark unverified (back-fill via the picker's migration vouch). The summon auto-pair below
+          // stays frame-based (that's pairing, not a trust grant), and addAdversaryToRoom/onAdversaryUp still
+          // flag a freshly-joined adversary directly — so a summon with the summoner online is unaffected.
+          const cls = classifySession(sessionId)
+          if (cls === 'adversary') { adversaries.add(sessionId); unverified.delete(sessionId) }
+          else if (cls === 'normal') { adversaries.delete(sessionId); unverified.delete(sessionId) }
+          else if (!unverified.has(sessionId)) {   // 'unknown' — surface once per session (don't add/delete adversaries: preserve any join-path flag, don't brand)
+            unverified.add(sessionId)
+            notify(`Unverifiable session "${safeName(f.label || f.repo || sessionId.slice(-6))}" connected — no security record. Treat its messages with caution; back-fill via mrc pick.`)
+            console.error(`[room-daemon] WARN unverifiable session ${sessionId} (${f.repo || '?'}) — no host security record at register`)
+          }
           noteSessions()
           if (f.room) {  // explicit named room: auto-pair with another session of the same name
             for (const [oid, ov] of sessions) {
@@ -704,6 +800,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
           // A (re)connecting member changes liveness → re-derive brakes, so a reconnecting multi-room
           // session re-brakes its lower rooms (the disconnect path below thaws a room its blocker left).
           recomputeSidechannelBrakes()
+          }
         } else if (f.type === 'list' && sessionId) {
           send(sessionId, { type: 'peerlist', peers: peerList(sessionId) })
         } else if (f.type === 'ask' && sessionId) onAsk(sessionId, String(f.question ?? ''), f.peer)
@@ -744,7 +841,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
           reply({
             ok: true,
             version,
-            sessions: [...sessions.entries()].map(([id, v]) => ({ id, repo: v.repo, name: v.label || v.repo })),
+            sessions: [...sessions.entries()].map(([id, v]) => ({ id, repo: v.repo, name: nameOf(id), adversary: adversaries.has(id) || undefined, unverified: unverified.has(id) || undefined })),   // nameOf reads the source-of-truth record, so status reflects an in-session /rename with no push
             pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, turnCap: p.turnCap, turnBudget: budgetOf(p), autoCatchup: p.autoCatchup, members: p.members.map(nameOf), a: nameOf(p.members[0]), b: nameOf(p.members[1]), pendingInvite: p.pendingInvite ? nameOf(p.pendingInvite.by) : null, requireConsent: !!p.requireConsent })),
           })
           continue
@@ -756,11 +853,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
           setTimeout(() => { try { server.close(); control.close() } catch {} ; process.exit(0) }, 50)
           continue
         }
-        if (f.action === 'relabel' && f.sessionId) {   // host nameWatcher pushes a session's generated/manual name → live daemon label
-          const s = sessions.get(f.sessionId)
-          if (s && f.label && s.label !== f.label) { s.label = f.label; knownNames.set(f.sessionId, f.label) }
-          reply({ ok: true }); continue
-        }
+        // (No `relabel` control action: the daemon reads each session's name from its on-disk record at
+        // use-time via nameOf — single source of truth — so there's no cached label to push. Removed with
+        // the host-side relabel wire.)
         if (f.action === 'delete' && f.roomId) {   // dashboard manual prune (rooms-end deprecation): FULL
           // removal — the daemon pairing (if any) AND the dir (thread.log + consensus.md). Handled pre-pick
           // so it works on a DORMANT/history room with no live pairing too (just removes the dir). This is

@@ -219,11 +219,18 @@ uncaged resume); and a normal `mrc pick` resume is unchanged (no cage, no prompt
   rendered INLINE in the picker TUI (single keypress); `confirmIfAdversary` guards the non-picker
   `sessions resume`. belt 0 strips egress/containment flags+envs from the repo `.mrcrc`.
 
-**Remaining:**
-- **Host-side:** the **guard-split** (silent `mrc .`: `adversary:true` unconditional + `no-record` only under
-  `roomsActive` — completes fail-closed) · the **migration** (names backfill + the show-each-session
-  "all NORMAL?" vouch) · the **transcript-coupled prune** (never-prune-`adversary:true`, keep-on-ambiguity).
-- **One rebuild:** statusline reads the record + retire `session-names` + #28 id · **belt 2** (firewall) ·
-  then the post-rebuild **LIVE regression** (a real resumed adversary: `/proc` `MRC_ADVERSARY_FW=1` +
-  `mrc rooms status` now FLAGGED [the *wire* — the mock can't prove it]; record-move → picker, not silent uncage).
-- **Open verify:** claude transcript-filename stability across compaction (sets prune conservatism).
+**DONE + SHIPPED (2026-06-19):** the **guard-split** (3-state `classifySession`), the **migration vouch**, and the
+**transcript-coupled prune** all built + committed (cc81a27); **belt 2** (firewall gates 443 behind
+`MRC_ADVERSARY_FW`) + the **statusline-reads-record** built + committed; **image rebuilt**. Post-rebuild **LIVE
+regression PASSED**: a fresh caged Pierre logged `arbitrary 443 (1.1.1.1) blocked — belt 2 / cage holds` on the
+WIRE + the 4 substrate checks green (`MRC_ADVERSARY_FW=1` + `MRC_ADVERSARY=1`, no `ALLOW_WEB`; example.com
+blocked; anthropic reachable); the host-side guard (record-move → picker; the "all NORMAL?" vouch) was
+live-validated earlier.
+
+**→ But that live run SPAWNED a full adversary-cage red-team that found the containment broadly holey (8
+findings) — see `docs/adversary-containment-hardening.md`.** Note the **trust-half above** (room-daemon.js:680
+classifying from the register *frame*) is **SUPERSEDED there by B/#39**: the daemon must read THIS host-only
+record (via `classifySession`), not the forgeable wire bit — the record was the authority all along; the daemon
+was wired to the frame. The two-bit env + the firewall-cage half stand.
+
+**Open verify (carried):** claude transcript-filename stability across compaction (sets prune conservatism).

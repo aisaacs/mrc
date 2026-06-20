@@ -3,10 +3,11 @@
 // mrc.js — Mister Claude
 // Launch Claude Code in a sandboxed Docker container with network firewall.
 //
-import { resolve, basename, dirname } from 'node:path'
+import { resolve, basename, dirname, sep } from 'node:path'
 import { readdirSync, existsSync, readFileSync, statSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { randomBytes } from 'node:crypto'
 
 import { BANNER } from './src/constants.js'
 import { setVerbose, dbg } from './src/output.js'
@@ -20,7 +21,6 @@ import { startNotifyProxy } from './src/proxies/notify-proxy.js'
 import { listSessions, nameSession, resolve as resolveSession, loadNames, loadMeta, saveMeta, getSessions, resolveSessionId } from './src/sessions/manager.js'
 import { saveSessionRecord, isAdversarySession, loadSessionRecord, classifySession, pruneSessionRecords } from './src/session-record.js'
 import { createInterface } from 'node:readline'
-import net from 'node:net'
 import { summarize, generateName } from './src/sessions/api.js'
 import { pick, ensureNamesMigrated, ensureSecurityRecordsMigrated } from './src/sessions/picker.js'
 import { detectToolMisses } from './src/sessions/transcript.js'
@@ -405,8 +405,13 @@ const gid = process.getgid?.() ?? 1000
 buildImage(CONTEXT_DIR, { rebuild: config.rebuild, verbose: config.verbose, uid, gid })
 checkImageAge(repoPath)
 
-// Volumes
-const volumes = ['-v', `${repoPath}:/workspace`]
+// Volumes. #45: a caged adversary gets /workspace READ-ONLY — a red-teamer reads the tree to critique it,
+// it never needs to WRITE it (its output goes through the room/daemon). Its own transcript then lives in
+// the RW config volume instead (container-setup.js skips the /workspace/.mrc symlink under the cage), so
+// it can't tamper with the summoner's working tree OR another session's transcript. --open-adversary-unsafe
+// (uncaged by explicit request) keeps RW, like a normal session. Gate = the cage bit (summon || resume-cage).
+const cagedAdversary = !!(config.summonedBy || config.cageAdversary)
+const volumes = ['-v', `${repoPath}:/workspace${cagedAdversary ? ':ro' : ''}`]
 volumes.push(...processSandboxignores(repoPath))
 
 // Config volume per session. BOTH adversary and regular slots are claimed RACE-FREE + FAIL-CLOSED via an atomic
@@ -555,23 +560,53 @@ if (roomsActive) {
   // flag is NEVER downgraded on resume (a resume carries no --summoned-by): it's true if THIS launch is a
   // summon, a re-opened adversary (resumeIsAdversary, incl. --open-adversary-unsafe), OR the existing
   // record already says so. Stores repoPath (for the transcript-coupled prune) + the Pierre slot (login-reuse).
+  let roomSecret
   try {
     const existingSec = loadSessionRecord(sessionId)
     const isAdv = !!config.summonedBy || !!config.resumeIsAdversary || !!existingSec.adversary
+    // G/#44: a STABLE per-UUID register secret — generated once, reused on resume (so a resumed session
+    // re-claims its own id even if the daemon hasn't reaped its old socket yet). Host-only + never mounted,
+    // so another container can't read it to impersonate this session.
+    roomSecret = existingSec.secret || randomBytes(24).toString('hex')
     saveSessionRecord(sessionId, {
       adversary: isAdv,
       summonedBy: config.summonedBy || existingSec.summonedBy || null,
       repoPath,
+      secret: roomSecret,
       ...(isAdv && adversarySlot ? { slot: adversarySlot } : {}),
     })
-  } catch {}
+  } catch (e) {
+    // B/#39 fail-closed: a NORMAL session tolerates a record-write failure (it classifies 'unknown' → the
+    // daemon alerts the human). But an ADVERSARY with no durable record is exactly the split-brain we're
+    // closing — firewall-caged yet daemon-classified-normal — so refuse to launch one we can't record.
+    if (config.summonedBy || config.resumeIsAdversary) {
+      console.error(`  ✗ Couldn't write the adversary's security record (${e.message}). Refusing to launch an unrecorded adversary. Nothing launched.`)
+      process.exit(1)
+    }
+  }
   // Human-readable label (alias) for `mrc rooms` + ask_peer matching: the record's name (source of
   // truth), then the legacy session-names projection (transitional fallback), else the repo basename.
   let label = basename(repoPath)
   try { const nm = loadMeta(mrcDirRec, sessionId).name || loadNames(mrcDirRec)[sessionId]; if (nm) label = nm } catch {}
   if (config.newSessionName) label = config.newSessionName   // an explicit --new <name> shows live in list_peers from register, not only on the next resume
-  envFlags.push(...roomSessionEnv({ daemonPort: daemon.port, sessionId, repoName: basename(repoPath), repoPath, roomName: config.room, label, summonedBy: config.summonedBy }))
-  volumes.push('-v', `${roomsRoot()}:/rooms:ro`)   // read-only: the container only READS briefs/thread/consensus; every write goes through the daemon (host-side), so rw was needless privilege that let any sandbox forge another room's audit log or swap a consented brief
+  envFlags.push(...roomSessionEnv({ daemonPort: daemon.port, sessionId, repoName: basename(repoPath), repoPath, roomName: config.room, label, summonedBy: config.summonedBy, secret: roomSecret }))
+  // D/#43: a caged adversary gets ONLY its own room dir (never the whole rooms tree → no cross-project
+  // harvest of every project's thread.log/consensus/briefs). The fresh-summon path always carries --room;
+  // mount just that subdir read-only. A resumed adversary without --room (rare) gets NO /rooms mount — live
+  // relay still works, just no on-disk catch-up (fail-closed). A regular session keeps the FULL tree: it's
+  // one trust domain and must see rooms created at runtime (ask_peer), whose ids aren't known at launch.
+  if (cagedAdversary) {
+    // D/#43: mount only the adversary's OWN room dir. Containment check — basename does NOT defang '..'
+    // (basename('..')==='..'), so verify the RESOLVED path is a real SUBDIR of roomsRoot before mounting,
+    // not just that basename left it unchanged.
+    const rid = config.room ? basename(config.room) : null
+    const roomPath = rid ? resolve(roomsRoot(), rid) : null
+    if (roomPath && roomPath.startsWith(roomsRoot() + sep) && existsSync(roomPath)) {
+      volumes.push('-v', `${roomPath}:/rooms/${rid}:ro`)
+    }
+  } else {
+    volumes.push('-v', `${roomsRoot()}:/rooms:ro`)   // read-only: the container only READS briefs/thread/consensus; every write goes through the daemon (host-side), so rw was needless privilege that let any sandbox forge another room's audit log or swap a consented brief
+  }
   roomInfo = { sessionId, roomName: config.room || '', label }
 }
 
@@ -582,9 +617,12 @@ if (!config.json) {
   console.log(`  → Volume:    ${volName}`)
   console.log(`  → Schwartz:  ${[apiKey && 'Anthropic', openaiKey && 'OpenAI'].filter(Boolean).join(' + ')} engaged`)
   if (config.agent !== 'claude') console.log(`  → Agent:     ${config.agent}`)
-  console.log(`  → Clipboard: ${clipboardServer ? 'the Schwartz can see your clipboard' : 'disabled'}`)
-  console.log(`  → Notify:    ${notifyServer ? 'the Schwartz will alert you when ready' : 'disabled'}`)
-  console.log(`  → Firewall:  ${config.allowWeb ? 'jammed, but he can see the web (--web)' : 'jammed (just like their radar)'}`)
+  // A caged adversary can't actually reach the clipboard or notify proxies — the firewall (F/#41) drops
+  // those host ports, keeping only the room relay. So the banner must say so, not claim they work (the same
+  // honesty fix as the consent text). cagedAdversary = the cage bit set above (summon || re-sandboxed resume).
+  console.log(`  → Clipboard: ${cagedAdversary ? 'blocked (adversary cage)' : clipboardServer ? 'the Schwartz can see your clipboard' : 'disabled'}`)
+  console.log(`  → Notify:    ${cagedAdversary ? 'blocked (adversary cage)' : notifyServer ? 'the Schwartz will alert you when ready' : 'disabled'}`)
+  console.log(`  → Firewall:  ${cagedAdversary ? 'hardened adversary cage — model API only, no web' : config.allowWeb ? 'jammed, but he can see the web (--web)' : 'jammed (just like their radar)'}`)
   if (roomInfo) console.log(`  → Rooms:     "${roomInfo.label}" · ${roomInfo.roomName ? `explicit pair "${roomInfo.roomName}"` : 'ambient (say "ask <peer>: …")'}`)
   console.log('')
 }
@@ -599,16 +637,9 @@ if (config.agent === 'claude') {
 // Background name generator
 let nameWatcher = null
 if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && apiKey) {
-  // Push a freshly-generated name to the room daemon so list_peers reflects it LIVE (the on-disk names
-  // map alone never moved the daemon label — that was the missing wire). Best-effort, fire-and-forget.
-  const relabelDaemon = (uuid) => {
-    try {
-      const nm = loadNames(mrcDir)[uuid]
-      if (!nm || !roomDaemon?.controlPort) return
-      const c = net.connect(roomDaemon.controlPort, '127.0.0.1', () => { c.write(JSON.stringify({ action: 'relabel', sessionId: uuid, label: nm }) + '\n'); c.end() })
-      c.on('error', () => {})
-    } catch {}
-  }
+  // No relabel push: the daemon reads each session's name from its on-disk record at use-time (single
+  // source of truth), so generateName writing that record is ALL that's needed — list_peers/status pick it
+  // up on the next read. (The old relabel-to-daemon wire was a cache-sync the SSOT design removed.)
   nameWatcher = (async () => {
     // Rooms pins THIS session's conversation UUID — name its OWN .jsonl directly. The heuristics below
     // (files[last] / newFiles[0]) mis-name under concurrent same-repo sessions: a fresh session grabs a
@@ -624,7 +655,7 @@ if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && 
       // Only name once there's enough transcript to extract a real name from. The 10KB threshold is a
       // GUARD, not just a wait: a session opened and left idle never crosses it, so it stays unnamed
       // instead of firing on an empty transcript (which the namer rejects as "no transcript provided").
-      if (big) { await generateName(mrcDir, roomSessionId); relabelDaemon(roomSessionId) }
+      if (big) await generateName(mrcDir, roomSessionId)
       return
     }
     // For resumed sessions, name immediately if unnamed
@@ -632,7 +663,7 @@ if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && 
       const files = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')).sort()
       if (files.length > 0) {
         const uuid = basename(files[files.length - 1], '.jsonl')
-        await generateName(mrcDir, uuid); relabelDaemon(uuid)
+        await generateName(mrcDir, uuid)
       }
     } catch {}
 
@@ -653,7 +684,7 @@ if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && 
           }
           if (big) {
             const uuid = basename(newFiles[0], '.jsonl')
-            await generateName(mrcDir, uuid); relabelDaemon(uuid)
+            await generateName(mrcDir, uuid)
           }
           break
         }

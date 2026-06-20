@@ -2,28 +2,52 @@
 set -euo pipefail
 trap 'echo "FAILED at line $LINENO (exit code $?)" >&2' ERR
 
-# Wait for network to be ready (Colima can be slow to warm up)
-echo "Waiting for network..."
-for i in $(seq 1 30); do
-  if dig +short +timeout=1 api.anthropic.com >/dev/null 2>&1; then
-    echo "Network ready after ${i}s"
-    break
-  fi
-  if [ "$i" -eq 30 ]; then
-    echo "ERROR: Network not ready after 30 attempts"
-    dig api.anthropic.com 2>&1 || true
-    exit 1
-  fi
-  sleep 1
-done
+# C/#38: the container now starts as ROOT. The ROOT PASS (this block) waits for the network and applies the
+# firewall — which needs NET_ADMIN — then drops to the unprivileged `coder` user via gosu and re-execs THIS
+# script. Everything BELOW the block (config setup, Codex login, the agent) runs as `coder`, byte-for-byte as
+# it did when the container started as coder — so normal sessions are unchanged (same file ownership, HOME,
+# login). What changes: a sandboxed session can no longer invoke or weaken its own firewall (coder has no
+# sudo at all). The old `sudo init-firewall.sh` escape hatch is gone.
+if [ "$(id -u)" = "0" ]; then
+  # Wait for network to be ready (Colima can be slow to warm up)
+  echo "Waiting for network..."
+  for i in $(seq 1 30); do
+    if dig +short +timeout=1 api.anthropic.com >/dev/null 2>&1; then
+      echo "Network ready after ${i}s"
+      break
+    fi
+    if [ "$i" -eq 30 ]; then
+      echo "ERROR: Network not ready after 30 attempts"
+      dig api.anthropic.com 2>&1 || true
+      exit 1
+    fi
+    sleep 1
+  done
 
-# Run firewall (must be bash + sudo — see init-firewall.sh)
-sudo ALLOW_WEB="${ALLOW_WEB:-}" \
-  MRC_ADVERSARY_FW="${MRC_ADVERSARY_FW:-}" \
-  MRC_CLIPBOARD_PORT="${MRC_CLIPBOARD_PORT:-7722}" \
-  MRC_NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}" \
-  MRC_ROOM_PORT="${MRC_ROOM_PORT:-}" \
-  /usr/local/bin/init-firewall.sh
+  # Apply the firewall AS ROOT (no sudo — the coder grant is gone). init-firewall.sh pins the cage profile
+  # into a root-owned file, so it's immutable for the rest of the container's life.
+  ALLOW_WEB="${ALLOW_WEB:-}" \
+    MRC_ADVERSARY_FW="${MRC_ADVERSARY_FW:-}" \
+    MRC_CLIPBOARD_PORT="${MRC_CLIPBOARD_PORT:-7722}" \
+    MRC_NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}" \
+    MRC_ROOM_PORT="${MRC_ROOM_PORT:-}" \
+    /usr/local/bin/init-firewall.sh
+
+  # Drop to coder for everything else. Pin HOME/USER/LOGNAME (gosu does NOT set them) so config setup and the
+  # agent resolve coder's home + config volume, not root's.
+  export HOME=/home/coder USER=coder LOGNAME=coder
+  exec gosu coder "$0" "$@"
+fi
+
+# ===== coder pass (unprivileged) — config setup + agent, unchanged from the pre-root-init flow =====
+# C/#38 fail-closed: we only get here (as coder) AFTER the root pass ran the firewall, which writes a
+# root-owned /etc/mrc-cage-profile. If that file is absent, the firewall never ran (e.g. the container was
+# started non-root by some future path / a debug `docker run --user`) — refuse to launch the agent with
+# un-firewalled network. (Spine 2: fail closed on the absence of proof the firewall applied.)
+if [ ! -f /etc/mrc-cage-profile ]; then
+  echo "FATAL: firewall did not run (no /etc/mrc-cage-profile) — refusing to start the agent unprotected." >&2
+  exit 1
+fi
 
 # All config setup is now in Node
 node /usr/local/bin/container-setup.js
