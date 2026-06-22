@@ -78,18 +78,22 @@ ipset create allowed-domains hash:net
 
 # Resolve and add allowed domains. A resolution failure is a warning, not fatal —
 # a transient DNS hiccup on one domain shouldn't wedge container startup.
-# A summoned adversary gets a MINIMAL allowlist: Anthropic's own model + auth endpoints only
-# (api.anthropic.com + platform.claude.com — current Claude Code authenticates/validates the session via
-# platform.claude.com, and because this profile DNS-pins + drops port 53, a missing host can't even be
-# resolved → "Failed to connect to platform.claude.com: ECONNREFUSED"). It grounds in the repo and volleys
-# via the daemon's host proxy ports (IP-based below), so it still needs no npm/openai, and dropping the
-# multi-tenant SaaS sinks (sentry/statsig) keeps those exfil channels closed.
+# A/#40: a summoned adversary gets an EMPTY direct allowlist — ZERO direct external egress. Every TLS call is
+# forced through the host SNI-pinning egress proxy (HTTPS_PROXY, set by mrc.js → host.docker.internal:proxy),
+# which peeks the in-tunnel ClientHello SNI and forwards ONLY api.anthropic.com / platform.claude.com.
+# Pinning the model's IP HERE would NOT seal egress: api.anthropic.com is a shared Cloudflare edge, so a
+# foreign SNI rides the pinned IP to another tenant (proven live) and an L3/L4 firewall is SNI-blind. So we
+# don't pin it at all — the proxy is the only way out and it seals by NAME. The cage reaches only
+# host.docker.internal:{room,proxy} (HOST_PORTS below) + the daemon relay; it needs no npm/openai/sentry/statsig.
+# ⚠ DANGER (Pierre's trap): do NOT add domains to THIS branch or re-enable a non-empty ipset for the cage. Any
+# IP allowed here is reachable by an ARBITRARY SNI (the firewall is L3/L4) and reopens the A/#40 SNI-ride. A new
+# cage destination goes in the PROXY allowlist (sni-proxy.js DEFAULT_ALLOW), which seals by name — never here.
 if [ "${MRC_ADVERSARY_FW:-}" = "1" ]; then
-    ALLOWED_DOMAINS=("api.anthropic.com" "platform.claude.com")
+    ALLOWED_DOMAINS=()
 else
     ALLOWED_DOMAINS=("registry.npmjs.org" "api.anthropic.com" "platform.claude.com" "api.openai.com" "sentry.io" "statsig.com")
 fi
-for domain in "${ALLOWED_DOMAINS[@]}"; do
+for domain in ${ALLOWED_DOMAINS[@]+"${ALLOWED_DOMAINS[@]}"}; do
     echo "Resolving $domain..."
     ips=$(dig +noall +answer A "$domain" | awk '$4 == "A" {print $5}')
     if [ -z "$ips" ]; then
@@ -125,14 +129,16 @@ echo "Host network detected as: $HOST_NETWORK"
 CLIP_PORT="${MRC_CLIPBOARD_PORT:-7722}"
 NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}"
 ROOM_PORT="${MRC_ROOM_PORT:-}"
-# F/#41: a caged adversary reaches ONLY the room relay port — NOT the clipboard proxy (which serves the
-# human's clipboard contents) or the notification proxy (a desktop-toast phishing surface). It still volleys
-# via the room daemon, so the room port stays open. A normal session keeps all three.
-# NB: this script sets IFS=$'\n\t' (no space), so a space-joined string would NOT word-split in `for` —
-# use a bash ARRAY so the ports iterate regardless of IFS (the original code relied on each port being a
-# separate $var token; collapsing them into one string broke that).
+SNI_PROXY_PORT="${MRC_SNI_PROXY_PORT:-}"
+# F/#41 + A/#40: a caged adversary reaches ONLY the room relay port + the SNI-pinning egress proxy port —
+# NOT the clipboard proxy (serves the human's clipboard) or the notify proxy (a desktop-toast phishing
+# surface). It volleys via the room daemon and reaches the model ONLY through the egress proxy, so those two
+# stay open and clipboard/notify are dropped. A normal session keeps clipboard + notify (+ room) and uses no
+# proxy (direct egress). NB: this script sets IFS=$'\n\t' (no space), so a space-joined string would NOT
+# word-split in `for` — use a bash ARRAY so the ports iterate regardless of IFS (collapsing them into one
+# string broke that and killed a normal session's firewall once already).
 if [ "$CAGE" = "1" ]; then
-    HOST_PORTS=(${ROOM_PORT:+$ROOM_PORT})
+    HOST_PORTS=(${ROOM_PORT:+$ROOM_PORT} ${SNI_PROXY_PORT:+$SNI_PROXY_PORT})
 else
     HOST_PORTS=("$CLIP_PORT" "$NOTIFY_PORT" ${ROOM_PORT:+$ROOM_PORT})
 fi
@@ -191,51 +197,57 @@ if [ "${ALLOW_WEB:-}" = "1" ] && [ "${MRC_ADVERSARY_FW:-}" != "1" ]; then
         echo "WARNING: Could not reach api.anthropic.com — network may not be fully ready"
     fi
 else
-    if curl --connect-timeout 5 https://example.com >/dev/null 2>&1; then
+    # --noproxy '*' so this stays a DIRECT-egress probe even for a caged adversary (HTTPS_PROXY is in its env;
+    # without it curl would tunnel example.com through the proxy — which also drops it, but then this would be
+    # testing the proxy, not the firewall's direct block). A no-op for a normal session (no proxy env).
+    if curl --noproxy '*' --connect-timeout 5 https://example.com >/dev/null 2>&1; then
         echo "ERROR: Firewall verification failed - was able to reach https://example.com"
         exit 1
     else
         echo "Firewall verification passed - unable to reach https://example.com as expected"
     fi
-    # Adversary profile: confirm the DNS-pinned model API is actually reachable — a stale/broken pin would
-    # silently break the agent, so surface it as a warning rather than a mysterious hang.
+    # A/#40 — the cage now has ZERO direct external egress; every TLS call routes through the host SNI-pinning
+    # egress proxy. Three self-checks under the LIVE firewall (the example.com check above already confirmed DNS
+    # is dead). These run ONLY for a caged adversary, so a failed seal aborts the adversary launch (fail-closed)
+    # and never touches a normal session.
     if [ "${MRC_ADVERSARY_FW:-}" = "1" ]; then
-        if curl --connect-timeout 5 https://api.anthropic.com >/dev/null 2>&1; then
-            echo "Adversary profile: api.anthropic.com reachable via pinned IP"
-        else
-            echo "WARNING: adversary profile — api.anthropic.com unreachable; the /etc/hosts pin may be stale"
-        fi
-        # belt 2 self-check: an arbitrary host on 443 by LITERAL IP (1.1.1.1 — bypasses the DNS drop so this
-        # tests the 443 GATE itself, not name resolution; not in the allowlist; it serves 443) MUST be blocked,
-        # even if ALLOW_WEB leaked in. rc 7 (REJECT) / 28 (DROP-timeout) = blocked; a real connection returns 0
-        # or a post-handshake TLS/cert code (≠7,28) → the cage is OPEN → abort the launch closed. The `|| rc=$?`
-        # keeps `set -e` from aborting on the expected non-zero. (The example.com check above passes via the DNS
-        # drop, NOT this gate — so this is the only probe that actually exercises belt 2.)
+        PROXY="http://host.docker.internal:${MRC_SNI_PROXY_PORT:-0}"
+        # (a) NO direct 443: an arbitrary host on 443 by LITERAL IP (1.1.1.1 — bypasses the DNS drop, so this
+        # tests the egress GATE itself, not name resolution) MUST be blocked. rc 7 (REJECT) / 28 (DROP-timeout) =
+        # blocked; a real connection (rc 0 / a post-handshake TLS code) = the cage has direct egress → abort.
+        # `--noproxy '*'` is ESSENTIAL: HTTPS_PROXY is in the container env, so without it curl would route THIS
+        # probe through the proxy (testing the proxy's drop, not the firewall's direct-egress drop = a false pass).
         rc=0
-        curl --connect-timeout 5 -o /dev/null -s https://1.1.1.1 2>/dev/null || rc=$?
+        curl --noproxy '*' --connect-timeout 5 -o /dev/null -s https://1.1.1.1 2>/dev/null || rc=$?
         if [ "$rc" = "7" ] || [ "$rc" = "28" ]; then
-            echo "Adversary profile: arbitrary 443 (1.1.1.1) blocked as expected — belt 2 / cage holds"
+            echo "Adversary profile: no direct 443 egress (1.1.1.1 blocked) — cage holds"
         else
-            echo "ERROR: adversary profile — reached 1.1.1.1:443 (curl rc=$rc); the 443 cage is OPEN. Aborting."
+            echo "ERROR: adversary profile — reached 1.1.1.1:443 directly (curl rc=$rc); the cage has direct egress. Aborting."
             exit 1
         fi
-        # A/#40 (DOWNGRADED — REFUTED in live test, see docs/adversary-containment-hardening.md): the cage pins
-        # egress by IP, but api.anthropic.com is a SHARED Cloudflare edge, so the IP-pin does NOT seal egress by
-        # NAME — a foreign SNI aimed at the pinned IP completes a real TLS handshake and rides to another CF
-        # tenant (proven: a foreign cert was served off this IP). The L3/L4 firewall is SNI-blind and CANNOT fix
-        # this; the real seal is a HOST SNI-pinning egress proxy (TODO — the "option 1" follow-up). This probe is
-        # DIAGNOSTIC ONLY — it seals nothing, and it does NOT abort. Correct signal: a COMPLETED handshake (curl
-        # rc=0) to a foreign SNI = the ride is OPEN; a connection-layer refusal (rc 7/28/35) = sealed. (Earlier
-        # this aborted on a 4xx HTTP code — a false-green: a 4xx with rc=0 is the foreign origin ANSWERING.)
-        PINNED_IP=$(getent hosts api.anthropic.com 2>/dev/null | awk '{print $1; exit}')
-        if [ -n "$PINNED_IP" ]; then
-            rc=0
-            curl -k --resolve "example.com:443:$PINNED_IP" --connect-timeout 5 -o /dev/null -s https://example.com/ 2>/dev/null || rc=$?
-            if [ "$rc" = "0" ]; then
-                echo "WARNING: adversary cage is NOT exfil-sealed — a foreign SNI rode the pinned IP ($PINNED_IP) to a full TLS handshake (shared CDN edge). A malicious adversary could exfil to a Cloudflare-fronted host. Real fix pending: host SNI-pinning egress proxy. Do NOT treat this cage as exfil-proof."
-            else
-                echo "Adversary profile: foreign SNI to the pinned IP refused at the connection layer (rc=$rc) — no SNI-ride"
-            fi
+        # (b) the egress proxy SEALS by SNI (this is the A/#40 fix): a foreign host THROUGH the proxy MUST be
+        # refused. The proxy answers CONNECT, peeks the in-tunnel ClientHello SNI, and drops a non-allowlisted
+        # name → curl can't finish the handshake (rc≠0). A COMPLETED request (rc 0) = the SNI-ride is open →
+        # abort closed. (The proxy is guaranteed up — mrc.js fails the launch closed if it can't start, so the
+        # container wouldn't exist; a connect-refused here would also be rc≠0 and still fail safe.) `-k` so only
+        # a transport failure, not a cert mismatch, can drive the verdict.
+        rc=0
+        curl -x "$PROXY" -k --connect-timeout 8 -o /dev/null -s https://example.com/ 2>/dev/null || rc=$?
+        if [ "$rc" = "0" ]; then
+            echo "ERROR: adversary profile — a foreign SNI (example.com) tunneled THROUGH the egress proxy (rc=0); the SNI pin is not holding. Aborting."
+            exit 1
+        else
+            echo "Adversary profile: foreign SNI refused by the egress proxy (rc=$rc) — A/#40 SNI-ride sealed"
+        fi
+        # (c) liveness: the model API MUST be reachable THROUGH the proxy or the agent is bricked. A warning, not
+        # an abort — a transient upstream hiccup isn't a safety failure and shouldn't wedge the launch closed.
+        # NB (Pierre F3): this proves the proxy→upstream PATH works when explicitly told (-x) to use it; it does
+        # NOT prove the agent binary routes its OWN calls through HTTPS_PROXY — that's the live model call. If the
+        # agent ignored the proxy, its calls go direct → empty ipset → blocked = fail-CLOSED (bricked, not leaky).
+        if curl -x "$PROXY" --connect-timeout 8 -o /dev/null -s https://api.anthropic.com; then
+            echo "Adversary profile: api.anthropic.com reachable via the SNI proxy"
+        else
+            echo "WARNING: adversary profile — api.anthropic.com NOT reachable via the egress proxy; the agent may be unable to start"
         fi
     fi
 fi

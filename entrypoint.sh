@@ -31,6 +31,7 @@ if [ "$(id -u)" = "0" ]; then
     MRC_CLIPBOARD_PORT="${MRC_CLIPBOARD_PORT:-7722}" \
     MRC_NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}" \
     MRC_ROOM_PORT="${MRC_ROOM_PORT:-}" \
+    MRC_SNI_PROXY_PORT="${MRC_SNI_PROXY_PORT:-}" \
     /usr/local/bin/init-firewall.sh
 
   # Drop to coder for everything else. Pin HOME/USER/LOGNAME (gosu does NOT set them) so config setup and the

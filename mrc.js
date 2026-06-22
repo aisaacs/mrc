@@ -18,6 +18,7 @@ import { processSandboxignores } from './src/sandboxignore.js'
 import { findFreePort } from './src/ports.js'
 import { startClipboardProxy } from './src/proxies/clipboard-proxy.js'
 import { startNotifyProxy } from './src/proxies/notify-proxy.js'
+import { startSniProxy } from './src/proxies/sni-proxy.js'
 import { listSessions, nameSession, resolve as resolveSession, loadNames, loadMeta, saveMeta, getSessions, resolveSessionId } from './src/sessions/manager.js'
 import { saveSessionRecord, isAdversarySession, loadSessionRecord, classifySession, pruneSessionRecords } from './src/session-record.js'
 import { createInterface } from 'node:readline'
@@ -292,11 +293,13 @@ const startedColima = await ensureDocker(config.verbose, { colimaCpu: config.col
 // Cleanup on exit
 let clipboardServer = null
 let notifyServer = null
+let sniProxyServer = null
 let roomBroker = null
 
 function cleanup() {
   if (clipboardServer) { clipboardServer.close(); clipboardServer = null }
   if (notifyServer) { notifyServer.close(); notifyServer = null }
+  if (sniProxyServer) { sniProxyServer.close(); sniProxyServer = null }
   if (roomBroker) { try { roomBroker.stop() } catch {} ; roomBroker = null }
   if (startedColima) {
     // Colima is a single shared VM hosting every mrc container. Only stop it
@@ -411,6 +414,14 @@ checkImageAge(repoPath)
 // it can't tamper with the summoner's working tree OR another session's transcript. --open-adversary-unsafe
 // (uncaged by explicit request) keeps RW, like a normal session. Gate = the cage bit (summon || resume-cage).
 const cagedAdversary = !!(config.summonedBy || config.cageAdversary)
+// A caged adversary's only egress is the host SNI-pinning proxy (A/#40), and that proxy is started in the
+// interactive launch path below — NOT in --daemon (detached) mode, which early-exits before it. The summon
+// path never uses --daemon (it spawns an interactive `mrc --new Pierre …`), so this is belt-and-suspenders:
+// refuse the combination loudly rather than detach a cage with zero egress and no proxy to reach the model.
+if (cagedAdversary && config.daemon) {
+  console.error('  ✗ A caged adversary can\'t run in --daemon mode (its SNI-pinning egress proxy is interactive-only). Nothing launched.')
+  process.exit(1)
+}
 const volumes = ['-v', `${repoPath}:/workspace${cagedAdversary ? ':ro' : ''}`]
 volumes.push(...processSandboxignores(repoPath))
 
@@ -533,6 +544,29 @@ if (!config.noNotify) {
   }
 }
 
+// A/#40 — SNI-pinning egress proxy for a CAGED adversary ONLY. The cage gets ZERO direct external
+// egress (init-firewall.sh drops the ipset/443 allow); its sole route out is this host proxy, which
+// peeks the in-tunnel ClientHello SNI and forwards only api.anthropic.com / platform.claude.com —
+// sealing the Cloudflare shared-edge SNI-ride that an L3/L4 firewall is blind to. HTTPS_PROXY points
+// the agent's TLS calls here; the room relay (raw TCP, not an HTTP client) ignores proxy env, so the
+// volley is unaffected. NO_PROXY keeps loopback/host.docker.internal direct. Refuse to launch the
+// adversary if the proxy can't start (fail-closed — no proxy means no sealed path out). A normal
+// session never starts this and never sees the env: its direct egress is unchanged.
+if (cagedAdversary) {
+  const sniPort = await findFreePort(notifyPort + 1)
+  try {
+    sniProxyServer = await startSniProxy(sniPort)
+    envFlags.push('-e', `MRC_SNI_PROXY_PORT=${sniPort}`)
+    envFlags.push('-e', `HTTPS_PROXY=http://host.docker.internal:${sniPort}`)
+    envFlags.push('-e', `https_proxy=http://host.docker.internal:${sniPort}`)
+    envFlags.push('-e', 'NO_PROXY=localhost,127.0.0.1,host.docker.internal')
+    envFlags.push('-e', 'no_proxy=localhost,127.0.0.1,host.docker.internal')
+  } catch (e) {
+    console.error(`  ✗ Couldn't start the adversary's SNI-pinning egress proxy (${e.message}). Refusing to launch a caged adversary without a sealed egress path. Nothing launched.`)
+    process.exit(1)
+  }
+}
+
 // Room participation (default-on for interactive Claude; see roomsActive above). The daemon was
 // booted earlier (roomDaemon); here we just wire this session's channel to it.
 let roomInfo = null
@@ -622,7 +656,7 @@ if (!config.json) {
   // honesty fix as the consent text). cagedAdversary = the cage bit set above (summon || re-sandboxed resume).
   console.log(`  → Clipboard: ${cagedAdversary ? 'blocked (adversary cage)' : clipboardServer ? 'the Schwartz can see your clipboard' : 'disabled'}`)
   console.log(`  → Notify:    ${cagedAdversary ? 'blocked (adversary cage)' : notifyServer ? 'the Schwartz will alert you when ready' : 'disabled'}`)
-  console.log(`  → Firewall:  ${cagedAdversary ? 'hardened adversary cage — model API only, no web' : config.allowWeb ? 'jammed, but he can see the web (--web)' : 'jammed (just like their radar)'}`)
+  console.log(`  → Firewall:  ${cagedAdversary ? 'hardened cage — egress SNI-pinned to the model API (no direct net, no web)' : config.allowWeb ? 'jammed, but he can see the web (--web)' : 'jammed (just like their radar)'}`)
   if (roomInfo) console.log(`  → Rooms:     "${roomInfo.label}" · ${roomInfo.roomName ? `explicit pair "${roomInfo.roomName}"` : 'ambient (say "ask <peer>: …")'}`)
   console.log('')
 }

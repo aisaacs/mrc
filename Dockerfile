@@ -105,11 +105,14 @@ RUN chmod +x /usr/local/bin/xclip
 COPY container/mrc-notify-hook.js /usr/local/bin/
 COPY container/mrc-statusline.js /usr/local/bin/
 COPY container/container-setup.js /usr/local/bin/
-COPY container/mrc-rename.js /usr/local/bin/
+# mrc-rename installs WITHOUT the .js so the /rename slash command can invoke it as a clean `mrc-rename`
+# (it has a node shebang + lands on PATH, exactly like the xclip shim above). The other three KEEP .js —
+# they're referenced by full path in hooks/settings/entrypoint, never typed as a command.
+COPY container/mrc-rename.js /usr/local/bin/mrc-rename
 RUN chmod +x /usr/local/bin/mrc-notify-hook.js \
     /usr/local/bin/mrc-statusline.js \
     /usr/local/bin/container-setup.js \
-    /usr/local/bin/mrc-rename.js
+    /usr/local/bin/mrc-rename
 
 # Video analysis script + slash command (staged for runtime seeding)
 COPY container/video-analysis.sh /usr/local/bin/video-analysis
