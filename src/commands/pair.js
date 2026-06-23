@@ -87,7 +87,14 @@ export async function ensureRoomDaemon({ portBase, notifyPort }) {
 // reconnects to fresh code without relaunching.
 export async function restartRoomDaemon() {
   const meta = readMeta()
-  if (!meta) return { ok: false, error: 'no room daemon recorded yet (start a session first)' }
+  if (!meta) {
+    // #37: no daemon recorded (never started, or `mrc rooms stop` cleared the record) → COLD-START a fresh
+    // one via the same proven path a session launch uses, instead of erroring "start a session first". It
+    // idle-shuts-down ~10min later if nothing connects, so a no-op restart can't leak a stray daemon.
+    const d = await ensureRoomDaemon({ portBase: Number(process.env.MRC_PORT_BASE) || 7722, notifyPort: 0 })
+    const up = d && await probeControl(d.controlPort)
+    return up ? { ok: true, port: d.port, coldStarted: true } : { ok: false, error: 'could not boot a room daemon — run: pkill -f room-daemon.js, then try again' }
+  }
   await stopDaemon(meta)
   spawnDaemon(meta.port, meta.controlPort, meta.notifyPort || 0)
   const ok = await waitUp(meta.controlPort)

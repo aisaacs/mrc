@@ -3,7 +3,18 @@ import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { dbg } from './output.js'
 
-/** Parse a .mrcrc file into flags and env vars (KEY=VALUE lines). */
+// #34: split a .mrcrc flag LINE into argv tokens (quote-aware) so `--colima-memory 32` becomes
+// ['--colima-memory','32'] instead of one un-parseable arg that silently falls through. Honors '…'/"…"
+// for a value with spaces (e.g. `--new "my session"`); an unterminated quote just takes the rest of the line.
+export function tokenizeArgs(line) {
+  const out = []
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g
+  let m
+  while ((m = re.exec(line))) out.push(m[1] ?? m[2] ?? m[3])
+  return out
+}
+
+/** Parse a .mrcrc file into flag TOKENS (#34: lines are tokenized) and env vars (KEY=VALUE lines, kept whole). */
 export function readMrcrc(file) {
   if (!existsSync(file)) return { flags: [], envs: [] }
   const flags = []
@@ -11,8 +22,8 @@ export function readMrcrc(file) {
   for (let line of readFileSync(file, 'utf8').split('\n')) {
     line = line.replace(/#.*$/, '').trim()
     if (!line) continue
-    if (/^[A-Z_]+=/.test(line)) envs.push(line)
-    else flags.push(line)
+    if (/^[A-Z_]+=/.test(line)) envs.push(line)            // KEY=VALUE env line — value may contain spaces, keep whole
+    else flags.push(...tokenizeArgs(line))                 // #34: tokenize so a multi-token flag line actually parses
   }
   return { flags, envs }
 }
@@ -30,10 +41,12 @@ export function readMrcrc(file) {
 // --summoned-by, --open-adversary-unsafe), host-global resource (--colima-*, -r/--rebuild), mode
 // (--daemon, -j/--json), and CLI-hijack (the `--` separator, -h/--help).
 //
-// NOTE: this is a per-TOKEN filter — a value-flag's value token (e.g. 'myname' in a two-line `--new`
-// then `myname`) is itself checked and dropped (it isn't an allowed flag). Fine today: the only allowed
-// value-flag is --new and losing its OPTIONAL name is safe-direction (a repo can force a fresh session
-// but never a misleading NAME). A value-REQUIRED repo flag would need a value-aware filter, not this one.
+// NOTE: this is a per-TOKEN filter, and #34 makes repo lines tokenize, so a value-flag's value token (e.g.
+// 'myname' after `--new`) is itself checked and dropped (not an allowed flag) AND a second flag on one line
+// (e.g. `--no-sound --web`) is filtered independently — so a repo file CANNOT smuggle `--web` past an allowed
+// leading flag. Fine today: the only allowed value-flag is --new and losing its OPTIONAL name is safe-direction
+// (a repo can force a fresh session but never a misleading NAME). A value-REQUIRED repo flag would need a
+// value-aware filter, not this one.
 const REPO_ALLOWED_FLAGS = new Set([
   '--no-sound', '--no-notify', '--no-summary', '--no-rooms', '--verbose', '-v', '--new', '-n',
 ])
@@ -52,8 +65,10 @@ const repoEnvForbidden = (key) => key === 'ALLOW_WEB' || key.startsWith('MRC_')
  */
 export function sanitizeRepoConfig(repoFlags, repoEnvs, warn = () => {}) {
   const flags = repoFlags.filter((f) => {
-    if (REPO_ALLOWED_FLAGS.has(f.split(/\s+/)[0])) return true
-    warn(`flag "${f}" from <repo>/.mrcrc — only local-UX flags are honored there; egress/containment/mode flags come from the CLI or ~/.mrcrc`)
+    if (REPO_ALLOWED_FLAGS.has(f)) return true
+    // f is a single token (#34: readMrcrc tokenizes). Warn only for a disallowed FLAG; silently drop an
+    // orphaned VALUE token (e.g. the name after a repo `--new`) so the notice stays about flags, not values.
+    if (f.startsWith('-')) warn(`flag "${f}" from <repo>/.mrcrc — only local-UX flags are honored there; egress/containment/mode flags come from the CLI or ~/.mrcrc`)
     return false
   })
   const envs = repoEnvs.filter((e) => {
@@ -171,7 +186,13 @@ export function parseArgs(argv) {
       case '-h': case '--help': help = true; break
       case '-n': case '--new':
         config.newSession = true
-        if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.newSessionName = argv[++i]
+        // #26/#48: take the next token as the session NAME only if it isn't the REPO PATH. Without the
+        // existsSync guard, `mrc --new ~/repo` (or `mrc --new .`) ate the repo as a garbage name — which set
+        // the wrong repo AND disabled the auto-namer (a truthy newSessionName gates the watcher off), so the
+        // session showed its repo basename forever (and read as "inherited" a same-repo peer's name, #48).
+        // A name that happens to match an existing path is treated as the repo; use `mrc <repo> --new <name>`
+        // to name unambiguously. (Shell-expanded ~ means existsSync sees a real path here.)
+        if (argv[i + 1] && !argv[i + 1].startsWith('-') && !existsSync(argv[i + 1])) config.newSessionName = argv[++i]
         break
       case '--no-notify': config.noNotify = true; break
       case '--no-sound': config.noSound = true; break

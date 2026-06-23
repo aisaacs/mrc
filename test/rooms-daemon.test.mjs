@@ -152,12 +152,13 @@ async function main() {
 
   // 8 — 3-member restore (the migration's persistence: a 3rd member survives a dump, unlike old {a,b})
   console.log('\n[8] 3-member persistence round-trip')
-  savePairings([{ roomId: 'restore-test', members: ['x', 'y', 'z'], seq: 99, turn: 3, turnCap: 0, autoCatchup: true, state: 'Running', pauseReason: null }])
+  savePairings([{ roomId: 'restore-test', members: ['x', 'y', 'z'], seq: 99, turn: 3, turnCap: 0, autoCatchup: true, state: 'Running', pauseReason: null, pendingInvite: { by: 'x', repo: 'r', web: false, requestedAt: 1 } }])
   const p2 = await findFreePort(port + 50), c2 = await findFreePort(p2 + 1)
   const d2 = startRoomDaemon({ port: p2, controlPort: c2, notifyPort: 0, version: 'test2', idleMs: 9e8, tickMs: 9e8 })
   await sleep(150)
   const st2 = await status(c2); const rr = (st2.pairings || []).find((p) => p.roomId === 'restore-test')
   check('8a 3-member room restored with all 3', rr && rr.members.length === 3, rr && JSON.stringify(rr.members))
+  check('8b #31: a pre-consent pendingInvite survives the restart', rr && rr.pendingInvite != null, rr && JSON.stringify(rr.pendingInvite))
   d2.stop()
 
   // 9 — stall timer must skip a sidechannel-paused room (not double-pause / mis-resume it)

@@ -49,6 +49,7 @@ COMMANDS
                                   or use the dashboard. Read /rooms/<id>/adversary-brief.md first.
   restart                       Refresh the room daemon in place (same ports) so every connected
                                   session reconnects to current code. Run after updating mrc.
+                                  Cold-starts one if none is running (no need to launch a session first).
   stop                          Stop the room daemon (no respawn). It also auto-stops ~10 min
                                   after the last session disconnects; the next session reboots it.
   dashboard, ui                 Open a local web dashboard (127.0.0.1) to read every room's full
@@ -84,7 +85,11 @@ export async function roomsCommand(args) {
   if (sub === 'restart') {
     const { restartRoomDaemon } = await import('./pair.js')
     const r = await restartRoomDaemon()
-    console.log(r.ok ? `  ↻ room daemon restarted on :${r.port} — connected sessions will reconnect.` : `  ! ${r.error}`)
+    console.log(r.ok
+      ? (r.coldStarted
+        ? `  ◎ no room daemon was running — cold-started one on :${r.port}.`
+        : `  ↻ room daemon restarted on :${r.port} — connected sessions will reconnect.`)
+      : `  ! ${r.error}`)
     return
   }
   if (sub === 'stop') {

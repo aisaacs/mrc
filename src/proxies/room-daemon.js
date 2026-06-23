@@ -851,7 +851,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
           reply({
             ok: true,
             version,
-            sessions: [...sessions.entries()].map(([id, v]) => ({ id, repo: v.repo, name: nameOf(id), adversary: adversaries.has(id) || undefined, unverified: unverified.has(id) || undefined })),   // nameOf reads the source-of-truth record, so status reflects an in-session /rename with no push
+            sessions: [...sessions.entries()].map(([id, v]) => ({ id, repo: v.repo || '?', name: nameOf(id), adversary: adversaries.has(id) || undefined, unverified: unverified.has(id) || undefined })),   // #28: `|| '?'` so a missing repo matches list_peers (repoOf) — no blank cell; nameOf reads the source-of-truth record, so status reflects an in-session /rename with no push
             pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, turnCap: p.turnCap, turnBudget: budgetOf(p), autoCatchup: p.autoCatchup, members: p.members.map(nameOf), a: nameOf(p.members[0]), b: nameOf(p.members[1]), pendingInvite: p.pendingInvite ? nameOf(p.pendingInvite.by) : null, requireConsent: !!p.requireConsent })),
           })
           continue
@@ -859,7 +859,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
         if (f.action === 'shutdown') {   // graceful stop (used by `mrc rooms restart` / version refresh)
           reply({ ok: true })
           // Dump live pairings so the next daemon can restore them — an in-flight room survives the restart.
-          savePairings([...pairings.values()].map((p) => ({ roomId: p.roomId, members: p.members, seq: p.seq, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, state: p.state, pauseReason: p.pauseReason, requireConsent: p.requireConsent, incomingAdversary: p.incomingAdversary })))
+          savePairings([...pairings.values()].map((p) => ({ roomId: p.roomId, members: p.members, seq: p.seq, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, state: p.state, pauseReason: p.pauseReason, requireConsent: p.requireConsent, incomingAdversary: p.incomingAdversary, pendingInvite: p.pendingInvite })))   // #31: persist a PRE-consent pending adversary invite too (restored via ...sp below) so a restart doesn't silently drop a consent prompt; consent is still required (accept/decline) so this loosens nothing
           setTimeout(() => { try { server.close(); control.close() } catch {} ; process.exit(0) }, 50)
           continue
         }

@@ -84,11 +84,15 @@ process.stdin.on('end', () => {
   // Session name
   const projectDir = (data.workspace || {}).project_dir || ''
   const name = lookupSessionName(projectDir, data.session_id || '')
+  // #28: the short id is the cross-reference handle — `mrc rooms` / list_peers show a session as `[last6]`,
+  // so surfacing the same suffix here lets a human match "which of these list_peers rows is THIS session".
+  const sid = (data.session_id || '').slice(-6)
 
   // Assemble
   const parts = [`${barColor}[${bar}] ${pct}% context${RESET}`]
   if (limitParts.length) parts.push(limitParts.join(` ${DIM}│${RESET} `))
   if (name) parts.push(`${DIM}${name}${RESET}`)
+  if (sid) parts.push(`${DIM}[${sid}]${RESET}`)
 
   process.stdout.write(parts.join(' · '))
 })
