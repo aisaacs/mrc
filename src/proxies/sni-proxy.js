@@ -61,14 +61,24 @@ export function parseClientHelloSNI(buf) {
   //
   // INTENTIONALLY stricter than BoringSSL (Pierre F-round-2): RFC 8446 permits a ClientHello fragmented across
   // multiple TLS records, and BoringSSL reassembles — we don't, so {hellos we accept} ⊊ {hellos CF accepts}.
-  // That's the SAFE direction (any ambiguity → drop → fail closed, never a ride), and Node/OpenSSL never
-  // fragments a sub-16KB ClientHello, so a real agent always sends one record. We keep it single-record-strict
-  // on purpose rather than add reassembly: reassembly is differential-risk surface on a security boundary (a
-  // reassembly bug could REOPEN the ride), defending a case that doesn't occur in practice. The residual risk
-  // is fail-CLOSED bricking, NOT exfil, and it's observable — a dropped legit hello logs "DROP non-canonical…
-  // via CONNECT api.anthropic.com" below. If that ever fires on a REAL agent hello (watch the live gate), the
-  // fix is to reassemble consecutive handshake records THEN strict-parse the reassembled message (back to
-  // as-strict-as-BoringSSL, not stricter) — do NOT just loosen these checks.
+  // That's the SAFE direction (any ambiguity → drop → fail closed, never a ride). Node/OpenSSL sends its
+  // ClientHello as ONE record today, but fragmentation is DISCRETIONARY (RFC-allowed at ANY size — an anti-DPI
+  // splitter, ECH GREASE, or a stack bump can split a 2 KB hello), so the brick trigger is "any multi-record
+  // hello", NOT a 16 KB threshold (Pierre F-round-4 correction). We keep it single-record-strict on purpose
+  // rather than add reassembly: reassembly is differential-risk surface on a security boundary (a reassembly
+  // bug could REOPEN the ride). The residual risk is fail-CLOSED bricking, NOT exfil, and it's observable — a
+  // dropped legit hello logs "DROP non-canonical… via CONNECT api.anthropic.com" below. If that fires on a REAL
+  // agent hello (watch the live gate), the fix is to reassemble consecutive handshake records THEN strict-parse
+  // the reassembled message (as-strict-as-BoringSSL, not stricter) — do NOT just loosen these checks.
+  //
+  // ARCHITECTURAL CEILING — ECH (Pierre F-round-4): this whole approach assumes the SNI is PLAINTEXT and
+  // routing-authoritative. Encrypted ClientHello exists to defeat exactly on-path SNI inspection like this.
+  // Under ECH we'd see only the outer public_name and either (a) BRICK (public_name not allowlisted) or (b) if
+  // someone allowlists the public_name to fix the brick, the inner SNI is unconstrained + invisible and the
+  // ride REOPENS. Today the cage's no-DNS blocks the client fetching its ECH config (HTTPS/SVCB RR) → plaintext
+  // SNI fallback — but that's ACCIDENTAL + fragile, not a designed control. SNI-pinning's shelf life is tied to
+  // ECH non-adoption in the agent's TLS stack; when ECH lands, the durable replacement is egress through an
+  // authenticated forward path (e.g. mTLS to a known endpoint), not SNI inspection.
   if (buf[5] !== 0x01) return none                 // not a ClientHello
   const hsLen = (buf[6] << 16) | (buf[7] << 8) | buf[8]
   if (4 + hsLen !== recLen) return none            // handshake must fill the record exactly (see note above)
@@ -98,11 +108,13 @@ export function parseClientHelloSNI(buf) {
 
   let sni = null
   let sniExtCount = 0
+  let ech = false                                  // ECH canary (Pierre F-round-4): observe encrypted_client_hello
   while (p + 4 <= extEnd) {
     const type = buf.readUInt16BE(p)
     const len = buf.readUInt16BE(p + 2)
     p += 4
     if (p + len > extEnd) return none
+    if (type === 0xfe0d) ech = true                // encrypted_client_hello present → real SNI is encrypted (unseen)
     if (type === 0x0000) {                         // server_name
       if (++sniExtCount > 1) return none           // duplicate server_name extension → ambiguous → drop
       const dataEnd = p + len
@@ -136,8 +148,8 @@ export function parseClientHelloSNI(buf) {
     p += len
   }
   if (p !== extEnd) return none                     // trailing bytes after the extensions → drop
-  if (sniExtCount !== 1 || !sni) return none        // exactly one server_name ext, with a host_name
-  return { sni }
+  if (sniExtCount !== 1 || !sni) return { sni: null, ech }   // exactly one server_name ext, with a host_name
+  return { sni, ech }
 }
 
 function isAllowed(sni, allow) {
@@ -185,6 +197,10 @@ export function startSniProxy(port, { allowlist = DEFAULT_ALLOW, dialUpstream } 
           return
         }
         client.removeListener('data', onData)
+        // ECH canary (Pierre F-round-4): if encrypted_client_hello is present, the REAL SNI is encrypted and we
+        // can't constrain it — this fires the day the agent starts negotiating ECH (the no-DNS reprieve ending),
+        // turning a silent brick-or-bypass into a logged signal. Best-effort: only seen on a well-formed hello.
+        if (r.ech) log(PREFIX, `NOTICE ECH (encrypted_client_hello / 0xfe0d) via CONNECT ${connectHost} — real SNI encrypted/unseen; SNI-pinning can't constrain it (brick-or-bypass; see parseClientHelloSNI + docs ECH ceiling).`)
         if (!isAllowed(r.sni, allow)) {
           // Distinguish a genuine foreign SNI (the attack we drop) from a strict-parse reject (sni===null). The
           // latter on CONNECT api.anthropic.com would mean the parser refused a REAL agent hello (over-strict —

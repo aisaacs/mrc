@@ -21,7 +21,7 @@ const once = (em, ev) => new Promise(res => em.once(ev, res))
 // host bytes (hostBytes, for non-LDH), and junk after the extensions block not covered by extLen (extTrailing).
 function buildClientHello(sni, opts = {}) {
   const { record = 0x16, hsType = 0x01, omitSni = false, leadExt = false,
-          sniExtCount = 1, hostCount = 1, hostBytes = null, extTrailing = null } = opts
+          sniExtCount = 1, hostCount = 1, hostBytes = null, extTrailing = null, echExt = false } = opts
   const u16 = n => Buffer.from([(n >> 8) & 0xff, n & 0xff])
   const sniExt = () => {
     const host = hostBytes || Buffer.from(sni, 'latin1')
@@ -33,6 +33,7 @@ function buildClientHello(sni, opts = {}) {
   }
   const exts = []
   if (leadExt) exts.push(Buffer.concat([u16(0x0017), u16(0)]))     // a dummy ext BEFORE sni → parser must skip it
+  if (echExt) exts.push(Buffer.concat([u16(0xfe0d), u16(4), Buffer.from([0, 1, 2, 3])]))  // encrypted_client_hello (canary)
   if (!omitSni) for (let i = 0; i < sniExtCount; i++) exts.push(sniExt())
   const extBlock = Buffer.concat(exts)
   const fixed = Buffer.concat([
@@ -76,6 +77,9 @@ const _tail = Buffer.concat([buildClientHello('api.anthropic.com'), Buffer.from(
 ck('parse: bytes trailing the handshake inside the record → null', parseClientHelloSNI(_tail).sni === null)
 // and the canonical hello still parses (no false negative from the new strictness)
 ck('parse: canonical hello with a leading benign ext still resolves', parseClientHelloSNI(buildClientHello('api.anthropic.com', { leadExt: true })).sni === 'api.anthropic.com')
+// ECH canary (Pierre F-round-4): a 0xfe0d extension is flagged so the day the agent negotiates ECH is observable
+ck('parse: ECH ext (0xfe0d) → ech=true, SNI still extracted', (() => { const r = parseClientHelloSNI(buildClientHello('api.anthropic.com', { echExt: true })); return r.ech === true && r.sni === 'api.anthropic.com' })())
+ck('parse: no ECH ext → ech falsy', !parseClientHelloSNI(buildClientHello('api.anthropic.com')).ech)
 
 // ── 2. End-to-end over a real socket ────────────────────────────────────────
 const upstreamGot = []

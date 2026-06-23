@@ -62,6 +62,7 @@ async function main() {
   let st = await status(controlPort)
   check('1a pairing S<->V exists', !!roomBy(st, 'S', 'V'))
   check('1b V received the ask', V.has('deliver', 'hello V'))
+  check('1b2 #47-A: a normal (non-adversary) peer message has NO guard', !V.has('deliver', 'CONTAINED ADVERSARY'))
   V.clear(); V.send({ type: 'msg', text: 'hi back', id: 1 }); await sleep(150)
   check('1c S received V reply', S.has('deliver', 'hi back'))
 
@@ -91,6 +92,7 @@ async function main() {
   check('3c adversary joined → 3-party', ab && ab.members.length === 3 && ab.members.includes('Pierre'), ab && JSON.stringify(ab.members))
   A.clear(); B.clear(); P.send({ type: 'msg', text: 'your premise is wrong', id: 9 }); await sleep(150)
   check('3d adversary reply broadcasts to BOTH A and B', A.has('deliver', 'premise') && B.has('deliver', 'premise'))
+  check('3e #47-A: a CAGED adversary message carries the do-not-act guard', A.has('deliver', 'CONTAINED ADVERSARY') && B.has('deliver', 'CONTAINED ADVERSARY'))
 
   // 4 — require-consent mode (auto-accept OFF) + decline
   console.log('\n[4] require-consent + decline')
