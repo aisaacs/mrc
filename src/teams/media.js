@@ -7,6 +7,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { extractMentions } from './names.js'
+import { repoEnvKey } from '../config.js'
 
 // role -> media kind. The ROLE decides what gets made; the backend just names the provider.
 export const MEDIA_ROLES = { designer: 'image', 'sound-designer': 'sfx', composer: 'music' }
@@ -77,7 +78,7 @@ export async function generateMedia(member, { items = [], fetchFn } = {}) {
   if (!kind) return { text: `[@${member.first}: not a media role]` }
   const prompt = mediaPrompt(items)
   if (!prompt) return { text: `[@${member.first}: nothing to make — say what you want generated]` }
-  const apiKey = env(KEY_FOR[kind])
+  const apiKey = repoEnvKey(member.repo, KEY_FOR[kind])   // per-repo .env first, then the global key
   let asset
   try { asset = await GENERATORS[kind](prompt, { apiKey, fetchFn }) }
   catch (e) { return { text: `[@${member.first} couldn't generate it: ${e?.message || e}]` } }

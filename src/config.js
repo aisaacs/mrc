@@ -88,6 +88,24 @@ function loadOpEnv(envFile) {
   return process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || null
 }
 
+/** Resolve an API key for a member's REPO: prefer the repo's own .env (or .mrc/.env), then fall back
+ *  to the process env (the global mrc .env the daemon loaded). So a project's character keys
+ *  (GEMINI_API_KEY, ELEVEN_LABS_API_KEY, OPENAI_API_KEY) live with the repo when present. op://
+ *  references are skipped here (the global loadEnv resolves those into process.env). */
+export function repoEnvKey(repo, name) {
+  if (repo) {
+    for (const f of [join(repo, '.env'), join(repo, '.mrc', '.env')]) {
+      try {
+        for (const line of readFileSync(f, 'utf8').split('\n')) {
+          const m = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*"?([^"\n]*)"?\s*$/)
+          if (m && m[1] === name) { const v = m[2].trim(); if (v && !v.includes('op://')) return v }
+        }
+      } catch {}
+    }
+  }
+  return process.env[name] || ''
+}
+
 /** Parse CLI args into a config object. Returns { config, repoArgs, claudeArgs }. */
 export function parseArgs(argv) {
   const config = {

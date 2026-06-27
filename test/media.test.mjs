@@ -6,6 +6,16 @@ import os from 'node:os'
 import fs from 'node:fs'
 import { join } from 'node:path'
 import { isMediaRole, mediaPrompt, generateImage, generateMedia } from '../src/teams/media.js'
+import { repoEnvKey } from '../src/config.js'
+
+test('repoEnvKey prefers the repo .env, then falls back to process.env', () => {
+  const repo = fs.mkdtempSync(join(os.tmpdir(), 'mrc-key-'))
+  fs.writeFileSync(join(repo, '.env'), 'GEMINI_API_KEY="repo-key"\n')
+  assert.equal(repoEnvKey(repo, 'GEMINI_API_KEY'), 'repo-key')
+  process.env.MRC_TEST_FALLBACK = 'global'
+  assert.equal(repoEnvKey(repo, 'MRC_TEST_FALLBACK'), 'global')   // not in repo .env -> process.env
+  assert.equal(repoEnvKey('/no/such/repo', 'MRC_TEST_FALLBACK'), 'global')
+})
 
 test('isMediaRole covers the three makers, not the coders', () => {
   for (const r of ['designer', 'sound-designer', 'composer']) assert.ok(isMediaRole(r))
