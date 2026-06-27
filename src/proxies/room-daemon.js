@@ -7,7 +7,7 @@
 // connect+send. Relays carry the same untrusted-data framing, brake, and turn-cap as
 // before. One daemon serves all sessions, so it outlives any single session.
 import net from 'node:net'
-import { spawn } from 'node:child_process'
+import { spawn, execFileSync } from 'node:child_process'
 import { openSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -22,6 +22,20 @@ const MRC_JS = fileURLToPath(new URL('../../mrc.js', import.meta.url))
 // Daemon-level events (launch/worker) go to a plain log file — NOT appendThread, which targets a real
 // room dir and would both throw (no such room) and pollute the Rooms list with fake "launch" rooms.
 const daemonLog = (msg) => { try { appendFileSync(join(homedir(), '.local', 'share', 'mrc', 'daemon.log'), `${new Date().toISOString()} ${msg}\n`) } catch {} }
+
+// --- mrc container listing (so the GUI can show/kill orphan sessions) ---
+function ensureDockerHost() {
+  if (process.env.DOCKER_HOST) return
+  try { execFileSync('which', ['colima'], { stdio: 'ignore' }); process.env.DOCKER_HOST = `unix://${join(homedir(), '.colima/default/docker.sock')}` } catch {}
+}
+function listMrcContainers() {
+  ensureDockerHost()
+  try {
+    const out = execFileSync('docker', ['ps', '--filter', 'label=mrc=1', '--format', '{{.ID}}\t{{.RunningFor}}\t{{.Label "mrc.repo.name"}}\t{{.Label "mrc.member"}}\t{{.Label "mrc.project"}}'], { encoding: 'utf8' })
+    return out.split('\n').filter(Boolean).map((l) => { const [id, up, repo, member, project] = l.split('\t'); return { id, up, repo: repo || '?', member: member || null, project: project || null } })
+  } catch { return [] }
+}
+function killContainer(id) { ensureDockerHost(); try { execFileSync('docker', ['rm', '-f', id], { stdio: 'ignore' }); return true } catch { return false } }
 
 // Worker invoker. Media members (designer/sound-designer/composer) generate an asset file via an API
 // call IN-PROCESS (the daemon loads .env, so it has GEMINI/ELEVEN keys, and gets the raw items).
@@ -396,6 +410,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
           try { if (f.roster) orgRoster.set(f.def.org, f.roster); reply({ ok: true, rooms: defineOrg(f.def) }) } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
           continue
         }
+        if (f.action === 'sessions') { reply({ ok: true, sessions: listMrcContainers() }); continue }
+        if (f.action === 'killsession' && f.id) { daemonLog(`kill session ${f.id}`); reply({ ok: killContainer(f.id) }); continue }
         if (f.action === 'team') {
           const st = engine.status()
           // Mark members whose tmux window exists but whose channel hasn't registered yet (launched,

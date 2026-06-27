@@ -110,7 +110,7 @@ async function handle(req, res) {
     }
     // GUI launch lifecycle: start the live members (tmux + embeddable ttyd), stop them, or switch the
     // embedded terminal to a given member's window. All proxy to the daemon.
-    if (req.method === 'POST' && (url.pathname === '/api/team-launch' || url.pathname === '/api/team-stop' || url.pathname === '/api/team-select' || url.pathname === '/api/team-add-member' || url.pathname === '/api/team-remove-member')) {
+    if (req.method === 'POST' && (url.pathname === '/api/team-launch' || url.pathname === '/api/team-stop' || url.pathname === '/api/team-select' || url.pathname === '/api/team-add-member' || url.pathname === '/api/team-remove-member' || url.pathname === '/api/kill-session')) {
       let body = ''
       req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
       req.on('end', async () => {
@@ -120,6 +120,7 @@ async function handle(req, res) {
         if (url.pathname === '/api/team-stop') return sendJSON(res, 200, await ctrl(cp, 'stopteam', { org: j.org }))
         if (url.pathname === '/api/team-add-member') return sendJSON(res, 200, await ctrl(cp, 'addmember', { org: j.org, team: j.team, role: j.role, backend: j.backend, territory: j.territory }))
         if (url.pathname === '/api/team-remove-member') return sendJSON(res, 200, await ctrl(cp, 'removemember', { org: j.org, handle: j.handle }))
+        if (url.pathname === '/api/kill-session') return sendJSON(res, 200, await ctrl(cp, 'killsession', { id: j.id }))
         return sendJSON(res, 200, await ctrl(cp, 'selectwin', { org: j.org, window: j.window }))
       })
       return
@@ -137,6 +138,11 @@ async function handle(req, res) {
       const meta = daemonMeta()
       const r = meta?.controlPort ? await ctrl(meta.controlPort, 'workerlog', { handle: url.searchParams.get('handle') }) : { ok: false }
       return sendJSON(res, 200, r)
+    }
+    if (req.method === 'GET' && url.pathname === '/api/sessions') {
+      const meta = daemonMeta()
+      const r = meta?.controlPort ? await ctrl(meta.controlPort, 'sessions') : { ok: false }
+      return sendJSON(res, 200, r?.ok ? r : { ok: false, sessions: [] })
     }
     if (req.method === 'GET' && url.pathname === '/api/state') return sendJSON(res, 200, await buildState())
     if (req.method === 'GET' && url.pathname === '/api/teams') {

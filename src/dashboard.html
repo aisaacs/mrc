@@ -106,7 +106,7 @@ const BACKENDS = ['claude','codex','qwen','gemini']
 
 const S = {
   building: false, org: null, selRoom: null, selInbox: null, selMember: null, workerLog: '', tab: 'thread', addingTo: null,
-  teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null,
+  teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null, sessions: [], _tick: 0,
   builder: { org:'shop', repo:'', teams:[ { name:'client', territory:'client', members:[
     {role:'architect',backend:'claude',lead:true,territory:''},{role:'engineer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
 }
@@ -119,6 +119,7 @@ async function tick() {
   S.state = st && st.rooms ? st : { rooms:[], daemon:{} }
   if (!S.org) S.org = (S.teams.orgs && S.teams.orgs[0] && S.teams.orgs[0].org) || null
   if (_scopedNav) { _scopedNav=false; const has=(S.teams.members||[]).some(m=>!_proj||m.org===_proj); S.building = !has; if (has && _proj) S.org=_proj }
+  if ((S._tick++ % 4) === 0) { const sr = await api('/api/sessions').catch(()=>null); S.sessions = (sr && sr.sessions) || [] }   // throttle docker ps
   if (S.selRoom && needRoomFetch()) S.room = await api('/api/room?id='+encodeURIComponent(S.selRoom)).catch(()=>null)
   if (S.selMember) {
     const m = memberByHandle(S.selMember)
@@ -216,7 +217,12 @@ function renderMain() {
   const rs = mergedRooms(); const mine = rs.filter(inOrg); const others = rs.filter(r=>!inOrg(r))
   if (mine.length) html += `<h2>Rooms</h2>` + mine.map(roomRow).join('')
   if (others.length) html += `<h2>Other — consults &amp; history</h2><div style="opacity:.55">${others.map(roomRow).join('')}</div>`
-  html += `<div style="margin:14px 0 24px;display:flex;gap:8px">${teams.length?`<button class="btn" style="flex:1" onclick="openBuilder()">✎ Edit teams</button>`:''}<button class="btn ${teams.length?'':'primary'}" style="flex:1" onclick="newProject()">＋ New project</button></div>`
+  html += `<div style="margin:14px 0 18px;display:flex;gap:8px">${teams.length?`<button class="btn" style="flex:1" onclick="openBuilder()">✎ Edit teams</button>`:''}<button class="btn ${teams.length?'':'primary'}" style="flex:1" onclick="newProject()">＋ New project</button></div>`
+  if ((S.sessions||[]).length) {
+    html += `<h2>Sessions <span class="muted" style="text-transform:none;letter-spacing:0">· all mrc containers</span></h2>`
+    html += S.sessions.map(s=>`<div class="rm" style="cursor:default"><span class="nm">${esc(s.member?('@'+s.member):s.repo)}</span><span class="meta">${esc(s.project||s.repo)} · ${esc(s.up||'')}</span><button class="btn tiny danger" style="margin-left:8px" onclick="killSession('${esc(s.id)}','${esc(s.member||s.repo)}')">kill</button></div>`).join('')
+  }
+  html += `<div style="height:18px"></div>`
   mid.innerHTML = html
 }
 function amForm(t) {
@@ -419,6 +425,7 @@ window.reviewCu = async (seq)=>{ await post('review',{roomId:S.selRoom,seq}); S.
 window.answer = async (i)=>{ const tx=$('#ansTx'); if(!tx||!tx.value.trim())return; await post('answer',{i,text:tx.value.trim()}); S.selInbox=null; tick() }
 window.stopTeam = async ()=>{ if(!confirm('Stop the team? This closes all member terminals.'))return; await postJSON('/api/team-stop',{org:S.org}); tick() }
 window.removeMember = async (h, first)=>{ if(!confirm('Remove @'+first+' from the team? (updates team.json)'))return; await postJSON('/api/team-remove-member',{org:S.org,handle:h}); S.selMember=null; tick() }
+window.killSession = async (id, name)=>{ if(!confirm('Kill container '+name+'? (force-removes it)'))return; await postJSON('/api/kill-session',{id}); S._tick=0; tick() }
 window.bLaunch = async ()=>{ const msg=$('#bMsg'); if(!msg)return; msg.innerHTML='<span class="muted">launching… first run builds the image (~minutes)</span>'
   const r=await postJSON('/api/team-launch',{roster:bRoster()})
   if(r&&r.ok){ msg.innerHTML='<span class="good">🚀 launching — pick each member to open its terminal and log in</span>'; S.org=bRoster().org||null; setOrgUrl(S.org); setTimeout(()=>{S.building=false;tick()},700) }

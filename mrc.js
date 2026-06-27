@@ -537,7 +537,8 @@ if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && 
 
 // Run container
 const roomLabels = roomInfo
-  ? ['--label', 'mrc.room=1', '--label', `mrc.room.session=${roomInfo.sessionId}`]
+  ? ['--label', 'mrc.room=1', '--label', `mrc.room.session=${roomInfo.sessionId}`,
+     ...(memberCtx ? ['--label', `mrc.member=${memberCtx.member.handle}`, '--label', `mrc.team=${memberCtx.member.team}`, '--label', `mrc.project=${memberCtx.norm.org}`] : [])]
   : []
 const exitCode = await runContainer({
   repoPath,
