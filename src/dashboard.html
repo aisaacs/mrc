@@ -79,6 +79,7 @@
       <button data-nav="teams" class="on">🎩 Teams</button>
       <button data-nav="rooms">💬 Rooms</button>
       <button data-nav="inbox">📥 Inbox <span class="badge" id="inboxBadge" style="display:none"></span></button>
+      <button data-nav="console">🖥 Console</button>
       <div class="sp"></div>
       <button data-nav="build">＋ New team</button>
     </nav>
@@ -91,6 +92,7 @@ const $ = (s, r=document) => r.querySelector(s)
 const esc = (s) => String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
 const api = (p, o) => fetch(p, o).then(r => r.json())
 const post = (action, extra={}) => api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ action, ...extra }) })
+const postJSON = (path, obj={}) => api(path, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(obj) })
 
 const ROLES = ['architect','engineer','critic','adversary','ultracritical','user-defender','researcher']
 const BACKENDS = ['claude','codex','qwen','gemini']
@@ -137,7 +139,8 @@ const memberByHandle = (h) => orgMembers().find(m => m.handle===h)
 const roomMembers = (id) => { const r=(S.teams.rooms||[]).find(x=>x.roomId===id); return r ? r.members.filter(x=>x!=='@user') : [] }
 
 // ---- painting ----
-const detailKey = () => S.nav==='build' ? 'build' : S.selInbox!=null ? 'inbox:'+S.selInbox : S.selRoom ? 'room:'+S.selRoom+':'+S.tab : 'empty:'+S.nav
+const launchFor = () => (S.teams.launch||[]).find(x=>x.org===S.org)
+const detailKey = () => S.nav==='build' ? 'build' : S.nav==='console' ? 'console:'+(launchFor()?.ttydUrl||'none') : S.selInbox!=null ? 'inbox:'+S.selInbox : S.selRoom ? 'room:'+S.selRoom+':'+S.tab : 'empty:'+S.nav
 
 function paint() {
   // topbar
@@ -180,8 +183,17 @@ function renderList() {
     mid.innerHTML = `<h2>Questions for you</h2>` + (ib.qs.length? ib.qs.map((q,i)=>`<div class="ib ${q.answered?'done':''} ${S.selInbox===i?'sel':''}" onclick="selInbox(${i})">
         <div class="who"><b>@${esc(q.fromName||q.from)}</b> · ${esc(q.room)}${q.answered?' · answered':''}</div><div class="q">${esc(q.text)}</div></div>`).join('') : `<div class="muted">Nothing waiting. 🎉</div>`)
       + `<h2>Catch-ups to review</h2>` + (ib.cu.length? ib.cu.map(r=>`<div class="rm" onclick="selRoom('${esc(r.roomId)}',true)"><span class="nm">${esc(r.team||r.roomId)}</span><span class="meta">${r.unreviewed} unreviewed</span></div>`).join('') : `<div class="muted">None.</div>`)
+  } else if (S.nav==='console') {
+    const L = launchFor()
+    const live = orgMembers().filter(m=>m.tier==='live')
+    mid.innerHTML = `<h2>Console</h2>` + (L
+      ? `<div class="muted" style="margin-bottom:8px">● running · <code>${esc(L.session||'')}</code></div>
+         <div class="muted" style="margin:8px 0 4px">Show member:</div>`
+         + live.map(m=>`<div class="rm" onclick="selWin('${esc(m.first)}')"><span class="nm">@${esc(m.first)}</span><span class="meta">${esc(m.role)}</span></div>`).join('')
+         + `<button class="btn danger" style="margin-top:12px;width:100%" onclick="stopTeam()">■ Stop team</button>`
+      : `<div class="muted">Not launched.<br>Build a team and press <b>🚀 Launch</b>, or run <code>mrc team up</code>.</div>`)
   } else if (S.nav==='build') {
-    mid.innerHTML = `<div class="muted" style="padding:6px">Compose your team in the panel →<br><br>Add teams &amp; members, pick roles and backends, watch the live preview, then <b>Save team.json</b> or <b>Define rooms</b>.</div>`
+    mid.innerHTML = `<div class="muted" style="padding:6px">Compose your team in the panel →<br><br>Add teams &amp; members, pick roles and backends, watch the live preview, then <b>Save</b>, <b>Define</b>, or <b>🚀 Launch</b>.</div>`
   }
 }
 const label2 = (r) => r.a&&r.b ? `${r.a} ⇄ ${r.b}` : r.roomId
@@ -190,9 +202,18 @@ const label2 = (r) => r.a&&r.b ? `${r.a} ⇄ ${r.b}` : r.roomId
 function renderDetail() {
   const d = $('#detail')
   if (S.nav==='build') return renderBuilder(d)
+  if (S.nav==='console') return renderConsole(d)
   if (S.selInbox!=null) return renderInboxItem(d)
   if (S.selRoom) return renderRoom(d)
   d.innerHTML = `<div class="empty">${S.nav==='inbox'?'Select a question or a catch-up.':'Select a room to watch its transcript and steer it.'}</div>`
+}
+function renderConsole(d) {
+  const L = launchFor()
+  if (!L) { d.innerHTML = `<div class="empty">No running team.<br><span class="muted">Build one and press <b>🚀 Launch</b> — then log in + accept the Channels prompt right here, all in the browser.</span></div>`; return }
+  if (!L.ttydUrl) { d.innerHTML = `<div class="empty">Team is running in tmux, but there's no embedded terminal.<br><span class="muted">Install <code>ttyd</code> (<code>brew install ttyd</code>) and relaunch to embed it here — or <code>tmux attach -t ${esc(L.session)}</code>.</span></div>`; return }
+  d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:8px"><b>Live terminal</b> <a href="${esc(L.ttydUrl)}" target="_blank">open in new tab ↗</a></div>
+    <iframe src="${esc(L.ttydUrl)}" style="width:100%;height:72vh;border:1px solid var(--line);border-radius:8px;background:#000"></iframe>
+    <div class="muted" style="margin-top:6px">First launch: log in + accept the Channels prompt here. Switch members in the left list (or Ctrl-b n inside the terminal).</div>`
 }
 function patchDetail() {
   if (S.selRoom && S.room) {
@@ -254,7 +275,7 @@ function renderBuilder(d) {
     <div>
       <div class="grid2"><div><label>Org</label><input id="bOrg" value="${esc(B.org)}"></div><div><label>Repo path (host)</label><input id="bRepo" value="${esc(B.repo)}" placeholder="/Users/you/code/app"></div></div>
       <h2>Teams</h2><div id="bTeams"></div><button class="btn" onclick="bAddTeam()">＋ Add team</button>
-      <div class="row" style="margin-top:14px"><button class="btn primary" onclick="bSave()">💾 Save team.json</button><button class="btn" onclick="bDefine()">◎ Define rooms</button><span id="bMsg" class="muted"></span></div>
+      <div class="row" style="margin-top:14px"><button class="btn primary" onclick="bSave()">💾 Save team.json</button><button class="btn" onclick="bDefine()">◎ Define rooms</button><button class="btn" style="background:#1f3a26;border-color:#2f6b3f;color:#bfe6c8" onclick="bLaunch()">🚀 Launch</button><span id="bMsg" class="muted"></span></div>
       <div class="muted" style="margin-top:8px">Then launch live members: <code id="bCmd">mrc team up</code></div>
     </div>
     <div><h2>Preview</h2><div id="bPrev" class="muted">…</div></div></div>`
@@ -306,6 +327,12 @@ window.roomAct = async (a)=>{ if(a==='end'&&!confirm('Close this room?'))return;
 window.doSteer = async ()=>{ const tx=$('#steerTx'); const t=$('#steerT'); if(!tx||!tx.value.trim())return; await post('steer',{roomId:S.selRoom,target:t.value,text:tx.value.trim()}); tx.value=''; tick() }
 window.reviewCu = async (seq)=>{ await post('review',{roomId:S.selRoom,seq}); S.room=await api('/api/room?id='+encodeURIComponent(S.selRoom)); paintedKey=null; paint() }
 window.answer = async (i)=>{ const tx=$('#ansTx'); if(!tx||!tx.value.trim())return; await post('answer',{i,text:tx.value.trim()}); S.selInbox=null; S.nav='inbox'; tick() }
+window.selWin = (w)=>{ postJSON('/api/team-select',{org:S.org,window:w}) }
+window.stopTeam = async ()=>{ if(!confirm('Stop the team? This closes all member terminals.'))return; await postJSON('/api/team-stop',{org:S.org}); tick() }
+window.bLaunch = async ()=>{ const msg=$('#bMsg'); if(!msg)return; msg.innerHTML='<span class="muted">launching… first run builds the image (~minutes)</span>'
+  const r=await postJSON('/api/team-launch',{roster:bRoster()})
+  if(r&&r.ok){ msg.innerHTML='<span class="good">🚀 launching — open Console, then log in + accept the prompt there</span>'; S.org=null; setTimeout(()=>{go('console');tick()},700) }
+  else msg.innerHTML=`<span class="bad">✗ ${esc((r&&r.error)||'failed')}</span>` }
 
 for (const b of document.querySelectorAll('[data-nav]')) b.onclick = ()=>go(b.dataset.nav)
 // deep link: /teams/new -> build

@@ -94,6 +94,10 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
   const worker = createWorkerRunner({ engine, invoke: workerInvoke, intervalMs: workerPollMs, log: (m) => appendThread('worker', `${ts()} ${m}`) })
   worker.start()
   const orgDefs = new Map()   // org -> roster def, persisted so team rooms survive a daemon refresh
+  const orgLaunch = new Map() // org -> { session, ttyd:{port,url,pid} } for a GUI-launched team
+  const orgRoster = new Map() // org -> the raw team.json (so the GUI can launch a defined org)
+  let teamMod = null          // lazily-loaded launch helpers (Docker/tmux/ttyd live here)
+  import('../commands/team.js').then((m) => { teamMod = m }).catch(() => {})
   for (const o of loadOrgs()) {
     orgDefs.set(o.org, o)
     try { engine.defineOrg(o); for (const r of (o.rooms || [])) ensureRoom(r.roomId, o.org || '', r.team || '') } catch {}
@@ -380,11 +384,39 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
         }
         // --- team controls (N-party engine rooms) ---------------------------
         if (f.action === 'defineOrg' && f.def) {
-          try { reply({ ok: true, rooms: defineOrg(f.def) }) } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
+          try { if (f.roster) orgRoster.set(f.def.org, f.roster); reply({ ok: true, rooms: defineOrg(f.def) }) } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
           continue
         }
-        if (f.action === 'team') { reply({ ok: true, ...engine.status() }); continue }
+        if (f.action === 'team') {
+          reply({ ok: true, ...engine.status(), launch: [...orgLaunch.entries()].map(([org, v]) => ({ org, session: v.session, ttydUrl: v.ttyd?.url || null, running: true })) })
+          continue
+        }
         if (f.action === 'answer') { reply(engine.answerUser(Number(f.i), String(f.text || ''))); continue }
+        // GUI launch lifecycle: spin up the live members (tmux + ttyd) so the human drives them in the
+        // browser. Fire-and-forget (the build can take minutes); the dashboard polls for the ttyd url.
+        if (f.action === 'launchteam') {
+          if (!teamMod) { reply({ ok: false, error: 'launch helpers still loading — retry in a moment' }); continue }
+          const roster = f.roster || orgRoster.get(f.org)
+          if (!roster) { reply({ ok: false, error: 'no roster for this org — launch from the builder, or run mrc team up' }); continue }
+          reply({ ok: true, launching: true })
+          ;(async () => {
+            try {
+              const { norm, rosterPath } = teamMod.materializeRoster(roster, f.repo)
+              orgRoster.set(norm.org, roster)
+              defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
+              const r = await teamMod.startTeamSession(norm, norm.repo, { rosterPath })
+              if (r.ok) orgLaunch.set(norm.org, { session: r.session, ttyd: r.ttyd })
+              appendThread('launch', `${ts()} [launch ${norm.org}] ${r.ok ? 'session ' + r.session + ' ' + (r.ttyd?.url || '(no ttyd)') : 'FAILED: ' + r.error}`)
+            } catch (e) { appendThread('launch', `${ts()} [launch error] ${e?.message || e}`) }
+          })()
+          continue
+        }
+        if (f.action === 'stopteam' && f.org) {
+          if (teamMod) teamMod.killTeamSession(f.org)
+          const l = orgLaunch.get(f.org); if (l?.ttyd?.pid) { try { process.kill(l.ttyd.pid) } catch {} }
+          orgLaunch.delete(f.org); reply({ ok: true }); continue
+        }
+        if (f.action === 'selectwin' && f.org) { reply({ ok: !!(teamMod && teamMod.tmuxSelectWindow(f.org, f.window)) }); continue }
         if (['brake', 'resume', 'steer', 'end'].includes(f.action) && f.roomId && engine.getRoom(f.roomId)) {
           const room = engine.getRoom(f.roomId)
           if (f.action === 'brake') { const held = engine.doBrake(room, 'brake'); notify(`Room ${room.team || room.roomId}: paused (human)`); reply({ ok: true, held }) }

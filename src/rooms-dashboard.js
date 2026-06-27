@@ -112,8 +112,23 @@ async function handle(req, res) {
           return sendJSON(res, 200, { ok: true, path: file })
         }
         // team-define: push the org to the daemon so its rooms exist (does NOT launch containers).
+        // Pass the raw roster too, so the daemon can later launch this defined org from the GUI.
         const def = { org: pv.org, repo: pv.repo, members: pv.members, rooms: pv.rooms }
-        return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, 'defineOrg', { def }))
+        return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, 'defineOrg', { def, roster: j.roster }))
+      })
+      return
+    }
+    // GUI launch lifecycle: start the live members (tmux + embeddable ttyd), stop them, or switch the
+    // embedded terminal to a given member's window. All proxy to the daemon.
+    if (req.method === 'POST' && (url.pathname === '/api/team-launch' || url.pathname === '/api/team-stop' || url.pathname === '/api/team-select')) {
+      let body = ''
+      req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
+      req.on('end', async () => {
+        let j; try { j = JSON.parse(body || '{}') } catch { return sendJSON(res, 400, { ok: false, error: 'bad json' }) }
+        const cp = daemonMeta()?.controlPort
+        if (url.pathname === '/api/team-launch') return sendJSON(res, 200, await ctrl(cp, 'launchteam', { roster: j.roster, org: j.org, repo: j.repo }))
+        if (url.pathname === '/api/team-stop') return sendJSON(res, 200, await ctrl(cp, 'stopteam', { org: j.org }))
+        return sendJSON(res, 200, await ctrl(cp, 'selectwin', { org: j.org, window: j.window }))
       })
       return
     }
