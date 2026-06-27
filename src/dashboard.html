@@ -16,20 +16,25 @@
     --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --line:#262b36; --inset:#0b0d12; --field:#11141b;
     /* text */
     --fg:#e6e9ef; --dim:#8b93a3;
-    /* brand & interactive — all blue today; SEPARATE so 2b can recolor one without touching the others */
-    --accent:#7aa2f7;   /* brand / active selection */
-    --link:#7aa2f7;     /* hyperlinks */
-    --info:#7aa2f7;     /* 🔗 Telegram-pending / informational (NOT the needs-you accent) */
-    --worker:#7aa2f7;   /* worker (on-demand) state */
+    /* #2b — Mr. Claude palette (derived from Côme's swatches by INTENT, WCAG-AA on the dark base).
+       Two learnable hue families: PURPLE = brand / attention (the top-hat), BLUE = navigate / info. */
+    --accent:#a78bfa;   /* brand / active selection — the top-hat purple */
+    --link:#6aa0f5;     /* hyperlinks (navigate) */
+    --info:#5b9cf6;     /* 🔗 Telegram-pending / informational (blue — NOT the purple needs-you) */
+    --worker:#6aa0f5;   /* worker (on-demand) state */
     /* status — perceptually distinct AND semantically mapped (green≈good, amber≈attention, red≈bad) */
-    --online:#7bd88f;   /* ready / running / online */
-    --starting:#e0af68; /* starting / attention */
-    --warning:#e0af68;  /* warning / paused */
-    --danger:#f7768e;   /* offline / error / destructive */
-    /* needs-you family — purple today; three DISTINCT meanings */
-    --needs-you:#bb9af7; /* ❓ needs-you / @you */
-    --lead:#bb9af7;      /* lead member */
-    --ref:#bb9af7;       /* [#N] reference chip */
+    --online:#5ec878;   /* ready / running / online */
+    --starting:#e6a23c; /* starting / attention */
+    --warning:#e6a23c;  /* warning / paused */
+    --danger:#f2607a;   /* offline / error / destructive */
+    /* needs-you family — purple (brand-attention); three DISTINCT meanings */
+    --needs-you:#c4a6ff; /* ❓ needs-you / @you — the brightest "ping" */
+    --lead:#b39ddb;      /* lead member */
+    --ref:#b8a4f0;       /* [#N] reference chip */
+    /* A11Y GUARDRAIL (Sandrine's contract pt 3): purple↔blue compresses under red-green colorblindness,
+       so 🔗-info(blue) vs ❓-needs-you(purple), and the three close purples (needs-you/lead/ref), are NOT
+       reliably separable by COLOR alone — the GLYPH/context channel (🔗 ❓ ● ✓ ✕, position) is load-bearing.
+       Never drop those glyphs for a "cleaner" color-only treatment in a polish pass. */
     /* legacy aliases so existing .good/.warn/.bad/.state/pills keep their exact look */
     --good:var(--online); --warn:var(--warning); --bad:var(--danger);
     /* semantic surfaces (bg / border / fg) for buttons, badges, flashes — unifies the ad-hoc accents */
