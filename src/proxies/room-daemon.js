@@ -6,9 +6,29 @@
 // connect+send. Relays carry the same untrusted-data framing, brake, and turn-cap as
 // before. One daemon serves all sessions, so it outlives any single session.
 import net from 'node:net'
+import { spawn } from 'node:child_process'
+import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { ensureRoom, appendThread, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs } from '../rooms.js'
 import { createRoomEngine } from '../teams/room-engine.js'
+import { createWorkerRunner } from '../teams/worker-runner.js'
+
+const MRC_JS = fileURLToPath(new URL('../../mrc.js', import.meta.url))
+
+// Default worker invoker: spawn `mrc team _worker-exec` so Docker stays out of the daemon process.
+// The worker's CLI runs in a sandboxed container scoped to its territory; its stdout is the reply.
+function spawnWorkerInvoke(member, { prompt }) {
+  return new Promise((resolve, reject) => {
+    if (!member.repo) return reject(new Error('no repo recorded for this worker'))
+    const child = spawn(process.execPath, [MRC_JS, 'team', '_worker-exec', '--handle', member.handle, '--repo', member.repo], { stdio: ['pipe', 'pipe', 'ignore'] })
+    let out = ''
+    const timer = setTimeout(() => { try { child.kill('SIGKILL') } catch {}; reject(new Error('worker timed out (180s)')) }, 180_000)
+    child.stdout.on('data', (d) => { out += d })
+    child.on('error', (e) => { clearTimeout(timer); reject(e) })
+    child.on('close', (code) => { clearTimeout(timer); code === 0 ? resolve({ text: out.trim() }) : reject(new Error(`worker exec exited ${code}`)) })
+    child.stdin.write(prompt); child.stdin.end()
+  })
+}
 
 const norm = (s) => String(s || '').trim().replace(/\s+/g, ' ')
 const ts = () => new Date().toISOString()
@@ -21,7 +41,7 @@ const catchupPrompt = (reason) =>
   `to the peer; (2) where things stand now; (3) exactly what you need from your human to get ` +
   `unblocked. Be concrete and skip preamble.`
 
-export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS }) {
+export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS, workerInvoke = spawnWorkerInvoke, workerPollMs = 2_000 }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
   // Restore pairings a graceful restart dumped, so an in-flight room survives `mrc rooms restart`
@@ -62,6 +82,10 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
   // legacy 2-party ambient consult stays on `pairings` above. The engine shares this daemon's
   // socket transport (send), thread log (appendThread), and notify proxy.
   const engine = createRoomEngine({ send, append: appendThread, notify, now: () => Date.now(), turnCap })
+  // Drives non-Claude (task-worker) members: a queued mention invokes the worker's CLI and posts the
+  // reply back. The invoker is injectable so tests don't spawn real processes.
+  const worker = createWorkerRunner({ engine, invoke: workerInvoke, intervalMs: workerPollMs, log: (m) => appendThread('worker', `${ts()} ${m}`) })
+  worker.start()
   const orgDefs = new Map()   // org -> roster def, persisted so team rooms survive a daemon refresh
   for (const o of loadOrgs()) {
     orgDefs.set(o.org, o)
@@ -82,6 +106,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
     if (r.unresolved?.length) send(fromId, { type: 'notice', text: `[Unknown addressee(s): ${r.unresolved.map((x) => '@' + x).join(', ')} — not in this room. Call list_team to see who is.]` })
     const delivered = (r.delivered || []).filter((d) => d.status === 'delivered').length
     const queued = (r.delivered || []).filter((d) => d.status === 'queued').length
+    if (queued) worker.kick()   // a worker was addressed — invoke it now (don't wait for the poll)
     ack(r.state === 'Paused' ? 'held' : 'delivered', { delivered, queued, toUser: !!r.toUser })
   }
 
@@ -421,7 +446,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
   }, tickMs)
   stallTimer.unref?.()
 
-  return { server, control, sessions, pairings, noteDashboardActivity: () => { lastDashboardHit = Date.now() }, stop: () => { clearInterval(stallTimer); try { server.close(); control.close() } catch {} } }
+  return { server, control, sessions, pairings, engine, worker, noteDashboardActivity: () => { lastDashboardHit = Date.now() }, stop: () => { clearInterval(stallTimer); worker.stop(); try { server.close(); control.close() } catch {} } }
 }
 
 // Direct invocation (mrc spawns this detached): node room-daemon.js <port> <controlPort> [notifyPort]

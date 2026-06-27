@@ -103,6 +103,28 @@ export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb
   })
 }
 
+/** Run a one-shot worker turn (non-interactive): a task-worker member's CLI executes inside the
+ *  sandbox scoped to its territory, and its stdout is the reply. Same security flags as a normal
+ *  run; the entrypoint takes its exec branch when MRC_EXEC_PROMPT_FILE is set. Returns stdout. */
+export function runWorkerExec({ repoPath, envFlags, volumes, allowWeb }) {
+  const args = [
+    'run', '--rm', '--init',
+    '--cap-add=NET_ADMIN', '--cap-add=NET_RAW',
+    '--add-host=host.docker.internal:host-gateway',
+    '--label', 'mrc=1',
+    '--label', `mrc.repo=${repoPath}`,
+    '--label', `mrc.repo.name=${basename(repoPath)}`,
+    '--label', `mrc.web=${!!allowWeb}`,
+    '--label', 'mrc.worker=1',
+    ...envFlags, ...volumes, IMAGE_NAME,
+  ]
+  try {
+    return execFileSync('docker', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+  } catch (e) {
+    return (e.stdout || '') + (e.stderr ? `\n[worker stderr] ${e.stderr}` : `\n[worker failed: ${e.message}]`)
+  }
+}
+
 /** Start a daemon container (detached). Returns the container ID. */
 export function startDaemon({ repoPath, envFlags, volumes, allowWeb }) {
   const args = [

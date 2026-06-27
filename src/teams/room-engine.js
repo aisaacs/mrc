@@ -58,7 +58,7 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
       members.set(handle, {
         handle, first: m.first, role: m.role, team: m.team, lead: !!m.lead,
         backend: m.backend, tier: m.tier || (m.backend === 'claude' ? 'live' : 'worker'),
-        territory: m.territory, mount: m.mount, org: orgId,
+        territory: m.territory, mount: m.mount, org: orgId, repo: repo || null,
         sessionId: prev?.sessionId ?? null,   // keep an existing live binding across a re-define
       })
     }
@@ -266,6 +266,20 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
     return { ok: true, targets }
   }
 
+  // Post a message into a room with EXPLICIT targets (no @mention parsing) — used for worker replies
+  // and any programmatic post. Honors brake (held FIFO) and turn counting like route().
+  function post({ roomId, fromHandle, toHandles = [], text }) {
+    const room = rooms.get(roomId)
+    if (!room) return { ok: false, error: 'no such room' }
+    const h = String(fromHandle).toLowerCase()
+    room.turn += 1; room.lastActivityAt = now()
+    _append(roomId, `${ts()} ${nameOf(h)} -> ${toHandles.map(nameOf).join(', ') || '(no one)'}: ${text}`)
+    clearStallOnActivity(room)
+    if (room.state === 'Paused') { for (const t of toHandles) room.held.push({ toHandle: t, fromHandle: h, text }); return { ok: true, state: 'Paused', held: toHandles.length } }
+    const delivered = toHandles.map((t) => ({ handle: t, status: deliverTo(room, t, h, text) }))
+    return { ok: true, delivered }
+  }
+
   // The human answered an @user inbox item: route the reply back into the room as a [Human directive].
   function answerUser(idx, text) {
     const item = userInbox[idx]
@@ -296,6 +310,20 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
   }
   function viewForSession(sessionId) { const h = handleForSession(sessionId); return h ? memberView(h) : null }
 
+  // Atomically take all queued worker invocations (the runner drains these), grouped by
+  // (roomId, toHandle) so a burst of mentions to one worker becomes a single invocation.
+  function claimWorkerBatches() {
+    if (!workerQueue.length) return []
+    const items = workerQueue.splice(0, workerQueue.length)
+    const groups = new Map()
+    for (const it of items) {
+      const key = `${it.roomId}\x00${it.toHandle}`
+      if (!groups.has(key)) groups.set(key, { roomId: it.roomId, toHandle: it.toHandle, items: [] })
+      groups.get(key).items.push(it)
+    }
+    return [...groups.values()]
+  }
+
   // Close a team room (human-only, mirrors legacy `end`): preserve files, drop in-memory state.
   function endRoom(roomId) {
     const r = rooms.get(roomId)
@@ -319,9 +347,9 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
   }
 
   return {
-    defineOrg, bindSession, unbindSession, route, endRoom,
+    defineOrg, bindSession, unbindSession, route, endRoom, post,
     roomsForSession, roomsForHandle, resolveTargets, resolveInRoom, findRoom,
-    doBrake, doResume, doSteer, answerUser, status, memberView, viewForSession,
+    doBrake, doResume, doSteer, answerUser, status, memberView, viewForSession, claimWorkerBatches,
     // exposed for the daemon/dashboard + tests
     _rooms: rooms, _members: members, _userInbox: userInbox, _workerQueue: workerQueue,
     getRoom: (id) => rooms.get(id) || null,

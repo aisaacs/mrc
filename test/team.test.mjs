@@ -8,7 +8,7 @@ import fs from 'node:fs'
 import { join } from 'node:path'
 import { parseRoster } from '../src/teams/roster.js'
 import {
-  memberSessionId, memberWorkspaceVolumes, memberEnv, personaForMember, writePersonaFile, orgDef, memberLaunch,
+  memberSessionId, memberWorkspaceVolumes, memberEnv, personaForMember, writePersonaFile, orgDef, memberLaunch, cleanWorkerOutput,
 } from '../src/commands/team.js'
 
 function seededRng(seed = 1) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x100000000 } }
@@ -93,6 +93,12 @@ test('orgDef is the serializable shape the daemon expects', () => {
   assert.equal(def.org, 'shop')
   assert.ok(Array.isArray(def.members) && Array.isArray(def.rooms))
   assert.doesNotThrow(() => JSON.parse(JSON.stringify(def)))
+})
+
+test('cleanWorkerOutput extracts the worker reply from the container chatter', () => {
+  const raw = 'Waiting for network...\nNetwork ready after 2s\n[firewall up]\n===MRC-WORKER-OUTPUT-START===\nDone: added client/api/parse.js\n===MRC-WORKER-OUTPUT-END===\n'
+  assert.equal(cleanWorkerOutput(raw), 'Done: added client/api/parse.js')
+  assert.match(cleanWorkerOutput('no markers, just tail text'), /tail text/)   // graceful fallback
 })
 
 test('memberLaunch assembles env + territorial volumes + a stable session id', () => {

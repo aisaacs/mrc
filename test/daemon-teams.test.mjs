@@ -44,7 +44,7 @@ function controlCall(port, frame) {
 test('daemon team rooms: define org, directed delivery, @user round-trip, brake/resume', async () => {
   const port = await findFreePort(19000)
   const controlPort = await findFreePort(port + 1)
-  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100 })
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
 
   const roster = {
     org: 'shop', repo: TMP_HOME,

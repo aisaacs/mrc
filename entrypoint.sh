@@ -27,6 +27,20 @@ sudo ALLOW_WEB="${ALLOW_WEB:-}" \
 # All config setup is now in Node
 node /usr/local/bin/container-setup.js
 
+# One-shot worker turn (task-worker member): run the backend non-interactively on the prompt file and
+# print its output (captured by the host runWorkerExec). No interactive TTY, no channel. The prompt is
+# read from a file so backticks/$ in it are not re-evaluated by the shell.
+if [ -n "${MRC_EXEC_PROMPT_FILE:-}" ] && [ -f "${MRC_EXEC_PROMPT_FILE}" ]; then
+  echo "===MRC-WORKER-OUTPUT-START==="
+  case "${MRC_AGENT:-codex}" in
+    codex)  codex exec --dangerously-bypass-approvals-and-sandbox "$(cat "${MRC_EXEC_PROMPT_FILE}")" 2>&1 || true ;;
+    claude) claude --dangerously-skip-permissions -p "$(cat "${MRC_EXEC_PROMPT_FILE}")" 2>&1 || true ;;
+    *)      echo "[worker backend '${MRC_AGENT:-}' is not installed in this image]" ;;
+  esac
+  echo "===MRC-WORKER-OUTPUT-END==="
+  exit 0
+fi
+
 # Read the resume flag computed by container-setup.js
 RESUME_FLAG=""
 if [ -f /tmp/mrc-resume-flag ]; then
