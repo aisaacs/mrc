@@ -124,7 +124,13 @@ async function tick() {
     const m = memberByHandle(S.selMember)
     if (m && m.tier==='worker') {
       const r = await api('/api/worker-log?handle='+encodeURIComponent(m.handle)).catch(()=>null)
-      S.workerLog = r && r.ok ? (r.log||'') : ''
+      let log = r && r.ok ? (r.log||'') : ''
+      if (!log) {   // fallback: scrape the team transcript for this worker (works on any daemon)
+        const room = mergedRooms().find(rr=>rr.team===m.team && rr.kind==='team')
+        const rd = room ? await api('/api/room?id='+encodeURIComponent(room.roomId)).catch(()=>null) : null
+        if (rd) log = (rd.thread||'').split('\n').filter(l=>l.toLowerCase().includes(m.first.toLowerCase())).join('\n')
+      }
+      S.workerLog = log
     }
   }
   paint()

@@ -2,8 +2,11 @@
 // invoker — the container exec is the injected seam and isn't exercised here.
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import { join } from 'node:path'
 import { createRoomEngine } from '../src/teams/room-engine.js'
-import { createWorkerRunner, buildWorkerPrompt } from '../src/teams/worker-runner.js'
+import { createWorkerRunner, buildWorkerPrompt, workerLogPath } from '../src/teams/worker-runner.js'
 import { parseRoster, teamRoomId } from '../src/teams/roster.js'
 
 function seededRng(seed = 1) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x100000000 } }
@@ -65,6 +68,23 @@ test('runner: batches a burst of mentions to one worker into a single invocation
   engine.route({ fromHandle: 'roland/claude', roomId, text: '@thierry step two' })
   await runner.tick()
   assert.equal(calls, 1, 'two mentions in one drain -> one invocation')
+})
+
+test('runner writes a per-member log file (request + result)', async () => {
+  const repo = fs.mkdtempSync(join(os.tmpdir(), 'mrc-wlog-'))
+  const engine = createRoomEngine({ send: () => {}, append: () => {}, notify: () => {} })
+  const norm = parseRoster({ org: 'shop', repo, teams: [{ name: 'client', members: [
+    { role: 'architect', backend: 'claude', name: 'roland', lead: true },
+    { role: 'engineer', backend: 'codex', name: 'thierry' },
+  ] }] }, { rng: seededRng(1) })
+  engine.defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
+  engine.bindSession('roland/claude', 's1')
+  const runner = createWorkerRunner({ engine, invoke: async () => ({ text: 'built the parser at src/parse.js' }) })
+  engine.route({ fromHandle: 'roland/claude', roomId: teamRoomId('shop', 'client'), text: '@thierry build the parser' })
+  await runner.tick()
+  const log = fs.readFileSync(workerLogPath(repo, 'thierry/codex'), 'utf8')
+  assert.match(log, /build the parser/)     // the request
+  assert.match(log, /built the parser at src\/parse\.js/)   // the result
 })
 
 test('runner: a failing invoke posts a graceful error, never silently drops', async () => {
