@@ -1,0 +1,157 @@
+// Host-side unit tests for the team foundation (names, personas, roster). Run: node --test test/
+import test from 'node:test'
+import assert from 'node:assert/strict'
+import { pickFirstName, makeHandle, parseMention, extractMentions, backendFamily, FRENCH_NAMES } from '../src/teams/names.js'
+import { buildPersona, roleDef, ROLES } from '../src/teams/personas.js'
+import { parseRoster, validateRoster, teamRoomId, leadsRoomId } from '../src/teams/roster.js'
+
+// Deterministic RNG for reproducible name draws.
+function seededRng(seed = 1) {
+  let s = seed >>> 0
+  return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x100000000 }
+}
+
+test('names: handles are first/backend, lowercased', () => {
+  assert.equal(makeHandle('Ludivine', 'Claude'), 'ludivine/claude')
+  assert.equal(makeHandle('Thierry', 'codex'), 'thierry/codex')
+  assert.equal(backendFamily('GPT-Codex'), 'gptcodex')
+})
+
+test('names: pickFirstName avoids taken names and is unique across a draw', () => {
+  const taken = new Set()
+  const rng = seededRng(42)
+  const picks = []
+  for (let i = 0; i < 20; i++) { const n = pickFirstName(taken, rng); taken.add(n.toLowerCase()); picks.push(n) }
+  assert.equal(new Set(picks.map((p) => p.toLowerCase())).size, 20, 'all picks unique')
+})
+
+test('names: pool exhaustion falls back to numbered names without throwing', () => {
+  const taken = new Set(FRENCH_NAMES.map((n) => n.toLowerCase()))
+  const n = pickFirstName(taken, seededRng(7))
+  assert.ok(n && !taken.has(n.toLowerCase()))
+})
+
+test('names: parseMention + extractMentions', () => {
+  assert.deepEqual(parseMention('@Ludivine/Claude'), { first: 'ludivine', backend: 'claude' })
+  assert.deepEqual(parseMention('thierry'), { first: 'thierry', backend: null })
+  assert.deepEqual(extractMentions('hey @critic and @ludivine/claude, also @user pls'),
+    ['critic', 'ludivine/claude', 'user'])
+  assert.deepEqual(extractMentions('no mentions here'), [])
+})
+
+test('personas: every role has a mandate and a mount/tier', () => {
+  for (const [name, def] of Object.entries(ROLES)) {
+    assert.ok(def.mandate.length > 20, `${name} has a mandate`)
+    assert.ok(['ro', 'rw'].includes(def.mount))
+    assert.ok(['live', 'worker'].includes(def.tier))
+  }
+  assert.equal(roleDef('writer').mount, 'rw')
+  assert.equal(roleDef('architect').mount, 'ro')
+  assert.equal(roleDef('nonsense').label, 'nonsense')   // generic fallback
+})
+
+test('personas: buildPersona injects identity, addressing, trust, territory, commit rule', () => {
+  const roster = [
+    { first: 'Roland', handle: 'roland/claude', roleLabel: 'Architect', lead: true },
+    { first: 'Ludivine', handle: 'ludivine/claude', roleLabel: 'Writer', lead: false },
+  ]
+  const p = buildPersona({
+    self: { first: 'Ludivine', handle: 'ludivine/claude', roleLabel: 'Writer' },
+    team: 'client', roster, isLead: false, territory: 'client/src', mount: 'rw', role: 'writer',
+  })
+  assert.match(p, /You are @Ludivine/)
+  assert.match(p, /the Writer on the "client" team/)
+  assert.match(p, /@roland/)                     // teammate listed
+  assert.match(p, /DIRECTED DELIVERY/)
+  assert.match(p, /\[Human directive\]/)         // trust model
+  assert.match(p, /client\/src/)                 // territory
+  assert.match(p, /Do NOT run `git commit`/)     // human commits
+  assert.match(p, /you may EDIT/)                // rw mount
+})
+
+test('personas: lead gets the leads-room instruction; non-lead does not', () => {
+  const self = { first: 'Roland', handle: 'roland/claude', roleLabel: 'Architect' }
+  const lead = buildPersona({ self, team: 'api', roster: [self], isLead: true, territory: '.', mount: 'ro', role: 'architect' })
+  const member = buildPersona({ self, team: 'api', roster: [self], isLead: false, territory: '.', mount: 'ro', role: 'architect' })
+  assert.match(lead, /LEADS room/)
+  assert.doesNotMatch(member, /LEADS room/)
+  assert.match(member, /ask your architect/)
+})
+
+test('roster: parses a two-team org and assigns unique handles', () => {
+  const json = {
+    org: 'shop', repo: '/tmp/shop',
+    teams: [
+      { name: 'client', territory: 'client', members: [
+        { role: 'architect', backend: 'claude', lead: true },
+        { role: 'writer', backend: 'claude' },
+        { role: 'critic', backend: 'codex' },
+      ]},
+      { name: 'api', territory: 'api', members: [
+        { role: 'architect', backend: 'claude', lead: true },
+        { role: 'writer', backend: 'qwen' },
+      ]},
+    ],
+  }
+  const norm = parseRoster(json, { rng: seededRng(3) })
+  assert.equal(norm.org, 'shop')
+  assert.equal(norm.members.length, 5)
+  const handles = norm.members.map((m) => m.handle)
+  assert.equal(new Set(handles).size, 5, 'handles unique across org')
+
+  // tiers: claude => live, others forced to worker
+  const codexCritic = norm.members.find((m) => m.backend === 'codex')
+  assert.equal(codexCritic.tier, 'worker')
+  const qwenWriter = norm.members.find((m) => m.backend === 'qwen')
+  assert.equal(qwenWriter.tier, 'worker')
+  assert.equal(norm.members.find((m) => m.role === 'architect').tier, 'live')
+
+  // mounts: writer rw, others ro
+  assert.equal(norm.members.find((m) => m.role === 'writer' && m.team === 'client').mount, 'rw')
+  assert.equal(norm.members.find((m) => m.role === 'critic').mount, 'ro')
+
+  // territory resolution
+  assert.equal(norm.members.find((m) => m.team === 'api' && m.mount === 'rw').territory, 'api')
+})
+
+test('roster: derives team rooms + a leads room with @user', () => {
+  const json = {
+    org: 'shop',
+    teams: [
+      { name: 'client', members: [ { role: 'architect', lead: true }, { role: 'writer' } ] },
+      { name: 'api', members: [ { role: 'architect', lead: true }, { role: 'writer' } ] },
+    ],
+  }
+  const norm = parseRoster(json, { repo: '/tmp/shop', rng: seededRng(9) })
+  const teamRooms = norm.rooms.filter((r) => r.kind === 'team')
+  const leads = norm.rooms.find((r) => r.kind === 'leads')
+  assert.equal(teamRooms.length, 2)
+  assert.equal(teamRooms[0].roomId, teamRoomId('shop', 'client'))
+  assert.ok(leads, 'leads room exists')
+  assert.equal(leads.roomId, leadsRoomId('shop'))
+  assert.ok(leads.members.includes('@user'))
+  assert.equal(leads.members.filter((m) => m !== '@user').length, 2, 'both leads in the leads room')
+})
+
+test('roster: exactly one lead per team, auto-designated when unset', () => {
+  const json = { org: 'x', teams: [ { name: 't', members: [ { role: 'writer' }, { role: 'architect' }, { role: 'critic' } ] } ] }
+  const norm = parseRoster(json, { repo: '/tmp/x', rng: seededRng(2) })
+  const leads = norm.members.filter((m) => m.lead)
+  assert.equal(leads.length, 1)
+  assert.equal(leads[0].role, 'architect', 'architect auto-designated lead')
+})
+
+test('roster: validate flags overlapping write territories', () => {
+  const json = { org: 'x', teams: [ { name: 't', territory: '.', members: [
+    { role: 'writer', name: 'aa', territory: 'src' },
+    { role: 'writer', name: 'bb', territory: 'src/deep' },
+  ] } ] }
+  const norm = parseRoster(json, { repo: '/tmp/x', rng: seededRng(2) })
+  const v = validateRoster(norm)
+  assert.ok(v.warnings.some((w) => /write territory/.test(w)), 'overlap warned')
+})
+
+test('roster: territory escaping the repo is rejected', () => {
+  const json = { org: 'x', teams: [ { name: 't', territory: '../evil', members: [ { role: 'writer' } ] } ] }
+  assert.throws(() => parseRoster(json, { repo: '/tmp/x', rng: seededRng(2) }), /escapes the repo/)
+})
