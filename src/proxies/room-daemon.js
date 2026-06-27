@@ -16,8 +16,14 @@ import { createWorkerRunner } from '../teams/worker-runner.js'
 
 const MRC_JS = fileURLToPath(new URL('../../mrc.js', import.meta.url))
 
-// Default worker invoker: spawn `mrc team _worker-exec` so Docker stays out of the daemon process.
-// The worker's CLI runs in a sandboxed container scoped to its territory; its stdout is the reply.
+// Worker invoker. Media members (designer/sound-designer/composer) generate an asset file via an API
+// call IN-PROCESS (the daemon loads .env, so it has GEMINI/ELEVEN keys, and gets the raw items).
+// CLI members (codex/qwen) run in a sandboxed container via `mrc team _worker-exec`.
+async function defaultWorkerInvoke(member, ctx) {
+  const { isMediaRole, generateMedia } = await import('../teams/media.js')
+  if (isMediaRole(member.role)) return generateMedia(member, ctx)
+  return spawnWorkerInvoke(member, ctx)
+}
 function spawnWorkerInvoke(member, { prompt }) {
   return new Promise((resolve, reject) => {
     if (!member.repo) return reject(new Error('no repo recorded for this worker'))
@@ -42,7 +48,7 @@ const catchupPrompt = (reason) =>
   `to the peer; (2) where things stand now; (3) exactly what you need from your human to get ` +
   `unblocked. Be concrete and skip preamble.`
 
-export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS, workerInvoke = spawnWorkerInvoke, workerPollMs = 2_000 }) {
+export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS, workerInvoke = defaultWorkerInvoke, workerPollMs = 2_000 }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
   // Restore pairings a graceful restart dumped, so an in-flight room survives `mrc rooms restart`
@@ -456,6 +462,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const { join } = await import('node:path')
   const { homedir } = await import('node:os')
   const { findFreePort } = await import('../ports.js')
+  // Load .env so media members (designer/sound/composer) have their generation keys in-process.
+  try { const { loadEnv } = await import('../config.js'); loadEnv(fileURLToPath(new URL('../../', import.meta.url))) } catch {}
   const version = createHash('sha1').update(readFileSync(process.argv[1])).digest('hex').slice(0, 12)
   const port = Number(process.argv[2])
   const controlPort = Number(process.argv[3])

@@ -65,6 +65,26 @@ export const ROLES = {
       'a convention is. Answer the question asked, with citations (file:line or source). You do not ' +
       'change code.',
   },
+  // --- media makers: task-workers backed by a generation API; an @mention produces an asset FILE ---
+  designer: {
+    label: 'Graphics Designer', mount: 'rw', tier: 'worker', leadByDefault: false,
+    mandate:
+      'You make visual assets — sprites, backgrounds, icons, textures, UI art — from a description. ' +
+      'When @mentioned, generate the image(s) into your territory and report the path. Be concrete; ' +
+      'ask the engineer or @user if the spec (size, style, palette) is unclear.',
+  },
+  'sound-designer': {
+    label: 'Sound Designer', mount: 'rw', tier: 'worker', leadByDefault: false,
+    mandate:
+      'You make sound effects — jumps, hits, pickups, UI clicks, ambiences — from a description. When ' +
+      '@mentioned, generate the audio into your territory and report the path.',
+  },
+  composer: {
+    label: 'Composer', mount: 'rw', tier: 'worker', leadByDefault: false,
+    mandate:
+      'You make music — themes, loops, stings — from a description (mood, tempo, instrumentation). When ' +
+      '@mentioned, generate the track into your territory and report the path.',
+  },
 }
 
 // Back-compat: "writer" was renamed to "engineer" (it read as a doc-writer and confused who

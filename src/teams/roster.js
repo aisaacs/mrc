@@ -135,7 +135,7 @@ export function validateRoster(norm) {
 
 function ROLES_OK(role) {
   // Mirrors personas.ROLES keys without importing the whole map; unknown roles are allowed (warned).
-  return ['architect', 'engineer', 'critic', 'adversary', 'ultracritical', 'user-defender', 'researcher'].includes(role)
+  return ['architect', 'engineer', 'critic', 'adversary', 'ultracritical', 'user-defender', 'researcher', 'designer', 'sound-designer', 'composer'].includes(role)
 }
 
 function territoriesOverlap(a, b) {
