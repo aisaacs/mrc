@@ -161,19 +161,47 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
     }
   }
 
-  // Core entry: a member sent `text` into `roomId`. Directed delivery to @mentioned members; @user
-  // to the inbox. Honors brake/turnCap (held FIFO). Returns an outcome summary for the ack.
-  function route({ sessionId, fromHandle, roomId, text }) {
+  // Find the room a member is sending into when they didn't give an exact id. A soft `hint` may be a
+  // room id, a team name, or "leads"; failing that, infer from the @mentioned targets (the one room,
+  // among the sender's, where every named target resolves). Returns room | null (in no room) |
+  // undefined (ambiguous — caller should ask them to name the team/room).
+  function findRoom(h, hint, text) {
+    const mine = roomsForHandle(h)
+    if (mine.length === 0) return null
+    if (hint) {
+      const exact = rooms.get(hint)
+      if (exact && exact.members.has(h)) return exact
+      const lc = String(hint).toLowerCase()
+      const byTeam = mine.find((r) => (r.team || '').toLowerCase() === lc)
+      if (byTeam) return byTeam
+      if (lc === 'leads') { const l = mine.find((r) => r.kind === 'leads'); if (l) return l }
+    }
+    if (mine.length === 1) return mine[0]
+    const toks = extractMentions(text).filter((t) => t !== 'user' && t !== 'user/human')
+    if (toks.length) {
+      const fit = mine.filter((r) => toks.every((t) => resolveInRoom(r, t)))
+      if (fit.length === 1) return fit[0]
+    }
+    return undefined   // ambiguous
+  }
+
+  // Core entry: a member sent `text`. An exact `roomId` is strict (must be a room they're in); a soft
+  // `room` hint (team name / "leads") or target inference picks the room otherwise. Directed delivery
+  // to @mentioned members; @user to the inbox. Honors brake/turnCap (held FIFO).
+  function route({ sessionId, fromHandle, roomId, room: hint, text }) {
     const h = fromHandle ? String(fromHandle).toLowerCase() : handleForSession(sessionId)
     if (!h) return { ok: false, error: 'sender not bound to a member' }
-    let room = roomId ? rooms.get(roomId) : null
-    // If no room given, default to the sender's only room (multi-room senders MUST specify).
-    if (!room) {
-      const mine = roomsForHandle(h)
-      if (mine.length === 1) room = mine[0]
-      else return { ok: false, error: mine.length ? 'ambiguous room — specify roomId' : 'not in any room' }
+    let room
+    if (roomId) {
+      room = rooms.get(roomId)
+      if (!room) return { ok: false, error: `no such room "${roomId}"` }
+      if (!room.members.has(h)) return { ok: false, error: 'not a member of that room' }
+    } else {
+      room = findRoom(h, hint, text)
+      if (room === null) return { ok: false, error: 'not in any room' }
+      if (room === undefined) return { ok: false, error: 'ambiguous room — name the team or room (e.g. room:"leads")' }
+      if (!room.members.has(h)) return { ok: false, error: 'not a member of that room' }
     }
-    if (!room.members.has(h)) return { ok: false, error: 'not a member of that room' }
 
     const { targets, toUser, unresolved } = resolveTargets(room, h, text)
     room.turn += 1; room.lastActivityAt = now()
@@ -241,6 +269,31 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
     return { ok: true }
   }
 
+  // What a member sees: its rooms and, per room, the teammates (with online state). Drives the
+  // member's list_team tool and the dashboard roster.
+  function memberView(handle) {
+    handle = String(handle).toLowerCase()
+    const me = members.get(handle)
+    if (!me) return null
+    const rms = roomsForHandle(handle).map((r) => ({
+      roomId: r.roomId, team: r.team, kind: r.kind, state: r.state,
+      members: [...r.members.keys()].map((h) => h === '@user'
+        ? { handle: '@user', first: 'user', role: 'human', lead: false, online: true }
+        : { handle: h, first: memberByHandle(h)?.first, role: r.members.get(h)?.role, lead: !!r.members.get(h)?.lead, backend: memberByHandle(h)?.backend, online: online(h) }),
+    }))
+    return { handle, first: me.first, role: me.role, team: me.team, lead: me.lead, rooms: rms }
+  }
+  function viewForSession(sessionId) { const h = handleForSession(sessionId); return h ? memberView(h) : null }
+
+  // Close a team room (human-only, mirrors legacy `end`): preserve files, drop in-memory state.
+  function endRoom(roomId) {
+    const r = rooms.get(roomId)
+    if (!r) return { ok: false, error: 'no such room' }
+    _append(roomId, `${ts()} [closed]`)
+    rooms.delete(roomId)
+    return { ok: true }
+  }
+
   function status() {
     return {
       orgs: [...orgs.values()],
@@ -255,9 +308,9 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
   }
 
   return {
-    defineOrg, bindSession, unbindSession, route,
-    roomsForSession, roomsForHandle, resolveTargets, resolveInRoom,
-    doBrake, doResume, doSteer, answerUser, status,
+    defineOrg, bindSession, unbindSession, route, endRoom,
+    roomsForSession, roomsForHandle, resolveTargets, resolveInRoom, findRoom,
+    doBrake, doResume, doSteer, answerUser, status, memberView, viewForSession,
     // exposed for the daemon/dashboard + tests
     _rooms: rooms, _members: members, _userInbox: userInbox, _workerQueue: workerQueue,
     getRoom: (id) => rooms.get(id) || null,

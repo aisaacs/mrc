@@ -117,3 +117,15 @@ export function loadPairings({ maxAgeMs = 120_000 } = {}) {
     return (Date.now() - (j.at || 0) <= maxAgeMs) ? (j.pairings || []) : []   // ignore a stale dump (sessions long gone)
   } catch { return [] }
 }
+
+// --- team org definitions (declared rooms + members) ----------------------
+// Unlike ambient pairings, a team org is declared up front by `mrc team` and should survive a daemon
+// refresh so already-running members keep their rooms. Persisted (not consumed) and re-pushed by the
+// launcher on each run, so a stale def is harmless — the next `mrc team` overwrites it.
+const orgsFile = () => join(daemonDir(), 'room-orgs.json')
+export function saveOrgs(list) {
+  try { mkdirSync(daemonDir(), { recursive: true }); writeFileSync(orgsFile(), JSON.stringify({ at: Date.now(), orgs: list }, null, 2)) } catch {}
+}
+export function loadOrgs() {
+  try { return JSON.parse(readFileSync(orgsFile(), 'utf8')).orgs || [] } catch { return [] }
+}

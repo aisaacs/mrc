@@ -194,6 +194,31 @@ test('engine: steer sends [Human directive] to all room members and clears held'
   assert.equal(h.deliveriesTo(writer).length, 0, 'held backlog dropped by steer')
 })
 
+test('engine: multi-room lead — room inferred from the @mentioned target', () => {
+  const json = {
+    org: 'shop',
+    teams: [
+      { name: 'client', members: [ { role: 'architect', backend: 'claude', name: 'roland', lead: true }, { role: 'writer', backend: 'claude', name: 'ludivine' } ] },
+      { name: 'api', members: [ { role: 'architect', backend: 'claude', name: 'gaston', lead: true } ] },
+    ],
+  }
+  const h = harness(json)
+  // No roomId given. "@ludivine" only resolves in the client team room -> inferred there.
+  h.engine.route({ fromHandle: 'roland/claude', text: '@ludivine start the form' })
+  assert.equal(h.deliveriesTo('ludivine/claude').length, 1)
+  // "@gaston" only resolves in the leads room -> inferred there.
+  h.engine.route({ fromHandle: 'roland/claude', text: '@gaston sync on the contract' })
+  assert.equal(h.deliveriesTo('gaston/claude').length, 1)
+})
+
+test('engine: soft room hint by team name resolves the room', () => {
+  const h = harness(TEAM)
+  const arch = h.handle('architect'), writer = h.handle('writer')
+  const r = h.engine.route({ fromHandle: arch, room: 'client', text: '@writer go' })
+  assert.equal(r.ok, true)
+  assert.equal(h.deliveriesTo(writer).length, 1)
+})
+
 test('engine: unresolved mentions are reported, not silently dropped', () => {
   const h = harness(TEAM)
   const r = h.engine.route({ fromHandle: h.handle('architect'), roomId: teamRoomId('shop', 'client'), text: '@nobody hello' })
