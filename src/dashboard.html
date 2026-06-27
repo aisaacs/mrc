@@ -41,11 +41,13 @@
   .mstate { font-size:10.5px; margin-left:6px; white-space:nowrap }
   .mstate.ready{color:var(--good)} .mstate.starting{color:var(--warn)} .mstate.worker{color:var(--accent)} .mstate.off{color:var(--dim)}
   /* cards */
-  .team { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:10px }
-  .team .tn { font-weight:650; font-size:13px; margin-bottom:6px; display:flex; gap:8px; align-items:center }
-  .mem { display:flex; align-items:center; gap:8px; padding:4px 6px; font-size:13px; cursor:pointer; border:1px solid transparent; border-radius:6px }
+  .team { background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:12px 12px 10px; margin-bottom:12px }
+  .team .tn { font-weight:650; font-size:13px; margin-bottom:8px; padding:0 2px; display:flex; gap:8px; align-items:center }
+  .mem { display:flex; align-items:center; gap:8px; padding:6px 8px; font-size:13px; cursor:pointer; border:1px solid transparent; border-radius:7px }
+  .mem + .mem { margin-top:2px }
   .mem:hover { background:var(--panel2) } .mem.sel { background:var(--panel2); border-color:var(--accent) }
-  .mem .role { color:var(--dim); font-size:11px; margin-left:auto } .mem.lead .h{ color:var(--lead) }
+  .mem .bk { font-size:11px } .mem .role { color:var(--dim); font-size:11px } .mem.lead .h{ color:var(--lead) }
+  .mem .grow { flex:1 }
   .rm { display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--line); border-radius:8px; margin:6px 0; cursor:pointer; background:var(--panel) }
   .rm:hover { border-color:#37506e } .rm.sel { border-color:var(--accent); background:var(--panel2) }
   .rm .nm { font-weight:600; font-size:13px } .rm .meta { color:var(--dim); font-size:11px; margin-left:auto }
@@ -85,7 +87,6 @@
   <div class="main">
     <nav class="rail" id="rail">
       <button data-nav="teams" class="on">🎩 Teams</button>
-      <button data-nav="rooms">💬 Rooms</button>
       <button data-nav="inbox">📥 Inbox <span class="badge" id="inboxBadge" style="display:none"></span></button>
       <div class="sp"></div>
       <button data-nav="build">＋ New team</button>
@@ -190,27 +191,14 @@ function renderList() {
     const byTeam = {}; for (const m of orgMembers()) (byTeam[m.team] ||= []).push(m)
     const teams = Object.keys(byTeam)
     if (!teams.length) { mid.innerHTML = `<div class="empty">No team yet.<br><a href="#" onclick="go('build');return false">＋ Assemble one</a></div>`; return }
-    mid.innerHTML = teams.map(t => {
-      const rooms = mergedRooms().filter(r => r.team===t && inOrg(r))
-      return `<div class="team"><div class="tn">${esc(t)}</div>
-        ${byTeam[t].map(m=>{const s=memberState(m);return `<div class="mem ${m.lead?'lead':''} ${m.handle===S.selMember?'sel':''}" onclick="selMember('${esc(m.handle)}')" title="${m.tier==='worker'?'on-demand — click for activity':'click for terminal'}"><span class="dot ${s.cls}"></span>
-          <span class="h">@${esc(m.first)}</span><span class="muted" style="font-size:11px">/${esc(m.backend)}</span>
-          <span class="mstate ${s.cls}">${esc(s.label)}</span>
-          <span class="role">${esc(m.role)}${m.lead?' ★':''}</span></div>`}).join('')}
-        ${rooms.map(r=>`<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')"><span class="nm">${esc(r.team||r.roomId)}</span>
-          <span class="state ${r.state}">${esc(r.state)}</span><span class="meta">t${r.turn||0}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`).join('')}
-        ${S.addingTo===t ? amForm(t) : `<button class="btn tiny" style="margin-top:6px" onclick="startAddMember('${esc(t)}')">＋ add member</button>`}
-      </div>`
-    }).join('')
-  } else if (S.nav==='rooms') {
-    const rs = mergedRooms()
-    const mine = rs.filter(inOrg), others = rs.filter(r=>!inOrg(r))
-    const row = (r) => `<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')">
-      <span class="nm">${esc(r.team||label2(r))}</span><span class="state ${r.state}">${esc(r.state)}</span>
-      <span class="meta">${esc(r.kind||'')}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`
-    mid.innerHTML = `<h2>${S.org?esc(S.org)+' rooms':'Rooms'}</h2>`
-      + (mine.length? mine.map(row).join('') : `<div class="muted">No rooms in this org.</div>`)
-      + (others.length? `<h2>Other — consults &amp; history</h2><div style="opacity:.55">${others.map(row).join('')}</div>` : '')
+    const memberRow = (m) => { const s=memberState(m); return `<div class="mem ${m.lead?'lead':''} ${m.handle===S.selMember?'sel':''}" onclick="selMember('${esc(m.handle)}')" title="${m.tier==='worker'?'on-demand — click for activity':'click for terminal'}"><span class="dot ${s.cls}"></span><span class="h">@${esc(m.first)}</span><span class="muted bk">/${esc(m.backend)}</span><span class="grow"></span><span class="mstate ${s.cls}">${esc(s.label)}</span><span class="role">${esc(m.role)}${m.lead?' ★':''}</span></div>` }
+    let html = teams.map(t => `<div class="team"><div class="tn">${esc(t)}</div>${byTeam[t].map(memberRow).join('')}${S.addingTo===t ? amForm(t) : `<button class="btn tiny" style="margin-top:8px" onclick="startAddMember('${esc(t)}')">＋ add member</button>`}</div>`).join('')
+    // Rooms as a section under the team list (the team rooms + the leads room; consults/history below)
+    const rs = mergedRooms(); const mine = rs.filter(inOrg); const others = rs.filter(r=>!inOrg(r))
+    const roomRow = (r) => `<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')"><span class="nm">${esc(r.team||label2(r))}</span><span class="state ${r.state}">${esc(r.state)}</span><span class="meta">${esc(r.kind||'')}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`
+    html += `<h2>Rooms</h2>` + (mine.length? mine.map(roomRow).join('') : `<div class="muted" style="padding:2px 6px">none</div>`)
+    if (others.length) html += `<h2>Other — consults &amp; history</h2><div style="opacity:.55">${others.map(roomRow).join('')}</div>`
+    mid.innerHTML = html
   } else if (S.nav==='inbox') {
     const ib = inbox()
     mid.innerHTML = `<h2>Questions for you</h2>` + (ib.qs.length? ib.qs.map((q,i)=>`<div class="ib ${q.answered?'done':''} ${S.selInbox===i?'sel':''}" onclick="selInbox(${i})">
@@ -390,7 +378,7 @@ window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('
   const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role,backend,territory})
   if(r&&r.ok){ S.addingTo=null; tick() } else { const m=$('#amMsg'); if(m)m.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
 window.selRoom = (id, openCu)=>{ S.selRoom=id; S.selInbox=null; S.selMember=null; if(openCu)S.tab='catchups'; S.room=null; tick() }
-window.openRoom = (id)=>{ S.nav='rooms'; selRoom(id) }
+window.openRoom = (id)=>{ S.nav='teams'; selRoom(id) }
 window.selInbox = (i)=>{ S.selInbox=i; S.selRoom=null; S.selMember=null; paint() }
 window.selMember = (h)=>{ S.selRoom=null; S.selInbox=null; S.selMember=h
   const m = memberByHandle(h)

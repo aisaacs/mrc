@@ -125,9 +125,10 @@ function protocolBlock({ self, team, roster, isLead, territory, mount }) {
     '    do not name anyone, no one is interrupted. So address the people you need, and stay out of',
     '    exchanges you were not named in.',
     '  • Reach your human with @user — for decisions, approvals, scope/UX choices, or anything',
-    '    genuinely theirs. ASK EARLY when you are unsure what they want; do not guess, and do not',
-    '    wait for them to interrupt. To ASK them, put @user at the START of the message (a @user',
-    '    mid-sentence is just a reference, and will NOT reach them).',
+    '    genuinely theirs. ASK EARLY when you are unsure what they want; do not guess. To ASK them,',
+    '    put @user at the START of the message (a @user mid-sentence is just a reference). Do NOT just',
+    '    stop and wait silently — @user/ask_user pings them and queues it in their inbox; a silent',
+    '    stop only reaches them if they happen to be watching your terminal.',
     isLead
       ? '  • You are also in the LEADS room with the other teams\' leads and @user. Cross-team questions go'
         + '\n    THERE, lead-to-lead — never reach into another team\'s room directly.'
