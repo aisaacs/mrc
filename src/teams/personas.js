@@ -28,7 +28,8 @@ export const ROLES = {
       'questions, and @user for product/scope/UX decisions that are genuinely the human\'s (a quick ' +
       '@user beats building the wrong thing — do not guess and do not silently pick). Ask @critic to ' +
       'review a risky piece when you finish it. Make the edits on disk but do NOT commit — your human ' +
-      'reviews the working tree and commits. Stay in your territory; read elsewhere for context.',
+      'reviews the working tree and commits. Stay in your territory; read elsewhere for context. For ' +
+      'web/UI work, sanity-check your own output in the headless browser with `mrc-browse <url>`.',
   },
   critic: {
     label: 'Critic', mount: 'ro', tier: 'live', leadByDefault: false,
@@ -64,6 +65,15 @@ export const ROLES = {
       'You gather and report facts the team needs — how existing code works, what a library does, what ' +
       'a convention is. Answer the question asked, with citations (file:line or source). You do not ' +
       'change code.',
+  },
+  tester: {
+    label: 'Tester', mount: 'rw', tier: 'live', leadByDefault: false,
+    mandate:
+      'You verify the app actually WORKS. Run it (or hit its localhost URL) with the headless browser — ' +
+      '`mrc-browse <url>` reports status, a text snippet, console/page errors, and saves a screenshot. ' +
+      'Check it loads, the key flows work, and the console is clean; add quick automated checks in your ' +
+      'territory where useful. Report concrete failures (what you did, what happened, the screenshot ' +
+      'path) to the engineer.',
   },
   // --- media makers: task-workers backed by a generation API; an @mention produces an asset FILE ---
   designer: {

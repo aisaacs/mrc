@@ -63,6 +63,15 @@ RUN npm install -g --loglevel=error @openai/codex \
 # already whitelists — no extra allowed domains needed.
 RUN npm install -g --loglevel=error sharp
 
+# Headless browser (Playwright + Chromium) so engineers/testers can load their app, click, screenshot,
+# and read console errors (the `mrc-browse <url>` helper). `--with-deps` apt-installs the browser's
+# system libraries; the browser binary downloads at build time (runtime testing hits localhost, which
+# the firewall doesn't restrict). Browsers live in a shared, world-readable path.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/pw-browsers
+RUN npm install -g --loglevel=error playwright \
+    && npx --yes playwright install --with-deps chromium \
+    && chmod -R a+rx /opt/pw-browsers || true
+
 # Node does not search the global npm root by default, so make it resolvable from
 # project code via NODE_PATH. A project's own local node_modules still take
 # precedence, so this only acts as a fallback and never shadows a pinned version.
@@ -101,6 +110,9 @@ RUN chmod +x /usr/local/bin/mrc-notify-hook.js \
 # Video analysis script + slash command (staged for runtime seeding)
 COPY container/video-analysis.sh /usr/local/bin/video-analysis
 RUN chmod +x /usr/local/bin/video-analysis
+
+COPY container/mrc-browse.js /usr/local/bin/mrc-browse
+RUN chmod +x /usr/local/bin/mrc-browse
 COPY container/video-analysis-command.md /opt/mrc-video-analysis/command.md
 COPY container/video-analysis-defaults.json /opt/mrc-video-analysis/defaults.json
 

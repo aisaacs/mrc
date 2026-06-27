@@ -16,23 +16,25 @@ export const PRESETS = {
   },
   'web': {
     title: 'E-commerce / web dev',
-    description: 'engineer + critic + user-defender + a UI graphics designer',
+    description: 'engineer + critic + user-defender + tester + a UI graphics designer',
     teams: [{ name: 'web', territory: '.', members: [
       { role: 'architect', backend: 'claude', lead: true },
       { role: 'engineer', backend: 'claude' },
       { role: 'critic', backend: 'claude' },
       { role: 'user-defender', backend: 'claude' },
+      { role: 'tester', backend: 'claude', territory: 'tests' },
       { role: 'designer', backend: 'gemini', territory: 'public/img' },
     ] }],
   },
   'mobile': {
     title: 'Mobile app dev',
-    description: 'engineer + critic + user-defender + a graphics designer',
+    description: 'engineer + critic + user-defender + tester + a graphics designer',
     teams: [{ name: 'app', territory: '.', members: [
       { role: 'architect', backend: 'claude', lead: true },
       { role: 'engineer', backend: 'claude' },
       { role: 'critic', backend: 'claude' },
       { role: 'user-defender', backend: 'claude' },
+      { role: 'tester', backend: 'claude', territory: 'tests' },
       { role: 'designer', backend: 'gemini', territory: 'assets' },
     ] }],
   },

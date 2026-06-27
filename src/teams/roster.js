@@ -123,10 +123,10 @@ export function validateRoster(norm) {
     }
   }
   // Overlapping write territories between CODE engineers cause file contention — the point is to avoid
-  // it. Media makers (distinct binary assets) are exempt: a designer writing under an engineer's tree
-  // doesn't collide.
-  const MEDIA = new Set(['designer', 'sound-designer', 'composer'])
-  const writers = norm.members.filter((m) => m.mount === 'rw' && !MEDIA.has(m.role))
+  // it. Media makers (distinct binary assets) and the tester (its own tests/ tree) are exempt: writing
+  // under an engineer's tree doesn't collide for them.
+  const EXEMPT = new Set(['designer', 'sound-designer', 'composer', 'tester'])
+  const writers = norm.members.filter((m) => m.mount === 'rw' && !EXEMPT.has(m.role))
   for (let i = 0; i < writers.length; i++) for (let j = i + 1; j < writers.length; j++) {
     if (territoriesOverlap(writers[i].territory, writers[j].territory)) {
       warnings.push(`writers @${writers[i].handle} and @${writers[j].handle} share write territory ` +
@@ -138,7 +138,7 @@ export function validateRoster(norm) {
 
 function ROLES_OK(role) {
   // Mirrors personas.ROLES keys without importing the whole map; unknown roles are allowed (warned).
-  return ['architect', 'engineer', 'critic', 'adversary', 'ultracritical', 'user-defender', 'researcher', 'designer', 'sound-designer', 'composer'].includes(role)
+  return ['architect', 'engineer', 'critic', 'adversary', 'ultracritical', 'user-defender', 'researcher', 'tester', 'designer', 'sound-designer', 'composer'].includes(role)
 }
 
 function territoriesOverlap(a, b) {

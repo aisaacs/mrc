@@ -38,7 +38,7 @@ The system has two layers: a **Node.js host launcher** (`mrc.js` + `src/`) and a
 
 ### Container-side (runs inside Docker)
 
-12. **`Dockerfile`** — Builds on `node:22-slim`. Installs Claude Code via native binary download, installs plugins from the official marketplace, installs Codex CLI (OpenAI), creates a non-root `coder` user, and grants passwordless sudo only for the firewall script.
+12. **`Dockerfile`** — Builds on `node:22-slim`. Installs Claude Code via native binary download, installs plugins from the official marketplace, installs Codex CLI (OpenAI), installs Playwright + Chromium (the `mrc-browse` headless-browser helper for in-team testing), creates a non-root `coder` user, and grants passwordless sudo only for the firewall script.
 
 13. **`entrypoint.sh`** — Container startup. Waits for DNS (up to 30s), runs the firewall via sudo, runs `container-setup.js` for config merging, optionally logs in Codex, then starts the selected agent (`claude` or `codex`).
 
@@ -66,7 +66,7 @@ Lets two running `mrc` sessions consult each other through a host-mediated relay
 Builds **on top of negotiation rooms**: generalizes the 2-party pairing into N-party **teams** of agent **members**, each in its own container, addressing each other by **@mention** and steered by the human from a web UI or any member's console. Declared in a `team.json` roster, launched with `mrc team up`. **Deep dive, topology, and the test/rebuild recipe live in `docs/agent-teams.md`.**
 
 - **`src/teams/names.js`** — French first-name pool (with Spaceballs easter eggs) + unique `first/backend` handles + @mention parsing.
-- **`src/teams/personas.js`** — role registry (architect/engineer/critic/adversary/ultracritical/user-defender/researcher, plus media makers designer/sound-designer/composer) + `buildPersona()`, the team protocol injected via `--append-system-prompt`.
+- **`src/teams/personas.js`** — role registry (architect/engineer/critic/adversary/ultracritical/user-defender/researcher/tester, plus media makers designer/sound-designer/composer) + `buildPersona()`, the team protocol injected via `--append-system-prompt`. The **tester** uses the in-container headless browser (`container/mrc-browse.js` → Playwright/Chromium) to verify web/game output.
 - **`src/teams/media.js`** — media-maker members: a designer (Gemini image), sound-designer / composer (ElevenLabs) generate an asset FILE into their territory on @mention. Keys resolve per-repo (`repoEnvKey`).
 - **`src/teams/presets.js`** — ready-made team rosters (game / web / mobile / backend) for `mrc team up --preset` and the builder's preset dropdown.
 - **`src/teams/roster.js`** — parse/normalize `team.json` → members (unique handles, resolved territory/mount/tier, one lead per team) + derived rooms (one team room per team + a leads room with `@user`). Deterministic naming so members rebind across runs.

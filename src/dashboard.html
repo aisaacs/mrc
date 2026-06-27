@@ -94,7 +94,7 @@ const api = (p, o) => fetch(p, o).then(r => r.json())
 const post = (action, extra={}) => api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ action, ...extra }) })
 const postJSON = (path, obj={}) => api(path, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(obj) })
 
-const ROLES = ['architect','engineer','critic','adversary','ultracritical','user-defender','researcher']
+const ROLES = ['architect','engineer','critic','adversary','ultracritical','user-defender','researcher','tester','designer','sound-designer','composer']
 const BACKENDS = ['claude','codex','qwen','gemini']
 
 const S = {
