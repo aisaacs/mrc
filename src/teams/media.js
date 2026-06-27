@@ -8,6 +8,7 @@ import { join } from 'node:path'
 import { createHash } from 'node:crypto'
 import { extractMentions } from './names.js'
 import { repoEnvKey } from '../config.js'
+import { HAIKU_MODEL } from '../constants.js'
 
 // role -> media kind. The ROLE decides what gets made; the backend just names the provider.
 export const MEDIA_ROLES = { designer: 'image', 'sound-designer': 'sfx', composer: 'music' }
@@ -71,20 +72,46 @@ export async function generateMusic(prompt, { apiKey, endpoint = env('MRC_ELEVEN
 const GENERATORS = { image: generateImage, sfx: generateSfx, music: generateMusic }
 const KEY_FOR = { image: 'GEMINI_API_KEY', sfx: 'ELEVEN_LABS_API_KEY', music: 'ELEVEN_LABS_API_KEY' }
 
+// Art-director pass: a teammate's message is conversational ("the acorn is perfect, locked — now the
+// blue jay"). Turn it into a clean, standalone generation prompt + a tidy 2-4 word filename, and flag
+// pure feedback so we don't generate (and don't name files after chatter). Uses the host-only Haiku
+// key mrc already has; returns null on any failure so generation falls back to the raw text.
+async function artDirect(rawRequest, kind, { apiKey, fetchFn = globalThis.fetch }) {
+  if (!apiKey) return null
+  const system = `You are the ${kind === 'image' ? 'art' : 'audio'} director for a software team. A teammate sent the message below to a ${kind} generator. Reply ONLY with JSON. If it is a real request for a NEW ${kind} asset: {"prompt":"<concise standalone ${kind}-generation prompt>","name":"<2-4 word kebab filename, no extension>"}. If it is just feedback/approval/chatter and NOT a new asset request: {"skip":true}.`
+  try {
+    const res = await fetchFn('https://api.anthropic.com/v1/messages', {
+      method: 'POST',
+      headers: { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({ model: HAIKU_MODEL, max_tokens: 200, system, messages: [{ role: 'user', content: String(rawRequest).slice(0, 1500) }] }),
+    })
+    if (!res.ok) return null
+    const j = await res.json()
+    const txt = (j.content?.[0]?.text || '').replace(/^```json\s*|\s*```$/g, '').trim()
+    return JSON.parse(txt)
+  } catch { return null }
+}
+
 // Worker invoker for a media member: generate the asset and write it into the member's territory.
 // `member` carries { role, repo, territory, first }; ctx carries { items, fetchFn? }.
 export async function generateMedia(member, { items = [], fetchFn } = {}) {
   const kind = MEDIA_ROLES[member.role]
   if (!kind) return { text: `[@${member.first}: not a media role]` }
-  const prompt = mediaPrompt(items)
-  if (!prompt) return { text: `[@${member.first}: nothing to make — say what you want generated]` }
+  const raw = mediaPrompt(items)
+  if (!raw) return { text: `[@${member.first}: nothing to make — say what you want generated]` }
+  // Art-director pass: clean the prompt + filename, and skip messages that are just feedback.
+  const adKey = repoEnvKey(member.repo, 'MRC_SESSION_NAMING_ANTHROPIC_API_KEY') || repoEnvKey(member.repo, 'ANTHROPIC_API_KEY')
+  const ad = await artDirect(raw, kind, { apiKey: adKey, fetchFn })
+  if (ad?.skip) return { text: `[@${member.first}: that read as feedback, not a new ${kind} request — start with "make/generate …" when you want a new asset.]` }
+  const prompt = (ad?.prompt) || raw
+  const fileBase = slug(ad?.name || prompt)
   const apiKey = repoEnvKey(member.repo, KEY_FOR[kind])   // per-repo .env first, then the global key
   let asset
   try { asset = await GENERATORS[kind](prompt, { apiKey, fetchFn }) }
   catch (e) { return { text: `[@${member.first} couldn't generate it: ${e?.message || e}]` } }
   const territory = member.territory && member.territory !== '.' ? member.territory : 'assets'
   const dir = join(member.repo, territory)
-  const name = `${slug(prompt)}-${createHash('sha1').update(prompt + asset.bytes.length).digest('hex').slice(0, 6)}.${asset.ext}`
+  const name = `${fileBase}-${createHash('sha1').update(prompt + asset.bytes.length).digest('hex').slice(0, 6)}.${asset.ext}`
   try { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, name), asset.bytes) }
   catch (e) { return { text: `[@${member.first} generated it but couldn't write the file: ${e?.message || e}]` } }
   const rel = join(territory, name)

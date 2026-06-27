@@ -69,3 +69,31 @@ test('generateMedia fails gracefully (never throws) when the API errors', async 
   const out = await generateMedia(member, { items: [{ text: 'make art' }], fetchFn: fakeFetch })
   assert.match(out.text, /couldn't generate it: Gemini 429/)
 })
+
+test('art-director cleans the prompt + filename (and the file is named from the subject)', async () => {
+  const repo = fs.mkdtempSync(join(os.tmpdir(), 'mrc-media-'))
+  process.env.GEMINI_API_KEY = 'g'; process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY = 'a'
+  try {
+    const fetchFn = async (url) => String(url).includes('anthropic')
+      ? { ok: true, json: async () => ({ content: [{ text: '{"prompt":"pixel-art blue jay game piece, transparent bg","name":"blue-jay-piece"}' }] }) }
+      : { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: Buffer.from('IMG').toString('base64') } }] } }] }) }
+    const member = { role: 'designer', repo, territory: 'assets', first: 'Côme' }
+    const out = await generateMedia(member, { items: [{ text: '@côme the acorn is perfect, locked — now make the blue jay piece' }], fetchFn })
+    assert.match(out.text, /Generated image: `assets\/blue-jay-piece-/)
+    assert.match(fs.readdirSync(join(repo, 'assets'))[0], /^blue-jay-piece-[0-9a-f]{6}\.png$/)
+  } finally { delete process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY }
+})
+
+test('art-director skips pure feedback (no file generated)', async () => {
+  const repo = fs.mkdtempSync(join(os.tmpdir(), 'mrc-media-'))
+  process.env.GEMINI_API_KEY = 'g'; process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY = 'a'
+  try {
+    const fetchFn = async (url) => String(url).includes('anthropic')
+      ? { ok: true, json: async () => ({ content: [{ text: '{"skip":true}' }] }) }
+      : { ok: true, json: async () => ({ candidates: [] }) }
+    const member = { role: 'designer', repo, territory: 'assets', first: 'Côme' }
+    const out = await generateMedia(member, { items: [{ text: '@côme the acorn is perfect, locked' }], fetchFn })
+    assert.match(out.text, /read as feedback/)
+    assert.ok(!fs.existsSync(join(repo, 'assets')) || fs.readdirSync(join(repo, 'assets')).length === 0)
+  } finally { delete process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY }
+})
