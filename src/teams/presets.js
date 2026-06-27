@@ -4,11 +4,12 @@
 export const PRESETS = {
   'game': {
     title: 'Game dev',
-    description: 'engineer + critic, plus graphics / sound / music makers',
+    description: 'engineer + critic + QA tester, plus graphics / sound / music makers',
     teams: [{ name: 'game', territory: '.', members: [
       { role: 'architect', backend: 'claude', lead: true },
       { role: 'engineer', backend: 'claude' },
       { role: 'critic', backend: 'claude' },
+      { role: 'tester', backend: 'claude', territory: 'tests' },
       { role: 'designer', backend: 'gemini', territory: 'assets/img' },
       { role: 'sound-designer', backend: 'elevenlabs', territory: 'assets/sfx' },
       { role: 'composer', backend: 'elevenlabs', territory: 'assets/music' },

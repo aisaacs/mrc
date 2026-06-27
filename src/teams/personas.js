@@ -97,9 +97,9 @@ export const ROLES = {
   },
 }
 
-// Back-compat: "writer" was renamed to "engineer" (it read as a doc-writer and confused who
-// implements). Old rosters using "writer" still resolve to the engineer role.
-export const ROLE_ALIASES = { writer: 'engineer' }
+// Role aliases: "writer" -> "engineer" (renamed; read as a doc-writer), "qa" -> "tester" (same role,
+// friendlier name). Old/either spelling resolves to the canonical role.
+export const ROLE_ALIASES = { writer: 'engineer', qa: 'tester' }
 
 export function roleDef(role) {
   const r = ROLE_ALIASES[role] || role

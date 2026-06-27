@@ -162,6 +162,15 @@ test('roster: names are deterministic across runs (no rng passed) so members reb
   assert.equal(new Set(a).size, a.length, 'still unique')
 })
 
+test('roster: "qa" role aliases to the tester role', () => {
+  const norm = parseRoster({ org: 'x', teams: [{ name: 't', members: [
+    { role: 'architect', backend: 'claude', lead: true }, { role: 'qa', backend: 'claude' },
+  ] }] }, { repo: '/tmp/x' })
+  const qa = norm.members.find((m) => m.role === 'tester')
+  assert.ok(qa, 'qa normalized to tester')
+  assert.equal(qa.roleLabel, 'Tester')
+})
+
 test('roster: territory escaping the repo is rejected', () => {
   const json = { org: 'x', teams: [ { name: 't', territory: '../evil', members: [ { role: 'engineer' } ] } ] }
   assert.throws(() => parseRoster(json, { repo: '/tmp/x', rng: seededRng(2) }), /escapes the repo/)
