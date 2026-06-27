@@ -274,6 +274,7 @@ function renderBuilder(d) {
   d.innerHTML = `<div style="display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start">
     <div>
       <div class="grid2"><div><label>Org</label><input id="bOrg" value="${esc(B.org)}"></div><div><label>Repo path (host)</label><input id="bRepo" value="${esc(B.repo)}" placeholder="/Users/you/code/app"></div></div>
+      <div style="margin-top:8px"><label>Start from a preset (optional)</label><select id="bPreset"><option value="">— preset —</option></select></div>
       <h2>Teams</h2><div id="bTeams"></div><button class="btn" onclick="bAddTeam()">＋ Add team</button>
       <div class="row" style="margin-top:14px"><button class="btn primary" onclick="bSave()">💾 Save team.json</button><button class="btn" onclick="bDefine()">◎ Define rooms</button><button class="btn" style="background:#1f3a26;border-color:#2f6b3f;color:#bfe6c8" onclick="bLaunch()">🚀 Launch</button><span id="bMsg" class="muted"></span></div>
       <div class="muted" style="margin-top:8px">Then launch live members: <code id="bCmd">mrc team up</code></div>
@@ -281,6 +282,9 @@ function renderBuilder(d) {
     <div><h2>Preview</h2><div id="bPrev" class="muted">…</div></div></div>`
   $('#bOrg').oninput = e=>{B.org=e.target.value;bPreview()}
   $('#bRepo').oninput = e=>{B.repo=e.target.value;$('#bCmd').textContent='cd '+(B.repo||'<repo>')+' && mrc team up';bPreview()}
+  fetch('/api/team-presets').then(r=>r.json()).then(d=>{ const sel=$('#bPreset'); if(!sel)return
+    sel.innerHTML='<option value="">— preset —</option>'+(d.presets||[]).map(p=>`<option value="${esc(p.name)}">${esc(p.title)}</option>`).join('')
+    sel.onchange=()=>{ const p=(d.presets||[]).find(x=>x.name===sel.value); if(!p)return; S.builder.teams=JSON.parse(JSON.stringify(p.roster.teams)); renderBuilder($('#detail')) } }).catch(()=>{})
   bRenderTeams(); bPreview()
 }
 function bRenderTeams() {

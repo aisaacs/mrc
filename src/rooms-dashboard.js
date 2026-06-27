@@ -132,6 +132,10 @@ async function handle(req, res) {
       })
       return
     }
+    if (req.method === 'GET' && url.pathname === '/api/team-presets') {
+      const { listPresets, buildPreset } = await import('./teams/presets.js')
+      return sendJSON(res, 200, { presets: listPresets().map((p) => ({ ...p, roster: buildPreset(p.name, {}) })) })
+    }
     if (req.method === 'GET' && url.pathname === '/api/state') return sendJSON(res, 200, await buildState())
     if (req.method === 'GET' && url.pathname === '/api/teams') {
       const meta = daemonMeta()

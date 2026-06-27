@@ -122,8 +122,11 @@ export function validateRoster(norm) {
       warnings.push(`member @${m.handle}: rw worker — edits apply per directed invocation`)
     }
   }
-  // Overlapping write territories within a team cause file contention — the whole point is to avoid it.
-  const writers = norm.members.filter((m) => m.mount === 'rw')
+  // Overlapping write territories between CODE engineers cause file contention — the point is to avoid
+  // it. Media makers (distinct binary assets) are exempt: a designer writing under an engineer's tree
+  // doesn't collide.
+  const MEDIA = new Set(['designer', 'sound-designer', 'composer'])
+  const writers = norm.members.filter((m) => m.mount === 'rw' && !MEDIA.has(m.role))
   for (let i = 0; i < writers.length; i++) for (let j = i + 1; j < writers.length; j++) {
     if (territoriesOverlap(writers[i].territory, writers[j].territory)) {
       warnings.push(`writers @${writers[i].handle} and @${writers[j].handle} share write territory ` +

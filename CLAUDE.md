@@ -66,7 +66,9 @@ Lets two running `mrc` sessions consult each other through a host-mediated relay
 Builds **on top of negotiation rooms**: generalizes the 2-party pairing into N-party **teams** of agent **members**, each in its own container, addressing each other by **@mention** and steered by the human from a web UI or any member's console. Declared in a `team.json` roster, launched with `mrc team up`. **Deep dive, topology, and the test/rebuild recipe live in `docs/agent-teams.md`.**
 
 - **`src/teams/names.js`** — French first-name pool (with Spaceballs easter eggs) + unique `first/backend` handles + @mention parsing.
-- **`src/teams/personas.js`** — role registry (architect/engineer/critic/adversary/ultracritical/user-defender/researcher) + `buildPersona()`, the team protocol injected via `--append-system-prompt`.
+- **`src/teams/personas.js`** — role registry (architect/engineer/critic/adversary/ultracritical/user-defender/researcher, plus media makers designer/sound-designer/composer) + `buildPersona()`, the team protocol injected via `--append-system-prompt`.
+- **`src/teams/media.js`** — media-maker members: a designer (Gemini image), sound-designer / composer (ElevenLabs) generate an asset FILE into their territory on @mention. Keys resolve per-repo (`repoEnvKey`).
+- **`src/teams/presets.js`** — ready-made team rosters (game / web / mobile / backend) for `mrc team up --preset` and the builder's preset dropdown.
 - **`src/teams/roster.js`** — parse/normalize `team.json` → members (unique handles, resolved territory/mount/tier, one lead per team) + derived rooms (one team room per team + a leads room with `@user`). Deterministic naming so members rebind across runs.
 - **`src/teams/room-engine.js`** — the generalized relay engine (transport-agnostic, injected I/O): member-set rooms, **directed @routing**, multi-room membership, room-tagged delivery, the `@user` inbox, brake/resume/turn-cap/steer for N members, the worker queue, and redefine-with-prune.
 - **`src/teams/worker-runner.js`** — drives non-Claude (task-worker) members: drains the worker queue, batches a burst into one invocation, runs the worker's CLI, posts the reply back.
@@ -141,11 +143,14 @@ Commands:
   mrc rooms brake|resume|end [room-id]    Pause / resume / close a room
   mrc rooms steer [--target a|b] <text>   Inject a trusted [Human directive] into a room
   mrc rooms restart|stop                  Refresh / stop the room daemon
-  mrc team up [path]                      Launch a team of agents from team.json (tmux)
+  mrc team up [path] [--preset name]      Define + launch a team (tmux + embeddable ttyd terminal)
   mrc team status [path]                  Show the org, rooms, and the @user inbox
   mrc team console <handle> [path]        Attach to a running member's terminal
   mrc team exec <handle> "prompt"         Run a task-worker (codex/qwen) turn manually
-  mrc team down|define [path]             Close the org's rooms / push roster without launching
+  mrc team presets                        List ready-made team presets (game/web/mobile/backend)
+  mrc team new --preset <name> [path]     Write a team.json from a preset
+  mrc team down|define [path]             Close the org's rooms / define without launching
+  (Or do it all in the GUI: mrc rooms dashboard → Build → 🚀 Launch → Console.)
 
 Config files (~/.mrcrc or <repo>/.mrcrc, one flag per line):
   # Example ~/.mrcrc
