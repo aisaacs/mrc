@@ -34,7 +34,12 @@
   .dim { color:var(--dim) } .muted { color:var(--dim); font-size:12px } .good{color:var(--good)} .bad{color:var(--bad)} .warn{color:var(--warn)}
   .h { font-family:ui-monospace,monospace; font-size:12.5px }
   .dot { width:8px; height:8px; border-radius:50%; background:#3a4150; display:inline-block; flex:0 0 auto }
-  .dot.online { background:var(--good); box-shadow:0 0 6px #7bd88f88 } .dot.worker { background:var(--warn) }
+  .dot.online, .dot.ready { background:var(--good); box-shadow:0 0 6px #7bd88f88 }
+  .dot.starting { background:var(--warn); box-shadow:0 0 7px #e0af68aa; animation:pulse 1.2s ease-in-out infinite }
+  .dot.worker { background:var(--accent) } .dot.off { background:#3a4150 }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .mstate { font-size:10.5px; margin-left:6px; white-space:nowrap }
+  .mstate.ready{color:var(--good)} .mstate.starting{color:var(--warn)} .mstate.worker{color:var(--accent)} .mstate.off{color:var(--dim)}
   /* cards */
   .team { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:10px }
   .team .tn { font-weight:650; font-size:13px; margin-bottom:6px; display:flex; gap:8px; align-items:center }
@@ -135,6 +140,14 @@ function inbox() {
   const cu = mergedRooms().filter(r => (r.unreviewed||0)>0)
   return { qs, cu, need: qs.filter(q=>!q.answered).length + cu.reduce((a,c)=>a+(c.unreviewed||0),0) }
 }
+// Readiness: workers are on-demand; a live member is 'ready' once its channel registers, 'starting'
+// while its terminal is up but not connected yet (loading / awaiting login + the Channels prompt).
+function memberState(m) {
+  if (m.tier==='worker') return { cls:'worker', label:'on-demand' }
+  if (m.online) return { cls:'ready', label:'ready' }
+  if (m.launched) return { cls:'starting', label:'starting — open Console' }
+  return { cls:'off', label:'offline' }
+}
 const memberByHandle = (h) => orgMembers().find(m => m.handle===h)
 const roomMembers = (id) => { const r=(S.teams.rooms||[]).find(x=>x.roomId===id); return r ? r.members.filter(x=>x!=='@user') : [] }
 
@@ -166,9 +179,10 @@ function renderList() {
     mid.innerHTML = teams.map(t => {
       const rooms = mergedRooms().filter(r => r.team===t)
       return `<div class="team"><div class="tn">${esc(t)}</div>
-        ${byTeam[t].map(m=>`<div class="mem ${m.lead?'lead':''}"><span class="dot ${m.online?'online':m.tier==='worker'?'worker':''}"></span>
+        ${byTeam[t].map(m=>{const s=memberState(m);return `<div class="mem ${m.lead?'lead':''}"><span class="dot ${s.cls}" title="${esc(s.label)}"></span>
           <span class="h">@${esc(m.first)}</span><span class="muted" style="font-size:11px">/${esc(m.backend)}</span>
-          <span class="role">${esc(m.role)}${m.lead?' ★':''}${m.tier==='worker'?' · worker':''}</span></div>`).join('')}
+          <span class="mstate ${s.cls}">${esc(s.label)}</span>
+          <span class="role">${esc(m.role)}${m.lead?' ★':''}</span></div>`}).join('')}
         ${rooms.map(r=>`<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')"><span class="nm">${esc(r.team||r.roomId)}</span>
           <span class="state ${r.state}">${esc(r.state)}</span><span class="meta">t${r.turn||0}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`).join('')}
       </div>`
@@ -189,7 +203,7 @@ function renderList() {
     mid.innerHTML = `<h2>Console</h2>` + (L
       ? `<div class="muted" style="margin-bottom:8px">● running · <code>${esc(L.session||'')}</code></div>
          <div class="muted" style="margin:8px 0 4px">Show member:</div>`
-         + live.map(m=>`<div class="rm" onclick="selWin('${esc(m.first)}')"><span class="nm">@${esc(m.first)}</span><span class="meta">${esc(m.role)}</span></div>`).join('')
+         + live.map(m=>{const s=memberState(m);return `<div class="rm" onclick="selWin('${esc(m.first)}')"><span class="dot ${s.cls}" title="${esc(s.label)}"></span><span class="nm">@${esc(m.first)}</span><span class="mstate ${s.cls}" style="margin-left:auto">${esc(s.label)}</span></div>`}).join('')
          + `<button class="btn danger" style="margin-top:12px;width:100%" onclick="stopTeam()">■ Stop team</button>`
       : `<div class="muted">Not launched.<br>Build a team and press <b>🚀 Launch</b>, or run <code>mrc team up</code>.</div>`)
   } else if (S.nav==='build') {
@@ -211,9 +225,12 @@ function renderConsole(d) {
   const L = launchFor()
   if (!L) { d.innerHTML = `<div class="empty">No running team.<br><span class="muted">Build one and press <b>🚀 Launch</b> — then log in + accept the Channels prompt right here, all in the browser.</span></div>`; return }
   if (!L.ttydUrl) { d.innerHTML = `<div class="empty">Team is running in tmux, but there's no embedded terminal.<br><span class="muted">Install <code>ttyd</code> (<code>brew install ttyd</code>) and relaunch to embed it here — or <code>tmux attach -t ${esc(L.session)}</code>.</span></div>`; return }
-  d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:8px"><b>Live terminal</b> <a href="${esc(L.ttydUrl)}" target="_blank">open in new tab ↗</a></div>
-    <iframe src="${esc(L.ttydUrl)}" style="width:100%;height:72vh;border:1px solid var(--line);border-radius:8px;background:#000"></iframe>
-    <div class="muted" style="margin-top:6px">First launch: log in + accept the Channels prompt here. Switch members in the left list (or Ctrl-b n inside the terminal).</div>`
+  const live = orgMembers().filter(m=>m.tier==='live'); const ready = live.filter(m=>m.online).length; const starting = live.filter(m=>!m.online && m.launched).length
+  d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:8px">
+      <b>Live terminal</b>
+      <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting — log in below</span>`:''} <a href="${esc(L.ttydUrl)}" target="_blank" style="margin-left:8px">open in new tab ↗</a></span></div>
+    <iframe src="${esc(L.ttydUrl)}" style="width:100%;height:70vh;border:1px solid var(--line);border-radius:8px;background:#000"></iframe>
+    <div class="muted" style="margin-top:6px">First launch: log in + accept the Channels prompt here — a member flips to 🟢 ready once it connects. Switch members in the left list (or Ctrl-b n in the terminal).</div>`
 }
 function patchDetail() {
   if (S.selRoom && S.room) {

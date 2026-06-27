@@ -394,8 +394,16 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
           continue
         }
         if (f.action === 'team') {
+          const st = engine.status()
+          // Mark members whose tmux window exists but whose channel hasn't registered yet (launched,
+          // still loading / awaiting login+accept) vs. truly online (channel registered = ready).
+          const winByOrg = {}
+          if (teamMod) for (const m of st.members) {
+            if (!(m.org in winByOrg)) { try { winByOrg[m.org] = new Set(teamMod.tmuxWindows(m.org)) } catch { winByOrg[m.org] = new Set() } }
+          }
+          for (const m of st.members) m.launched = !!(winByOrg[m.org] && winByOrg[m.org].has(m.first))
           const launches = loadLaunches()
-          reply({ ok: true, ...engine.status(), launch: Object.entries(launches).map(([org, v]) => ({ org, session: v.session, ttydUrl: v.ttydUrl || null, running: true })) })
+          reply({ ok: true, ...st, launch: Object.entries(launches).map(([org, v]) => ({ org, session: v.session, ttydUrl: v.ttydUrl || null, running: true })) })
           continue
         }
         if (f.action === 'answer') { reply(engine.answerUser(Number(f.i), String(f.text || ''))); continue }
