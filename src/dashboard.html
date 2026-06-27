@@ -50,6 +50,10 @@
   .rm:hover { border-color:#37506e } .rm.sel { border-color:var(--accent); background:var(--panel2) }
   .rm .nm { font-weight:600; font-size:13px } .rm .meta { color:var(--dim); font-size:11px; margin-left:auto }
   .ib { border:1px solid #3a2f4f; background:#1a1622; border-radius:9px; padding:9px 11px; margin-bottom:7px; cursor:pointer }
+  .ib.slim { padding:6px 10px; font-size:13px } .ib.slim:hover { border-color:#6a5a8a }
+  #orgSel { width:auto; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:5px 10px; font-size:13px; cursor:pointer }
+  #orgSel:hover { border-color:#3a4150 }
+  header .plabel { font-size:11px; color:var(--dim); margin-left:4px }
   .ib:hover { border-color:#5a4a7a } .ib.sel { border-color:var(--lead) } .ib .who{ font-size:12px; color:var(--dim) } .ib .who b{ color:var(--fg) }
   .ib .q { margin-top:3px } .ib.done { opacity:.5 }
   /* controls */
@@ -78,7 +82,8 @@
 <div class="app">
   <header>
     <h1>🎩 Mister Claude</h1>
-    <select id="orgSel" style="width:auto;display:none"></select>
+    <span class="plabel" id="orgLabel" style="display:none">project</span>
+    <select id="orgSel" style="display:none" title="Switch project"></select>
     <span class="spacer"></span>
     <span class="pill" id="needPill" style="display:none"></span>
     <span class="pill off" id="daemonPill">daemon ?</span>
@@ -94,6 +99,7 @@ const esc = (s) => String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<
 const api = (p, o) => fetch(p, o).then(r => r.json())
 const post = (action, extra={}) => api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ action, ...extra }) })
 const postJSON = (path, obj={}) => api(path, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(obj) })
+const setOrgUrl = (org) => { try { history.replaceState(null, '', location.pathname + (org ? '?org='+encodeURIComponent(org) : '')) } catch {} }
 
 const ROLES = ['architect','engineer','critic','adversary','ultracritical','user-defender','researcher','tester','designer','sound-designer','composer']
 const BACKENDS = ['claude','codex','qwen','gemini']
@@ -170,7 +176,9 @@ function paint() {
   dp.className = 'pill '+(up?'on':'off'); dp.textContent = up?'daemon up':'daemon down'
   const np = $('#needPill'); if (ib.need){ np.style.display=''; np.className='pill'; np.style.color='#d7c5f5'; np.style.borderColor='#5a4a7a'; np.textContent='📥 '+ib.need+' need you' } else np.style.display='none'
   const orgs = (S.teams.orgs||[]).map(o=>o.org)
-  const os = $('#orgSel'); if (orgs.length>1){ os.style.display=''; os.innerHTML=orgs.map(o=>`<option ${o===S.org?'selected':''}>${esc(o)}</option>`).join(''); os.onchange=()=>{S.org=os.value;S.selRoom=null;S.selInbox=null;S.selMember=null;paint()} } else os.style.display='none'
+  const os = $('#orgSel'), ol = $('#orgLabel')
+  if (orgs.length>1){ os.style.display=''; ol.style.display=''; os.innerHTML=orgs.map(o=>`<option ${o===S.org?'selected':''}>${esc(o)}</option>`).join(''); os.onchange=()=>{ S.org=os.value; S.selRoom=S.selInbox=S.selMember=null; S.building=false; setOrgUrl(os.value); paint() } }
+  else { os.style.display='none'; ol.style.display='none' }
   if (!S.addingTo) renderMain()   // freeze the list while the add-member form is open (don't clobber inputs)
   const key = detailKey()
   if (key!==paintedKey) { renderDetail(); paintedKey=key } else patchDetail()
@@ -191,11 +199,12 @@ function renderMain() {
     return `<div class="team"><div class="tn">${esc(t)}${running?'':' <span class="state Paused" style="font-size:10px;padding:1px 6px">not running</span>'}</div>${ms.map(memberRow).join('')}
       ${S.addingTo===t ? amForm(t) : `<div class="row" style="margin-top:8px;gap:6px">${running?'':`<button class="btn tiny launch" onclick="launchTeam()">🚀 Launch</button>`}<button class="btn tiny" onclick="startAddMember('${esc(t)}')">＋ add member</button></div>`}</div>` }
 
-  let html = `<h2 class="you">@you${ib.need?` <span class="badge">${ib.need}</span>`:''}</h2>`
-  if (ib.qs.length || ib.cu.length) {
-    html += ib.qs.map((q,i)=>`<div class="ib ${q.answered?'done':''} ${S.selInbox===i?'sel':''}" onclick="selInbox(${i})"><div class="who"><b>${esc(q.fromName||('@'+q.from))}</b> · ${esc(q.room)}${q.answered?' · ✓':''}</div><div class="q">${esc(q.text)}</div></div>`).join('')
+  const unans = (ib.qs||[]).filter(q=>!q.answered)
+  let html = `<h2 class="you">@you${unans.length?` <span class="badge">${unans.length}</span>`:''}</h2>`
+  if (unans.length || ib.cu.length) {
+    html += unans.map(q=>`<div class="ib slim ${S.selInbox===q.i?'sel':''}" onclick="selInbox(${q.i})"><b>${esc(q.fromName||('@'+q.from))}</b> <span class="muted">· ${esc(q.room)}</span></div>`).join('')
     html += ib.cu.map(r=>`<div class="rm" onclick="selRoom('${esc(r.roomId)}',true)"><span class="nm">${esc(r.team||r.roomId)}</span><span class="meta">${r.unreviewed} catch-up${r.unreviewed>1?'s':''}</span></div>`).join('')
-  } else html += `<div class="muted" style="padding:2px 6px 6px">No messages yet — members reach you here.</div>`
+  } else html += `<div class="muted" style="padding:2px 6px 6px">No messages — members reach you here.</div>`
 
   if (teams.length) html += `<h2>Teams</h2>` + teams.map(teamCard).join('')
   const rs = mergedRooms(); const mine = rs.filter(inOrg); const others = rs.filter(r=>!inOrg(r))
@@ -396,7 +405,8 @@ window.bLaunch = async ()=>{ const msg=$('#bMsg'); if(!msg)return; msg.innerHTML
 // if a team for that org already exists — decided after the first data load).
 const _q = new URLSearchParams(location.search)
 const _qRepo = _q.get('repo'), _qOrg = _q.get('org')
-if (_qRepo) { S.builder.repo = _qRepo; if (_qOrg) { S.builder.org = _qOrg; S.org = _qOrg } }
+if (_qOrg) S.org = _qOrg                                   // ?org=<project> -> jump straight to it
+if (_qRepo) { S.builder.repo = _qRepo; if (_qOrg) S.builder.org = _qOrg }
 let _scopedNav = !!_qRepo
 if (!_qRepo && location.pathname.endsWith('/new')) S.building=true
 tick(); setInterval(tick, 1500)
