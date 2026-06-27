@@ -216,7 +216,7 @@ function renderMain() {
   const rs = mergedRooms(); const mine = rs.filter(inOrg); const others = rs.filter(r=>!inOrg(r))
   if (mine.length) html += `<h2>Rooms</h2>` + mine.map(roomRow).join('')
   if (others.length) html += `<h2>Other — consults &amp; history</h2><div style="opacity:.55">${others.map(roomRow).join('')}</div>`
-  html += `<div style="margin:14px 0 24px"><button class="btn ${S.building?'primary':''}" style="width:100%" onclick="openBuilder()">＋ New team</button></div>`
+  html += `<div style="margin:14px 0 24px"><button class="btn ${S.building?'primary':''}" style="width:100%" onclick="openBuilder()">${teams.length?'✎ Edit / add a team':'＋ New team'}</button></div>`
   mid.innerHTML = html
 }
 function amForm(t) {
@@ -380,7 +380,15 @@ window.bSave=async()=>{const B=S.builder;const msg=$('#bMsg');if(!B.repo){msg.in
 window.bDefine=async()=>{const r=await api('/api/team-define',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})});$('#bMsg').innerHTML=r.ok?`<span class="good">◎ defined ${(r.rooms||[]).length} room(s)</span> <a href="#" onclick="closeBuilder();return false">view</a>`:`<span class="bad">✗ ${esc(r.error||'daemon down')}</span>`; if(r.ok){S.org=null;tick()}}
 
 // ---- actions ----
-window.openBuilder = ()=>{ S.building=true; S.selMember=null; S.selRoom=null; S.selInbox=null; paint() }
+window.openBuilder = async ()=>{ S.building=true; S.selMember=null; S.selRoom=null; S.selInbox=null; paint()
+  // Load the project's CURRENT roster so adding a team/member EXTENDS it (never resets the project).
+  if (S.org && (S.teams.members||[]).some(m=>m.org===S.org)) {
+    const r = await api('/api/team-roster?org='+encodeURIComponent(S.org)).catch(()=>null)
+    if (r && r.ok && r.roster && (r.roster.teams||[]).length) {
+      S.builder = { org: r.roster.org||S.org, repo: r.roster.repo||S.builder.repo||'', teams: r.roster.teams }
+      if (S.building) renderBuilder($('#detail'))
+    }
+  } }
 window.closeBuilder = ()=>{ S.building=false; paint() }
 window.launchTeam = async ()=>{ const r=await postJSON('/api/team-launch',{org:S.org}); if(!(r&&r.ok)) alert('Launch failed: '+((r&&r.error)||'unknown')); tick() }
 window.startAddMember = (t)=>{ S.addingTo=t; renderMain() }

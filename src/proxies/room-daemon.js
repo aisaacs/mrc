@@ -434,6 +434,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
           removeLaunch(f.org); reply({ ok: true }); continue
         }
         if (f.action === 'selectwin' && f.org) { reply({ ok: !!(teamMod && teamMod.tmuxSelectWindow(f.org, f.window)) }); continue }
+        if (f.action === 'getroster' && f.org) {
+          // The CURRENT roster (with every member added since), so the builder edits live state instead
+          // of resetting to the original. orgRoster tracks it; fall back to reconstructing from the def.
+          let roster = orgRoster.get(f.org)
+          if (!roster && orgDefs.get(f.org) && teamMod) roster = teamMod.rosterFromDef(orgDefs.get(f.org))
+          reply({ ok: true, roster: roster || null }); continue
+        }
         if (f.action === 'workerlog' && f.handle) {
           const m = engine.memberByHandle(f.handle)
           let log = ''

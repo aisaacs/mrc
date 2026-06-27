@@ -12,6 +12,17 @@ import {
   rosterFromDef, addMemberToRoster,
 } from '../src/commands/team.js'
 
+test('rosterFromDef round-trips a multi-team project (no team or member is lost)', () => {
+  const n0 = parseRoster({ org: 'shop', teams: [
+    { name: 'client', territory: 'client', members: [{ role: 'architect', backend: 'claude', lead: true }, { role: 'engineer', backend: 'claude' }] },
+    { name: 'api', territory: 'api', members: [{ role: 'architect', backend: 'claude', lead: true }, { role: 'engineer', backend: 'codex' }] },
+  ] }, { repo: '/tmp/shop' })
+  const before = n0.members.map((m) => m.handle).sort()
+  const n1 = parseRoster(rosterFromDef({ org: n0.org, repo: n0.repo, members: n0.members }), { repo: '/tmp/shop' })
+  assert.deepEqual(n1.members.map((m) => m.handle).sort(), before, 'all members across both teams preserved')
+  assert.equal(new Set(n1.members.map((m) => m.team)).size, 2, 'both teams present')
+})
+
 test('add-member preserves existing members\' names and appends the new one', () => {
   const n0 = parseRoster({ org: 'shop', teams: [{ name: 'client', territory: '.', members: [
     { role: 'architect', backend: 'claude', lead: true }, { role: 'engineer', backend: 'claude' },
