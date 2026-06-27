@@ -45,7 +45,7 @@ test('personas: every role has a mandate and a mount/tier', () => {
     assert.ok(['ro', 'rw'].includes(def.mount))
     assert.ok(['live', 'worker'].includes(def.tier))
   }
-  assert.equal(roleDef('writer').mount, 'rw')
+  assert.equal(roleDef('engineer').mount, 'rw')
   assert.equal(roleDef('architect').mount, 'ro')
   assert.equal(roleDef('nonsense').label, 'nonsense')   // generic fallback
 })
@@ -53,14 +53,14 @@ test('personas: every role has a mandate and a mount/tier', () => {
 test('personas: buildPersona injects identity, addressing, trust, territory, commit rule', () => {
   const roster = [
     { first: 'Roland', handle: 'roland/claude', roleLabel: 'Architect', lead: true },
-    { first: 'Ludivine', handle: 'ludivine/claude', roleLabel: 'Writer', lead: false },
+    { first: 'Ludivine', handle: 'ludivine/claude', roleLabel: 'Engineer', lead: false },
   ]
   const p = buildPersona({
-    self: { first: 'Ludivine', handle: 'ludivine/claude', roleLabel: 'Writer' },
-    team: 'client', roster, isLead: false, territory: 'client/src', mount: 'rw', role: 'writer',
+    self: { first: 'Ludivine', handle: 'ludivine/claude', roleLabel: 'Engineer' },
+    team: 'client', roster, isLead: false, territory: 'client/src', mount: 'rw', role: 'engineer',
   })
   assert.match(p, /You are @Ludivine/)
-  assert.match(p, /the Writer on the "client" team/)
+  assert.match(p, /the Engineer on the "client" team/)
   assert.match(p, /@roland/)                     // teammate listed
   assert.match(p, /DIRECTED DELIVERY/)
   assert.match(p, /\[Human directive\]/)         // trust model
@@ -84,12 +84,12 @@ test('roster: parses a two-team org and assigns unique handles', () => {
     teams: [
       { name: 'client', territory: 'client', members: [
         { role: 'architect', backend: 'claude', lead: true },
-        { role: 'writer', backend: 'claude' },
+        { role: 'engineer', backend: 'claude' },
         { role: 'critic', backend: 'codex' },
       ]},
       { name: 'api', territory: 'api', members: [
         { role: 'architect', backend: 'claude', lead: true },
-        { role: 'writer', backend: 'qwen' },
+        { role: 'engineer', backend: 'qwen' },
       ]},
     ],
   }
@@ -102,12 +102,12 @@ test('roster: parses a two-team org and assigns unique handles', () => {
   // tiers: claude => live, others forced to worker
   const codexCritic = norm.members.find((m) => m.backend === 'codex')
   assert.equal(codexCritic.tier, 'worker')
-  const qwenWriter = norm.members.find((m) => m.backend === 'qwen')
-  assert.equal(qwenWriter.tier, 'worker')
+  const qwenEngineer = norm.members.find((m) => m.backend === 'qwen')
+  assert.equal(qwenEngineer.tier, 'worker')
   assert.equal(norm.members.find((m) => m.role === 'architect').tier, 'live')
 
-  // mounts: writer rw, others ro
-  assert.equal(norm.members.find((m) => m.role === 'writer' && m.team === 'client').mount, 'rw')
+  // mounts: engineer rw, others ro
+  assert.equal(norm.members.find((m) => m.role === 'engineer' && m.team === 'client').mount, 'rw')
   assert.equal(norm.members.find((m) => m.role === 'critic').mount, 'ro')
 
   // territory resolution
@@ -118,8 +118,8 @@ test('roster: derives team rooms + a leads room with @user', () => {
   const json = {
     org: 'shop',
     teams: [
-      { name: 'client', members: [ { role: 'architect', lead: true }, { role: 'writer' } ] },
-      { name: 'api', members: [ { role: 'architect', lead: true }, { role: 'writer' } ] },
+      { name: 'client', members: [ { role: 'architect', lead: true }, { role: 'engineer' } ] },
+      { name: 'api', members: [ { role: 'architect', lead: true }, { role: 'engineer' } ] },
     ],
   }
   const norm = parseRoster(json, { repo: '/tmp/shop', rng: seededRng(9) })
@@ -134,7 +134,7 @@ test('roster: derives team rooms + a leads room with @user', () => {
 })
 
 test('roster: exactly one lead per team, auto-designated when unset', () => {
-  const json = { org: 'x', teams: [ { name: 't', members: [ { role: 'writer' }, { role: 'architect' }, { role: 'critic' } ] } ] }
+  const json = { org: 'x', teams: [ { name: 't', members: [ { role: 'engineer' }, { role: 'architect' }, { role: 'critic' } ] } ] }
   const norm = parseRoster(json, { repo: '/tmp/x', rng: seededRng(2) })
   const leads = norm.members.filter((m) => m.lead)
   assert.equal(leads.length, 1)
@@ -143,8 +143,8 @@ test('roster: exactly one lead per team, auto-designated when unset', () => {
 
 test('roster: validate flags overlapping write territories', () => {
   const json = { org: 'x', teams: [ { name: 't', territory: '.', members: [
-    { role: 'writer', name: 'aa', territory: 'src' },
-    { role: 'writer', name: 'bb', territory: 'src/deep' },
+    { role: 'engineer', name: 'aa', territory: 'src' },
+    { role: 'engineer', name: 'bb', territory: 'src/deep' },
   ] } ] }
   const norm = parseRoster(json, { repo: '/tmp/x', rng: seededRng(2) })
   const v = validateRoster(norm)
@@ -153,7 +153,7 @@ test('roster: validate flags overlapping write territories', () => {
 
 test('roster: names are deterministic across runs (no rng passed) so members rebind', () => {
   const json = { org: 'shop', teams: [
-    { name: 'client', members: [ { role: 'architect', backend: 'claude', lead: true }, { role: 'writer', backend: 'claude' } ] },
+    { name: 'client', members: [ { role: 'architect', backend: 'claude', lead: true }, { role: 'engineer', backend: 'claude' } ] },
     { name: 'api', members: [ { role: 'architect', backend: 'claude', lead: true } ] },
   ] }
   const a = parseRoster(json, { repo: '/tmp/shop' }).members.map((m) => m.handle)
@@ -163,6 +163,6 @@ test('roster: names are deterministic across runs (no rng passed) so members reb
 })
 
 test('roster: territory escaping the repo is rejected', () => {
-  const json = { org: 'x', teams: [ { name: 't', territory: '../evil', members: [ { role: 'writer' } ] } ] }
+  const json = { org: 'x', teams: [ { name: 't', territory: '../evil', members: [ { role: 'engineer' } ] } ] }
   assert.throws(() => parseRoster(json, { repo: '/tmp/x', rng: seededRng(2) }), /escapes the repo/)
 })

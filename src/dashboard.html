@@ -92,14 +92,14 @@ const esc = (s) => String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<
 const api = (p, o) => fetch(p, o).then(r => r.json())
 const post = (action, extra={}) => api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ action, ...extra }) })
 
-const ROLES = ['architect','writer','critic','adversary','ultracritical','user-defender','researcher']
+const ROLES = ['architect','engineer','critic','adversary','ultracritical','user-defender','researcher']
 const BACKENDS = ['claude','codex','qwen','gemini']
 
 const S = {
   nav: 'teams', org: null, selRoom: null, selInbox: null, tab: 'thread',
   teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null,
   builder: { org:'shop', repo:'', teams:[ { name:'client', territory:'client', members:[
-    {role:'architect',backend:'claude',lead:true,territory:''},{role:'writer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
+    {role:'architect',backend:'claude',lead:true,territory:''},{role:'engineer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
 }
 let paintedKey = null
 
@@ -279,7 +279,7 @@ function bRenderTeams() {
 window.bSet=(ti,mi,k,v)=>{const B=S.builder; if(mi==null)B.teams[ti][k]=v; else if(k==='lead'&&v)B.teams[ti].members.forEach((mm,j)=>mm.lead=(j===mi)); else B.teams[ti].members[mi][k]=v; if(k==='lead'){bRenderTeams()} bPreview()}
 window.bAddTeam=()=>{S.builder.teams.push({name:'team'+(S.builder.teams.length+1),territory:'.',members:[{role:'architect',backend:'claude',lead:true,territory:''}]});bRenderTeams();bPreview()}
 window.bDelTeam=(ti)=>{S.builder.teams.splice(ti,1);bRenderTeams();bPreview()}
-window.bAddMem=(ti)=>{S.builder.teams[ti].members.push({role:'writer',backend:'claude',lead:false,territory:''});bRenderTeams();bPreview()}
+window.bAddMem=(ti)=>{S.builder.teams[ti].members.push({role:'engineer',backend:'claude',lead:false,territory:''});bRenderTeams();bPreview()}
 window.bDelMem=(ti,mi)=>{S.builder.teams[ti].members.splice(mi,1);bRenderTeams();bPreview()}
 function bRoster(){const B=S.builder;return {org:B.org||'org',repo:B.repo||undefined,teams:B.teams.map(t=>({name:t.name,territory:t.territory||'.',members:t.members.map(m=>{const o={role:m.role,backend:m.backend};if(m.lead)o.lead=true;if(m.territory)o.territory=m.territory;return o})}))}}
 let bTimer=null

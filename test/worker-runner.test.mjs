@@ -15,7 +15,7 @@ function setup() {
     org: 'shop', repo: '/tmp/shop',
     teams: [{ name: 'client', territory: 'client', members: [
       { role: 'architect', backend: 'claude', name: 'roland', lead: true },
-      { role: 'writer', backend: 'codex', name: 'thierry', territory: 'client/api' },
+      { role: 'engineer', backend: 'codex', name: 'thierry', territory: 'client/api' },
     ] }],
   }, { rng: seededRng(1) })
   engine.defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
@@ -24,7 +24,7 @@ function setup() {
 }
 
 test('buildWorkerPrompt frames peer (untrusted) and directive (authoritative) lines', () => {
-  const member = { first: 'Thierry', role: 'writer', roleLabel: 'Writer', team: 'client', territory: 'client/api', mount: 'rw' }
+  const member = { first: 'Thierry', role: 'engineer', roleLabel: 'Engineer', team: 'client', territory: 'client/api', mount: 'rw' }
   const p = buildWorkerPrompt(member, [
     { fromHandle: 'roland/claude', text: 'build the parser' },
     { directive: true, text: '[Human directive]: use streaming' },
@@ -40,7 +40,7 @@ test('runner: invokes the worker for a mention and posts the reply back to the s
   const seen = []
   const runner = createWorkerRunner({ engine, invoke: async (member, ctx) => { seen.push({ member: member.handle, prompt: ctx.prompt }); return { text: 'parser done: see client/api/parse.js' } } })
 
-  // Architect @mentions the codex writer -> queued (not delivered live).
+  // Architect @mentions the codex engineer -> queued (not delivered live).
   engine.route({ fromHandle: 'roland/claude', roomId, text: '@thierry build the parser' })
   assert.equal(engine.status().workerQueue, 1)
   assert.equal(sent.filter((s) => s.frame.type === 'deliver').length, 0)

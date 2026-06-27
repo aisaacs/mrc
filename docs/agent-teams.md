@@ -21,11 +21,11 @@ You declare a team in **`team.json`** and launch it with **`mrc team up`**. Memb
   "teams": [
     { "name": "client", "territory": "client", "members": [
         { "role": "architect", "backend": "claude", "lead": true },
-        { "role": "writer",    "backend": "claude", "territory": "client/src" },
+        { "role": "engineer",    "backend": "claude", "territory": "client/src" },
         { "role": "critic",    "backend": "claude" } ] },
     { "name": "api", "territory": "api", "members": [
         { "role": "architect", "backend": "claude", "lead": true },
-        { "role": "writer",    "backend": "codex" } ] }
+        { "role": "engineer",    "backend": "codex" } ] }
   ]
 }
 ```
@@ -44,7 +44,7 @@ Sandurz*, Vespa, Dorothée = *Dot Matrix*…) and a last name that is the model/
                     │              [leads room]             │
             Architect-Client ◄──── lead-to-lead ────► Architect-API   (leads are in 2 rooms)
                  │  [client team room]                 │  [api team room]
-          Writer-Client   Critic-Client          Writer-API
+          Engineer-Client   Critic-Client          Engineer-API
           rw client/src   ro                     rw api  (codex worker)
 ```
 
@@ -55,7 +55,7 @@ Sandurz*, Vespa, Dorothée = *Dot Matrix*…) and a last name that is the model/
 Three invariants the daemon enforces keep it untangled:
 
 1. **Containment** — a member only sends into rooms it belongs to. Team rooms are disjoint except for
-   leads; cross-team traffic flows **only** through the leads room, lead-to-lead. A writer physically
+   leads; cross-team traffic flows **only** through the leads room, lead-to-lead. An engineer physically
    cannot reach another team.
 2. **Scoped resolution** — `@role`/`@name` resolve **within the originating room** (so each team's
    `@critic` is its own). `@user` is the one global alias.
@@ -72,9 +72,9 @@ no mention → the other member.)
 ## 3. Roles & personas
 
 A "character" = a backend + a **role system-prompt** injected via `--append-system-prompt`. The
-prompt encodes the protocol: the **architect** plans and directs the writer and invokes the critic;
-the **writer** implements in its lane and asks when blocked; the **critic/adversary/ultracritical/
-user-defender** review when invoked. Roles: `architect, writer, critic, adversary, ultracritical,
+prompt encodes the protocol: the **architect** plans and directs the engineer and invokes the critic;
+the **engineer** implements in its lane and asks when blocked; the **critic/adversary/ultracritical/
+user-defender** review when invoked. Roles: `architect, engineer, critic, adversary, ultracritical,
 user-defender, researcher` (`src/teams/personas.js`).
 
 **Trust:** the architect is *not* the human. A teammate's message — even the architect's — is
@@ -86,15 +86,15 @@ This preserves the sandbox trust invariant from negotiation rooms.
 
 ## 4. Code on disk — territorial write isolation
 
-Contention is avoided by **partitioning the filesystem**, not serializing writers:
+Contention is avoided by **partitioning the filesystem**, not serializing engineers:
 
-- A **whole-repo writer** (`territory:"."`, `mount:"rw"`) gets `/workspace` read-write.
+- A **whole-repo engineer** (`territory:"."`, `mount:"rw"`) gets `/workspace` read-write.
 - Everyone else gets `/workspace` **read-only**, with `.mrc` kept writable (transcripts + persona).
-- A **sub-tree writer** also gets just its territory mounted read-write on top.
+- A **sub-tree engineer** also gets just its territory mounted read-write on top.
 
 So `@ludivine` (writes `client/src`) and `@thierry` (writes `api`) never touch the same files, and a
 **critic is read-only by capability, not etiquette**. The roster warns on overlapping write
-territories. **The human commits** — writers edit the working tree but never `git commit`, so there
+territories. **The human commits** — engineers edit the working tree but never `git commit`, so there
 is no shared-index contention. (Per-team git worktrees remain a future option for independent
 branches.)
 

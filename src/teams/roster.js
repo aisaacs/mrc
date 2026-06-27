@@ -19,7 +19,7 @@
 import { readFileSync, existsSync } from 'node:fs'
 import { basename, isAbsolute, join, normalize } from 'node:path'
 import { pickFirstName, makeHandle, backendFamily } from './names.js'
-import { roleDef } from './personas.js'
+import { roleDef, ROLE_ALIASES } from './personas.js'
 
 // Backends we can actually launch. claude = live channel member; others = task-workers.
 export const KNOWN_BACKENDS = new Set(['claude', 'codex', 'qwen', 'gemini'])
@@ -73,7 +73,7 @@ export function parseRoster(input, { repo, rng } = {}) {
     let leadHandle = null
     const memsIn = Array.isArray(t.members) ? t.members : []
     const normMembers = memsIn.map((m) => {
-      const role = m.role || 'writer'
+      const role = ROLE_ALIASES[m.role] || m.role || 'engineer'   // "writer" -> "engineer" (back-compat)
       const def = roleDef(role)
       const backend = backendFamily(m.backend || 'claude')
       const first = m.name ? String(m.name) : pickFirstName(taken, rng)
@@ -135,7 +135,7 @@ export function validateRoster(norm) {
 
 function ROLES_OK(role) {
   // Mirrors personas.ROLES keys without importing the whole map; unknown roles are allowed (warned).
-  return ['architect', 'writer', 'critic', 'adversary', 'ultracritical', 'user-defender', 'researcher'].includes(role)
+  return ['architect', 'engineer', 'critic', 'adversary', 'ultracritical', 'user-defender', 'researcher'].includes(role)
 }
 
 function territoriesOverlap(a, b) {

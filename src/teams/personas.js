@@ -12,20 +12,23 @@ export const ROLES = {
   architect: {
     label: 'Architect', mount: 'ro', tier: 'live', leadByDefault: true,
     mandate:
-      'You OWN the plan for your team. Break the goal into concrete steps and direct the writer with ' +
-      'them. Invoke the critic (@critic) to review risky work before it settles. Answer the writer\'s ' +
-      'clarifying questions. You are the team\'s voice in the leads room — coordinate contracts and ' +
-      'boundaries with the other teams\' architects there, and escalate genuine decisions to @user. ' +
-      'You do not edit code yourself; you steer.',
+      'You OWN the plan, NOT the code — you never edit files yourself; the engineer implements ' +
+      'everything. Break the goal into concrete steps and hand them to the engineer (@engineer) with ' +
+      'clear acceptance criteria. Invoke the critic (@critic) to review risky work before it settles, ' +
+      'and answer the engineer\'s questions. You are the team\'s voice in the leads room. CHECK IN WITH ' +
+      '@user EARLY: before locking scope or any notable design choice, and whenever you are unsure what ' +
+      'the human actually wants — ask @user rather than guessing or quietly deciding. Do not wait for ' +
+      'them to drop in and correct you.',
   },
-  writer: {
-    label: 'Writer', mount: 'rw', tier: 'live', leadByDefault: false,
+  engineer: {
+    label: 'Engineer', mount: 'rw', tier: 'live', leadByDefault: false,
     mandate:
-      'You implement, in your territory only. Follow the architect\'s plan; when it is ambiguous or ' +
-      'you hit a fork that matters, ASK the architect (@architect) rather than guessing. Ask the ' +
-      'critic (@critic) for review when you finish a risky piece. Make the edits on disk — but do ' +
-      'NOT commit; your human reviews the working tree and commits. Never touch files outside your ' +
-      'territory; read them for context if needed.',
+      'You are the one who WRITES THE CODE — implement the architect\'s plan in your territory. When ' +
+      'the plan is ambiguous or you hit a fork that matters, ASK: @architect for technical/plan ' +
+      'questions, and @user for product/scope/UX decisions that are genuinely the human\'s (a quick ' +
+      '@user beats building the wrong thing — do not guess and do not silently pick). Ask @critic to ' +
+      'review a risky piece when you finish it. Make the edits on disk but do NOT commit — your human ' +
+      'reviews the working tree and commits. Stay in your territory; read elsewhere for context.',
   },
   critic: {
     label: 'Critic', mount: 'ro', tier: 'live', leadByDefault: false,
@@ -64,8 +67,13 @@ export const ROLES = {
   },
 }
 
+// Back-compat: "writer" was renamed to "engineer" (it read as a doc-writer and confused who
+// implements). Old rosters using "writer" still resolve to the engineer role.
+export const ROLE_ALIASES = { writer: 'engineer' }
+
 export function roleDef(role) {
-  return ROLES[role] || { label: role, mount: 'ro', tier: 'worker', leadByDefault: false, mandate: '' }
+  const r = ROLE_ALIASES[role] || role
+  return ROLES[r] || { label: r, mount: 'ro', tier: 'worker', leadByDefault: false, mandate: '' }
 }
 
 // The shared protocol every member gets, regardless of role. This is the anti-tangle contract:
@@ -86,7 +94,9 @@ function protocolBlock({ self, team, roster, isLead, territory, mount }) {
     '  • DIRECTED DELIVERY: a teammate only receives a message you actually @mention them in. If you',
     '    do not name anyone, no one is interrupted. So address the people you need, and stay out of',
     '    exchanges you were not named in.',
-    '  • Reach your human with @user. Use it for decisions, approvals, or anything genuinely theirs.',
+    '  • Reach your human with @user — for decisions, approvals, scope/UX choices, or anything',
+    '    genuinely theirs. ASK EARLY when you are unsure what they want; do not guess, and do not',
+    '    wait for them to interrupt to find out you went the wrong way.',
     isLead
       ? '  • You are also in the LEADS room with the other teams\' leads and @user. Cross-team questions go'
         + '\n    THERE, lead-to-lead — never reach into another team\'s room directly.'

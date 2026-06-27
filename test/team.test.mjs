@@ -18,7 +18,7 @@ const ROSTER = {
   org: 'shop',
   teams: [{ name: 'client', territory: 'client', members: [
     { role: 'architect', backend: 'claude', name: 'Roland', lead: true },
-    { role: 'writer', backend: 'claude', name: 'Ludivine', territory: 'client/src' },
+    { role: 'engineer', backend: 'claude', name: 'Ludivine', territory: 'client/src' },
     { role: 'critic', backend: 'claude', name: 'Pierre' },
   ] }],
 }
@@ -34,7 +34,7 @@ test('memberSessionId is deterministic and a valid v5-shaped UUID', () => {
   assert.notEqual(a, memberSessionId('other', 'roland/claude'))
 })
 
-test('memberWorkspaceVolumes: whole-repo writer gets rw /workspace', () => {
+test('memberWorkspaceVolumes: whole-repo engineer gets rw /workspace', () => {
   const m = { mount: 'rw', territory: '.' }
   assert.deepEqual(memberWorkspaceVolumes(m, '/repo'), ['-v', '/repo:/workspace'])
 })
@@ -44,7 +44,7 @@ test('memberWorkspaceVolumes: read-only member gets ro /workspace + rw .mrc', ()
   assert.deepEqual(v, ['-v', '/repo:/workspace:ro', '-v', '/repo/.mrc:/workspace/.mrc'])
 })
 
-test('memberWorkspaceVolumes: sub-tree writer gets ro repo + rw .mrc + rw its territory', () => {
+test('memberWorkspaceVolumes: sub-tree engineer gets ro repo + rw .mrc + rw its territory', () => {
   const v = memberWorkspaceVolumes({ mount: 'rw', territory: 'client/src' }, '/repo')
   assert.deepEqual(v, [
     '-v', '/repo:/workspace:ro',
@@ -54,7 +54,7 @@ test('memberWorkspaceVolumes: sub-tree writer gets ro repo + rw .mrc + rw its te
 })
 
 test('memberEnv carries handle/team/role + persona path', () => {
-  const n = norm(); const w = find(n, 'writer')
+  const n = norm(); const w = find(n, 'engineer')
   const e = memberEnv(w, '/workspace/.mrc/teams/ludivine-claude.persona')
   assert.ok(e.includes(`MRC_MEMBER_HANDLE=${w.handle}`))
   assert.ok(e.includes(`MRC_TEAM=${w.team}`))
@@ -63,10 +63,10 @@ test('memberEnv carries handle/team/role + persona path', () => {
 })
 
 test('personaForMember builds the role prompt with identity, teammates, territory', () => {
-  const n = norm(); const w = find(n, 'writer')
+  const n = norm(); const w = find(n, 'engineer')
   const p = personaForMember(n, w)
   assert.match(p, /You are @Ludivine/)
-  assert.match(p, /Writer on the "client" team/)
+  assert.match(p, /Engineer on the "client" team/)
   assert.match(p, /@roland/)                 // teammate listed
   assert.match(p, /@pierre/)                 // teammate listed
   assert.match(p, /client\/src/)             // its writable territory
@@ -80,7 +80,7 @@ test('lead persona includes the leads-room instruction', () => {
 
 test('writePersonaFile writes under .mrc/teams and returns the in-container path', () => {
   const repo = fs.mkdtempSync(join(os.tmpdir(), 'mrc-team-'))
-  const n = norm(); const w = find(n, 'writer')
+  const n = norm(); const w = find(n, 'engineer')
   const p = writePersonaFile(repo, w, 'PERSONA BODY')
   assert.equal(p, `/workspace/.mrc/teams/${w.handle.replace('/', '-')}.persona`)
   const onDisk = join(repo, '.mrc', 'teams', `${w.handle.replace('/', '-')}.persona`)
@@ -103,7 +103,7 @@ test('cleanWorkerOutput extracts the worker reply from the container chatter', (
 
 test('memberLaunch assembles env + territorial volumes + a stable session id', () => {
   const repo = fs.mkdtempSync(join(os.tmpdir(), 'mrc-team-'))
-  const n = norm(); const w = find(n, 'writer')
+  const n = norm(); const w = find(n, 'engineer')
   const launch = memberLaunch(n, w, repo)
   assert.match(launch.sessionId, UUID_RE)
   assert.ok(launch.workspaceVolumes.includes('/repo/client/src:/workspace/client/src') ||

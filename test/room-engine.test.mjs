@@ -37,7 +37,7 @@ const TEAM = {
   teams: [{
     name: 'client', territory: 'client', members: [
       { role: 'architect', backend: 'claude', lead: true },
-      { role: 'writer', backend: 'claude' },
+      { role: 'engineer', backend: 'claude' },
       { role: 'critic', backend: 'claude' },
     ],
   }],
@@ -45,13 +45,13 @@ const TEAM = {
 
 test('engine: directed @role delivery hits only the addressed member', () => {
   const h = harness(TEAM)
-  const arch = h.handle('architect'), writer = h.handle('writer'), critic = h.handle('critic')
-  const r = h.engine.route({ fromHandle: arch, roomId: teamRoomId('shop', 'client'), text: '@writer please implement the login form' })
+  const arch = h.handle('architect'), engineer = h.handle('engineer'), critic = h.handle('critic')
+  const r = h.engine.route({ fromHandle: arch, roomId: teamRoomId('shop', 'client'), text: '@engineer please implement the login form' })
   assert.equal(r.ok, true)
-  assert.equal(h.deliveriesTo(writer).length, 1)
+  assert.equal(h.deliveriesTo(engineer).length, 1)
   assert.equal(h.deliveriesTo(critic).length, 0, 'critic not addressed -> not delivered')
-  assert.match(h.deliveriesTo(writer)[0], /Peer \(@.*Architect.*\) says/i)
-  assert.match(h.deliveriesTo(writer)[0], /\[room client\]/, 'team room tag present')
+  assert.match(h.deliveriesTo(engineer)[0], /Peer \(@.*Architect.*\) says/i)
+  assert.match(h.deliveriesTo(engineer)[0], /\[room client\]/, 'team room tag present')
 })
 
 test('engine: @firstname and @handle both resolve', () => {
@@ -75,7 +75,7 @@ test('engine: directed-only floor control — no mention in a 3+ room delivers t
 test('engine: 2-member consult back-compat — no mention delivers to the other; no room tag', () => {
   const json = { org: 'duo', teams: [{ name: 'pair', members: [
     { role: 'architect', backend: 'claude', name: 'alice', lead: true },
-    { role: 'writer', backend: 'claude', name: 'bob' },
+    { role: 'engineer', backend: 'claude', name: 'bob' },
   ] }] }
   const h = harness(json)
   // Re-tag the room as consult to exercise the legacy framing path.
@@ -88,32 +88,32 @@ test('engine: 2-member consult back-compat — no mention delivers to the other;
 
 test('engine: @user routes to the inbox + notify; answerUser sends [Human reply] back', () => {
   const h = harness(TEAM)
-  const writer = h.handle('writer')
-  h.engine.route({ fromHandle: writer, roomId: teamRoomId('shop', 'client'), text: '@user should errors be toasts or inline?' })
+  const engineer = h.handle('engineer')
+  h.engine.route({ fromHandle: engineer, roomId: teamRoomId('shop', 'client'), text: '@user should errors be toasts or inline?' })
   const inbox = h.engine.status().userInbox
   assert.equal(inbox.length, 1)
-  assert.equal(inbox[0].from, writer)
+  assert.equal(inbox[0].from, engineer)
   assert.ok(h.notes.some((n) => /needs you/.test(n)))
   const res = h.engine.answerUser(0, 'inline')
   assert.equal(res.ok, true)
-  assert.match(h.directivesTo(writer)[0], /\[Human reply\]: inline/)
+  assert.match(h.directivesTo(engineer)[0], /\[Human reply\]: inline/)
 })
 
 test('engine: multi-room — a lead is in team room + leads room; routing is isolated per room', () => {
   const json = {
     org: 'shop',
     teams: [
-      { name: 'client', members: [ { role: 'architect', backend: 'claude', name: 'roland', lead: true }, { role: 'writer', backend: 'claude', name: 'ludivine' } ] },
-      { name: 'api', members: [ { role: 'architect', backend: 'claude', name: 'gaston', lead: true }, { role: 'writer', backend: 'claude', name: 'thierry' } ] },
+      { name: 'client', members: [ { role: 'architect', backend: 'claude', name: 'roland', lead: true }, { role: 'engineer', backend: 'claude', name: 'ludivine' } ] },
+      { name: 'api', members: [ { role: 'architect', backend: 'claude', name: 'gaston', lead: true }, { role: 'engineer', backend: 'claude', name: 'thierry' } ] },
     ],
   }
   const h = harness(json)
   const roland = 'roland/claude', gaston = 'gaston/claude', ludivine = 'ludivine/claude', thierry = 'thierry/claude'
-  // Both architects are in two rooms; the writers in one each.
+  // Both architects are in two rooms; the engineers in one each.
   assert.equal(h.engine.roomsForHandle(roland).length, 2)
   assert.equal(h.engine.roomsForHandle(ludivine).length, 1)
 
-  // Roland talks to Gaston in the LEADS room — must not reach the client writer.
+  // Roland talks to Gaston in the LEADS room — must not reach the client engineer.
   h.engine.route({ fromHandle: roland, roomId: leadsRoomId('shop'), text: '@gaston what is the token TTL?' })
   assert.equal(h.deliveriesTo(gaston).length, 1)
   assert.equal(h.deliveriesTo(ludivine).length, 0, 'leads-room traffic stays out of the client team room')
@@ -125,11 +125,11 @@ test('engine: multi-room — a lead is in team room + leads room; routing is iso
   assert.match(amb.error, /ambiguous room/)
 })
 
-test('engine: a writer cannot reach another team (not a member of that room)', () => {
+test('engine: a engineer cannot reach another team (not a member of that room)', () => {
   const json = {
     org: 'shop',
     teams: [
-      { name: 'client', members: [ { role: 'architect', backend: 'claude', name: 'roland', lead: true }, { role: 'writer', backend: 'claude', name: 'ludivine' } ] },
+      { name: 'client', members: [ { role: 'architect', backend: 'claude', name: 'roland', lead: true }, { role: 'engineer', backend: 'claude', name: 'ludivine' } ] },
       { name: 'api', members: [ { role: 'architect', backend: 'claude', name: 'gaston', lead: true } ] },
     ],
   }
@@ -141,21 +141,21 @@ test('engine: a writer cannot reach another team (not a member of that room)', (
 
 test('engine: brake holds directed messages FIFO; resume delivers them in order', () => {
   const h = harness(TEAM)
-  const arch = h.handle('architect'), writer = h.handle('writer')
+  const arch = h.handle('architect'), engineer = h.handle('engineer')
   const room = h.engine.getRoom(teamRoomId('shop', 'client'))
   h.engine.doBrake(room)
-  h.engine.route({ fromHandle: arch, roomId: room.roomId, text: '@writer step one' })
-  h.engine.route({ fromHandle: arch, roomId: room.roomId, text: '@writer step two' })
-  assert.equal(h.deliveriesTo(writer).length, 0, 'held while paused')
+  h.engine.route({ fromHandle: arch, roomId: room.roomId, text: '@engineer step one' })
+  h.engine.route({ fromHandle: arch, roomId: room.roomId, text: '@engineer step two' })
+  assert.equal(h.deliveriesTo(engineer).length, 0, 'held while paused')
   h.engine.doResume(room)
-  const got = h.deliveriesTo(writer)
+  const got = h.deliveriesTo(engineer)
   assert.equal(got.length, 2)
   assert.match(got[0], /step one/); assert.match(got[1], /step two/)
 })
 
 test('engine: turn-cap check-in pauses the room at the cap', () => {
   const json = { org: 'shop', teams: [{ name: 'client', members: [
-    { role: 'architect', backend: 'claude', name: 'a', lead: true }, { role: 'writer', backend: 'claude', name: 'b' },
+    { role: 'architect', backend: 'claude', name: 'a', lead: true }, { role: 'engineer', backend: 'claude', name: 'b' },
   ] }] }
   const sent = []
   const engine = createRoomEngine({ send: (s, f) => sent.push({ s, f }), append: () => {}, notify: () => {}, turnCap: 2 })
@@ -172,7 +172,7 @@ test('engine: turn-cap check-in pauses the room at the cap', () => {
 test('engine: worker (non-Claude) member is queued, not delivered live', () => {
   const json = { org: 'shop', teams: [{ name: 'client', members: [
     { role: 'architect', backend: 'claude', name: 'roland', lead: true },
-    { role: 'writer', backend: 'codex', name: 'thierry' },
+    { role: 'engineer', backend: 'codex', name: 'thierry' },
   ] }] }
   const h = harness(json)
   const r = h.engine.route({ fromHandle: 'roland/claude', roomId: teamRoomId('shop', 'client'), text: '@thierry build the parser' })
@@ -183,22 +183,22 @@ test('engine: worker (non-Claude) member is queued, not delivered live', () => {
 
 test('engine: steer sends [Human directive] to all room members and clears held', () => {
   const h = harness(TEAM)
-  const arch = h.handle('architect'), writer = h.handle('writer'), critic = h.handle('critic')
+  const arch = h.handle('architect'), engineer = h.handle('engineer'), critic = h.handle('critic')
   const room = h.engine.getRoom(teamRoomId('shop', 'client'))
   h.engine.doBrake(room)
-  h.engine.route({ fromHandle: arch, roomId: room.roomId, text: '@writer wrong path' })
+  h.engine.route({ fromHandle: arch, roomId: room.roomId, text: '@engineer wrong path' })
   const res = h.engine.doSteer(room, 'all', 'switch to OAuth')
   assert.equal(room.state, 'Running')
-  assert.ok(h.directivesTo(writer).some((t) => /switch to OAuth/.test(t)))
+  assert.ok(h.directivesTo(engineer).some((t) => /switch to OAuth/.test(t)))
   assert.ok(h.directivesTo(critic).some((t) => /switch to OAuth/.test(t)))
-  assert.equal(h.deliveriesTo(writer).length, 0, 'held backlog dropped by steer')
+  assert.equal(h.deliveriesTo(engineer).length, 0, 'held backlog dropped by steer')
 })
 
 test('engine: multi-room lead — room inferred from the @mentioned target', () => {
   const json = {
     org: 'shop',
     teams: [
-      { name: 'client', members: [ { role: 'architect', backend: 'claude', name: 'roland', lead: true }, { role: 'writer', backend: 'claude', name: 'ludivine' } ] },
+      { name: 'client', members: [ { role: 'architect', backend: 'claude', name: 'roland', lead: true }, { role: 'engineer', backend: 'claude', name: 'ludivine' } ] },
       { name: 'api', members: [ { role: 'architect', backend: 'claude', name: 'gaston', lead: true } ] },
     ],
   }
@@ -213,10 +213,10 @@ test('engine: multi-room lead — room inferred from the @mentioned target', () 
 
 test('engine: soft room hint by team name resolves the room', () => {
   const h = harness(TEAM)
-  const arch = h.handle('architect'), writer = h.handle('writer')
-  const r = h.engine.route({ fromHandle: arch, room: 'client', text: '@writer go' })
+  const arch = h.handle('architect'), engineer = h.handle('engineer')
+  const r = h.engine.route({ fromHandle: arch, room: 'client', text: '@engineer go' })
   assert.equal(r.ok, true)
-  assert.equal(h.deliveriesTo(writer).length, 1)
+  assert.equal(h.deliveriesTo(engineer).length, 1)
 })
 
 test('engine: redefining an org prunes removed members and rooms (no ghosts)', () => {
@@ -224,7 +224,7 @@ test('engine: redefining an org prunes removed members and rooms (no ghosts)', (
   const engine = createRoomEngine({ send: (s, f) => sent.push({ s, f }), append: () => {}, notify: () => {} })
   const v1 = parseRoster({ org: 'shop', teams: [{ name: 'client', members: [
     { role: 'architect', backend: 'claude', name: 'roland', lead: true },
-    { role: 'writer', backend: 'claude', name: 'ludivine' },
+    { role: 'engineer', backend: 'claude', name: 'ludivine' },
     { role: 'critic', backend: 'claude', name: 'pierre' },
   ] }] }, { repo: '/tmp' })
   engine.defineOrg({ org: v1.org, repo: v1.repo, members: v1.members, rooms: v1.rooms })
@@ -232,7 +232,7 @@ test('engine: redefining an org prunes removed members and rooms (no ghosts)', (
   // Redefine with the critic removed.
   const v2 = parseRoster({ org: 'shop', teams: [{ name: 'client', members: [
     { role: 'architect', backend: 'claude', name: 'roland', lead: true },
-    { role: 'writer', backend: 'claude', name: 'ludivine' },
+    { role: 'engineer', backend: 'claude', name: 'ludivine' },
   ] }] }, { repo: '/tmp' })
   engine.defineOrg({ org: v2.org, repo: v2.repo, members: v2.members, rooms: v2.rooms })
   const handles = engine.status().members.map((m) => m.handle)

@@ -50,7 +50,7 @@ test('daemon team rooms: define org, directed delivery, @user round-trip, brake/
     org: 'shop', repo: TMP_HOME,
     teams: [{ name: 'client', territory: 'client', members: [
       { role: 'architect', backend: 'claude', name: 'roland', lead: true },
-      { role: 'writer', backend: 'claude', name: 'ludivine' },
+      { role: 'engineer', backend: 'claude', name: 'ludivine' },
       { role: 'critic', backend: 'claude', name: 'pierre' },
     ] }],
   }
@@ -62,34 +62,34 @@ test('daemon team rooms: define org, directed delivery, @user round-trip, brake/
   assert.ok(def.rooms.includes(teamRoomId('shop', 'client')))
 
   // 2) Connect the three members and register them with their handles.
-  const arch = client(port), writer = client(port), critic = client(port)
-  await Promise.all([arch.ready, writer.ready, critic.ready])
+  const arch = client(port), engineer = client(port), critic = client(port)
+  await Promise.all([arch.ready, engineer.ready, critic.ready])
   arch.send({ type: 'register', sessionId: 's-arch', memberHandle: 'roland/claude', repo: 'shop', label: 'roland' })
-  writer.send({ type: 'register', sessionId: 's-writer', memberHandle: 'ludivine/claude', repo: 'shop', label: 'ludivine' })
+  engineer.send({ type: 'register', sessionId: 's-engineer', memberHandle: 'ludivine/claude', repo: 'shop', label: 'ludivine' })
   critic.send({ type: 'register', sessionId: 's-critic', memberHandle: 'pierre/claude', repo: 'shop', label: 'pierre' })
   // each gets a join notice listing its rooms
   const joined = await arch.waitFor((f) => f.type === 'notice' && /Joined as @roland/.test(f.text))
   assert.match(joined.text, new RegExp(teamRoomId('shop', 'client')))
 
-  // 3) Architect directs the writer; only the writer receives it (directed-only floor control).
+  // 3) Architect directs the engineer; only the engineer receives it (directed-only floor control).
   arch.send({ type: 'say', id: 1, text: '@ludivine implement the login form' })
-  const toWriter = await writer.waitFor((f) => f.type === 'deliver')
-  assert.match(toWriter.text, /implement the login form/)
-  assert.match(toWriter.text, /\[room client\]/)
+  const toEngineer = await engineer.waitFor((f) => f.type === 'deliver')
+  assert.match(toEngineer.text, /implement the login form/)
+  assert.match(toEngineer.text, /\[room client\]/)
   const ack = await arch.waitFor((f) => f.type === 'ack' && f.id === 1)
   assert.equal(ack.status, 'delivered')
   await sleep(60)
   assert.equal(critic.frames.filter((f) => f.type === 'deliver').length, 0, 'critic not addressed -> nothing delivered')
 
-  // 4) @user inbox round-trip: writer asks the human; control sees it; answer routes back as a directive.
-  writer.send({ type: 'say', id: 2, text: '@user toasts or inline errors?' })
-  await writer.waitFor((f) => f.type === 'ack' && f.id === 2)
+  // 4) @user inbox round-trip: engineer asks the human; control sees it; answer routes back as a directive.
+  engineer.send({ type: 'say', id: 2, text: '@user toasts or inline errors?' })
+  await engineer.waitFor((f) => f.type === 'ack' && f.id === 2)
   const teamState = await controlCall(controlPort, { action: 'team' })
   assert.equal(teamState.userInbox.length, 1)
   assert.equal(teamState.userInbox[0].from, 'ludivine/claude')
   const answered = await controlCall(controlPort, { action: 'answer', i: 0, text: 'inline' })
   assert.equal(answered.ok, true)
-  const directive = await writer.waitFor((f) => f.type === 'directive')
+  const directive = await engineer.waitFor((f) => f.type === 'directive')
   assert.match(directive.text, /\[Human reply\]: inline/)
 
   // 5) Brake holds; resume delivers in order.
@@ -98,14 +98,14 @@ test('daemon team rooms: define org, directed delivery, @user round-trip, brake/
   arch.send({ type: 'say', id: 3, text: '@ludivine step A' })
   arch.send({ type: 'say', id: 4, text: '@ludivine step B' })
   await sleep(80)
-  const before = writer.frames.filter((f) => f.type === 'deliver').length
+  const before = engineer.frames.filter((f) => f.type === 'deliver').length
   await controlCall(controlPort, { action: 'resume', roomId })
-  await writer.waitFor((f) => f.type === 'deliver' && /step B/.test(f.text))
-  const stepFrames = writer.frames.filter((f) => f.type === 'deliver' && /step [AB]/.test(f.text)).map((f) => f.text)
+  await engineer.waitFor((f) => f.type === 'deliver' && /step B/.test(f.text))
+  const stepFrames = engineer.frames.filter((f) => f.type === 'deliver' && /step [AB]/.test(f.text)).map((f) => f.text)
   assert.equal(stepFrames.length, 2)
   assert.match(stepFrames[0], /step A/); assert.match(stepFrames[1], /step B/)
-  assert.ok(before <= writer.frames.filter((f) => f.type === 'deliver').length)
+  assert.ok(before <= engineer.frames.filter((f) => f.type === 'deliver').length)
 
-  arch.sock.destroy(); writer.sock.destroy(); critic.sock.destroy()
+  arch.sock.destroy(); engineer.sock.destroy(); critic.sock.destroy()
   daemon.stop()
 })

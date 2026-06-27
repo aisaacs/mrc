@@ -6,7 +6,7 @@
       "territory": "client",
       "members": [
         { "role": "architect", "backend": "claude", "lead": true },
-        { "role": "writer",    "backend": "claude", "territory": "client/src" },
+        { "role": "engineer",  "backend": "claude", "territory": "client/src" },
         { "role": "critic",    "backend": "claude" }
       ]
     },
@@ -15,7 +15,7 @@
       "territory": "api",
       "members": [
         { "role": "architect", "backend": "claude", "lead": true },
-        { "role": "writer",    "backend": "claude", "territory": "api/src" },
+        { "role": "engineer",  "backend": "claude", "territory": "api/src" },
         { "role": "adversary", "backend": "codex" }
       ]
     }
