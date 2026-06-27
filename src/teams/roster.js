@@ -40,12 +40,23 @@ function resolveTerritory(raw, fallback) {
 export function teamRoomId(org, team) { return `${slug(org)}--${slug(team)}--team` }
 export function leadsRoomId(org) { return `${slug(org)}--leads` }
 
+// Deterministic RNG seeded from a string (mulberry32). Used so a roster WITHOUT pinned names still
+// assigns the SAME handles on every run — otherwise each `mrc team up` would mint new names and the
+// daemon would accumulate ghost members whose rooms no one rejoins.
+function rngFromString(s) {
+  let h = 1779033703 ^ String(s).length
+  for (let i = 0; i < String(s).length; i++) { h = Math.imul(h ^ String(s).charCodeAt(i), 3432918353); h = (h << 13) | (h >>> 19) }
+  let a = h >>> 0
+  return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296 }
+}
+
 export function parseRoster(input, { repo, rng } = {}) {
   const data = typeof input === 'string' ? JSON.parse(input) : input
   if (!data || typeof data !== 'object') throw new Error('roster: not an object')
   const repoPath = data.repo || repo || process.cwd()
   const org = data.org || basename(repoPath) || 'org'
   const teamsIn = Array.isArray(data.teams) ? data.teams : []
+  rng = rng || rngFromString(`mrc-team:${org}`)   // stable per-org names by default
 
   const taken = new Set()
   // Honor any explicitly-pinned first names first, so auto-assignment works around them.

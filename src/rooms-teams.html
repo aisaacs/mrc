@@ -1,0 +1,181 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mister Claude — Team</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --line:#262b36; --fg:#e6e9ef; --dim:#8b93a3;
+          --accent:#7aa2f7; --good:#7bd88f; --warn:#e0af68; --bad:#f7768e; --lead:#bb9af7; }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif }
+  code,pre,.mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace }
+  header { display:flex; align-items:center; gap:12px; padding:12px 18px; border-bottom:1px solid var(--line); background:var(--panel) }
+  header h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:.2px }
+  header .sub { color:var(--dim); font-size:12px }
+  header a { color:var(--accent); text-decoration:none; font-size:12px; margin-left:auto }
+  .pill { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line) }
+  .pill.on { color:var(--good); border-color:#2c4533 } .pill.off { color:var(--bad); border-color:#4a2a31 }
+  main { display:grid; grid-template-columns:340px 1fr; gap:0; height:calc(100vh - 53px) }
+  aside { border-right:1px solid var(--line); overflow:auto; padding:12px }
+  section.detail { overflow:auto; padding:16px 20px }
+  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--dim); margin:18px 0 8px }
+  .team { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:10px }
+  .team .tname { font-weight:650; font-size:13px; margin-bottom:6px }
+  .mem { display:flex; align-items:center; gap:8px; padding:3px 0; font-size:13px }
+  .dot { width:8px; height:8px; border-radius:50%; background:#3a4150; flex:0 0 auto }
+  .dot.online { background:var(--good); box-shadow:0 0 6px #7bd88f88 }
+  .mem .role { color:var(--dim); font-size:11px; margin-left:auto }
+  .mem.lead .h { color:var(--lead) }
+  .h { font-family:ui-monospace,monospace; font-size:12.5px }
+  .roomrow { display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--line); border-radius:8px;
+             margin-bottom:6px; cursor:pointer; background:var(--panel) }
+  .roomrow:hover { border-color:#37506e } .roomrow.sel { border-color:var(--accent); background:var(--panel2) }
+  .roomrow .nm { font-weight:600; font-size:13px } .roomrow .meta { color:var(--dim); font-size:11px; margin-left:auto }
+  .state { font-size:10px; padding:1px 6px; border-radius:6px; border:1px solid var(--line); color:var(--dim) }
+  .state.Running { color:var(--good) } .state.Paused { color:var(--warn) }
+  .inbox { background:#1a1622; border:1px solid #3a2f4f; border-radius:10px; padding:12px; margin-bottom:14px }
+  .inbox.empty { display:none }
+  .inbox h2 { color:var(--lead); margin-top:0 }
+  .ask { border-top:1px solid var(--line); padding-top:8px; margin-top:8px }
+  .ask:first-of-type { border-top:0; padding-top:0; margin-top:0 }
+  .ask .who { font-size:12px; color:var(--dim) } .ask .who b { color:var(--fg) }
+  .ask .q { margin:4px 0 6px; white-space:pre-wrap }
+  .ask.answered { opacity:.5 }
+  textarea,input,select { background:#11141b; color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:7px 9px; font:13px/1.4 inherit; width:100% }
+  textarea { resize:vertical; min-height:38px }
+  button { background:var(--panel2); color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:6px 12px; cursor:pointer; font-size:12.5px }
+  button:hover { border-color:#3a4150 } button.primary { background:#23314d; border-color:#33507e; color:#cfe0ff }
+  button.danger { background:#2a1b21; border-color:#5a3540; color:#f4a6b4 }
+  .row { display:flex; gap:8px; align-items:center } .row.wrap { flex-wrap:wrap }
+  .controls { display:flex; gap:8px; flex-wrap:wrap; margin:6px 0 14px }
+  pre.thread { background:#0b0d12; border:1px solid var(--line); border-radius:10px; padding:14px; white-space:pre-wrap;
+               word-break:break-word; font-size:12.5px; max-height:60vh; overflow:auto }
+  .empty-hint { color:var(--dim); padding:40px; text-align:center }
+  .muted { color:var(--dim) }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎩 Mister Claude — Team</h1>
+  <span class="sub" id="sub">connecting…</span>
+  <span class="pill off" id="daemonPill">daemon ?</span>
+  <a href="/">↩ rooms dashboard</a>
+</header>
+<main>
+  <aside>
+    <div id="orgEmpty" class="empty-hint">No team defined yet.<br><span class="muted">Run <code>mrc team up</code>.</span></div>
+    <div id="teams"></div>
+    <h2 id="roomsHdr" style="display:none">Rooms</h2>
+    <div id="rooms"></div>
+  </aside>
+  <section class="detail">
+    <div class="inbox empty" id="inbox"></div>
+    <div id="roomDetail"><div class="empty-hint">Select a room to watch its transcript and steer it.</div></div>
+  </section>
+</main>
+<script>
+const $ = (s, r=document) => r.querySelector(s)
+let SELECTED = null, lastThread = '', members = [], rooms = []
+const esc = (s) => String(s==null?'':s).replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))
+async function api(path, opts) { const r = await fetch(path, opts); return r.json() }
+async function act(action, extra={}) { return api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ action, ...extra }) }) }
+
+function renderTeams() {
+  const byTeam = {}
+  for (const m of members) (byTeam[m.team] ||= []).push(m)
+  const wrap = $('#teams')
+  const teams = Object.keys(byTeam)
+  $('#orgEmpty').style.display = members.length ? 'none' : 'block'
+  $('#roomsHdr').style.display = rooms.length ? 'block' : 'none'
+  wrap.innerHTML = teams.map(t => `
+    <div class="team">
+      <div class="tname">${esc(t)}</div>
+      ${byTeam[t].map(m => `
+        <div class="mem ${m.lead?'lead':''}">
+          <span class="dot ${m.online?'online':''}" title="${m.online?'online':'offline'}"></span>
+          <span class="h">@${esc(m.first)}</span>
+          <span class="muted" style="font-size:11px">/${esc(m.backend)}</span>
+          <span class="role">${esc(m.role)}${m.lead?' ★':''}${m.tier==='worker'?' · worker':''}</span>
+        </div>`).join('')}
+    </div>`).join('')
+  $('#rooms').innerHTML = rooms.map(r => {
+    const memCount = r.members.filter(x => x !== '@user').length
+    const cls = r.roomId === SELECTED ? 'roomrow sel' : 'roomrow'
+    return `<div class="${cls}" data-room="${esc(r.roomId)}">
+      <span class="nm">${esc(r.team || r.roomId)}</span>
+      <span class="state ${r.state}">${esc(r.state)}${r.pauseReason?(' · '+esc(r.pauseReason)):''}</span>
+      <span class="meta">${memCount}👥 · t${r.turn}</span>
+    </div>`
+  }).join('')
+  for (const el of document.querySelectorAll('[data-room]')) el.onclick = () => selectRoom(el.dataset.room)
+}
+
+function renderInbox(inbox) {
+  const box = $('#inbox')
+  const pending = inbox.filter(x => !x.answered)
+  if (!inbox.length) { box.className = 'inbox empty'; box.innerHTML = ''; return }
+  box.className = 'inbox'
+  box.innerHTML = `<h2>@user — ${pending.length} awaiting you</h2>` + inbox.map(it => `
+    <div class="ask ${it.answered?'answered':''}">
+      <div class="who"><b>@${esc(it.fromName||it.from)}</b> in <b>${esc(it.room)}</b>${it.answered?' · answered':''}</div>
+      <div class="q">${esc(it.text)}</div>
+      ${it.answered ? `<div class="muted mono" style="font-size:12px">↳ ${esc(it.answer||'')}</div>` :
+        `<div class="row"><textarea id="ans${it.i}" placeholder="Your reply (routes back as [Human reply])…"></textarea>
+         <button class="primary" data-answer="${it.i}">Send</button></div>`}
+    </div>`).join('')
+  for (const el of box.querySelectorAll('[data-answer]')) el.onclick = async () => {
+    const i = el.dataset.answer, text = $('#ans'+i).value.trim(); if (!text) return
+    el.disabled = true; await act('answer', { i:Number(i), text }); refresh()
+  }
+}
+
+async function selectRoom(id) {
+  SELECTED = id; lastThread = ''; renderTeams()
+  const r = await api('/api/room?id=' + encodeURIComponent(id))
+  const room = rooms.find(x => x.roomId === id) || {}
+  const opts = ['<option value="all">everyone</option>'].concat(
+    (room.members||[]).filter(x=>x!=='@user').map(h => { const m = members.find(mm=>mm.handle===h); const lbl = m?('@'+m.first+' ('+m.role+')'):h; return `<option value="${esc(h)}">${esc(lbl)}</option>` })).join('')
+  $('#roomDetail').innerHTML = `
+    <div class="row wrap" style="justify-content:space-between">
+      <div><b>${esc(room.team || id)}</b> <span class="muted">[${esc(room.kind||'room')}]</span>
+        <span class="state ${room.state}">${esc(room.state||'')}</span></div>
+      <div class="controls">
+        <button data-a="brake">⏸ Pause</button>
+        <button data-a="resume">▶ Resume</button>
+        <button class="danger" data-a="end">✕ Close room</button>
+      </div>
+    </div>
+    <h2>Steer (trusted [Human directive])</h2>
+    <div class="row"><select id="steerT" style="max-width:220px">${opts}</select>
+      <textarea id="steerTx" placeholder="Direct the team or a member…"></textarea>
+      <button class="primary" id="steerBtn">Send</button></div>
+    <h2>Transcript</h2>
+    <pre class="thread" id="thread">${esc(r.thread||'(no messages yet)')}</pre>`
+  lastThread = r.thread || ''
+  for (const el of document.querySelectorAll('[data-a]')) el.onclick = async () => { await act(el.dataset.a, { roomId:id }); refresh() }
+  $('#steerBtn').onclick = async () => { const text = $('#steerTx').value.trim(); if(!text) return
+    await act('steer', { roomId:id, target:$('#steerT').value, text }); $('#steerTx').value=''; refreshDetail() }
+}
+
+async function refreshDetail() {
+  if (!SELECTED) return
+  const r = await api('/api/room?id=' + encodeURIComponent(SELECTED))
+  if ((r.thread||'') !== lastThread) { const t = $('#thread'); if (t) { t.textContent = r.thread||''; t.scrollTop = t.scrollHeight } lastThread = r.thread||'' }
+}
+
+async function refresh() {
+  const t = await api('/api/teams')
+  members = t.members || []; rooms = t.rooms || []
+  const online = members.filter(m=>m.online).length
+  $('#sub').textContent = members.length ? `${members.length} members · ${online} online · ${rooms.length} rooms` : 'no team defined'
+  const dp = $('#daemonPill'); const ok = t.ok !== false && (members.length || rooms.length)
+  dp.className = 'pill ' + (ok?'on':'off'); dp.textContent = ok ? 'daemon up' : 'daemon down'
+  renderTeams(); renderInbox(t.userInbox || [])
+}
+refresh(); selectRoomIfHash()
+function selectRoomIfHash(){ const h=location.hash.slice(1); if(h) selectRoom(decodeURIComponent(h)) }
+setInterval(() => { refresh(); refreshDetail() }, 1500)
+</script>
+</body>
+</html>

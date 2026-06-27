@@ -17,6 +17,7 @@ const metaPath = () => join(homedir(), '.local', 'share', 'mrc', 'room-daemon.js
 const daemonMeta = () => { try { return JSON.parse(readFileSync(metaPath(), 'utf8')) } catch { return null } }
 const readIf = (f) => { try { return readFileSync(f, 'utf8') } catch { return '' } }
 const HTML_FILE = fileURLToPath(new URL('./rooms-dashboard.html', import.meta.url))
+const TEAMS_HTML = fileURLToPath(new URL('./rooms-teams.html', import.meta.url))
 
 // One request/response to the daemon control socket. Never throws — returns {ok:false,error} so the
 // dashboard degrades gracefully when the daemon is down (historical rooms still browse fine).
@@ -79,7 +80,16 @@ async function handle(req, res) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
       return res.end(readFileSync(HTML_FILE))   // re-read each load so the page can be edited live
     }
+    if (req.method === 'GET' && url.pathname === '/teams') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      return res.end(readFileSync(TEAMS_HTML))
+    }
     if (req.method === 'GET' && url.pathname === '/api/state') return sendJSON(res, 200, await buildState())
+    if (req.method === 'GET' && url.pathname === '/api/teams') {
+      const meta = daemonMeta()
+      const t = meta?.controlPort ? await ctrl(meta.controlPort, 'team') : { ok: false }
+      return sendJSON(res, 200, t?.ok ? t : { ok: false, members: [], rooms: [], userInbox: [] })
+    }
     if (req.method === 'GET' && url.pathname === '/api/room') {
       const id = url.searchParams.get('id')
       if (!knownRoom(id)) return sendJSON(res, 404, { error: 'unknown room' })
@@ -92,15 +102,18 @@ async function handle(req, res) {
       req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
       req.on('end', async () => {
         let j; try { j = JSON.parse(body || '{}') } catch { return sendJSON(res, 400, { ok: false, error: 'bad json' }) }
-        if (!['brake', 'resume', 'steer', 'end', 'review', 'catchup', 'autocatchup'].includes(j.action)) return sendJSON(res, 400, { ok: false, error: 'action not allowed' })
+        if (!['brake', 'resume', 'steer', 'end', 'review', 'catchup', 'autocatchup', 'answer'].includes(j.action)) return sendJSON(res, 400, { ok: false, error: 'action not allowed' })
         if (j.roomId && !knownRoom(j.roomId)) return sendJSON(res, 404, { ok: false, error: 'unknown room' })
         // 'review' is a local catchups.json write (we run inside the daemon process), not a control action.
         if (j.action === 'review') {
           const e = updateCatchup(j.roomId, Number(j.seq), { reviewedAt: new Date().toISOString() })
           return sendJSON(res, 200, e ? { ok: true } : { ok: false, error: 'unknown catch-up' })
         }
+        // 'answer' replies to an @user inbox item; no roomId (the daemon knows the item's room).
+        if (j.action === 'answer') return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, 'answer', { i: Number(j.i), text: String(j.text || '').slice(0, 8000) }))
         const extra = { roomId: j.roomId }
-        if (j.action === 'steer') { extra.target = ['a', 'b', 'both'].includes(j.target) ? j.target : 'both'; extra.text = String(j.text || '').slice(0, 8000) }
+        // Team rooms steer by member handle / role / 'all'; legacy pairings use a|b|both (non-a/b => both).
+        if (j.action === 'steer') { extra.target = String(j.target || 'both').slice(0, 80); extra.text = String(j.text || '').slice(0, 8000) }
         if (j.action === 'autocatchup') extra.on = !!j.on
         return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, j.action, extra))
       })

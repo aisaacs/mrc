@@ -219,6 +219,27 @@ test('engine: soft room hint by team name resolves the room', () => {
   assert.equal(h.deliveriesTo(writer).length, 1)
 })
 
+test('engine: redefining an org prunes removed members and rooms (no ghosts)', () => {
+  const sent = []
+  const engine = createRoomEngine({ send: (s, f) => sent.push({ s, f }), append: () => {}, notify: () => {} })
+  const v1 = parseRoster({ org: 'shop', teams: [{ name: 'client', members: [
+    { role: 'architect', backend: 'claude', name: 'roland', lead: true },
+    { role: 'writer', backend: 'claude', name: 'ludivine' },
+    { role: 'critic', backend: 'claude', name: 'pierre' },
+  ] }] }, { repo: '/tmp' })
+  engine.defineOrg({ org: v1.org, repo: v1.repo, members: v1.members, rooms: v1.rooms })
+  assert.equal(engine.status().members.length, 3)
+  // Redefine with the critic removed.
+  const v2 = parseRoster({ org: 'shop', teams: [{ name: 'client', members: [
+    { role: 'architect', backend: 'claude', name: 'roland', lead: true },
+    { role: 'writer', backend: 'claude', name: 'ludivine' },
+  ] }] }, { repo: '/tmp' })
+  engine.defineOrg({ org: v2.org, repo: v2.repo, members: v2.members, rooms: v2.rooms })
+  const handles = engine.status().members.map((m) => m.handle)
+  assert.equal(handles.length, 2, 'pruned to the new member set')
+  assert.ok(!handles.includes('pierre/claude'), 'removed member is gone')
+})
+
 test('engine: unresolved mentions are reported, not silently dropped', () => {
   const h = harness(TEAM)
   const r = h.engine.route({ fromHandle: h.handle('architect'), roomId: teamRoomId('shop', 'client'), text: '@nobody hello' })

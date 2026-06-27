@@ -151,6 +151,17 @@ test('roster: validate flags overlapping write territories', () => {
   assert.ok(v.warnings.some((w) => /write territory/.test(w)), 'overlap warned')
 })
 
+test('roster: names are deterministic across runs (no rng passed) so members rebind', () => {
+  const json = { org: 'shop', teams: [
+    { name: 'client', members: [ { role: 'architect', backend: 'claude', lead: true }, { role: 'writer', backend: 'claude' } ] },
+    { name: 'api', members: [ { role: 'architect', backend: 'claude', lead: true } ] },
+  ] }
+  const a = parseRoster(json, { repo: '/tmp/shop' }).members.map((m) => m.handle)
+  const b = parseRoster(json, { repo: '/tmp/shop' }).members.map((m) => m.handle)
+  assert.deepEqual(a, b, 'same roster -> same handles every run')
+  assert.equal(new Set(a).size, a.length, 'still unique')
+})
+
 test('roster: territory escaping the repo is rejected', () => {
   const json = { org: 'x', teams: [ { name: 't', territory: '../evil', members: [ { role: 'writer' } ] } ] }
   assert.throws(() => parseRoster(json, { repo: '/tmp/x', rng: seededRng(2) }), /escapes the repo/)

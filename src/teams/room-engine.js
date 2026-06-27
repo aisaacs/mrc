@@ -41,6 +41,17 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
   function defineOrg({ org, repo, members: mem = [], rooms: rms = [] }) {
     const orgId = String(org)
     orgs.set(orgId, { org: orgId, repo: repo || null })
+    // Redefining an org REPLACES it: prune members/rooms that belonged to this org but are gone from
+    // the new def, so re-running `mrc team up` (or a daemon reload) never accumulates ghosts.
+    const keepHandles = new Set(mem.map((m) => String(m.handle).toLowerCase()))
+    const keepRooms = new Set(rms.map((r) => r.roomId))
+    for (const [h, m] of [...members]) {
+      if (m.org === orgId && !keepHandles.has(h)) {
+        if (m.sessionId) bySession.delete(m.sessionId)
+        members.delete(h)
+      }
+    }
+    for (const [id, r] of [...rooms]) if (r.org === orgId && !keepRooms.has(id)) rooms.delete(id)
     for (const m of mem) {
       const handle = String(m.handle).toLowerCase()
       const prev = members.get(handle)
