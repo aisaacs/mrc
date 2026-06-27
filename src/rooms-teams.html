@@ -60,11 +60,12 @@
   <h1>🎩 Mister Claude — Team</h1>
   <span class="sub" id="sub">connecting…</span>
   <span class="pill off" id="daemonPill">daemon ?</span>
-  <a href="/">↩ rooms dashboard</a>
+  <a href="/teams/new" style="margin-left:auto">＋ New team</a>
+  <a href="/" style="margin-left:14px">↩ rooms dashboard</a>
 </header>
 <main>
   <aside>
-    <div id="orgEmpty" class="empty-hint">No team defined yet.<br><span class="muted">Run <code>mrc team up</code>.</span></div>
+    <div id="orgEmpty" class="empty-hint">No team defined yet.<br><a href="/teams/new" style="color:var(--accent);text-decoration:none">＋ Assemble one</a> <span class="muted">or run <code>mrc team up</code>.</span></div>
     <div id="teams"></div>
     <h2 id="roomsHdr" style="display:none">Rooms</h2>
     <div id="rooms"></div>

@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mister Claude — New Team</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --line:#262b36; --fg:#e6e9ef; --dim:#8b93a3;
+          --accent:#7aa2f7; --good:#7bd88f; --warn:#e0af68; --bad:#f7768e; --lead:#bb9af7; }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif }
+  code,pre,.mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace }
+  header { display:flex; align-items:center; gap:12px; padding:12px 18px; border-bottom:1px solid var(--line); background:var(--panel) }
+  header h1 { font-size:15px; margin:0; font-weight:650 } header a { color:var(--accent); text-decoration:none; font-size:12px; margin-left:auto }
+  main { display:grid; grid-template-columns:1fr 380px; gap:0; height:calc(100vh - 53px) }
+  .form { overflow:auto; padding:16px 20px } .side { border-left:1px solid var(--line); overflow:auto; padding:16px; background:#12141a }
+  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--dim); margin:16px 0 8px }
+  label { display:block; font-size:12px; color:var(--dim); margin:8px 0 3px }
+  input,select { background:#11141b; color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:7px 9px; font:13px/1.4 inherit; width:100% }
+  .row { display:flex; gap:8px; align-items:center } .row.wrap { flex-wrap:wrap }
+  .grid2 { display:grid; grid-template-columns:1fr 1fr; gap:10px }
+  button { background:var(--panel2); color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:6px 12px; cursor:pointer; font-size:12.5px }
+  button:hover { border-color:#3a4150 } button.primary { background:#23314d; border-color:#33507e; color:#cfe0ff }
+  button.tiny { padding:3px 8px; font-size:11px } button.ghost { background:transparent }
+  .team { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:12px }
+  .team .head { display:flex; gap:8px; align-items:flex-end; margin-bottom:8px }
+  .mem { display:grid; grid-template-columns:1.3fr 1fr auto 1.2fr auto; gap:8px; align-items:center; padding:5px 0; border-top:1px solid var(--line) }
+  .mem .lead { display:flex; align-items:center; gap:5px; font-size:12px; color:var(--dim); white-space:nowrap }
+  .mem input[type=checkbox]{ width:auto }
+  .pillrow { display:flex; gap:8px; flex-wrap:wrap; margin:10px 0 }
+  .h { font-family:ui-monospace,monospace; font-size:12.5px }
+  .mono.box { background:#0b0d12; border:1px solid var(--line); border-radius:8px; padding:10px; white-space:pre-wrap; font-size:12px }
+  .memcard { background:var(--panel); border:1px solid var(--line); border-radius:8px; padding:7px 10px; margin-bottom:6px; font-size:13px }
+  .memcard .role { color:var(--dim); font-size:11px }
+  .warn { color:var(--warn); font-size:12px } .bad { color:var(--bad); font-size:12px } .good { color:var(--good) }
+  .dim { color:var(--dim) } .muted { color:var(--dim); font-size:12px }
+  .roomtag { display:inline-block; font-size:11px; border:1px solid var(--line); border-radius:6px; padding:1px 7px; margin:2px 4px 2px 0; color:var(--dim) }
+  .footer { position:sticky; bottom:0; background:linear-gradient(transparent,#12141a 30%); padding-top:12px }
+  .ok { color:var(--good); font-size:12px } .err { color:var(--bad); font-size:12px }
+</style>
+</head>
+<body>
+<header>
+  <h1>🎩 Mister Claude — Assemble a Team</h1>
+  <a href="/teams">↩ team orchestrator</a>
+</header>
+<main>
+  <section class="form">
+    <div class="grid2">
+      <div><label>Org name</label><input id="org" placeholder="shop"></div>
+      <div><label>Repo path (host)</label><input id="repo" placeholder="/Users/you/code/shop"></div>
+    </div>
+    <h2>Teams</h2>
+    <div id="teams"></div>
+    <button class="ghost" id="addTeam">＋ Add team</button>
+  </section>
+  <aside class="side">
+    <h2>Preview</h2>
+    <div id="preview" class="muted">Build a team on the left — handles and rooms appear here.</div>
+    <div class="footer">
+      <div class="grid2" style="margin-bottom:8px">
+        <button class="primary" id="save">💾 Save team.json</button>
+        <button id="define">◎ Define rooms</button>
+      </div>
+      <div id="saveMsg" class="muted"></div>
+      <h2>Then launch</h2>
+      <div class="mono box" id="launchCmd">mrc team up</div>
+      <div class="muted" style="margin-top:6px">Live members each accept the one-time Channels prompt in their tmux window.</div>
+    </div>
+  </aside>
+</main>
+<script>
+const $ = (s, r=document) => r.querySelector(s)
+const ROLES = ['architect','writer','critic','adversary','ultracritical','user-defender','researcher']
+const BACKENDS = ['claude','codex','qwen','gemini']
+const esc = (s) => String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
+let state = { org:'shop', repo:'', teams:[ { name:'client', territory:'client', members:[
+  { role:'architect', backend:'claude', lead:true, territory:'' },
+  { role:'writer', backend:'claude', lead:false, territory:'' },
+  { role:'critic', backend:'claude', lead:false, territory:'' },
+] } ] }
+
+const opts = (list, sel) => list.map(o => `<option ${o===sel?'selected':''}>${o}</option>`).join('')
+
+function renderTeams() {
+  $('#teams').innerHTML = state.teams.map((t, ti) => `
+    <div class="team">
+      <div class="head">
+        <div style="flex:2"><label>Team name</label><input data-t="${ti}" data-k="name" value="${esc(t.name)}"></div>
+        <div style="flex:2"><label>Territory (sub-tree, or .)</label><input data-t="${ti}" data-k="territory" value="${esc(t.territory)}" placeholder="."></div>
+        <button class="tiny ghost" data-delteam="${ti}">✕ team</button>
+      </div>
+      ${t.members.map((m, mi) => `
+        <div class="mem">
+          <select data-t="${ti}" data-m="${mi}" data-k="role">${opts(ROLES, m.role)}</select>
+          <select data-t="${ti}" data-m="${mi}" data-k="backend">${opts(BACKENDS, m.backend)}</select>
+          <label class="lead"><input type="checkbox" data-t="${ti}" data-m="${mi}" data-k="lead" ${m.lead?'checked':''}> lead</label>
+          <input data-t="${ti}" data-m="${mi}" data-k="territory" value="${esc(m.territory)}" placeholder="territory (optional)">
+          <button class="tiny ghost" data-delmem="${ti}.${mi}">✕</button>
+        </div>`).join('')}
+      <div class="pillrow"><button class="tiny" data-addmem="${ti}">＋ member</button></div>
+    </div>`).join('')
+  // bind inputs
+  for (const el of document.querySelectorAll('[data-k]')) {
+    const ti = +el.dataset.t, mi = el.dataset.m!=null ? +el.dataset.m : null, k = el.dataset.k
+    const handler = () => {
+      const v = el.type==='checkbox' ? el.checked : el.value
+      if (mi==null) state.teams[ti][k] = v
+      else {
+        if (k==='lead' && v) state.teams[ti].members.forEach((mm,j) => mm.lead = (j===mi))  // one lead/team
+        else state.teams[ti].members[mi][k] = v
+      }
+      schedulePreview(); if (k==='lead') renderTeams()
+    }
+    el.oninput = handler; el.onchange = handler
+  }
+  for (const el of document.querySelectorAll('[data-delteam]')) el.onclick = () => { state.teams.splice(+el.dataset.delteam,1); renderTeams(); schedulePreview() }
+  for (const el of document.querySelectorAll('[data-addmem]')) el.onclick = () => { state.teams[+el.dataset.addmem].members.push({role:'writer',backend:'claude',lead:false,territory:''}); renderTeams(); schedulePreview() }
+  for (const el of document.querySelectorAll('[data-delmem]')) el.onclick = () => { const [ti,mi]=el.dataset.delmem.split('.').map(Number); state.teams[ti].members.splice(mi,1); renderTeams(); schedulePreview() }
+}
+
+function rosterJSON() {
+  return { org: state.org || 'org', repo: state.repo || undefined, teams: state.teams.map(t => ({
+    name: t.name, territory: t.territory || '.',
+    members: t.members.map(m => { const o = { role:m.role, backend:m.backend }; if (m.lead) o.lead=true; if (m.territory) o.territory=m.territory; return o })
+  })) }
+}
+
+let prevTimer = null
+function schedulePreview() { clearTimeout(prevTimer); prevTimer = setTimeout(preview, 250); $('#launchCmd').textContent = 'cd ' + (state.repo||'<repo>') + ' && mrc team up' }
+async function preview() {
+  const r = await fetch('/api/team-preview', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ roster: rosterJSON() }) }).then(r=>r.json())
+  const box = $('#preview')
+  if (!r.ok) { box.innerHTML = `<div class="bad">⚠ ${esc(r.error)}</div>`; return }
+  const v = r.validation || { warnings:[], errors:[] }
+  box.innerHTML =
+    r.members.map(m => `<div class="memcard"><span class="h">@${esc(m.handle)}</span>
+      <span class="role"> — ${esc(m.roleLabel)}${m.lead?' ★ lead':''} · ${esc(m.team)} · ${m.tier==='worker'?'worker':'live'} · writes ${m.mount==='rw'?esc(m.territory):'—'}</span></div>`).join('')
+    + `<h2>Rooms</h2>` + r.rooms.map(rm => `<span class="roomtag">${esc(rm.team||rm.kind)} · ${rm.members.filter(x=>x!=='@user').length}👥${rm.members.includes('@user')?' +@user':''}</span>`).join('')
+    + (v.warnings.length ? `<h2>Warnings</h2>` + v.warnings.map(w=>`<div class="warn">⚠ ${esc(w)}</div>`).join('') : '')
+    + (v.errors.length ? v.errors.map(e=>`<div class="bad">✗ ${esc(e)}</div>`).join('') : '')
+}
+
+$('#org').oninput = e => { state.org = e.target.value; schedulePreview() }
+$('#repo').oninput = e => { state.repo = e.target.value; schedulePreview() }
+$('#addTeam').onclick = () => { state.teams.push({ name:'team'+(state.teams.length+1), territory:'.', members:[{role:'architect',backend:'claude',lead:true,territory:''}] }); renderTeams(); schedulePreview() }
+$('#save').onclick = async () => {
+  const msg = $('#saveMsg')
+  if (!state.repo) { msg.innerHTML = '<span class="err">Set a repo path first.</span>'; return }
+  const r = await fetch('/api/team-save', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ repo: state.repo, roster: rosterJSON() }) }).then(r=>r.json())
+  msg.innerHTML = r.ok ? `<span class="ok">✓ Saved ${esc(r.path)}</span>` : `<span class="err">✗ ${esc(r.error)}</span>`
+}
+$('#define').onclick = async () => {
+  const msg = $('#saveMsg')
+  const r = await fetch('/api/team-define', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ roster: rosterJSON() }) }).then(r=>r.json())
+  msg.innerHTML = r.ok ? `<span class="ok">◎ Defined ${ (r.rooms||[]).length } room(s) on the daemon. Open the <a href="/teams" style="color:var(--accent)">orchestrator</a>.</span>` : `<span class="err">✗ ${esc(r.error||'daemon unreachable')}</span>`
+}
+$('#org').value = state.org
+renderTeams(); preview()
+</script>
+</body>
+</html>

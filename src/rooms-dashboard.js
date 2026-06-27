@@ -5,19 +5,29 @@
 // into a chat; the only writes are the room controls and marking a catch-up reviewed.
 import http from 'node:http'
 import net from 'node:net'
-import { readFileSync, existsSync, statSync } from 'node:fs'
+import { readFileSync, existsSync, statSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { roomsRoot, roomDir, listRooms, readCatchups, updateCatchup } from './rooms.js'
 import { findFreePort } from './ports.js'
+import { parseRoster, validateRoster } from './teams/roster.js'
 
 const metaPath = () => join(homedir(), '.local', 'share', 'mrc', 'room-daemon.json')
 const daemonMeta = () => { try { return JSON.parse(readFileSync(metaPath(), 'utf8')) } catch { return null } }
 const readIf = (f) => { try { return readFileSync(f, 'utf8') } catch { return '' } }
 const HTML_FILE = fileURLToPath(new URL('./rooms-dashboard.html', import.meta.url))
 const TEAMS_HTML = fileURLToPath(new URL('./rooms-teams.html', import.meta.url))
+const BUILDER_HTML = fileURLToPath(new URL('./rooms-team-builder.html', import.meta.url))
+
+// Normalize a roster object/JSON into { norm, validation } or { error }. Pure — no disk/daemon.
+function previewRoster(input) {
+  try {
+    const norm = parseRoster(input, {})
+    return { ok: true, org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms, validation: validateRoster(norm) }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
 
 // One request/response to the daemon control socket. Never throws — returns {ok:false,error} so the
 // dashboard degrades gracefully when the daemon is down (historical rooms still browse fine).
@@ -83,6 +93,34 @@ async function handle(req, res) {
     if (req.method === 'GET' && url.pathname === '/teams') {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
       return res.end(readFileSync(TEAMS_HTML))
+    }
+    if (req.method === 'GET' && url.pathname === '/teams/new') {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      return res.end(readFileSync(BUILDER_HTML))
+    }
+    // Team builder: preview (pure), save team.json to a repo, or define rooms on the daemon.
+    if (req.method === 'POST' && (url.pathname === '/api/team-preview' || url.pathname === '/api/team-save' || url.pathname === '/api/team-define')) {
+      let body = ''
+      req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
+      req.on('end', async () => {
+        let j; try { j = JSON.parse(body || '{}') } catch { return sendJSON(res, 400, { ok: false, error: 'bad json' }) }
+        const pv = previewRoster(j.roster)
+        if (url.pathname === '/api/team-preview') return sendJSON(res, 200, pv)
+        if (!pv.ok) return sendJSON(res, 400, pv)
+        if (url.pathname === '/api/team-save') {
+          // Localhost-only write: target an EXISTING directory; the filename is fixed to team.json.
+          const repo = String(j.repo || '').trim()
+          try { if (!repo || !statSync(repo).isDirectory()) throw new Error('repo must be an existing directory') }
+          catch (e) { return sendJSON(res, 400, { ok: false, error: String(e?.message || e) }) }
+          const file = join(repo, 'team.json')
+          try { writeFileSync(file, JSON.stringify(j.roster, null, 2) + '\n') } catch (e) { return sendJSON(res, 500, { ok: false, error: String(e?.message || e) }) }
+          return sendJSON(res, 200, { ok: true, path: file })
+        }
+        // team-define: push the org to the daemon so its rooms exist (does NOT launch containers).
+        const def = { org: pv.org, repo: pv.repo, members: pv.members, rooms: pv.rooms }
+        return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, 'defineOrg', { def }))
+      })
+      return
     }
     if (req.method === 'GET' && url.pathname === '/api/state') return sendJSON(res, 200, await buildState())
     if (req.method === 'GET' && url.pathname === '/api/teams') {
