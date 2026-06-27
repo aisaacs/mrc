@@ -16,12 +16,7 @@
   header { display:flex; align-items:center; gap:12px; padding:0 16px; border-bottom:1px solid var(--line); background:var(--panel) }
   header h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:.2px }
   header .spacer { flex:1 }
-  .main { display:grid; grid-template-columns:120px 300px 1fr; min-height:0 }
-  nav.rail { border-right:1px solid var(--line); padding:10px 8px; display:flex; flex-direction:column; gap:4px; background:#13151b }
-  nav.rail button { display:flex; align-items:center; gap:8px; width:100%; text-align:left; background:transparent; border:1px solid transparent;
-                    border-radius:8px; padding:8px 10px; color:var(--dim); cursor:pointer; font-size:13px }
-  nav.rail button:hover { background:var(--panel) } nav.rail button.on { background:var(--panel2); color:var(--fg); border-color:var(--line) }
-  nav.rail .sp { flex:1 }
+  .main { display:grid; grid-template-columns:340px 1fr; min-height:0 }
   .list { border-right:1px solid var(--line); overflow:auto; padding:10px }
   .detail { overflow:auto; padding:16px 20px; min-width:0 }
   /* pills / badges */
@@ -31,6 +26,7 @@
   .state { font-size:10px; padding:1px 7px; border-radius:6px; border:1px solid var(--line); color:var(--dim) }
   .state.Running { color:var(--good) } .state.Paused { color:var(--warn) } .state.History { color:var(--dim) }
   h2 { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--dim); margin:16px 0 8px } h2:first-child { margin-top:4px }
+  h2.you { color:var(--lead); font-size:12px; display:flex; align-items:center; gap:8px } h2.you .badge { margin-left:0 }
   .dim { color:var(--dim) } .muted { color:var(--dim); font-size:12px } .good{color:var(--good)} .bad{color:var(--bad)} .warn{color:var(--warn)}
   .h { font-family:ui-monospace,monospace; font-size:12.5px }
   .dot { width:8px; height:8px; border-radius:50%; background:#3a4150; display:inline-block; flex:0 0 auto }
@@ -46,8 +42,10 @@
   .mem { display:flex; align-items:center; gap:8px; padding:6px 8px; font-size:13px; cursor:pointer; border:1px solid transparent; border-radius:7px }
   .mem + .mem { margin-top:2px }
   .mem:hover { background:var(--panel2) } .mem.sel { background:var(--panel2); border-color:var(--accent) }
-  .mem .bk { font-size:11px } .mem .role { color:var(--dim); font-size:11px } .mem.lead .h{ color:var(--lead) }
-  .mem .grow { flex:1 }
+  .mem .who { flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis }
+  .mem .bk { font-size:11px } .mem.lead .h{ color:var(--lead) }
+  .mem .mstate { flex:0 0 80px; text-align:right; margin-left:0 }
+  .mem .role { flex:0 0 90px; text-align:right; color:var(--dim); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
   .rm { display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--line); border-radius:8px; margin:6px 0; cursor:pointer; background:var(--panel) }
   .rm:hover { border-color:#37506e } .rm.sel { border-color:var(--accent); background:var(--panel2) }
   .rm .nm { font-weight:600; font-size:13px } .rm .meta { color:var(--dim); font-size:11px; margin-left:auto }
@@ -58,6 +56,7 @@
   textarea,input,select { background:#11141b; color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:7px 9px; font:13px/1.4 inherit; width:100% }
   textarea { resize:vertical; min-height:38px }
   button.btn { background:var(--panel2); color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:6px 12px; cursor:pointer; font-size:12.5px }
+  button.btn.launch { background:#1f3a26; border-color:#2f6b3f; color:#bfe6c8 }
   button.btn:hover { border-color:#3a4150 } button.primary { background:#23314d; border-color:#33507e; color:#cfe0ff } button.danger { background:#2a1b21; border-color:#5a3540; color:#f4a6b4 }
   button.tiny { padding:3px 8px; font-size:11px }
   .row { display:flex; gap:8px; align-items:center } .row.wrap{ flex-wrap:wrap } .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:10px }
@@ -85,12 +84,6 @@
     <span class="pill off" id="daemonPill">daemon ?</span>
   </header>
   <div class="main">
-    <nav class="rail" id="rail">
-      <button data-nav="teams" class="on">🎩 Teams</button>
-      <button data-nav="inbox">📥 Inbox <span class="badge" id="inboxBadge" style="display:none"></span></button>
-      <div class="sp"></div>
-      <button data-nav="build">＋ New team</button>
-    </nav>
     <div class="list" id="mid"></div>
     <div class="detail" id="detail"></div>
   </div>
@@ -106,7 +99,7 @@ const ROLES = ['architect','engineer','critic','adversary','ultracritical','user
 const BACKENDS = ['claude','codex','qwen','gemini']
 
 const S = {
-  nav: 'teams', org: null, selRoom: null, selInbox: null, selMember: null, workerLog: '', tab: 'thread', addingTo: null,
+  building: false, org: null, selRoom: null, selInbox: null, selMember: null, workerLog: '', tab: 'thread', addingTo: null,
   teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null,
   builder: { org:'shop', repo:'', teams:[ { name:'client', territory:'client', members:[
     {role:'architect',backend:'claude',lead:true,territory:''},{role:'engineer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
@@ -119,7 +112,7 @@ async function tick() {
   S.teams = t && t.members ? t : { members:[], rooms:[], userInbox:[], orgs:[] }
   S.state = st && st.rooms ? st : { rooms:[], daemon:{} }
   if (!S.org) S.org = (S.teams.orgs && S.teams.orgs[0] && S.teams.orgs[0].org) || null
-  if (_scopedNav) { _scopedNav=false; const has=(S.teams.members||[]).some(m=>!_qOrg||m.org===_qOrg); S.nav = has ? 'teams' : 'build'; if (has && _qOrg) S.org=_qOrg }
+  if (_scopedNav) { _scopedNav=false; const has=(S.teams.members||[]).some(m=>!_qOrg||m.org===_qOrg); S.building = !has; if (has && _qOrg) S.org=_qOrg }
   if (S.selRoom && needRoomFetch()) S.room = await api('/api/room?id='+encodeURIComponent(S.selRoom)).catch(()=>null)
   if (S.selMember) {
     const m = memberByHandle(S.selMember)
@@ -130,7 +123,7 @@ async function tick() {
   }
   paint()
 }
-const needRoomFetch = () => S.nav!=='build'
+const needRoomFetch = () => !S.building
 
 // merge live engine team rooms with all room dirs (consult pairings + history)
 function mergedRooms() {
@@ -164,11 +157,11 @@ const roomMembers = (id) => { const r=(S.teams.rooms||[]).find(x=>x.roomId===id)
 
 // ---- painting ----
 const launchFor = () => (S.teams.launch||[]).find(x=>x.org===S.org)
-const detailKey = () => S.nav==='build' ? 'build'
+const detailKey = () => S.building ? 'build'
   : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+(launchFor()?.ttydUrl||'none'))
   : S.selInbox!=null ? 'inbox:'+S.selInbox
   : S.selRoom ? 'room:'+S.selRoom+':'+S.tab
-  : 'empty:'+S.nav
+  : 'empty'
 
 function paint() {
   // topbar
@@ -176,39 +169,41 @@ function paint() {
   const dp = $('#daemonPill'); const up = (S.state.daemon&&S.state.daemon.running) || (S.teams.members||[]).length>0
   dp.className = 'pill '+(up?'on':'off'); dp.textContent = up?'daemon up':'daemon down'
   const np = $('#needPill'); if (ib.need){ np.style.display=''; np.className='pill'; np.style.color='#d7c5f5'; np.style.borderColor='#5a4a7a'; np.textContent='📥 '+ib.need+' need you' } else np.style.display='none'
-  const bd = $('#inboxBadge'); if (ib.need){ bd.style.display=''; bd.textContent=ib.need } else bd.style.display='none'
   const orgs = (S.teams.orgs||[]).map(o=>o.org)
-  const os = $('#orgSel'); if (orgs.length>1){ os.style.display=''; os.innerHTML=orgs.map(o=>`<option ${o===S.org?'selected':''}>${esc(o)}</option>`).join(''); os.onchange=()=>{S.org=os.value;S.selRoom=null;S.selInbox=null;paint()} } else os.style.display='none'
-  for (const b of document.querySelectorAll('[data-nav]')) b.classList.toggle('on', b.dataset.nav===S.nav)
-  if (!S.addingTo) renderList()   // freeze the list while the add-member form is open (don't clobber inputs)
+  const os = $('#orgSel'); if (orgs.length>1){ os.style.display=''; os.innerHTML=orgs.map(o=>`<option ${o===S.org?'selected':''}>${esc(o)}</option>`).join(''); os.onchange=()=>{S.org=os.value;S.selRoom=null;S.selInbox=null;S.selMember=null;paint()} } else os.style.display='none'
+  if (!S.addingTo) renderMain()   // freeze the list while the add-member form is open (don't clobber inputs)
   const key = detailKey()
   if (key!==paintedKey) { renderDetail(); paintedKey=key } else patchDetail()
 }
 
-function renderList() {
-  const mid = $('#mid')
-  if (S.nav==='teams') {
-    const byTeam = {}; for (const m of orgMembers()) (byTeam[m.team] ||= []).push(m)
-    const teams = Object.keys(byTeam)
-    if (!teams.length) { mid.innerHTML = `<div class="empty">No team yet.<br><a href="#" onclick="go('build');return false">＋ Assemble one</a></div>`; return }
-    const memberRow = (m) => { const s=memberState(m); return `<div class="mem ${m.lead?'lead':''} ${m.handle===S.selMember?'sel':''}" onclick="selMember('${esc(m.handle)}')" title="${m.tier==='worker'?'on-demand — click for activity':'click for terminal'}"><span class="dot ${s.cls}"></span><span class="h">@${esc(m.first)}</span><span class="muted bk">/${esc(m.backend)}</span><span class="grow"></span><span class="mstate ${s.cls}">${esc(s.label)}</span><span class="role">${esc(m.role)}${m.lead?' ★':''}</span></div>` }
-    let html = teams.map(t => `<div class="team"><div class="tn">${esc(t)}</div>${byTeam[t].map(memberRow).join('')}${S.addingTo===t ? amForm(t) : `<button class="btn tiny" style="margin-top:8px" onclick="startAddMember('${esc(t)}')">＋ add member</button>`}</div>`).join('')
-    // Rooms as a section under the team list (the team rooms + the leads room; consults/history below)
-    const rs = mergedRooms(); const mine = rs.filter(inOrg); const others = rs.filter(r=>!inOrg(r))
-    const roomRow = (r) => `<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')" title="${r.turn!=null?`${r.turn} messages exchanged${r.turnCap?` — checks in with you at ${r.turnCap}`:''}`:''}"><span class="nm">${esc(r.team||label2(r))}</span><span class="state ${r.state}">${esc(r.state)}</span><span class="meta">${esc(r.kind||'')}${r.turn?` · ${r.turn} msgs`:''}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`
-    html += `<h2>Rooms</h2>` + (mine.length? mine.map(roomRow).join('') : `<div class="muted" style="padding:2px 6px">none</div>`)
-    if (others.length) html += `<h2>Other — consults &amp; history</h2><div style="opacity:.55">${others.map(roomRow).join('')}</div>`
-    mid.innerHTML = html
-  } else if (S.nav==='inbox') {
-    const ib = inbox()
-    mid.innerHTML = `<h2>Questions for you</h2>` + (ib.qs.length? ib.qs.map((q,i)=>`<div class="ib ${q.answered?'done':''} ${S.selInbox===i?'sel':''}" onclick="selInbox(${i})">
-        <div class="who"><b>${esc(q.fromName||('@'+q.from))}</b> · ${esc(q.room)}${q.answered?' · answered':''}</div><div class="q">${esc(q.text)}</div></div>`).join('') : `<div class="muted">Nothing waiting. 🎉</div>`)
-      + `<h2>Catch-ups to review</h2>` + (ib.cu.length? ib.cu.map(r=>`<div class="rm" onclick="selRoom('${esc(r.roomId)}',true)"><span class="nm">${esc(r.team||r.roomId)}</span><span class="meta">${r.unreviewed} unreviewed</span></div>`).join('') : `<div class="muted">None.</div>`)
-  } else if (S.nav==='build') {
-    mid.innerHTML = `<div class="muted" style="padding:6px">Compose your team in the panel →<br><br>Add teams &amp; members, pick roles and backends, watch the live preview, then <b>Save</b>, <b>Define</b>, or <b>🚀 Launch</b>.</div>`
-  }
-}
 const label2 = (r) => r.a&&r.b ? `${r.a} ⇄ ${r.b}` : r.roomId
+const roomRow = (r) => `<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')" title="${r.turn!=null?`${r.turn} messages exchanged${r.turnCap?` — checks in with you at ${r.turnCap}`:''}`:''}"><span class="nm">${esc(r.team||label2(r))}</span><span class="state ${r.state}">${esc(r.state)}</span><span class="meta">${esc(r.kind||'')}${r.turn?` · ${r.turn} msgs`:''}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`
+const teamRunning = (ms) => { const live=ms.filter(m=>m.tier==='live'); return !live.length || live.some(m=>m.online||m.launched) }
+
+// One scrolling overview: @you (your messages) on top, then Teams, then Rooms.
+function renderMain() {
+  const mid = $('#mid')
+  const ib = inbox()
+  const byTeam = {}; for (const m of orgMembers()) (byTeam[m.team] ||= []).push(m)
+  const teams = Object.keys(byTeam)
+  const memberRow = (m) => { const s=memberState(m); return `<div class="mem ${m.lead?'lead':''} ${m.handle===S.selMember?'sel':''}" onclick="selMember('${esc(m.handle)}')" title="${m.tier==='worker'?'on-demand — click for activity':'click for terminal'}"><span class="dot ${s.cls}"></span><span class="who"><span class="h">@${esc(m.first)}</span> <span class="bk muted">/${esc(m.backend)}</span></span><span class="mstate ${s.cls}">${esc(s.label)}</span><span class="role">${esc(m.role)}${m.lead?' ★':''}</span></div>` }
+  const teamCard = (t) => { const ms=byTeam[t]; const running=teamRunning(ms)
+    return `<div class="team"><div class="tn">${esc(t)}${running?'':' <span class="state Paused" style="font-size:10px;padding:1px 6px">not running</span>'}</div>${ms.map(memberRow).join('')}
+      ${S.addingTo===t ? amForm(t) : `<div class="row" style="margin-top:8px;gap:6px">${running?'':`<button class="btn tiny launch" onclick="launchTeam()">🚀 Launch</button>`}<button class="btn tiny" onclick="startAddMember('${esc(t)}')">＋ add member</button></div>`}</div>` }
+
+  let html = `<h2 class="you">@you${ib.need?` <span class="badge">${ib.need}</span>`:''}</h2>`
+  if (ib.qs.length || ib.cu.length) {
+    html += ib.qs.map((q,i)=>`<div class="ib ${q.answered?'done':''} ${S.selInbox===i?'sel':''}" onclick="selInbox(${i})"><div class="who"><b>${esc(q.fromName||('@'+q.from))}</b> · ${esc(q.room)}${q.answered?' · ✓':''}</div><div class="q">${esc(q.text)}</div></div>`).join('')
+    html += ib.cu.map(r=>`<div class="rm" onclick="selRoom('${esc(r.roomId)}',true)"><span class="nm">${esc(r.team||r.roomId)}</span><span class="meta">${r.unreviewed} catch-up${r.unreviewed>1?'s':''}</span></div>`).join('')
+  } else html += `<div class="muted" style="padding:2px 6px 6px">No messages yet — members reach you here.</div>`
+
+  if (teams.length) html += `<h2>Teams</h2>` + teams.map(teamCard).join('')
+  const rs = mergedRooms(); const mine = rs.filter(inOrg); const others = rs.filter(r=>!inOrg(r))
+  if (mine.length) html += `<h2>Rooms</h2>` + mine.map(roomRow).join('')
+  if (others.length) html += `<h2>Other — consults &amp; history</h2><div style="opacity:.55">${others.map(roomRow).join('')}</div>`
+  html += `<div style="margin:14px 0 24px"><button class="btn ${S.building?'primary':''}" style="width:100%" onclick="openBuilder()">＋ New team</button></div>`
+  mid.innerHTML = html
+}
 function amForm(t) {
   return `<div class="amf">
     <div class="muted" style="margin-bottom:5px">Add a member to <b>${esc(t)}</b>:</div>
@@ -222,11 +217,11 @@ function amForm(t) {
 // ---- detail renderers ----
 function renderDetail() {
   const d = $('#detail')
-  if (S.nav==='build') return renderBuilder(d)
+  if (S.building) return renderBuilder(d)
   if (S.selMember) return renderMember(d)
   if (S.selInbox!=null) return renderInboxItem(d)
   if (S.selRoom) return renderRoom(d)
-  d.innerHTML = `<div class="empty">${S.nav==='inbox'?'Select a question or a catch-up.':'Pick a member for its terminal/activity, or a room to watch the transcript and steer.'}</div>`
+  d.innerHTML = `<div class="empty">Pick a member (terminal / log), a room (transcript &amp; steer), or an @you message — or ＋ New team.</div>`
 }
 function renderMember(d) {
   const m = memberByHandle(S.selMember)
@@ -295,7 +290,7 @@ function renderRoom(d) {
 }
 function renderTab() {
   const b = $('#tabbody'); if (!b) return
-  if (S.tab==='thread') b.innerHTML = `<pre class="thread" id="thread">${esc((S.room&&S.room.thread)||'(no messages yet)')}</pre>`
+  if (S.tab==='thread') { b.innerHTML = `<pre class="thread" id="thread">${esc((S.room&&S.room.thread)||'(no messages yet)')}</pre>`; const t=$('#thread'); if(t) t.scrollTop=t.scrollHeight }
   else if (S.tab==='summary') b.innerHTML = `<pre class="thread" id="summary">${esc((S.room&&S.room.consensus)||'(no summary)')}</pre>`
   else {
     const cu = (S.room&&S.room.catchups)||[]
@@ -367,20 +362,22 @@ function bPreview(){clearTimeout(bTimer);bTimer=setTimeout(async()=>{
 },250)}
 window.bSave=async()=>{const B=S.builder;const msg=$('#bMsg');if(!B.repo){msg.innerHTML='<span class="bad">set a repo path</span>';return}
   const r=await api('/api/team-save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({repo:B.repo,roster:bRoster()})});msg.innerHTML=r.ok?`<span class="good">✓ ${esc(r.path)}</span>`:`<span class="bad">✗ ${esc(r.error)}</span>`}
-window.bDefine=async()=>{const r=await api('/api/team-define',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})});$('#bMsg').innerHTML=r.ok?`<span class="good">◎ defined ${(r.rooms||[]).length} room(s)</span> <a href="#" onclick="go('teams');return false">view</a>`:`<span class="bad">✗ ${esc(r.error||'daemon down')}</span>`; if(r.ok){S.org=null;tick()}}
+window.bDefine=async()=>{const r=await api('/api/team-define',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})});$('#bMsg').innerHTML=r.ok?`<span class="good">◎ defined ${(r.rooms||[]).length} room(s)</span> <a href="#" onclick="closeBuilder();return false">view</a>`:`<span class="bad">✗ ${esc(r.error||'daemon down')}</span>`; if(r.ok){S.org=null;tick()}}
 
 // ---- actions ----
-window.go = (nav)=>{ S.nav=nav; if(nav!=='inbox')S.selInbox=null; S.addingTo=null; S.selMember=null; paint() }
-window.startAddMember = (t)=>{ S.addingTo=t; renderList() }
-window.cancelAddMember = ()=>{ S.addingTo=null; renderList() }
+window.openBuilder = ()=>{ S.building=true; S.selMember=null; S.selRoom=null; S.selInbox=null; paint() }
+window.closeBuilder = ()=>{ S.building=false; paint() }
+window.launchTeam = async ()=>{ const r=await postJSON('/api/team-launch',{org:S.org}); if(!(r&&r.ok)) alert('Launch failed: '+((r&&r.error)||'unknown')); tick() }
+window.startAddMember = (t)=>{ S.addingTo=t; renderMain() }
+window.cancelAddMember = ()=>{ S.addingTo=null; renderMain() }
 window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('#amBackend').value, territory=$('#amTerr').value.trim()
   const msg=$('#amMsg'); if(msg)msg.textContent='adding…'
   const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role,backend,territory})
   if(r&&r.ok){ S.addingTo=null; tick() } else { const m=$('#amMsg'); if(m)m.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
-window.selRoom = (id, openCu)=>{ S.selRoom=id; S.selInbox=null; S.selMember=null; if(openCu)S.tab='catchups'; S.room=null; tick() }
-window.openRoom = (id)=>{ S.nav='teams'; selRoom(id) }
-window.selInbox = (i)=>{ S.selInbox=i; S.selRoom=null; S.selMember=null; paint() }
-window.selMember = (h)=>{ S.selRoom=null; S.selInbox=null; S.selMember=h
+window.selRoom = (id, openCu)=>{ S.selRoom=id; S.selInbox=null; S.selMember=null; S.building=false; if(openCu)S.tab='catchups'; else S.tab='thread'; S.room=null; tick() }
+window.openRoom = (id)=>{ selRoom(id) }
+window.selInbox = (i)=>{ S.selInbox=i; S.selRoom=null; S.selMember=null; S.building=false; paint() }
+window.selMember = (h)=>{ S.selRoom=null; S.selInbox=null; S.building=false; S.selMember=h
   const m = memberByHandle(h)
   if (m && m.tier==='worker') { S.workerLog=null; tick() }
   else { if (m) postJSON('/api/team-select',{org:S.org,window:m.first}); paint() } }
@@ -388,22 +385,20 @@ window.setTab = (t)=>{ S.tab=t; paintedKey=null; paint() }
 window.roomAct = async (a)=>{ if(a==='end'&&!confirm('Close this room?'))return; await post(a,{roomId:S.selRoom}); tick() }
 window.doSteer = async ()=>{ const tx=$('#steerTx'); const t=$('#steerT'); if(!tx||!tx.value.trim())return; await post('steer',{roomId:S.selRoom,target:t.value,text:tx.value.trim()}); tx.value=''; tick() }
 window.reviewCu = async (seq)=>{ await post('review',{roomId:S.selRoom,seq}); S.room=await api('/api/room?id='+encodeURIComponent(S.selRoom)); paintedKey=null; paint() }
-window.answer = async (i)=>{ const tx=$('#ansTx'); if(!tx||!tx.value.trim())return; await post('answer',{i,text:tx.value.trim()}); S.selInbox=null; S.nav='inbox'; tick() }
-window.selWin = (w)=>{ postJSON('/api/team-select',{org:S.org,window:w}) }
+window.answer = async (i)=>{ const tx=$('#ansTx'); if(!tx||!tx.value.trim())return; await post('answer',{i,text:tx.value.trim()}); S.selInbox=null; tick() }
 window.stopTeam = async ()=>{ if(!confirm('Stop the team? This closes all member terminals.'))return; await postJSON('/api/team-stop',{org:S.org}); tick() }
 window.bLaunch = async ()=>{ const msg=$('#bMsg'); if(!msg)return; msg.innerHTML='<span class="muted">launching… first run builds the image (~minutes)</span>'
   const r=await postJSON('/api/team-launch',{roster:bRoster()})
-  if(r&&r.ok){ msg.innerHTML='<span class="good">🚀 launching — open Console, then log in + accept the prompt there</span>'; S.org=null; setTimeout(()=>{go('console');tick()},700) }
+  if(r&&r.ok){ msg.innerHTML='<span class="good">🚀 launching — pick each member to open its terminal and log in</span>'; S.org=null; setTimeout(()=>{S.building=false;tick()},700) }
   else msg.innerHTML=`<span class="bad">✗ ${esc((r&&r.error)||'failed')}</span>` }
 
-for (const b of document.querySelectorAll('[data-nav]')) b.onclick = ()=>go(b.dataset.nav)
 // Scoped launch (mrc gui [repo]): pre-fill the builder from ?repo=&org=, then land on Build (or Teams
 // if a team for that org already exists — decided after the first data load).
 const _q = new URLSearchParams(location.search)
 const _qRepo = _q.get('repo'), _qOrg = _q.get('org')
 if (_qRepo) { S.builder.repo = _qRepo; if (_qOrg) { S.builder.org = _qOrg; S.org = _qOrg } }
 let _scopedNav = !!_qRepo
-if (!_qRepo && location.pathname.endsWith('/new')) S.nav='build'
+if (!_qRepo && location.pathname.endsWith('/new')) S.building=true
 tick(); setInterval(tick, 1500)
 </script>
 </body>
