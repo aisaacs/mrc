@@ -1,7 +1,7 @@
 // Host-side unit tests for the team foundation (names, personas, roster). Run: node --test test/
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { pickFirstName, makeHandle, parseMention, extractMentions, backendFamily, FRENCH_NAMES } from '../src/teams/names.js'
+import { pickFirstName, makeHandle, parseMention, extractMentions, stripMentions, backendFamily, FRENCH_NAMES } from '../src/teams/names.js'
 import { buildPersona, roleDef, ROLES } from '../src/teams/personas.js'
 import { parseRoster, validateRoster, teamRoomId, leadsRoomId } from '../src/teams/roster.js'
 
@@ -37,6 +37,27 @@ test('names: parseMention + extractMentions', () => {
   assert.deepEqual(extractMentions('hey @critic and @ludivine/claude, also @user pls'),
     ['critic', 'ludivine/claude', 'user'])
   assert.deepEqual(extractMentions('no mentions here'), [])
+})
+
+test('names: extractMentions captures accented French handles in full', () => {
+  // The whole point of the French/Spaceballs pool — an ASCII-only matcher truncated these.
+  assert.deepEqual(extractMentions('@Côme @Médor @Dorothée @Hélène @Étienne @Rémy @Mégane'),
+    ['côme', 'médor', 'dorothée', 'hélène', 'étienne', 'rémy', 'mégane'])
+  assert.deepEqual(extractMentions('@Côme/claude please'), ['côme/claude'])
+})
+
+test('names: extractMentions trims trailing punctuation and ignores emails / mid-word @', () => {
+  // Sentence-final names must still resolve, and critically @user. must still reach the human.
+  assert.deepEqual(extractMentions('thanks @Roland. and @user.'), ['roland', 'user'])
+  assert.deepEqual(extractMentions('ping @brigitte, @apolline!'), ['brigitte', 'apolline'])
+  // An email in prose is not a mention; a mid-word @ is not either.
+  assert.deepEqual(extractMentions('email a@b.com, ask @user not foo@bar'), ['user'])
+})
+
+test('names: stripMentions removes addressees regardless of case or accents', () => {
+  assert.equal(stripMentions('@Côme make a neon diner logo'), 'make a neon diner logo')
+  assert.equal(stripMentions('@designer @Côme/claude  punchy 8-bit title'), 'punchy 8-bit title')
+  assert.equal(stripMentions('no handles at all'), 'no handles at all')
 })
 
 test('personas: every role has a mandate and a mount/tier', () => {

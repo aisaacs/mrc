@@ -6,7 +6,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { createHash } from 'node:crypto'
-import { extractMentions } from './names.js'
+import { stripMentions } from './names.js'
 import { repoEnvKey } from '../config.js'
 import { HAIKU_MODEL } from '../constants.js'
 
@@ -17,12 +17,44 @@ export const isMediaRole = (role) => Object.prototype.hasOwnProperty.call(MEDIA_
 const env = (k) => process.env[k] || ''
 const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'asset'
 
+// Generation intent — only SPEND on a new asset when the request actually asks to make one. A bare
+// reference or feedback ("the acorn is perfect, locked") must not fire a paid generation. Checked
+// BEFORE the art-director (Haiku) call so feedback costs nothing. (The #10 opening-line gate already
+// stops buried-mention misfires; this stops a leading mention that's still just chatter.)
+// A generation IMPERATIVE — a generation verb that LEADS its clause. Position matters, not just the
+// word: "design a banner" / "now make the blue jay" are requests; "the design looks great" / "that
+// makes sense" are not (the verb-word is a noun/idiom there). So the verb must sit at the string
+// start, after clause punctuation, or after a small set of imperative lead-ins (now/please/can you…) —
+// never after a determiner. This kills the noun/common-verb false-positives (esp. "design", the
+// designer's own domain word) without restructuring around an LLM. The art-director {skip} stays as a
+// backstop for anything verb-leading that's still chatter.
+// The verb must lead its clause — at the string start or after clause punctuation — though a run of
+// politeness/greeting lead-ins may precede it (the @mention is already stripped, so "please make a
+// logo" arrives as "please make…"). So: (clause start)(0+ lead-in words)(generation verb). "design a
+// banner" / "please make a logo" / "now make the blue jay" pass; "the design looks great" / "love
+// this design" / "that makes sense" / "good design work" do not (the verb-word follows a determiner/
+// adjective, never a clause-lead).
+const GEN_VERB = 'make|generate|regenerate|re-?generate|draw|redraw|create|recreate|render|re-?render|design|compose|produce|sketch|paint|illustrate|animate|redo|mock-?up'
+const GEN_LEADIN = "now|then|just|quick|please|pls|kindly|also|and|so|ok|okay|hey|hi|yo|go|can|could|would|will|you|we|i|i'?d|let'?s|like|want|need|to"
+const GENERATION_INTENT = new RegExp(`(?:^|[.;:,—–-]\\s*)(?:(?:${GEN_LEADIN})\\s+)*(?:${GEN_VERB})\\b`, 'i')
+
+// Per-room generation rate cap — bound a runaway @designer loop. Sliding window kept in daemon memory.
+const RATE = { max: 6, windowMs: 60_000 }
+const _genTimes = new Map()   // roomId -> [timestamps]
+function withinRateCap(roomId, now) {
+  const key = roomId || '_'
+  const arr = (_genTimes.get(key) || []).filter((t) => now - t < RATE.windowMs)
+  if (arr.length >= RATE.max) { _genTimes.set(key, arr); return false }
+  arr.push(now); _genTimes.set(key, arr)
+  return true
+}
+export function _resetMediaRate() { _genTimes.clear() }   // test hook
+
 // The generation prompt = the requesters' messages, stripped of @mentions and the [Human …] framing.
 export function mediaPrompt(items = []) {
   return items
-    .map((it) => String(it.text || '').replace(/\[Human (directive|reply)\]:/gi, '').trim())
-    .map((t) => { for (const m of extractMentions(t)) t = t.split('@' + m).join('').split('@' + m.split('/')[0]).join(''); return t })
-    .map((t) => t.replace(/\s+/g, ' ').trim())
+    .map((it) => String(it.text || '').replace(/\[Human (directive|reply)\]:/gi, ''))
+    .map((t) => stripMentions(t))
     .filter(Boolean)
     .join('. ')
 }
@@ -96,11 +128,15 @@ async function artDirect(rawRequest, kind, { apiKey, fetchFn = globalThis.fetch 
 
 // Worker invoker for a media member: generate the asset and write it into the member's territory.
 // `member` carries { role, repo, territory, first }; ctx carries { items, fetchFn? }.
-export async function generateMedia(member, { items = [], fetchFn } = {}) {
+export async function generateMedia(member, { items = [], fetchFn, room, now } = {}) {
   const kind = MEDIA_ROLES[member.role]
   if (!kind) return { text: `[@${member.first}: not a media role]` }
   const raw = mediaPrompt(items)
   if (!raw) return { text: `[@${member.first}: nothing to make — say what you want generated]` }
+  // Intent gate — cheap, BEFORE the paid art-director (Haiku) call: feedback/discussion never spends.
+  if (!GENERATION_INTENT.test(raw)) return { text: `[@${member.first}: that read as feedback/discussion, not a new ${kind} request — start with "make/generate/draw …" when you want a NEW asset.]` }
+  // Rate cap — bound a runaway generation loop in this room before any paid call.
+  if (!withinRateCap(room, typeof now === 'number' ? now : Date.now())) return { text: `[@${member.first}: throttled — too many ${kind} generations in this room in the last minute. Give it a moment, then ask again.]` }
   // Art-director pass: clean the prompt + filename, and skip messages that are just feedback.
   const adKey = repoEnvKey(member.repo, 'MRC_SESSION_NAMING_ANTHROPIC_API_KEY') || repoEnvKey(member.repo, 'ANTHROPIC_API_KEY')
   const ad = await artDirect(raw, kind, { apiKey: adKey, fetchFn })

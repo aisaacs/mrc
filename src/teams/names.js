@@ -62,14 +62,28 @@ export function parseMention(token) {
 
 // Pull every @mention out of a message body, in order, de-duplicated. Mentions look like
 // `@first` or `@first/backend`; `@user` is included (it's a real, global addressee).
+//
+// Unicode-aware on purpose: the name pool is French, so accented handles (@Côme, @Médor, @Dorothée)
+// must capture in FULL — an ASCII-only class truncated them at the first accent (@Côme -> "c"),
+// making accented members unaddressable. The leading lookbehind keeps email locals and mid-word "@"
+// from false-matching (a@b.com, foo@bar), and the trailing trim drops sentence punctuation so a
+// sentence-final "@user." still reaches the human and "@Roland," still resolves.
+const MENTION_RE = /(?<![\p{L}\p{N}_@/])@([\p{L}\p{N}][\p{L}\p{N}._-]*(?:\/[\p{L}\p{N}._-]+)?)/gu
 export function extractMentions(text) {
   const out = []
   const seen = new Set()
-  const re = /@([a-z0-9._-]+(?:\/[a-z0-9._-]+)?)/gi
+  const re = new RegExp(MENTION_RE)   // fresh lastIndex per call
   let m
   while ((m = re.exec(String(text || '')))) {
-    const key = m[1].toLowerCase()
-    if (!seen.has(key)) { seen.add(key); out.push(m[1].toLowerCase()) }
+    const key = m[1].toLowerCase().replace(/[._-]+$/, '')
+    if (key && !seen.has(key)) { seen.add(key); out.push(key) }
   }
   return out
+}
+
+// Remove every @mention span from a body, regardless of case or accents (uses the same matcher as
+// extractMentions, so it strips `@Côme` whole — not the broken case/accent-sensitive split it
+// replaced). Used to clean a media-generation prompt of its addressees.
+export function stripMentions(text) {
+  return String(text || '').replace(new RegExp(MENTION_RE), '').replace(/\s+/g, ' ').trim()
 }

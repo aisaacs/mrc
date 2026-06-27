@@ -1,6 +1,6 @@
 # Agent Teams
 
-**Status:** Host-side core built and unit-tested end-to-end (44 tests); the container-launch and
+**Status:** Host-side core built and unit-tested end-to-end (132 tests); the container-launch and
 worker-exec paths are wired and need a Docker rebuild to validate (this environment has no Docker).
 Builds directly on **negotiation rooms** (`docs/negotiation-rooms.md`) — same host daemon, same
 host-mediated transport, same trust model — generalized from a 2-party pairing to N-party teams.
@@ -180,7 +180,7 @@ mrc team define  [path] [--roster f]   push the roster WITHOUT launching
 
 ## 9. What's tested vs. what needs Docker
 
-**Unit/integration tested host-side (44 tests, `node --test test/`):** naming, roster, personas,
+**Unit/integration tested host-side (132 tests, `node --test test/`):** naming, roster, personas,
 the full room engine (directed routing, multi-room isolation, floor control, @user inbox,
 brake/resume, prune), a socket-level daemon round-trip (define org → register → directed delivery →
 @user → brake/resume), the launcher's pure pieces (session ids, territorial mounts, persona files),

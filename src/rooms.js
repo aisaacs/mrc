@@ -27,6 +27,7 @@ export function createRoom(repoA, repoB, stamp = Date.now()) {
   mkdirSync(dir, { recursive: true })
   writeFileSync(join(dir, 'consensus.md'), consensusTemplate(roomId, repoA, repoB))
   writeFileSync(join(dir, 'thread.log'), '')
+  writeFileSync(join(dir, 'transcript.jsonl'), '')   // #18: structured per-message store (trusted qids)
   const meta = { roomId, repoA, repoB, createdAt: stamp, state: 'open' }
   writeFileSync(join(dir, 'room.json'), JSON.stringify(meta, null, 2))
   return { roomId, dir, meta }
@@ -40,6 +41,7 @@ export function ensureRoom(roomId, repoA = '', repoB = '', stamp = Date.now()) {
   const f = (n) => join(dir, n)
   if (!existsSync(f('consensus.md'))) writeFileSync(f('consensus.md'), consensusTemplate(roomId, repoA, repoB))
   if (!existsSync(f('thread.log'))) writeFileSync(f('thread.log'), '')
+  if (!existsSync(f('transcript.jsonl'))) writeFileSync(f('transcript.jsonl'), '')   // #18: structured store
   let meta
   if (existsSync(f('room.json'))) meta = JSON.parse(readFileSync(f('room.json'), 'utf8'))
   else { meta = { roomId, repoA, repoB, createdAt: stamp, state: 'open' }; writeFileSync(f('room.json'), JSON.stringify(meta, null, 2)) }
@@ -66,6 +68,35 @@ export function listRooms() {
 
 export function appendThread(roomId, line) {
   appendFileSync(join(roomDir(roomId), 'thread.log'), line.endsWith('\n') ? line : line + '\n')
+}
+
+// Structured transcript (#18): ONE JSON record per logical message, parallel to thread.log. Carries
+// the daemon's TRUSTED per-message qid/reqid so the dashboard can anchor `[#N]` / `(re #N)` jumps from
+// a field it authored — never by text-scanning the human-readable log (which a member could spoof, incl.
+// via a `\n` in their message body). `t` is the exact line text; `q`/`r` are null unless the daemon set
+// them. One record per append ⇒ a member's newline stays inside one record's `t`, forging nothing.
+export function appendTranscript(roomId, record) {
+  // JSON.stringify escapes any newline in `t` to \n, so each record is exactly one physical line.
+  appendFileSync(join(roomDir(roomId), 'transcript.jsonl'), JSON.stringify(record) + '\n')
+}
+export function readTranscript(roomId) {
+  const dir = roomDir(roomId)
+  const tf = join(dir, 'transcript.jsonl')
+  try {
+    const recs = readFileSync(tf, 'utf8').split('\n').filter(Boolean).map((l) => { try { return JSON.parse(l) } catch { return null } }).filter(Boolean)
+    if (recs.length) return recs
+  } catch {}
+  // Backfill a PRE-#18 room (thread.log content but no structured transcript yet): seed transcript.jsonl
+  // from the existing lines as INERT records (q/r null → no anchors/jumps for old content, which is the
+  // safe default — we never assign trusted qids by re-parsing old text). Seeding persists it so the
+  // history doesn't vanish once a NEW (anchored) message appends a record. One-time, idempotent.
+  try {
+    const old = readFileSync(join(dir, 'thread.log'), 'utf8')
+    if (!old.trim()) return []
+    const recs = old.split('\n').filter((l) => l.length).map((t) => ({ t, q: null, r: null }))
+    try { appendFileSync(tf, recs.map((r) => JSON.stringify(r)).join('\n') + '\n') } catch {}
+    return recs
+  } catch { return [] }
 }
 
 // Replace the body below the "---" divider, preserving the header/instructions.
@@ -128,6 +159,27 @@ export function saveOrgs(list) {
 }
 export function loadOrgs() {
   try { return JSON.parse(readFileSync(orgsFile(), 'utf8')).orgs || [] } catch { return [] }
+}
+
+// --- @user inbox durable store (#16) --------------------------------------
+// The engine's userInbox is in-memory; without this a `mrc rooms restart` (or a version-refresh)
+// loses every pending question/notification — a data-loss the human flagged. Persist the whole inbox
+// (incl. answered/dismissed, so history + show-dismissed survive) and restore it on boot.
+const inboxFile = () => join(daemonDir(), 'room-inbox.json')
+export function loadInbox() { try { return JSON.parse(readFileSync(inboxFile(), 'utf8')).items || [] } catch { return [] } }
+export function saveInbox(items) {
+  try { mkdirSync(daemonDir(), { recursive: true }); writeFileSync(inboxFile(), JSON.stringify({ at: Date.now(), items }, null, 2)) } catch {}
+}
+
+// --- Telegram per-org durable state (#12) ---------------------------------
+// Persists only the durable bits — getUpdates `offset`, the `maxUpdateId` dedup high-water-mark, and
+// the `pinned` authorized user — so a daemon restart doesn't replay updates or lose the link. The bot
+// `token` is NOT persisted (re-read from the repo .env each boot, host-side); `pending` is ephemeral
+// (a restart just makes the user re-/start). Keyed by org.
+const tgFile = () => join(daemonDir(), 'room-telegram.json')
+export function loadTgStates() { try { return JSON.parse(readFileSync(tgFile(), 'utf8')).orgs || {} } catch { return {} } }
+export function saveTgStates(map) {
+  try { mkdirSync(daemonDir(), { recursive: true }); writeFileSync(tgFile(), JSON.stringify({ at: Date.now(), orgs: map }, null, 2)) } catch {}
 }
 
 // --- GUI launch registry (org -> tmux session + embedded ttyd) ------------

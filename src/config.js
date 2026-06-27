@@ -106,6 +106,24 @@ export function repoEnvKey(repo, name) {
   return process.env[name] || ''
 }
 
+/** Like repoEnvKey but STRICT: reads ONLY the repo's own .env / .mrc/.env — NO process.env fallback.
+ *  For PER-PROJECT secrets that must never bleed from the daemon's global env. Critically the Telegram
+ *  bot token: the daemon may run inside an mrc that loaded mrc's .env into process.env, and the
+ *  fallback would then hand that one bot to EVERY token-less project (misattributing /start to the
+ *  wrong project). A global bot token is meaningless for per-project bots, so there is no fallback. */
+export function repoEnvKeyStrict(repo, name) {
+  if (!repo) return ''
+  for (const f of [join(repo, '.env'), join(repo, '.mrc', '.env')]) {
+    try {
+      for (const line of readFileSync(f, 'utf8').split('\n')) {
+        const m = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*"?([^"\n]*)"?\s*$/)
+        if (m && m[1] === name) { const v = m[2].trim(); if (v && !v.includes('op://')) return v }
+      }
+    } catch {}
+  }
+  return ''
+}
+
 /** Parse CLI args into a config object. Returns { config, repoArgs, claudeArgs }. */
 export function parseArgs(argv) {
   const config = {

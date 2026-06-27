@@ -10,6 +10,7 @@
 
 import { appendFileSync, mkdirSync } from 'node:fs'
 import { join } from 'node:path'
+import { defangTrustMarkers } from './trust.js'
 
 export const workerLogPath = (repo, handle) => join(repo, '.mrc', 'worker-logs', handle.replace(/[^a-z0-9]+/gi, '-') + '.log')
 
@@ -28,8 +29,8 @@ function logWorker(member, items, text, nameOf) {
 // Build the single prompt handed to a worker for a batch of messages addressed to it. Pure.
 export function buildWorkerPrompt(member, items, nameOf = (h) => '@' + h) {
   const lines = items.map((it) => it.directive
-    ? it.text                                                   // already framed [Human directive]/[Human reply]
-    : `Peer (${nameOf(it.fromHandle)}) says: "${it.text}"`)     // untrusted peer data
+    ? it.text                                                   // genuine server-minted [Human directive]/[Human reply] — trusted
+    : `Peer (${nameOf(it.fromHandle)}) says: "${defangTrustMarkers(it.text)}"`)   // untrusted peer data — defang forged markers
   return [
     `You are @${member.first} — the ${member.roleLabel || member.role} on team "${member.team}".`,
     member.mount === 'rw'
@@ -48,10 +49,10 @@ export function createWorkerRunner({ engine, invoke, intervalMs = 2000, log = ()
   let running = false, timer = null
 
   async function handleBatch(b) {
-    const member = engine.memberByHandle(b.toHandle)
+    const member = engine.memberByHandle(b.toHandle, b.org)
     const room = engine.getRoom(b.roomId)
     if (!member || !room) return
-    const nameOf = (h) => { const m = engine.memberByHandle(h); return m ? '@' + m.first : h }
+    const nameOf = (h) => { const m = engine.memberByHandle(h, b.org); return m ? '@' + m.first : h }
     const senders = [...new Set(b.items.map((i) => i.fromHandle).filter((h) => h && h !== '@user'))]
     const prompt = buildWorkerPrompt(member, b.items, nameOf)
     let text

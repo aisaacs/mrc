@@ -71,6 +71,15 @@ test('memberSessionId is deterministic and a valid v5-shaped UUID', () => {
   assert.notEqual(a, memberSessionId('other', 'roland/claude'))
 })
 
+test('memberSessionId: team.js and the shared session-id module agree byte-for-byte', async () => {
+  // The daemon builds its register-disambiguation index from the shared module while the launcher
+  // pins --session-id from team.js's copy; if they ever drift, a member could never bind. Guard it.
+  const { memberSessionId: shared } = await import('../src/teams/session-id.js')
+  for (const [org, h] of [['shop', 'roland/claude'], ['alpha', 'côme/claude'], ['x y', 'a/codex']]) {
+    assert.equal(shared(org, h), memberSessionId(org, h), `${org}/${h}`)
+  }
+})
+
 test('memberWorkspaceVolumes: whole-repo engineer gets rw /workspace', () => {
   const m = { mount: 'rw', territory: '.' }
   assert.deepEqual(memberWorkspaceVolumes(m, '/repo'), ['-v', '/repo:/workspace'])

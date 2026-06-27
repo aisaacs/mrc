@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import os from 'node:os'
 import fs from 'node:fs'
 import { join } from 'node:path'
-import { isMediaRole, mediaPrompt, generateImage, generateMedia } from '../src/teams/media.js'
+import { isMediaRole, mediaPrompt, generateImage, generateMedia, _resetMediaRate } from '../src/teams/media.js'
 import { repoEnvKey } from '../src/config.js'
 import { encodePNG, decodePNG } from '../src/teams/png.js'
 
@@ -114,4 +114,37 @@ test('art-director skips pure feedback (no file generated)', async () => {
     assert.match(out.text, /read as feedback/)
     assert.ok(!fs.existsSync(join(repo, 'assets')) || fs.readdirSync(join(repo, 'assets')).length === 0)
   } finally { delete process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY }
+})
+
+test('media intent-gate: a non-imperative message makes NO API call at all (no paid spend)', async () => {
+  _resetMediaRate()
+  const repo = fs.mkdtempSync(join(os.tmpdir(), 'mrc-media-'))
+  process.env.GEMINI_API_KEY = 'g'; process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY = 'a'
+  const calls = []
+  const fetchFn = async (url) => { calls.push(String(url)); return { ok: true, json: async () => ({}) } }
+  const member = { role: 'designer', repo, territory: 'assets', first: 'Côme' }
+  try {
+    // Feedback/discussion with no generation verb — gated BEFORE the paid art-director (Haiku) call.
+    const out = await generateMedia(member, { items: [{ text: '@côme the acorn is perfect, locked — ship it' }], fetchFn, room: 'r1' })
+    assert.match(out.text, /feedback\/discussion/)
+    assert.equal(calls.length, 0, 'no API call whatsoever — gated before any spend')
+  } finally { delete process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY }
+})
+
+test('media rate-cap: a generation loop in one room is throttled after the cap', async () => {
+  _resetMediaRate()
+  const repo = fs.mkdtempSync(join(os.tmpdir(), 'mrc-media-'))
+  process.env.GEMINI_API_KEY = 'g'
+  const fetchFn = async () => ({ ok: true, json: async () => ({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: Buffer.from('IMG').toString('base64') } }] } }] }) })
+  const member = { role: 'designer', repo, territory: 'assets', first: 'Vespa' }
+  const fire = () => generateMedia(member, { items: [{ text: 'make a sprite' }], fetchFn, room: 'loopy', now: 1_000 })
+  const results = []
+  for (let i = 0; i < 8; i++) results.push(await fire())
+  const throttled = results.filter((r) => /throttled/.test(r.text)).length
+  const generated = results.filter((r) => /Generated/.test(r.text)).length
+  assert.equal(generated, 6, 'cap allows 6 in the window')
+  assert.equal(throttled, 2, 'the 7th and 8th are throttled')
+  // A DIFFERENT room is unaffected (per-room counter).
+  const other = await generateMedia(member, { items: [{ text: 'make a sprite' }], fetchFn, room: 'fresh', now: 1_000 })
+  assert.match(other.text, /Generated/)
 })

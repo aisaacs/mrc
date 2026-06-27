@@ -4,71 +4,131 @@
 // (send/append/notify/now), so the routing, multi-room membership, and @user inbox are unit-testable
 // without sockets or a filesystem.
 //
+// ORG ISOLATION (containment): one daemon hosts MANY orgs, and member handles (`first/backend`) are
+// only unique WITHIN an org — two orgs can each have `roland/claude`. So the engine keys members by
+// org in a NESTED map (`members: org -> handle -> member`) and every lookup is org-scoped. A room is
+// org-tagged (`room.org`) and its memberMap is keyed by bare handle (unambiguous within one org).
+// `bySession` maps a live session to its {org, handle}. This makes cross-org delivery and @user-inbox
+// bleed structurally impossible: a member only ever resolves rooms/teammates inside its own org.
+//
 // Concepts:
-//   member  — { handle, first, role, team, lead, backend, tier, sessionId|null }
-//             handle = "first/backend" (unique per org). tier 'live' binds a session; 'worker'
+//   member  — { handle, first, role, team, lead, backend, tier, org, sessionId|null }
+//             handle = "first/backend" (unique per ORG). tier 'live' binds a session; 'worker'
 //             members have no persistent session — a directed mention enqueues an invocation.
-//   room    — { roomId, kind, team, members:Map<handle,{role,lead}>, state, turn, held, … }
+//   room    — { roomId, kind, team, org, members:Map<handle,{role,lead}>, state, turn, held, … }
 //             kind: 'team' | 'leads' | 'consult' (legacy 2-party) | 'dm'.
 //   routing — extract @mentions from the text; resolve each to a room member by handle, then first
 //             name, then role (each must be unambiguous within the room). @user routes to the human
 //             inbox + a notify. No mention in a 2-member room ⇒ the other member (consult back-compat);
 //             no mention in a 3+-member room ⇒ nothing is delivered (directed-only is the floor control).
 import { extractMentions, parseMention } from './names.js'
+import { defangTrustMarkers, snippetForTrustedLine } from './trust.js'
 
 const norm = (s) => String(s || '').trim()
+const lc = (s) => String(s).toLowerCase()
 
-// The @mentions at the START of a message are its ADDRESSEES; @mentions later in the prose are
-// references (e.g. "scope locked by @user"). Used so a passing @user reference isn't mistaken for a
-// question to the human. Allows leading connectors ("@a and @b, …").
-function leadingAddressees(text) {
-  const out = []
-  let s = String(text || '').trimStart()
-  const re = /^(?:and\s+|&\s*|,\s*)?@([a-z0-9._/-]+)\s*/i
+// Accent-fold for resolution: strip diacritics so a user can type @come or @cote and still reach
+// @Côme — handy on keyboards without dead keys. Display names stay accented; only matching folds.
+const fold = (s) => String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase()
+
+// Light greeting/connector/vocative words allowed to PRECEDE or SEPARATE leading @mentions, so a
+// natural opener still addresses ("Hey @architect, …", "ok @engineer ship it", "Quick one @critic: …",
+// "a question for @user").
+// KNOWN, ACCEPTED residual (architect's call): the bare particles a/to/for also let a statement ABOUT
+// someone read as an address ("a @critic is needed", "to @roland this looks fine"). Kept on purpose —
+// the asymmetry favors @user: those same particles keep "a question for @user" REACHING the human, and
+// not-missing-@user-questions is an explicit priority, so we over-deliver rather than risk dropping a
+// real question. A spurious teammate ping is mild noise; the costly path (a media worker firing) is
+// separately backstopped by media.js's generation-intent gate. Revisit only if noisy in practice.
+const ADDR_CONNECTORS = new Set([
+  'and', 'also', 'cc', 're', 'plus', 'hey', 'hi', 'hello', 'yo', 'ok', 'okay', 'so', 'thanks', 'thx',
+  'thank', 'you', 'quick', 'one', 'please', 'pls', 'morning', 'afternoon', 'evening', 'team', 'folks',
+  'everyone', 'all', 'a', 'question', 'for', 'to',
+])
+
+// The ADDRESSEES of a message are the @mentions in its OPENING run — the leading stretch of
+// @mentions and light greeting/connector words before the first SUBSTANTIVE word. @mentions after
+// that (deep in the body) are REFERENCES, not addressing ("@engineer kickoff — scope locked by
+// @user, build it" addresses @engineer; @user is a reference, no inbox ping, no worker fire). This
+// is the floor control behind #10: a buried handle never spuriously delivers or invokes a paid
+// worker, while a greeting before the @mention still addresses. Returns a Set of mention tokens.
+// Applies identically to @user and teammates (one unified rule). The 2-member consult fallback (no
+// opening addressee → the other member) lives in resolveTargets.
+function openingAddressees(text) {
+  const out = new Set()
+  let s = String(text || '').replace(/^[\s,&:;—–-]+/, '')
+  // token = a word (optionally @-prefixed) plus any trailing separators (space, comma, colon, dash…)
+  const tokenRe = /^(@?[\p{L}\p{N}][\p{L}\p{N}._/-]*)([\s,&:;—–-]*)/u
   let m
-  while ((m = s.match(re))) { out.push(m[1].toLowerCase()); s = s.slice(m[0].length) }
+  while ((m = s.match(tokenRe))) {
+    const word = m[1]
+    if (word.startsWith('@')) {
+      const clean = word.slice(1).toLowerCase().replace(/[._-]+$/, '')
+      if (clean) out.add(clean)
+    } else if (!ADDR_CONNECTORS.has(word.toLowerCase())) {
+      break   // first substantive (non-greeting, non-mention) word — the addressee run ends here
+    }
+    s = s.slice(m[0].length)
+  }
   return out
 }
 
-export function createRoomEngine({ send, append, notify, now = () => Date.now(), turnCap = 100 } = {}) {
-  const members = new Map()   // handle -> member def (sessionId bound when its live session connects)
-  const rooms = new Map()     // roomId -> room state
-  const bySession = new Map() // sessionId -> handle (reverse index for live members)
-  const userInbox = []        // @user messages awaiting the human (read by the dashboard/CLI)
-  const workerQueue = []      // directed mentions to worker (non-live) members, awaiting invocation
+export function createRoomEngine({ send, append, notify, onInbox, now = () => Date.now(), turnCap = 100 } = {}) {
+  const members = new Map()   // orgId -> Map<handleLC, member def>   (sessionId bound when live)
+  const rooms = new Map()     // roomId -> room state (org-tagged)
+  const bySession = new Map() // sessionId -> { org, handle }  (reverse index for live members)
+  const userInbox = []        // @user messages awaiting the human; each carries its `org` (no bleed)
+  let inboxSeq = 0            // monotonic STABLE id per inbox item — answer/dismiss/reopen + any external
+                             // surface (Telegram #12) address items by this, never by array index (which
+                             // shifts as items resolve, so a stale reply could hit the wrong item)
+  const workerQueue = []      // directed mentions to worker (non-live) members; each carries its `org`
   const orgs = new Map()      // orgId -> { org, repo }
 
-  const _append = (roomId, line) => { try { append?.(roomId, line) } catch {} }
+  // `meta` (optional) carries the daemon's TRUSTED per-message qid/reqid (#18) so the structured
+  // transcript can anchor jumps by an authored field, never by re-parsing the line text.
+  const _append = (roomId, line, meta) => { try { append?.(roomId, line, meta) } catch {} }
   const _notify = (msg) => { try { notify?.(msg) } catch {} }
+  // Fire-and-forget inbox lifecycle hook (new / resolved / reopened) — lets a transport like Telegram
+  // (#12) push a question, edit it on resolve, and restore it on reopen. Never awaited; never throws.
+  const _inbox = (kind, item) => { try { onInbox?.({ kind, item }) } catch {} }
   const ts = () => new Date(now()).toISOString()
 
-  function memberByHandle(h) { return members.get(String(h).toLowerCase()) || null }
-  function handleForSession(sessionId) { return bySession.get(sessionId) || null }
-  function nameOf(handle) { const m = memberByHandle(handle); return m ? `@${m.first}` : handle }
-  function roleOf(handle, room) { const e = room?.members.get(handle); return e?.role || memberByHandle(handle)?.role || '' }
-  const online = (handle) => { const m = memberByHandle(handle); return !!(m && m.sessionId && m.tier === 'live') }
+  // --- org-scoped member access -------------------------------------------
+  function mem(org, handle) { return members.get(String(org))?.get(lc(handle)) || null }
+  // Convenience for non-routing callers (dashboard workerlog/removemember display): look up a handle,
+  // optionally within a known org; without org, return the first match across orgs. Routing NEVER uses
+  // the cross-org fallback — it always passes an explicit org (room.org / sender org).
+  function memberByHandle(handle, org) {
+    if (org != null) return mem(org, handle)
+    for (const omap of members.values()) { const m = omap.get(lc(handle)); if (m) return m }
+    return null
+  }
+  function senderOf(sessionId) { return bySession.get(sessionId) || null }   // { org, handle } | null
+  function nameOf(org, handle) { const m = mem(org, handle); return m ? `@${m.first}` : (handle === '@user' ? '@user' : handle) }
+  function roleOf(org, handle, room) { const e = room?.members.get(lc(handle)); return e?.role || mem(org, handle)?.role || '' }
+  const online = (org, handle) => { const m = mem(org, handle); return !!(m && m.sessionId && m.tier === 'live') }
 
   // Register/refresh an org's roster: its members and its rooms. Idempotent — re-defining updates
   // membership without dropping live bindings or in-flight room state (turn/held are preserved).
-  function defineOrg({ org, repo, members: mem = [], rooms: rms = [] }) {
+  // Crucially org-scoped: defining org B never touches org A's members (the old shared-key clobber).
+  function defineOrg({ org, repo, members: mem_ = [], rooms: rms = [] }) {
     const orgId = String(org)
     orgs.set(orgId, { org: orgId, repo: repo || null })
-    // Redefining an org REPLACES it: prune members/rooms that belonged to this org but are gone from
-    // the new def, so re-running `mrc team up` (or a daemon reload) never accumulates ghosts.
-    const keepHandles = new Set(mem.map((m) => String(m.handle).toLowerCase()))
+    if (!members.has(orgId)) members.set(orgId, new Map())
+    const omap = members.get(orgId)
+    // Redefining an org REPLACES it: prune members/rooms of THIS org that are gone from the new def,
+    // so re-running `mrc team up` (or a daemon reload) never accumulates ghosts.
+    const keepHandles = new Set(mem_.map((m) => lc(m.handle)))
     const keepRooms = new Set(rms.map((r) => r.roomId))
-    for (const [h, m] of [...members]) {
-      if (m.org === orgId && !keepHandles.has(h)) {
-        if (m.sessionId) bySession.delete(m.sessionId)
-        members.delete(h)
-      }
+    for (const [h, m] of [...omap]) {
+      if (!keepHandles.has(h)) { if (m.sessionId) bySession.delete(m.sessionId); omap.delete(h) }
     }
     for (const [id, r] of [...rooms]) if (r.org === orgId && !keepRooms.has(id)) rooms.delete(id)
-    for (const m of mem) {
-      const handle = String(m.handle).toLowerCase()
-      const prev = members.get(handle)
-      members.set(handle, {
-        handle, first: m.first, role: m.role, team: m.team, lead: !!m.lead,
+    for (const m of mem_) {
+      const h = lc(m.handle)
+      const prev = omap.get(h)
+      omap.set(h, {
+        handle: m.handle, first: m.first, role: m.role, team: m.team, lead: !!m.lead,
         backend: m.backend, tier: m.tier || (m.backend === 'claude' ? 'live' : 'worker'),
         territory: m.territory, mount: m.mount, org: orgId, repo: repo || null,
         sessionId: prev?.sessionId ?? null,   // keep an existing live binding across a re-define
@@ -79,8 +139,8 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
       const memberMap = new Map()
       for (const h of r.members) {
         if (h === '@user') { memberMap.set('@user', { role: 'human', lead: false }); continue }
-        const def = memberByHandle(h)
-        memberMap.set(String(h).toLowerCase(), { role: def?.role || '', lead: !!def?.lead })
+        const def = mem(orgId, h)
+        memberMap.set(lc(h), { role: def?.role || '', lead: !!def?.lead })
       }
       if (existing) { existing.members = memberMap; existing.kind = r.kind; existing.team = r.team; existing.org = orgId }
       else rooms.set(r.roomId, freshRoom(r.roomId, r.kind, r.team, orgId, memberMap))
@@ -97,37 +157,41 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
     }
   }
 
-  // Bind a live session to its member (called when its channel registers with a memberHandle).
+  // Bind a live session to its member. The daemon resolves WHICH org's member is connecting via its
+  // memberSessionId index (the sessionId is org-specific), then calls this with the resolved org.
   // Returns the rooms the member belongs to, for connect notices.
-  function bindSession(handle, sessionId) {
-    const h = String(handle).toLowerCase()
-    const m = members.get(h)
-    if (!m) return { ok: false, error: `unknown member ${handle}` }
+  function bindSession(org, handle, sessionId) {
+    const orgId = String(org)
+    const h = lc(handle)
+    const m = mem(orgId, h)
+    if (!m) return { ok: false, error: `unknown member ${handle} in org ${orgId}` }
     m.sessionId = sessionId
-    bySession.set(sessionId, h)
-    const inRooms = [...rooms.values()].filter((r) => r.members.has(h)).map((r) => r.roomId)
-    return { ok: true, handle: h, rooms: inRooms }
+    bySession.set(sessionId, { org: orgId, handle: h })
+    const inRooms = [...rooms.values()].filter((r) => r.org === orgId && r.members.has(h)).map((r) => r.roomId)
+    return { ok: true, handle: h, org: orgId, rooms: inRooms }
   }
   function unbindSession(sessionId) {
-    const h = bySession.get(sessionId)
-    if (!h) return
+    const s = bySession.get(sessionId)
+    if (!s) return
     bySession.delete(sessionId)
-    const m = members.get(h)
+    const m = mem(s.org, s.handle)
     if (m && m.sessionId === sessionId) m.sessionId = null
   }
 
-  function roomsForSession(sessionId) {
-    const h = handleForSession(sessionId)
-    if (!h) return []
-    return [...rooms.values()].filter((r) => r.members.has(h))
+  function roomsForSender(s) {
+    if (!s) return []
+    return [...rooms.values()].filter((r) => r.org === s.org && r.members.has(lc(s.handle)))
   }
-  function roomsForHandle(h) {
-    h = String(h).toLowerCase()
-    return [...rooms.values()].filter((r) => r.members.has(h))
+  function roomsForSession(sessionId) { return roomsForSender(senderOf(sessionId)) }
+  // Optional org arg; without it, falls back to the unique-across-orgs match (single-org/test use).
+  function roomsForHandle(handle, org) {
+    const s = org != null ? { org, handle } : senderFromHandle(handle)
+    return roomsForSender(s)
   }
 
-  // Resolve one @mention token to a member handle WITHIN a room. Most-specific first:
-  // exact handle (first/backend) → unique first-name → unique role-holder. Returns handle | null.
+  // Resolve one @mention token to a member handle WITHIN a room (room is org-scoped, so the bare
+  // handle it returns is unambiguous). Most-specific first: exact handle (first/backend) → unique
+  // first-name (accent-insensitive) → unique role-holder. Returns handle | null.
   function resolveInRoom(room, token) {
     const { first, backend } = parseMention(token) || {}
     if (!first) return null
@@ -136,7 +200,7 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
       const exact = `${first}/${backend}`
       if (room.members.has(exact)) return exact
     }
-    const byFirst = present.filter((k) => memberByHandle(k)?.first?.toLowerCase() === first)
+    const byFirst = present.filter((k) => fold(mem(room.org, k)?.first) === fold(first))
     if (byFirst.length === 1) return byFirst[0]
     if (byFirst.length > 1) return null   // ambiguous first name in this room
     const byRole = present.filter((k) => (room.members.get(k)?.role || '').toLowerCase() === first)
@@ -145,36 +209,43 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
   }
 
   // Decide who a message is directed to. Returns { targets:[handles], toUser, unresolved:[tokens] }.
+  // Only the message's OPENING addressees count (unified for @user AND teammates) — a buried @mention
+  // is a reference, so it neither delivers nor reports as unresolved nor fires a paid worker (#10).
   function resolveTargets(room, fromHandle, text) {
-    const mentions = extractMentions(text)
+    const addressees = openingAddressees(text)
     const targets = new Set()
     const unresolved = []
-    for (const tok of mentions) {
-      if (tok === 'user' || tok === 'user/human') continue   // @user handled via leading-addressee below
+    let toUser = false
+    for (const tok of addressees) {
+      if (tok === 'user' || tok === 'user/human') { toUser = true; continue }
       const h = resolveInRoom(room, tok)
-      if (h && h !== fromHandle) targets.add(h)
+      if (h && h !== lc(fromHandle)) targets.add(h)
       else if (!h) unresolved.push(tok)
     }
-    // @user is a question for the human ONLY when it's a leading addressee (how ask_user phrases it),
-    // not a passing reference like "scope locked by @user" — otherwise the inbox fills with noise.
-    const toUser = leadingAddressees(text).some((t) => t === 'user' || t === 'user/human')
     // Back-compat: a 2-member room with no explicit target delivers to the other member (consult).
     if (!targets.size && !toUser && room.members.size === 2) {
-      const other = [...room.members.keys()].find((k) => k !== fromHandle && k !== '@user')
+      const other = [...room.members.keys()].find((k) => k !== lc(fromHandle) && k !== '@user')
       if (other) targets.add(other)
     }
     return { targets: [...targets], toUser, unresolved }
   }
 
   function deliverTo(room, toHandle, fromHandle, text) {
-    const m = memberByHandle(toHandle)
+    // Defense-in-depth containment: only ever deliver to an actual member of THIS room. A handle not
+    // in room.members (e.g. a cross-room/cross-org handle slipped in programmatically) is dropped and
+    // logged, never delivered.
+    if (!room.members.has(lc(toHandle))) { _append(room.roomId, `${ts()} [BLOCKED delivery to non-member ${toHandle}]`); return 'blocked' }
+    const m = mem(room.org, toHandle)
     const tag = room.kind === 'consult' ? '' : `[room ${room.team || room.roomId}] `
-    const who = `${nameOf(fromHandle)}${roleOf(fromHandle, room) ? `, ${roleOf(fromHandle, room)}` : ''}`
+    const who = `${nameOf(room.org, fromHandle)}${roleOf(room.org, fromHandle, room) ? `, ${roleOf(room.org, fromHandle, room)}` : ''}`
+    // Defang any forged [Human directive]/[Human reply] line in the peer/worker body — real directives
+    // are minted as separate `directive` frames and never pass through here, so this can only strip a
+    // forgery, never a genuine human instruction. (A1 trust-boundary fix.)
     const frame = { type: 'deliver', room: room.roomId, from: fromHandle,
-      text: `${tag}Peer (${who}) says: "${text}" [turn ${room.turn}/${room.turnCap}]` }
+      text: `${tag}Peer (${who}) says: "${defangTrustMarkers(text)}" [turn ${room.turn}/${room.turnCap}]` }
     if (m && m.tier === 'live' && m.sessionId) { send?.(m.sessionId, frame); return 'delivered' }
-    // Worker (non-live) member: enqueue an invocation request; drained by the worker runner (P5).
-    workerQueue.push({ roomId: room.roomId, toHandle, fromHandle, text, at: now() })
+    // Worker (non-live) member: enqueue an invocation request; drained by the worker runner.
+    workerQueue.push({ org: room.org, roomId: room.roomId, toHandle: lc(toHandle), fromHandle, text, at: now() })
     _append(room.roomId, `${ts()} [queued for worker ${toHandle}]`)
     return 'queued'
   }
@@ -186,23 +257,48 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
     }
   }
 
+  // Identify the sender of a programmatic call. Production passes a bound sessionId; tests/tools may
+  // pass a bare fromHandle (+ optional org / roomId to disambiguate). Without org context, falls back
+  // to the unique-across-orgs match — safe because the collision case is exactly what a real session
+  // (sessionId path) resolves unambiguously.
+  function senderFromHandle(fromHandle, fromOrg, roomId) {
+    const h = lc(fromHandle)
+    if (fromOrg != null) return mem(fromOrg, h) ? { org: String(fromOrg), handle: h } : null
+    if (roomId) { const r = rooms.get(roomId); if (r && mem(r.org, h)) return { org: r.org, handle: h } }
+    const hits = []
+    for (const [org, omap] of members) if (omap.has(h)) hits.push(org)
+    return hits.length === 1 ? { org: hits[0], handle: h } : null
+  }
+
   // Find the room a member is sending into when they didn't give an exact id. A soft `hint` may be a
   // room id, a team name, or "leads"; failing that, infer from the @mentioned targets (the one room,
   // among the sender's, where every named target resolves). Returns room | null (in no room) |
-  // undefined (ambiguous — caller should ask them to name the team/room).
-  function findRoom(h, hint, text) {
-    const mine = roomsForHandle(h)
+  // undefined (ambiguous — caller should ask them to name the team/room). All scoped to sender's org.
+  function findRoom(sOrHandle, hint, text) {
+    // Accept a resolved sender {org,handle} (route's internal path) or a bare handle (tests/tools).
+    const s = typeof sOrHandle === 'string' ? senderFromHandle(sOrHandle) : sOrHandle
+    if (!s) return null
+    const mine = roomsForSender(s)
     if (mine.length === 0) return null
     if (hint) {
       const exact = rooms.get(hint)
-      if (exact && exact.members.has(h)) return exact
-      const lc = String(hint).toLowerCase()
-      const byTeam = mine.find((r) => (r.team || '').toLowerCase() === lc)
+      if (exact && exact.org === s.org && exact.members.has(lc(s.handle))) return exact
+      const lch = lc(hint)
+      const byTeam = mine.find((r) => (r.team || '').toLowerCase() === lch)
       if (byTeam) return byTeam
-      if (lc === 'leads') { const l = mine.find((r) => r.kind === 'leads'); if (l) return l }
+      if (lch === 'leads') { const l = mine.find((r) => r.kind === 'leads'); if (l) return l }
     }
     if (mine.length === 1) return mine[0]
-    const toks = extractMentions(text).filter((t) => t !== 'user' && t !== 'user/human')
+    // Infer the room from the OPENING addressees (consistent with resolveTargets — buried refs don't
+    // steer routing). Peer addressees pick the one room where they all resolve.
+    const opening = openingAddressees(text)
+    const toks = [...opening].filter((t) => t !== 'user' && t !== 'user/human')
+    // An @user-only message (no peer addressee, no hint) from a lead belongs in the room where @user
+    // actually lives — the leads room — not an "ambiguous room" error.
+    if (!toks.length && (opening.has('user') || opening.has('user/human'))) {
+      const withUser = mine.filter((r) => r.members.has('@user'))
+      if (withUser.length === 1) return withUser[0]
+    }
     if (toks.length) {
       const fit = mine.filter((r) => toks.every((t) => resolveInRoom(r, t)))
       if (fit.length === 1) return fit[0]
@@ -210,32 +306,44 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
     return undefined   // ambiguous
   }
 
-  // Core entry: a member sent `text`. An exact `roomId` is strict (must be a room they're in); a soft
-  // `room` hint (team name / "leads") or target inference picks the room otherwise. Directed delivery
-  // to @mentioned members; @user to the inbox. Honors brake/turnCap (held FIFO).
-  function route({ sessionId, fromHandle, roomId, room: hint, text }) {
-    const h = fromHandle ? String(fromHandle).toLowerCase() : handleForSession(sessionId)
-    if (!h) return { ok: false, error: 'sender not bound to a member' }
+  // Core entry: a member sent `text`. Identify the sender (bound session preferred; else fromHandle).
+  // An exact `roomId` is strict (must be a room they're in); a soft `room` hint (team name / "leads")
+  // or target inference picks the room otherwise. Directed delivery to @mentioned members; @user to
+  // the inbox. Honors brake/turnCap (held FIFO).
+  function route({ sessionId, fromHandle, fromOrg, roomId, room: hint, text, kind }) {
+    const s = sessionId ? senderOf(sessionId) : (fromHandle ? senderFromHandle(fromHandle, fromOrg, roomId) : null)
+    if (!s) return { ok: false, error: 'sender not bound to a member' }
+    const h = lc(s.handle)
     let room
     if (roomId) {
       room = rooms.get(roomId)
       if (!room) return { ok: false, error: `no such room "${roomId}"` }
-      if (!room.members.has(h)) return { ok: false, error: 'not a member of that room' }
+      if (room.org !== s.org || !room.members.has(h)) return { ok: false, error: 'not a member of that room' }
     } else {
-      room = findRoom(h, hint, text)
+      room = findRoom(s, hint, text)
       if (room === null) return { ok: false, error: 'not in any room' }
       if (room === undefined) return { ok: false, error: 'ambiguous room — name the team or room (e.g. room:"leads")' }
-      if (!room.members.has(h)) return { ok: false, error: 'not a member of that room' }
+      if (room.org !== s.org || !room.members.has(h)) return { ok: false, error: 'not a member of that room' }
     }
 
     const { targets, toUser, unresolved } = resolveTargets(room, h, text)
     room.turn += 1; room.lastActivityAt = now()
-    _append(room.roomId, `${ts()} ${nameOf(h)} -> ${targets.map(nameOf).join(', ') || (toUser ? '@user' : '(no one)')}: ${text}`)
+    // type rides the member's tool choice (#11): ask_user → 'question' (wants a reply, badges); plain
+    // @user via send_message → 'notification' (FYI, no badge). Default-to-notification is the safe
+    // failure mode. Created BEFORE the thread-append so its stable id can be stamped on the line (#18).
+    const item = toUser
+      ? { id: ++inboxSeq, org: room.org, roomId: room.roomId, room: room.team || room.roomId, from: h, fromName: nameOf(room.org, h), role: roleOf(room.org, h, room), team: mem(room.org, h)?.team || null, text, type: kind === 'question' ? 'question' : 'notification', at: now(), answered: false, dismissed: false }
+      : null
+    // Stamp a visible, meaningful [#<id>] on the @user line — a cross-surface reference (CLI/file/
+    // dashboard/Telegram). The id is ALSO passed as the trusted `qid` meta so the dashboard anchors the
+    // jump from that field, not from re-scanning this line's text (which a member could spoof) (#18).
+    _append(room.roomId, `${ts()} ${nameOf(room.org, h)} -> ${targets.map((t) => nameOf(room.org, t)).join(', ') || (toUser ? '@user' : '(no one)')}: ${text}${item ? ` [#${item.id}]` : ''}`, item ? { qid: item.id } : undefined)
     clearStallOnActivity(room)
 
-    if (toUser) {
-      userInbox.push({ roomId: room.roomId, room: room.team || room.roomId, from: h, fromName: nameOf(h), text, at: now(), answered: false })
-      _notify(`${nameOf(h)} needs you (room ${room.team || room.roomId})`)
+    if (item) {
+      userInbox.push(item)
+      _notify(item.type === 'question' ? `${nameOf(room.org, h)} needs you (room ${room.team || room.roomId})` : `${nameOf(room.org, h)} — FYI (room ${room.team || room.roomId})`)
+      _inbox('new', item)
     }
 
     if (room.state === 'Paused') {
@@ -265,18 +373,19 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
     room.state = 'Running'; room.pauseReason = null; room.lastActivityAt = now()
     _append(room.roomId, `${ts()} [resumed${queued.length ? `: delivered ${queued.length} held` : ''}]`)
   }
-  function doSteer(room, target, text) {
+  function doSteer(room, target, text, { via } = {}) {
+    const marker = via === 'telegram' ? '[Human directive via Telegram]' : '[Human directive]'   // #12 step 5 audit tag
     const targets = !target || target === 'all'
       ? [...room.members.keys()].filter((k) => k !== '@user')
       : [resolveInRoom(room, target)].filter(Boolean)
     for (const t of targets) {
-      const m = memberByHandle(t)
-      if (m?.sessionId) send?.(m.sessionId, { type: 'directive', room: room.roomId, text: `[Human directive]: ${text}` })
-      else workerQueue.push({ roomId: room.roomId, toHandle: t, fromHandle: '@user', text: `[Human directive]: ${text}`, at: now(), directive: true })
+      const m = mem(room.org, t)
+      if (m?.sessionId) send?.(m.sessionId, { type: 'directive', room: room.roomId, text: `${marker}: ${text}` })
+      else workerQueue.push({ org: room.org, roomId: room.roomId, toHandle: t, fromHandle: '@user', text: `${marker}: ${text}`, at: now(), directive: true })
     }
     if (room.held.length) _append(room.roomId, `${ts()} [steer dropped ${room.held.length} held]`)
     room.held = []; room.state = 'Running'; room.pauseReason = null; room.lastActivityAt = now()
-    _append(room.roomId, `${ts()} HUMAN -> ${targets.map(nameOf).join(', ') || 'all'}: ${text}`)
+    _append(room.roomId, `${ts()} HUMAN -> ${targets.map((t) => nameOf(room.org, t)).join(', ') || 'all'}: ${text}`)
     return { ok: true, targets }
   }
 
@@ -285,11 +394,11 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
   function post({ roomId, fromHandle, toHandles = [], text }) {
     const room = rooms.get(roomId)
     if (!room) return { ok: false, error: 'no such room' }
-    const h = String(fromHandle).toLowerCase()
+    const h = lc(fromHandle)
     room.turn += 1; room.lastActivityAt = now()
-    _append(roomId, `${ts()} ${nameOf(h)} -> ${toHandles.map(nameOf).join(', ') || '(no one)'}: ${text}`)
+    _append(roomId, `${ts()} ${nameOf(room.org, h)} -> ${toHandles.map((t) => nameOf(room.org, t)).join(', ') || '(no one)'}: ${text}`)
     clearStallOnActivity(room)
-    if (room.state === 'Paused') { for (const t of toHandles) room.held.push({ toHandle: t, fromHandle: h, text }); return { ok: true, state: 'Paused', held: toHandles.length } }
+    if (room.state === 'Paused') { for (const t of toHandles) room.held.push({ toHandle: lc(t), fromHandle: h, text }); return { ok: true, state: 'Paused', held: toHandles.length } }
     const delivered = toHandles.map((t) => ({ handle: t, status: deliverTo(room, t, h, text) }))
     return { ok: true, delivered }
   }
@@ -300,43 +409,92 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
     if (!room) return 0
     let n = 0
     for (const h of room.members.keys()) {
-      if (h === '@user' || h === except) continue
-      const m = memberByHandle(h)
+      if (h === '@user' || h === lc(except)) continue
+      const m = mem(room.org, h)
       if (m?.sessionId && m.tier === 'live') { send?.(m.sessionId, { type: 'notice', room: roomId, text }); n++ }
     }
     _append(roomId, `${ts()} [${text}]`)
     return n
   }
 
-  // The human answered an @user inbox item: route the reply back into the room as a [Human directive].
-  function answerUser(idx, text) {
-    const item = userInbox[idx]
+  // The human answered an @user inbox item (by STABLE id): route the reply back as a [Human reply].
+  // Rejects a STALE reply (item already answered) so a late reply from any surface — dashboard or
+  // Telegram (#12 H4) — can't double-route; the caller surfaces `stale` to drop it.
+  function answerUser(id, text, { via } = {}) {
+    const item = userInbox.find((x) => x.id === id)
     if (!item) return { ok: false, error: 'no such inbox item' }
+    // OPEN = not answered AND not dismissed. Reject a stale reply to an item already resolved EITHER
+    // way — answering a dismissed item would double-route (a TG reply to a dashboard-dismissed
+    // question is exactly the cross-surface double-answer H4 prevents). The change-of-mind path is
+    // Re-open (clears dismissed) → answer.
+    if (item.answered || item.dismissed) return { ok: false, error: item.answered ? 'already answered' : 'already dismissed', stale: true }
     const room = rooms.get(item.roomId)
     if (!room) return { ok: false, error: 'room gone' }
-    const m = memberByHandle(item.from)
-    if (m?.sessionId) send?.(m.sessionId, { type: 'directive', room: room.roomId, text: `[Human reply]: ${text}` })
-    else workerQueue.push({ roomId: room.roomId, toHandle: item.from, fromHandle: '@user', text: `[Human reply]: ${text}`, at: now(), directive: true })
+    // Reply traceability (#17): quote the ORIGINAL question inline so the member knows WHICH of their
+    // @user messages this answers. The snippet is member-authored (untrusted) embedded in a TRUSTED
+    // directive line, so it MUST go through snippetForTrustedLine (defang + break-out strip) — this is
+    // the A1 class via the new quote. Audit tag (#12 step 5: via-Telegram) rides in the same marker.
+    const quoted = snippetForTrustedLine(item.text)
+    const marker = `[${via === 'telegram' ? 'Human reply via Telegram' : 'Human reply'} to "${quoted}"]`
+    const m = mem(item.org, item.from)
+    if (m?.sessionId) send?.(m.sessionId, { type: 'directive', room: room.roomId, text: `${marker}: ${text}` })
+    else workerQueue.push({ org: item.org, roomId: room.roomId, toHandle: item.from, fromHandle: '@user', text: `${marker}: ${text}`, at: now(), directive: true })
     item.answered = true; item.answer = text
-    _append(room.roomId, `${ts()} HUMAN -> ${nameOf(item.from)}: ${text}`)
+    _append(room.roomId, `${ts()} HUMAN -> ${nameOf(item.org, item.from)}: ${text} (re #${item.id})`, { reqid: item.id })   // #18: trusted reqid → the dashboard makes a jump from the field, not a text-scan
+    _inbox('resolved', item)
     return { ok: true }
+  }
+
+  // The human cleared an @user inbox item WITHOUT replying (#11): dismisses a notification (its only
+  // action) or a question the human chooses not to answer. v1 = SILENT clear — the asking member is
+  // not signaled (ask_user acks on delivery, not on the reply, so it isn't hard-blocked). To switch to
+  // a courtesy signal, route a soft `[Human reply]: (dismissed, no response)` here. Idempotent.
+  function dismissUser(id) {
+    const item = userInbox.find((x) => x.id === id)
+    if (!item) return { ok: false, error: 'no such inbox item' }
+    if (item.answered || item.dismissed) return { ok: true }
+    item.dismissed = true; item.dismissedAt = now()
+    _append(item.roomId, `${ts()} HUMAN dismissed ${nameOf(item.org, item.from)}'s ${item.type || 'message'}`)
+    _inbox('resolved', item)
+    return { ok: true }
+  }
+
+  // Undo a dismiss (#11): a mis-dismissed question becomes actionable again. Only un-dismisses — an
+  // already-answered item stays answered. Makes the silent-clear default recoverable.
+  function reopenUser(id) {
+    const item = userInbox.find((x) => x.id === id)
+    if (!item) return { ok: false, error: 'no such inbox item' }
+    if (!item.dismissed) return { ok: true }
+    item.dismissed = false; item.dismissedAt = null
+    _inbox('reopened', item)
+    return { ok: true }
+  }
+
+  // Restore the persisted @user inbox on a daemon restart (#16) — replaces the in-memory list with the
+  // saved items (answered/dismissed/type/org/id all intact, so the badge, show-dismissed, and the
+  // question/notification split all come back exactly; resolved items stay resolved, not resurrected).
+  // The id counter resumes past the highest restored id so new items never collide. No _inbox fire.
+  function restoreInbox(items) {
+    if (!Array.isArray(items)) return
+    userInbox.length = 0
+    for (const it of items) if (it && it.id != null) userInbox.push(it)
+    inboxSeq = userInbox.reduce((m, x) => Math.max(m, x.id || 0), 0)
   }
 
   // What a member sees: its rooms and, per room, the teammates (with online state). Drives the
   // member's list_team tool and the dashboard roster.
-  function memberView(handle) {
-    handle = String(handle).toLowerCase()
-    const me = members.get(handle)
+  function memberView(org, handle) {
+    const me = mem(org, handle)
     if (!me) return null
-    const rms = roomsForHandle(handle).map((r) => ({
+    const rms = roomsForSender({ org, handle }).map((r) => ({
       roomId: r.roomId, team: r.team, kind: r.kind, state: r.state,
       members: [...r.members.keys()].map((h) => h === '@user'
         ? { handle: '@user', first: 'user', role: 'human', lead: false, online: true }
-        : { handle: h, first: memberByHandle(h)?.first, role: r.members.get(h)?.role, lead: !!r.members.get(h)?.lead, backend: memberByHandle(h)?.backend, online: online(h) }),
+        : { handle: h, first: mem(r.org, h)?.first, role: r.members.get(h)?.role, lead: !!r.members.get(h)?.lead, backend: mem(r.org, h)?.backend, online: online(r.org, h) }),
     }))
-    return { handle, first: me.first, role: me.role, team: me.team, lead: me.lead, rooms: rms }
+    return { handle: lc(handle), first: me.first, role: me.role, team: me.team, lead: me.lead, org, rooms: rms }
   }
-  function viewForSession(sessionId) { const h = handleForSession(sessionId); return h ? memberView(h) : null }
+  function viewForSession(sessionId) { const s = senderOf(sessionId); return s ? memberView(s.org, s.handle) : null }
 
   // Atomically take all queued worker invocations (the runner drains these), grouped by
   // (roomId, toHandle) so a burst of mentions to one worker becomes a single invocation.
@@ -346,7 +504,7 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
     const groups = new Map()
     for (const it of items) {
       const key = `${it.roomId}\x00${it.toHandle}`
-      if (!groups.has(key)) groups.set(key, { roomId: it.roomId, toHandle: it.toHandle, items: [] })
+      if (!groups.has(key)) groups.set(key, { org: it.org, roomId: it.roomId, toHandle: it.toHandle, items: [] })
       groups.get(key).items.push(it)
     }
     return [...groups.values()]
@@ -361,23 +519,39 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
     return { ok: true }
   }
 
+  // Fully forget an org (the dashboard "Delete project"): drop its members, rooms, sessions, inbox
+  // items, and queued work. Mirrors a teardown that defineOrg-prune can't do (it only prunes WITHIN a
+  // redefine). Idempotent.
+  function removeOrg(org) {
+    const orgId = String(org)
+    const omap = members.get(orgId)
+    if (omap) { for (const m of omap.values()) if (m.sessionId) bySession.delete(m.sessionId); members.delete(orgId) }
+    for (const [id, r] of [...rooms]) if (r.org === orgId) rooms.delete(id)
+    for (let i = userInbox.length - 1; i >= 0; i--) if (userInbox[i].org === orgId) userInbox.splice(i, 1)
+    for (let i = workerQueue.length - 1; i >= 0; i--) if (workerQueue[i].org === orgId) workerQueue.splice(i, 1)
+    orgs.delete(orgId)
+    return { ok: true }
+  }
+
   function status() {
+    const allMembers = []
+    for (const omap of members.values()) for (const m of omap.values()) allMembers.push(m)
     return {
       orgs: [...orgs.values()],
-      members: [...members.values()].map((m) => ({ handle: m.handle, first: m.first, role: m.role, team: m.team, lead: m.lead, backend: m.backend, tier: m.tier, org: m.org, online: online(m.handle) })),
+      members: allMembers.map((m) => ({ handle: m.handle, first: m.first, role: m.role, team: m.team, lead: m.lead, backend: m.backend, tier: m.tier, org: m.org, online: online(m.org, m.handle) })),
       rooms: [...rooms.values()].map((r) => ({
         roomId: r.roomId, kind: r.kind, team: r.team, org: r.org, state: r.state, pauseReason: r.pauseReason,
         turn: r.turn, turnCap: r.turnCap, members: [...r.members.keys()],
       })),
-      userInbox: userInbox.map((x, i) => ({ i, ...x })),
+      userInbox: userInbox.map((x) => ({ ...x })),   // each carries a stable `id` (addressing key)
       workerQueue: workerQueue.length,
     }
   }
 
   return {
-    defineOrg, bindSession, unbindSession, route, endRoom, post,
+    defineOrg, bindSession, unbindSession, route, endRoom, removeOrg, post,
     roomsForSession, roomsForHandle, resolveTargets, resolveInRoom, findRoom,
-    doBrake, doResume, doSteer, answerUser, status, memberView, viewForSession, claimWorkerBatches, notifyRoom,
+    doBrake, doResume, doSteer, answerUser, dismissUser, reopenUser, restoreInbox, status, memberView, viewForSession, claimWorkerBatches, notifyRoom,
     // exposed for the daemon/dashboard + tests
     _rooms: rooms, _members: members, _userInbox: userInbox, _workerQueue: workerQueue,
     getRoom: (id) => rooms.get(id) || null,

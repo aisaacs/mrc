@@ -22,7 +22,7 @@ import { pickFirstName, makeHandle, backendFamily } from './names.js'
 import { roleDef, ROLE_ALIASES } from './personas.js'
 
 // Backends we can actually launch. claude = live channel member; others = task-workers.
-export const KNOWN_BACKENDS = new Set(['claude', 'codex', 'qwen', 'gemini'])
+export const KNOWN_BACKENDS = new Set(['claude', 'codex', 'qwen', 'gemini', 'elevenlabs'])
 const LIVE_BACKENDS = new Set(['claude'])   // only Claude has the async inbound-injection channel
 
 const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'x'

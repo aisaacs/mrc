@@ -22,7 +22,7 @@ function setup() {
     ] }],
   }, { rng: seededRng(1) })
   engine.defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
-  engine.bindSession('roland/claude', 'sess:roland')
+  engine.bindSession('shop', 'roland/claude', 'sess:roland')
   return { engine, sent, roomId: teamRoomId('shop', 'client') }
 }
 
@@ -78,7 +78,7 @@ test('runner writes a per-member log file (request + result)', async () => {
     { role: 'engineer', backend: 'codex', name: 'thierry' },
   ] }] }, { rng: seededRng(1) })
   engine.defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
-  engine.bindSession('roland/claude', 's1')
+  engine.bindSession('shop', 'roland/claude', 's1')
   const runner = createWorkerRunner({ engine, invoke: async () => ({ text: 'built the parser at src/parse.js' }) })
   engine.route({ fromHandle: 'roland/claude', roomId: teamRoomId('shop', 'client'), text: '@thierry build the parser' })
   await runner.tick()

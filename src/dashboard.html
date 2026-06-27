@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+CjxzdHlsZT4uaHtmaWxsOiMxNTE3MWN9QG1lZGlhKHByZWZlcnMtY29sb3Itc2NoZW1lOmRhcmspey5oe2ZpbGw6I2VlZjFmNn19PC9zdHlsZT4KPGVsbGlwc2UgY2xhc3M9ImgiIGN4PSIxNiIgY3k9IjIzLjQiIHJ4PSIxMi44IiByeT0iMy4wNSIvPgo8cGF0aCBjbGFzcz0iaCIgZD0iTTEwLjUgOSBRMTAuNzUgNi4zIDE2IDYuMSBRMjEuMjUgNi4zIDIxLjUgOSBMMjIgMjIuNiBMMTAgMjIuNiBaIi8+Cjwvc3ZnPg==">
+  <link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABsklEQVR4nOxXsUoDQRB9c1FRIRJMSMCclYgWgpZBsBArg62dhb8gFvo9YmcrWqWwsVYQRMRGkyISQUihqHfr22AgwTOZLY5DuAfJhdm3s+9m3rDEQ8LwkDBSAamAEbhhvFDyd2CwBTELYuDboBHU+XUHwWmrWT9m6F2bUKDHWKFYPhORjUEkY0yt9dyo8ucHFFC3IF+cqQ473MJyLBdKqAWQWImJq0MoMh4HVy2AhlMndeGqp4Bu1Qtw4KorwFFTJ3XhOrRAcnFw/08FmFad1IWb+BToW+DgbBeuyxjqTejAVVTAn5gulSt8qykoYbl2j907jBt1G2YKhfKmeNjm8qqBmeMFI7zl7EUDlYAfLp8cCHlg5NKEOGm1GudcDv4UwIPXWZMjbvZ/J4UTorRST52Kdl+ajVo31t+CDPajDu8mdPlE5xCfS3u9sT4BAb4OrUrEBLbzMfwMDnpjUVpH86XyGmd5hVsWId4yu7lE6iTc8Mau3fB5zdrfsvRXLP0FBnlgAIT+mDcZzNJWOToy60Gy8Ey2sxpKO4RpG5E27foqAZ5ouPvOSw9LjISR/i9IBXwDAAD//5nrkiYAAAAGSURBVAMAAAyEVmKfO4QAAAAASUVORK5CYII=">
+  <link rel="apple-touch-icon" sizes="180x180" href="data:image/png;base64,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">
 <title>Mister Claude</title>
 <style>
   :root { --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --line:#262b36; --fg:#e6e9ef; --dim:#8b93a3;
@@ -18,7 +21,9 @@
   header .spacer { flex:1 }
   .main { display:grid; grid-template-columns:340px 1fr; min-height:0 }
   .list { border-right:1px solid var(--line); overflow:auto; padding:10px }
-  .detail { overflow:auto; padding:16px 20px; min-width:0 }
+  .detail { display:flex; flex-direction:column; overflow:auto; padding:16px 20px; min-width:0; min-height:0 }
+  .detail > * { flex-shrink:0 }   /* flowing views keep natural height + the pane scrolls; fill children (#tabbody / the iframe) override below */
+  #tabbody { flex:1 1 0; min-height:0; display:flex; flex-direction:column; overflow:auto }   /* transcript/summary fill the remaining height; catch-up cards scroll */
   /* pills / badges */
   .pill { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--dim) }
   .pill.on { color:var(--good); border-color:#2c4533 } .pill.off { color:var(--bad); border-color:#4a2a31 }
@@ -50,7 +55,11 @@
   .rm:hover { border-color:#37506e } .rm.sel { border-color:var(--accent); background:var(--panel2) }
   .rm .nm { font-weight:600; font-size:13px } .rm .meta { color:var(--dim); font-size:11px; margin-left:auto }
   .ib { border:1px solid #3a2f4f; background:#1a1622; border-radius:9px; padding:9px 11px; margin-bottom:7px; cursor:pointer }
-  .ib.slim { padding:6px 10px; font-size:13px } .ib.slim:hover { border-color:#6a5a8a }
+  .ib.slim { padding:6px 10px; font-size:13px; display:flex; align-items:center; gap:5px } .ib.slim:hover { border-color:#6a5a8a }
+  .ib.q { border-color:#5a4a7a } .ib.fyi { background:#12161d; border-color:#2a3344; opacity:.82 }
+  .ib.dism { opacity:.45; border-style:dashed } .ib.dism b { text-decoration:line-through }
+  .ib .qicon { font-size:11px; flex:0 0 auto } .ib .dismx { margin-left:auto; color:var(--dim); font-size:12px; opacity:.45; flex:0 0 auto } .ib:hover .dismx { opacity:1 } .ib .dismx:hover { color:#f4a6b4 }
+  .pane.fyi { border-color:#2a3344; background:#12161d }
   #orgSel { width:auto; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:5px 10px; font-size:13px; cursor:pointer }
   #orgSel:hover { border-color:#3a4150 }
   header .plabel { font-size:11px; color:var(--dim); margin-left:4px }
@@ -66,8 +75,13 @@
   .row { display:flex; gap:8px; align-items:center } .row.wrap{ flex-wrap:wrap } .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:10px }
   .tabs { display:flex; gap:6px; margin:14px 0 10px } .tabs button { background:transparent; border:1px solid transparent; color:var(--dim); border-radius:7px; padding:5px 10px; cursor:pointer; font-size:12.5px }
   .tabs button.on { background:var(--panel2); color:var(--fg); border-color:var(--line) }
-  pre.thread { background:#0b0d12; border:1px solid var(--line); border-radius:10px; padding:14px; white-space:pre-wrap; word-break:break-word; font-size:12.5px; max-height:62vh; overflow:auto }
-  .pane { background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:10px 12px; margin-bottom:8px }
+  .thread { background:#0b0d12; border:1px solid var(--line); border-radius:10px; padding:14px; white-space:pre-wrap; word-break:break-word; font-size:12.5px; flex:1 1 0; min-height:0; overflow:auto; margin:0 }
+  .thread:focus-visible { outline:1px solid var(--accent); outline-offset:-1px }   /* keyboard-scroll a11y */
+  .tline { white-space:pre-wrap; word-break:break-word }
+  .qnum { color:var(--lead); font-weight:600 }   /* the question's [#N] anchor target */
+  .qjump { color:var(--accent); cursor:pointer; text-decoration:underline dotted }
+  .tline.qhi { background:#2a2440; border-radius:5px; transition:background .3s }   /* jump highlight */
+  .pane { background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:10px 12px; margin-bottom:8px; flex-shrink:0 }
   .pane.unrev { border-color:#5a4a7a }
   .card { background:#0b0d12; border:1px solid var(--line); border-radius:8px; padding:9px 11px; margin:6px 0; white-space:pre-wrap; font-size:12.5px }
   .empty { color:var(--dim); padding:40px 20px; text-align:center } label{ display:block; font-size:12px; color:var(--dim); margin:8px 0 3px }
@@ -76,16 +90,42 @@
   .roomtag { display:inline-block; font-size:11px; border:1px solid var(--line); border-radius:6px; padding:1px 7px; margin:2px 4px 2px 0; color:var(--dim) }
   .amf { background:#0b0d12; border:1px solid #33507e; border-radius:8px; padding:8px; margin-top:6px }
   .amf select, .amf input { font-size:12px; padding:5px 7px }
+  /* project tabs (one per org) */
+  .tabstrip { display:flex; gap:4px; align-items:flex-end; overflow-x:auto; flex:1; min-width:0; margin:0 10px; scrollbar-width:thin }
+  .tabstrip::-webkit-scrollbar { height:5px } .tabstrip::-webkit-scrollbar-thumb { background:#2a3550; border-radius:3px }
+  .ptab { display:flex; align-items:center; gap:6px; flex:0 0 auto; max-width:180px; padding:5px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--dim); cursor:pointer; font-size:12.5px }
+  .ptab:hover { color:var(--fg); border-color:#37506e }
+  .ptab.active { background:var(--panel2); color:var(--fg); border-color:var(--accent) }
+  .ptab.closed:not(.active) { opacity:.5 }
+  .ptab .pdot { width:6px; height:6px; border-radius:50%; flex:0 0 auto }
+  .ptab.running .pdot { background:#3f9d54 } .ptab.closed .pdot { background:#555c6b } .ptab.active .pdot { background:var(--accent) }
+  .ptab .pname { white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  .ptab .pbadge { background:#5a4a7a; color:#e7dcff; border-radius:10px; padding:0 6px; font-size:10.5px; font-weight:700; flex:0 0 auto }
+  .ptab .plink { color:var(--accent); font-size:11px; font-weight:700; flex:0 0 auto }   /* Telegram link awaiting confirm — distinct from the needs-you badge */
+  .ptab .pclose { opacity:0; color:var(--dim); font-size:14px; line-height:.8; flex:0 0 auto; padding:0 1px } .ptab:hover .pclose { opacity:.65 } .ptab .pclose:hover { color:#f4a6b4; opacity:1 }
+  .ptab.add { color:var(--dim); font-size:15px; padding:4px 11px } .ptab.add:hover { color:#bfe6c8; border-color:#2f6b3f }
+  .tabovf { flex:0 0 auto; background:var(--panel); border:1px solid var(--line); border-radius:8px; color:var(--dim); cursor:pointer; padding:5px 8px; font-size:12.5px; position:relative }
+  .tabovf:hover { color:var(--fg) }
+  .tabmenu { position:absolute; top:100%; right:0; margin-top:4px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:4px; z-index:20; min-width:160px; box-shadow:0 6px 20px rgba(0,0,0,.4) }
+  .tabmenu div { padding:5px 9px; border-radius:6px; cursor:pointer; font-size:12.5px; white-space:nowrap; display:flex; gap:8px; align-items:center }
+  .tabmenu div:hover { background:var(--panel) }
+  .resume { background:#0b0d12; border:1px solid #33507e; border-radius:10px; padding:14px 16px; margin:8px 0 14px }
+  .resume h3 { margin:0 0 6px; font-size:14px } .resume .step { font-size:12px; color:var(--dim); margin:3px 0 }
+  /* #20: a failed state-change surfaces here instead of silently swallowing (stale token → reload). */
+  #flash { position:fixed; top:0; left:0; right:0; z-index:1000; display:flex; flex-direction:column; align-items:center; pointer-events:none }
+  #flash .fl { pointer-events:auto; margin-top:9px; max-width:680px; padding:9px 14px; border-radius:9px; font-size:13px; box-shadow:0 5px 20px rgba(0,0,0,.5); display:flex; gap:12px; align-items:center }
+  #flash .fl.err { background:#3a1518; border:1px solid #7a2630; color:#ffd9dc }
+  #flash .fl.stale { background:#1d2740; border:1px solid #3f5d97; color:#dbe6ff }
+  #flash .fl .x { cursor:pointer; opacity:.7; margin-left:2px } #flash .fl .x:hover { opacity:1 }
+  #flash .fl .btn { padding:3px 11px; font-size:12px }
 </style>
 </head>
 <body>
+<div id="flash"></div>
 <div class="app">
   <header>
     <h1>🎩 Mister Claude</h1>
-    <span class="plabel" id="orgLabel" style="display:none">project</span>
-    <select id="orgSel" style="display:none" title="Switch project"></select>
-    <span class="spacer"></span>
-    <span class="pill" id="needPill" style="display:none"></span>
+    <div class="tabstrip" id="tabs"></div>
     <span class="pill off" id="daemonPill">daemon ?</span>
   </header>
   <div class="main">
@@ -96,16 +136,48 @@
 <script>
 const $ = (s, r=document) => r.querySelector(s)
 const esc = (s) => String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
-const api = (p, o) => fetch(p, o).then(r => r.json())
+const MRC_TOKEN = (document.querySelector('meta[name=mrc-token]')||{}).content || ''
+// Attach the CSRF token to every non-GET request (POST state-changers). A cross-origin page can't read
+// MRC_TOKEN (same-origin policy), so it can't forge these. The token is now persisted across daemon
+// restarts (#20) so an open tab keeps validating; if it ever still mismatches (HTTP 403), api() stamps
+// `_status` so callers can surface a "reload to continue" banner instead of silently swallowing.
+const api = (p, o) => {
+  if (o && String(o.method||'GET').toUpperCase() !== 'GET') o = { ...o, headers: { ...(o.headers||{}), 'X-MRC-Token': MRC_TOKEN } }
+  return fetch(p, o).then(async r => {
+    let j; try { j = await r.json() } catch { j = {} }
+    if (!r.ok) { if (j.ok===undefined) j.ok = false; j._status = r.status }   // surface HTTP-level failure (403/5xx)
+    return j
+  })
+}
 const post = (action, extra={}) => api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ action, ...extra }) })
 const postJSON = (path, obj={}) => api(path, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(obj) })
+
+// State-changing actions MUST confirm success before the UI clears/closes — no optimistic-close (#20).
+// act()/actJSON() never throw: a network reject (daemon mid-restart) and a non-2xx both resolve to
+// {ok:false,...}. Callers check .ok and only close on success; on failure they keep the item and call
+// flashFail(), which surfaces the error — a rotated/again-mismatched token (403) shows a persistent
+// "reload to continue" banner; anything else a dismissable error. This is the no-silent-failure floor:
+// even with the token persisted, a network blip / 500 / mid-restart must never be swallowed.
+const normResult = (r) => (r && r.ok) ? { ok:true } : { ok:false, status: r && r._status, error: (r && r.error) || 'action failed' }
+async function act(action, extra={}) { try { return normResult(await post(action, extra)) } catch { return { ok:false, error:'network error — the daemon may be restarting' } } }
+async function actJSON(path, obj={}) { try { return normResult(await postJSON(path, obj)) } catch { return { ok:false, error:'network error — the daemon may be restarting' } } }
+const isStale = (r) => r && (r.status===403 || /forbidden|x-mrc-token|reload the dashboard/i.test(r.error||''))
+function flashFail(r) { S.flash = isStale(r) ? { kind:'stale' } : { kind:'err', text:(r&&r.error)||'action failed' }; renderFlash() }
+function renderFlash() {
+  const el = $('#flash'); if (!el) return
+  if (!S.flash) { el.innerHTML=''; return }
+  el.innerHTML = S.flash.kind==='stale'
+    ? `<div class="fl stale">⟳ Session refreshed — the daemon restarted. Reload to continue.<button class="btn primary" onclick="location.reload()">Reload</button></div>`
+    : `<div class="fl err">⚠ ${esc(S.flash.text)}<span class="x" title="dismiss" onclick="dismissFlash()">✕</span></div>`
+}
+window.dismissFlash = () => { S.flash=null; renderFlash() }
 const setOrgUrl = (org) => { try { history.replaceState(null, '', '/'+encodeURIComponent(org||'')) } catch {} }   // /anigame
 
 const ROLES = ['architect','engineer','critic','adversary','ultracritical','user-defender','researcher','tester','designer','sound-designer','composer']
 const BACKENDS = ['claude','codex','qwen','gemini']
 
 const S = {
-  building: false, org: null, selRoom: null, selInbox: null, selMember: null, workerLog: '', tab: 'thread', addingTo: null,
+  building: false, org: null, selRoom: null, selInbox: null, selMember: null, workerLog: '', tab: 'thread', addingTo: null, showDismissed: false, flash: null,
   teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null, sessions: [], _tick: 0,
   builder: { org:'shop', repo:'', teams:[ { name:'client', territory:'client', members:[
     {role:'architect',backend:'claude',lead:true,territory:''},{role:'engineer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
@@ -124,7 +196,7 @@ async function tick() {
   if (S.selMember) {
     const m = memberByHandle(S.selMember)
     if (m && m.tier==='worker') {
-      const r = await api('/api/worker-log?handle='+encodeURIComponent(m.handle)).catch(()=>null)
+      const r = await api('/api/worker-log?handle='+encodeURIComponent(m.handle)+'&org='+encodeURIComponent(m.org||S.org||'')).catch(()=>null)
       let log = r && r.ok ? (r.log||'') : ''
       if (!log) {   // fallback: scrape the team transcript for this worker (works on any daemon)
         const room = mergedRooms().find(rr=>rr.team===m.team && rr.kind==='team')
@@ -153,10 +225,64 @@ function mergedRooms() {
 const inOrg = (r) => !S.org || r.org===S.org   // team rooms carry org; org-less consults are NOT in any org
 const orgMembers = () => (S.teams.members||[]).filter(m => !S.org || !m.org || m.org===S.org)
 function inbox() {
-  const qs = (S.teams.userInbox||[])
+  // Scope the @you queue to the ACTIVE project — items carry their org (#8). An item is OPEN until
+  // answered or dismissed (#11). Questions (ask_user) are actionable; notifications (plain @user) are
+  // FYI — split so they render + count differently. Legacy/undefined type → notification (safe default).
+  const all = (S.teams.userInbox||[]).filter(q => q.org===S.org)
+  const open = all.filter(q => !q.answered && !q.dismissed)
+  const questions = open.filter(q => q.type==='question')
+  const notifications = open.filter(q => q.type!=='question')
+  const dismissed = all.filter(q => q.dismissed && !q.answered)   // recoverable via the show-dismissed toggle
   const cu = mergedRooms().filter(r => (r.unreviewed||0)>0 && inOrg(r))
-  return { qs, cu, need: qs.filter(q=>!q.answered).length + cu.reduce((a,c)=>a+(c.unreviewed||0),0) }
+  return { all, open, questions, notifications, dismissed, cu, need: questions.length + cu.reduce((a,c)=>a+(c.unreviewed||0),0) }
 }
+// Per-project needs-you count (drives each tab's badge): open QUESTIONS only + unreviewed catch-ups in
+// that org — notifications never nag. Strict org match (harmonized with inbox()). Derived, not stored.
+function orgNeed(org) {
+  const qs = (S.teams.userInbox||[]).filter(q => q.org===org && q.type==='question' && !q.answered && !q.dismissed).length
+  const cu = mergedRooms().filter(r => (r.unreviewed||0)>0 && r.org===org).reduce((a,c)=>a+(c.unreviewed||0),0)
+  return qs + cu
+}
+// A project is "running" if it has a launch record or any live member up (online/launched).
+// A launch record only counts as "running" if the daemon reconciled it as live (tmux up or still
+// building) — a stale record from a crash reports running:false, so ▶ Resume/🚀 Launch comes back.
+const orgRunning = (org) => (S.teams.launch||[]).some(l=>l.org===org && l.running) || (S.teams.members||[]).some(m=>m.org===org && m.tier==='live' && (m.online||m.launched))
+function switchOrg(org) { if (org===S.org) return; S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; setOrgUrl(org); paint() }
+window.switchOrg = switchOrg
+
+// Browser-style project tabs: one per defined org. Chrome-stable — tabs keep a FIXED position
+// (definition order); SELECTING a tab only changes which is highlighted, it never reorders the strip
+// (a tab jumping to the front on click was the instability @user flagged). Many tabs → the strip
+// scrolls horizontally and the active one is scrolled into view (no truncation/overflow menu, so the
+// active tab is always reachable without moving anything). Each tab: state dot, needs-you badge, an ✕
+// that SUSPENDS (stop + preserve), and a trailing ＋ → Build.
+function renderTabs() {
+  const el = $('#tabs'); if (!el) return
+  const orgs = (S.teams.orgs||[]).map(o=>o.org)   // STABLE order — never re-sorted by active/running state
+  const tab = (o) => {
+    const need = orgNeed(o), cls = o===S.org ? 'active' : orgRunning(o) ? 'running' : 'closed'
+    // A pending Telegram link is a "verify me" event — surfaced on the OWNING tab regardless of which
+    // tab is active (#14 B), and visually DISTINCT from the ❓ needs-you badge (a 🔗, not an answer count).
+    const link = (S.teams.telegram||{})[o]?.pending?.length || 0
+    return `<div class="ptab ${cls}" onclick="switchOrg('${esc(o)}')" title="${esc(o)} · ${orgRunning(o)?'running':'stopped'}">`
+      + `<span class="pdot"></span><span class="pname">${esc(o)}</span>`
+      + (link?`<span class="plink" title="Telegram link awaiting your confirmation${link>1?` (${link})`:''}">🔗${link>1?link:''}</span>`:'')
+      + (need?`<span class="pbadge" title="${need} need you">${need}</span>`:'')
+      + `<span class="pclose" title="Close (stop members, keep the team)" onclick="event.stopPropagation();closeTab('${esc(o)}')">✕</span></div>`
+  }
+  el.innerHTML = orgs.map(tab).join('') + `<div class="ptab add" title="New project (Build)" onclick="newProject()">＋</div>`
+  const act = el.querySelector('.ptab.active')
+  if (act && act.scrollIntoView) { try { act.scrollIntoView({ inline:'nearest', block:'nearest' }) } catch {} }
+}
+// Close a tab = SUSPEND: stop the member containers but keep the team defined, transcripts, and
+// history — the tab stays as closed-dormant and ▶ Resume brings it back. (Delete is deferred.)
+window.closeTab = async (org) => {
+  if (!confirm(`Close "${org}"? Members stop; the team, transcripts, and history stay — reopen to resume.`)) return
+  const r = await actJSON('/api/team-stop', { org }); if(!r.ok)return flashFail(r); S.flash=null
+  tick()
+}
+// Resume = relaunch the saved roster (deterministic members rebind, each --continues its own convo).
+window.resumeTeam = async (org) => { const r=await actJSON('/api/team-launch', { org: org||S.org }); if(!r.ok)return flashFail(r); S.flash=null; tick() }
 // Readiness: workers are on-demand; a live member is 'ready' once its channel registers, 'starting'
 // while its terminal is up but not connected yet (loading / awaiting login + the Channels prompt).
 function memberState(m) {
@@ -169,7 +295,7 @@ const memberByHandle = (h) => orgMembers().find(m => m.handle===h)
 const roomMembers = (id) => { const r=(S.teams.rooms||[]).find(x=>x.roomId===id); return r ? r.members.filter(x=>x!=='@user') : [] }
 
 // ---- painting ----
-const launchFor = () => (S.teams.launch||[]).find(x=>x.org===S.org)
+const launchFor = () => (S.teams.launch||[]).find(x=>x.org===S.org && x.running)   // a stale (crashed) launch is not a terminal
 const detailKey = () => S.building ? 'build'
   : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+(launchFor()?.ttydUrl||'none'))
   : S.selInbox!=null ? 'inbox:'+S.selInbox
@@ -181,14 +307,11 @@ function paint() {
   const ib = inbox()
   const dp = $('#daemonPill'); const up = (S.state.daemon&&S.state.daemon.running) || (S.teams.members||[]).length>0
   dp.className = 'pill '+(up?'on':'off'); dp.textContent = up?'daemon up':'daemon down'
-  const np = $('#needPill'); if (ib.need){ np.style.display=''; np.className='pill'; np.style.color='#d7c5f5'; np.style.borderColor='#5a4a7a'; np.textContent='📥 '+ib.need+' need you' } else np.style.display='none'
-  const orgs = (S.teams.orgs||[]).map(o=>o.org)
-  const os = $('#orgSel'), ol = $('#orgLabel')
-  if (orgs.length>1){ os.style.display=''; ol.style.display=''; os.innerHTML=orgs.map(o=>`<option ${o===S.org?'selected':''}>${esc(o)}</option>`).join(''); os.onchange=()=>{ S.org=os.value; S.selRoom=S.selInbox=S.selMember=null; S.building=false; setOrgUrl(os.value); paint() } }
-  else { os.style.display='none'; ol.style.display='none' }
+  renderTabs()   // project tabs replace the old org dropdown + global needs-you pill (per-tab badges)
   if (!S.addingTo) renderMain()   // freeze the list while the add-member form is open (don't clobber inputs)
   const key = detailKey()
   if (key!==paintedKey) { renderDetail(); paintedKey=key } else patchDetail()
+  renderFlash()   // keep a surfaced failure (#20) visible across re-renders until reload/dismiss
 }
 
 const label2 = (r) => r.a&&r.b ? `${r.a} ⇄ ${r.b}` : r.roomId
@@ -204,20 +327,62 @@ function renderMain() {
   const memberRow = (m) => { const s=memberState(m); return `<div class="mem ${m.lead?'lead':''} ${m.handle===S.selMember?'sel':''}" onclick="selMember('${esc(m.handle)}')" title="${m.tier==='worker'?'on-demand — click for activity':'click for terminal'}"><span class="dot ${s.cls}"></span><span class="who"><span class="h">@${esc(m.first)}</span> <span class="bk muted">/${esc(m.backend)}</span></span><span class="mstate ${s.cls}">${esc(s.label)}</span><span class="role">${esc(m.role)}${m.lead?' ★':''}</span></div>` }
   const teamCard = (t) => { const ms=byTeam[t]; const running=teamRunning(ms)
     return `<div class="team"><div class="tn">${esc(t)}${running?'':' <span class="state Paused" style="font-size:10px;padding:1px 6px">not running</span>'}</div>${ms.map(memberRow).join('')}
-      ${S.addingTo===t ? amForm(t) : `<div class="row" style="margin-top:8px;gap:6px">${running?'':`<button class="btn tiny launch" onclick="launchTeam()">🚀 Launch</button>`}<button class="btn tiny" onclick="startAddMember('${esc(t)}')">＋ add member</button></div>`}</div>` }
+      ${S.addingTo===t ? amForm(t) : `<div class="row" style="margin-top:8px;gap:6px"><button class="btn tiny" onclick="startAddMember('${esc(t)}')">＋ add member</button></div>`}</div>` }
 
-  const unans = (ib.qs||[]).filter(q=>!q.answered)
-  let html = `<h2 class="you">@you${unans.length?` <span class="badge">${unans.length}</span>`:''}</h2>`
-  if (unans.length || ib.cu.length) {
-    html += unans.map(q=>`<div class="ib slim ${S.selInbox===q.i?'sel':''}" onclick="selInbox(${q.i})"><b>${esc(q.fromName||('@'+q.from))}</b> <span class="muted">· ${esc(q.room)}</span></div>`).join('')
+  // @you: open QUESTIONS (actionable, badged) first, then notifications (FYI, muted, dismiss-only),
+  // then catch-ups. The header badge counts questions only — notifications never inflate it (#11).
+  let html = `<h2 class="you">@you${ib.questions.length?` <span class="badge">${ib.questions.length}</span>`:''}${ib.notifications.length?` <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">· ${ib.notifications.length} FYI</span>`:''}</h2>`
+  if (ib.questions.length || ib.notifications.length || ib.cu.length) {
+    html += ib.questions.map(q=>`<div class="ib slim q ${S.selInbox===q.id?'sel':''}" onclick="selInbox(${q.id})"><span class=" qicon">❓</span> <b>${esc(q.fromName||('@'+q.from))}</b> <span class="muted">· ${esc(q.room)}</span></div>`).join('')
+    html += ib.notifications.map(q=>`<div class="ib slim fyi ${S.selInbox===q.id?'sel':''}" onclick="selInbox(${q.id})"><span class="qicon">🔔</span> <b>${esc(q.fromName||('@'+q.from))}</b> <span class="muted">· ${esc(q.room)}</span><span class="dismx" title="Dismiss" onclick="event.stopPropagation();dismissInbox(${q.id})">✕</span></div>`).join('')
     html += ib.cu.map(r=>`<div class="rm" onclick="selRoom('${esc(r.roomId)}',true)"><span class="nm">${esc(r.team||r.roomId)}</span><span class="meta">${r.unreviewed} catch-up${r.unreviewed>1?'s':''}</span></div>`).join('')
   } else html += `<div class="muted" style="padding:2px 6px 6px">No messages — members reach you here.</div>`
+  // Recover a mis-dismissed item: a collapsed "show dismissed" toggle reveals dismissed items, which
+  // re-open from the detail (activates the dismissed branch; makes the silent-clear default reversible).
+  if (ib.dismissed.length) {
+    html += `<div class="muted" style="padding:3px 6px;cursor:pointer;font-size:11.5px;user-select:none" onclick="toggleDismissed()">${S.showDismissed?'▾':'▸'} ${ib.dismissed.length} dismissed</div>`
+    if (S.showDismissed) html += ib.dismissed.map(q=>`<div class="ib slim dism ${S.selInbox===q.id?'sel':''}" onclick="selInbox(${q.id})"><span class="qicon">${q.type==='question'?'❓':'🔔'}</span> <b>${esc(q.fromName||('@'+q.from))}</b> <span class="muted">· ${esc(q.room)}</span></div>`).join('')
+  }
+
+  // Reopen panel (T7): the active project is defined but not running → explicit ▶ Resume, with the
+  // honest cold-image + per-live-member Channels-accept expectation (no surprise multi-minute spin-up).
+  if (S.org && teams.length && !orgRunning(S.org)) {
+    const live = orgMembers().filter(m=>m.tier==='live')
+    html += `<div class="resume"><h3>⏸ "${esc(S.org)}" is stopped</h3>`
+      + `<div class="step">Resume relaunches the saved team — each live member <b>--continues its own conversation</b> from where it left off.</div>`
+      + `<div class="step">First run rebuilds the image (~minutes). Each live member must re-accept its one-time <b>Channels prompt in its Console</b> before it's active${live.length?`: ${live.map(m=>'@'+esc(m.first)).join(', ')}`:''}. Workers are on-demand (no accept).</div>`
+      + `<div style="margin-top:10px"><button class="btn launch" onclick="resumeTeam('${esc(S.org)}')">▶ Resume team</button></div></div>`
+  }
+
+  // Telegram pairing (#12): a pending chat needs a Confirm HERE (the trust gate); linked shows Unpair.
+  const tg = (S.teams.telegram||{})[S.org]
+  if (tg && tg.warning) {
+    // #21/#3: this project's bot token clashes with another's — its bridge did NOT start. Say so loudly
+    // and actionably here instead of letting it 409-storm Telegram silently.
+    html += `<div class="resume" style="border-color:#7a2630"><h3 style="color:#ffd9dc">📱 Telegram not running for ${esc(S.org)}</h3><div class="step">⚠ ${esc(tg.warning)}</div></div>`
+  } else if (tg && tg.configured) {
+    if (tg.pending && tg.pending.length) {
+      // Name the owning project everywhere (#14 A): a misrouted /start then visibly says the WRONG
+      // project, so the user cross-checks instead of blind-confirming.
+      html += `<div class="resume" style="border-color:#33507e"><h3>📱 Telegram — confirm to link to ${esc(S.org)}</h3>`
+        + tg.pending.map(p=>`<div class="row" style="justify-content:space-between;margin:5px 0"><span>@${esc(p.username||p.fromId)} <span class="muted">(${esc([p.firstName,p.lastName].filter(Boolean).join(' ')||'—')}, id ${esc(p.fromId)})</span> → link to <b>${esc(S.org)}</b></span><span class="row"><button class="btn tiny primary" onclick="tgConfirm('${esc(p.fromId)}')">Confirm</button> <button class="btn tiny" onclick="tgReject('${esc(p.fromId)}')">Reject</button></span></div>`).join('')
+        + `<div class="step">Confirm only YOUR account — an unexpected entry is someone else who messaged the bot; Reject it.</div></div>`
+    } else if (tg.pinned) {
+      html += `<div class="muted" style="padding:3px 6px;font-size:11.5px">📱 Telegram linked to @${esc(tg.pinned.username||tg.pinned.fromId)}${tg.pinned.prePinned?' (.env)':''} · <a href="#" onclick="tgUnpair();return false">unpair</a></div>`
+      if (tg.lastPushError) html += `<div class="bad" style="padding:2px 6px;font-size:11px">⚠ last Telegram push failed: ${esc(tg.lastPushError)} — re-link if the chat is stale.</div>`
+    } else {
+      html += `<div class="muted" style="padding:3px 6px;font-size:11.5px">📱 Telegram: DM the bot <code>/start</code>, then confirm here.</div>`
+    }
+  }
 
   if (teams.length) html += `<h2>Teams</h2>` + teams.map(teamCard).join('')
   const rs = mergedRooms(); const mine = rs.filter(inOrg); const others = rs.filter(r=>!inOrg(r))
   if (mine.length) html += `<h2>Rooms</h2>` + mine.map(roomRow).join('')
   if (others.length) html += `<h2>Other — consults &amp; history</h2><div style="opacity:.55">${others.map(roomRow).join('')}</div>`
-  html += `<div style="margin:14px 0 18px;display:flex;gap:8px">${teams.length?`<button class="btn" style="flex:1" onclick="openBuilder()">✎ Edit teams</button>`:''}<button class="btn ${teams.length?'':'primary'}" style="flex:1" onclick="newProject()">＋ New project</button></div>`
+  html += `<div style="margin:14px 0 8px;display:flex;gap:8px">${teams.length?`<button class="btn" style="flex:1" onclick="openBuilder()">✎ Edit teams</button>`:''}<button class="btn ${teams.length?'':'primary'}" style="flex:1" onclick="newProject()">＋ New project</button></div>`
+  // Delete (#13): a DELIBERATE control distinct from the tab ✕ (which only suspends). Forgets the
+  // project from the daemon + stops its sessions; deletes nothing on disk — re-addable via `mrc team up`.
+  if (S.org && teams.length) html += `<div style="margin:0 0 18px"><button class="btn danger tiny" onclick="deleteProject()">🗑 Delete project</button></div>`
   if ((S.sessions||[]).length) {
     html += `<h2>Sessions <span class="muted" style="text-transform:none;letter-spacing:0">· all mrc containers</span></h2>`
     html += S.sessions.map(s=>`<div class="rm" style="cursor:default"><span class="nm">${esc(s.member?('@'+s.member):s.repo)}</span><span class="meta">${esc(s.project||s.repo)} · ${esc(s.up||'')}</span><button class="btn tiny danger" style="margin-left:8px" onclick="killSession('${esc(s.id)}','${esc(s.member||s.repo)}')">kill</button></div>`).join('')
@@ -264,7 +429,7 @@ function renderTerminal(d, m) {
   d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:8px">
       <b>@${esc(m.first)} <span class="muted">· terminal</span></b>
       <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(L.ttydUrl)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny" style="margin-left:8px" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove</button> <button class="btn tiny danger" onclick="stopTeam()">■ Stop team</button></span></div>
-    <iframe src="${esc(L.ttydUrl)}" style="width:100%;height:68vh;border:1px solid var(--line);border-radius:8px;background:#000"></iframe>
+    <iframe src="${esc(L.ttydUrl)}" style="width:100%;flex:1 1 0;min-height:0;border:1px solid var(--line);border-radius:8px;background:#000"></iframe>
     <div class="muted" style="margin-top:6px">First launch: log in + accept the Channels prompt here. Click a member on the left to switch the terminal to them (or Ctrl-b n).</div>`
 }
 // On-demand worker -> no terminal; show its recent activity from the team transcript.
@@ -278,13 +443,23 @@ function renderWorkerLog(d, m) {
 function patchDetail() {
   if (S.selMember) {
     const m = memberByHandle(S.selMember)
-    if (m && m.tier==='worker') { const w=$('#wlog'); if (w && w.textContent!==(S.workerLog||'')) { w.textContent = S.workerLog || '(no activity yet)'; w.scrollTop=w.scrollHeight } }
+    if (m && m.tier==='worker') { const w=$('#wlog'); if (w && w.textContent!==(S.workerLog||'')) followScroll(w, () => { w.textContent = S.workerLog || '(no activity yet)' }) }
     return
   }
   if (S.selRoom && S.room) {
-    const t = $('#thread'); if (t && S.tab==='thread' && t.textContent!==(S.room.thread||'')) { t.textContent=S.room.thread||''; t.scrollTop=t.scrollHeight }
+    const t = $('#thread'); if (t && S.tab==='thread' && t.dataset.raw!==(S.room.thread||'')) followScroll(t, () => { const raw=S.room.thread||''; t.dataset.raw=raw; t.innerHTML = raw?threadHTML(raw):'(no messages yet)' })
     const sm = $('#summary'); if (sm && S.tab==='summary') sm.textContent = S.room.consensus||''
   }
+}
+// Stick-to-bottom ONLY when the user is already near the bottom (chat/log pattern). If they've scrolled
+// UP to read history, a 1.5s live update must NOT yank their viewport — to the bottom OR to the top.
+// We capture before the mutation and follow-or-restore after (restore is a no-op when textContent is
+// mutated in place, and corrects an innerHTML-style reset — so it's safe either way).
+function followScroll(el, mutate) {
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+  const keepTop = el.scrollTop
+  mutate()
+  el.scrollTop = atBottom ? el.scrollHeight : keepTop
 }
 
 function renderRoom(d) {
@@ -310,9 +485,26 @@ function renderRoom(d) {
     <div id="tabbody"></div>`
   renderTab()
 }
+// Render the raw thread.log into per-message lines, turning the DAEMON's EOL `[#N]` (question) into a
+// jump ANCHOR (id="q<N>") and its `(re #N)` (reply) into a clickable jump (#18). Only the daemon's
+// exact-EOL token is treated as a marker — a member's `#5`/`[#5]` in prose is plain esc()'d text, never
+// an anchor. Ids are deduped (first wins) so the DOM never has a duplicate anchor to hijack a jump.
+function threadHTML(raw) {
+  const seen = new Set()
+  return String(raw||'').split('\n').map(line => {
+    if (!line) return '<div class="tline"> </div>'
+    let m = line.match(/^(.*) \[#(\d+)\]$/)
+    if (m) { const id=m[2], anchor = !seen.has(id); if(anchor) seen.add(id)
+      return `<div class="tline"${anchor?` id="q${id}"`:''}>${esc(m[1])} <span class="qnum">[#${id}]</span></div>` }
+    m = line.match(/^(.*) \(re #(\d+)\)$/)
+    if (m) return `<div class="tline">${esc(m[1])} <a class="qjump" onclick="jumpToQ(${m[2]})" title="jump to question #${m[2]}">re #${m[2]}</a></div>`
+    return `<div class="tline">${esc(line)}</div>`
+  }).join('')
+}
+window.jumpToQ = (id)=>{ const el=$('#q'+id); if(!el)return; el.scrollIntoView({block:'center',behavior:'smooth'}); el.classList.add('qhi'); setTimeout(()=>el.classList.remove('qhi'),1400) }
 function renderTab() {
   const b = $('#tabbody'); if (!b) return
-  if (S.tab==='thread') { b.innerHTML = `<pre class="thread" id="thread">${esc((S.room&&S.room.thread)||'(no messages yet)')}</pre>`; const t=$('#thread'); if(t) t.scrollTop=t.scrollHeight }
+  if (S.tab==='thread') { const raw=(S.room&&S.room.thread)||''; b.innerHTML = `<div class="thread" id="thread" tabindex="0">${raw?threadHTML(raw):'(no messages yet)'}</div>`; const t=$('#thread'); if(t){ t.dataset.raw=raw; t.scrollTop=t.scrollHeight } }
   else if (S.tab==='summary') b.innerHTML = `<pre class="thread" id="summary">${esc((S.room&&S.room.consensus)||'(no summary)')}</pre>`
   else {
     const cu = (S.room&&S.room.catchups)||[]
@@ -324,13 +516,23 @@ function renderTab() {
   }
 }
 function renderInboxItem(d) {
-  const q = (S.teams.userInbox||[])[S.selInbox]
-  if (!q) { d.innerHTML = `<div class="empty">Question gone.</div>`; return }
-  d.innerHTML = `<h2>A member needs you</h2>
-    <div class="pane"><div class="who muted"><b style="color:var(--fg)">${esc(q.fromName||('@'+q.from))}</b> in <b>${esc(q.room)}</b></div>
+  const q = (S.teams.userInbox||[]).find(x=>x.id===S.selInbox)   // stable id, not array index
+  if (!q) { d.innerHTML = `<div class="empty">Message gone.</div>`; return }
+  const isQ = q.type==='question'
+  const head = isQ ? '❓ A member needs you' : '🔔 Notification'
+  const done = q.answered ? `<div class="muted">↳ ${esc(q.answer||'')}</div>`
+    : q.dismissed ? `<div class="muted">↳ dismissed — re-open to act on it</div>` : ''
+  // EVERY open item is replyable (#15) — a reply routes a [Human reply] via answerUser (open-revalidation
+  // stale-guards a double-answer). A notification differs only in framing ("reply optional", it never
+  // badges) — not in capability. Dismiss clears without replying (instant on a notification, confirmed
+  // on a question — handled in dismissInbox). Dismissed → ↺ Re-open. All keep "Open room".
+  const actions = q.answered ? `<div style="margin-top:8px"><button class="btn" onclick="openRoom('${esc(q.roomId)}')">Open room</button></div>`
+    : q.dismissed ? `<div class="row" style="margin-top:8px"><button class="btn primary" onclick="reopenInbox(${S.selInbox})">↺ Re-open</button> <button class="btn" onclick="openRoom('${esc(q.roomId)}')">Open room</button></div>`
+    : `${isQ ? '' : '<div class="muted" style="margin:6px 0">FYI — reply optional.</div>'}<textarea id="ansTx" placeholder="Your reply (routes back as [Human reply])…"></textarea><div class="row" style="margin-top:8px"><button class="btn primary" onclick="answer(${S.selInbox})">Send reply</button> <button class="btn" onclick="dismissInbox(${S.selInbox})">✕ Dismiss</button> <button class="btn" onclick="openRoom('${esc(q.roomId)}')">Open room</button></div>`
+  d.innerHTML = `<h2>${head}</h2>
+    <div class="pane ${isQ?'':'fyi'}"><div class="who muted"><b style="color:var(--fg)">${esc(q.fromName||('@'+q.from))}</b> in <b>${esc(q.room)}</b></div>
     <div style="margin:8px 0;white-space:pre-wrap">${esc(q.text)}</div>
-    ${q.answered? `<div class="muted">↳ ${esc(q.answer||'')}</div>` :
-      `<textarea id="ansTx" placeholder="Your reply (routes back as [Human reply])…"></textarea><div style="margin-top:8px"><button class="btn primary" onclick="answer(${S.selInbox})">Send reply</button> <button class="btn" onclick="openRoom('${esc(q.roomId)}')">Open room</button></div>`}</div>`
+    ${done}${actions}</div>`
 }
 
 // ---- builder ----
@@ -419,13 +621,31 @@ window.selMember = (h)=>{ S.selRoom=null; S.selInbox=null; S.building=false; S.s
   if (m && m.tier==='worker') { S.workerLog=null; tick() }
   else { if (m) postJSON('/api/team-select',{org:S.org,window:m.first}); paint() } }
 window.setTab = (t)=>{ S.tab=t; paintedKey=null; paint() }
-window.roomAct = async (a)=>{ if(a==='end'&&!confirm('Close this room?'))return; await post(a,{roomId:S.selRoom}); tick() }
-window.doSteer = async ()=>{ const tx=$('#steerTx'); const t=$('#steerT'); if(!tx||!tx.value.trim())return; await post('steer',{roomId:S.selRoom,target:t.value,text:tx.value.trim()}); tx.value=''; tick() }
-window.reviewCu = async (seq)=>{ await post('review',{roomId:S.selRoom,seq}); S.room=await api('/api/room?id='+encodeURIComponent(S.selRoom)); paintedKey=null; paint() }
-window.answer = async (i)=>{ const tx=$('#ansTx'); if(!tx||!tx.value.trim())return; await post('answer',{i,text:tx.value.trim()}); S.selInbox=null; tick() }
-window.stopTeam = async ()=>{ if(!confirm('Stop the team? This closes all member terminals.'))return; await postJSON('/api/team-stop',{org:S.org}); tick() }
-window.removeMember = async (h, first)=>{ if(!confirm('Remove @'+first+' from the team? (updates team.json)'))return; await postJSON('/api/team-remove-member',{org:S.org,handle:h}); S.selMember=null; tick() }
-window.killSession = async (id, name)=>{ if(!confirm('Kill container '+name+'? (force-removes it)'))return; await postJSON('/api/kill-session',{id}); S._tick=0; tick() }
+window.roomAct = async (a)=>{ if(a==='end'&&!confirm('Close this room?'))return; const r=await act(a,{roomId:S.selRoom}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
+window.doSteer = async ()=>{ const tx=$('#steerTx'); const t=$('#steerT'); if(!tx||!tx.value.trim())return; const r=await act('steer',{roomId:S.selRoom,target:t.value,text:tx.value.trim()}); if(!r.ok)return flashFail(r); tx.value=''; S.flash=null; tick() }
+window.reviewCu = async (seq)=>{ const r=await act('review',{roomId:S.selRoom,seq}); if(!r.ok)return flashFail(r); S.flash=null; S.room=await api('/api/room?id='+encodeURIComponent(S.selRoom)); paintedKey=null; paint() }
+// #20: confirm the reply landed (2xx) BEFORE closing the panel. A 403 (stale token) / network / 500 keeps
+// the item open and surfaces the error — never optimistic-close (that was the silent-swallow @user hit).
+window.answer = async (i)=>{ const tx=$('#ansTx'); if(!tx||!tx.value.trim())return; const r=await act('answer',{i,text:tx.value.trim()}); if(!r.ok)return flashFail(r); S.flash=null; S.selInbox=null; tick() }
+// Dismiss without replying (#11). A QUESTION is a permanent-loss-on-misclick path → confirm first
+// (the ✕ sits next to Send reply); a NOTIFICATION is fast FYI triage → instant, no confirm.
+window.dismissInbox = async (id)=>{
+  const it = (S.teams.userInbox||[]).find(x=>x.id===id)
+  if (it && it.type==='question' && !confirm(`Dismiss without replying? ${it.fromName||('@'+it.from)} won't get an answer. (You can re-open it later from "show dismissed".)`)) return
+  const r = await act('dismiss',{i:id}); if(!r.ok)return flashFail(r)   // keep it if the dismiss didn't land (#20)
+  S.flash=null; if(S.selInbox===id)S.selInbox=null; tick()
+}
+window.reopenInbox = async (i)=>{ const r=await act('reopen',{i}); if(!r.ok)return flashFail(r); S.flash=null; tick() }   // undo a dismiss → actionable again
+// Telegram pairing (#12): Confirm is the trust gate (on the localhost dashboard); Reject/Unpair too.
+window.tgConfirm = async (fromId)=>{ const r=await actJSON('/api/tg',{action:'tgconfirm',org:S.org,fromId:Number(fromId)}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
+window.tgReject = async (fromId)=>{ const r=await actJSON('/api/tg',{action:'tgreject',org:S.org,fromId:Number(fromId)}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
+window.tgUnpair = async ()=>{ if(!confirm('Unpair Telegram? The linked chat stops receiving questions until you re-link.'))return; const r=await actJSON('/api/tg',{action:'tgunpair',org:S.org}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
+// Delete project (#13): forget it from the daemon + stop sessions; nothing on disk is deleted.
+window.deleteProject = async ()=>{ const org=S.org; if(!org||!confirm(`Delete "${org}" from Mister Claude? Its sessions stop and the tab is removed. Nothing on disk is deleted — your transcripts and team.json stay, so you can re-add it any time with \`mrc team up\`.`))return; const r=await actJSON('/api/team-delete',{org}); if(!r.ok)return flashFail(r); S.flash=null; S.org=null; S.selRoom=S.selInbox=S.selMember=null; S.building=false; tick() }
+window.toggleDismissed = ()=>{ S.showDismissed=!S.showDismissed; paint() }
+window.stopTeam = async ()=>{ if(!confirm('Stop the team? This closes all member terminals.'))return; const r=await actJSON('/api/team-stop',{org:S.org}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
+window.removeMember = async (h, first)=>{ if(!confirm('Remove @'+first+' from the team? (updates team.json)'))return; const r=await actJSON('/api/team-remove-member',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; S.selMember=null; tick() }
+window.killSession = async (id, name)=>{ if(!confirm('Kill container '+name+'? (force-removes it)'))return; const r=await actJSON('/api/kill-session',{id}); if(!r.ok)return flashFail(r); S.flash=null; S._tick=0; tick() }
 window.bLaunch = async ()=>{ const msg=$('#bMsg'); if(!msg)return; msg.innerHTML='<span class="muted">launching… first run builds the image (~minutes)</span>'
   const r=await postJSON('/api/team-launch',{roster:bRoster()})
   if(r&&r.ok){ msg.innerHTML='<span class="good">🚀 launching — pick each member to open its terminal and log in</span>'; S.org=bRoster().org||null; setOrgUrl(S.org); setTimeout(()=>{S.building=false;tick()},700) }

@@ -143,7 +143,7 @@ const teamTools = [
     inputSchema: {
       type: 'object',
       properties: {
-        text: { type: 'string', description: 'the message; include @mentions for the addressee(s)' },
+        text: { type: 'string', description: 'the message; LEAD with the @mention(s) for the addressee(s) — a handle buried later in the body is treated as a reference, not an address' },
         room: { type: 'string', description: 'optional: team name or "leads" to disambiguate' },
       },
       required: ['text'],
@@ -201,7 +201,9 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
     case 'send_message':
       return await sendAwaitAck({ type: 'say', text: String(a.text ?? ''), room: a.room || undefined })
     case 'ask_user':
-      return await sendAwaitAck({ type: 'say', text: `@user ${String(a.text ?? '')}` })
+      // The member chose ask_user → it's a QUESTION (wants a reply). A plain send_message to @user is
+      // an FYI/notification. The `kind` rides the frame so the inbox can tell them apart (#11).
+      return await sendAwaitAck({ type: 'say', text: `@user ${String(a.text ?? '')}`, kind: 'question' })
     case 'list_team':
       return await new Promise((resolve) => {
         pendingTeam = (view) => resolve({ content: [{ type: 'text', text: renderTeam(view) }] })
@@ -249,7 +251,10 @@ function ackText(status, frame = {}) {
         if (frame.delivered) parts.push(`${frame.delivered} teammate(s) live`)
         if (frame.queued) parts.push(`${frame.queued} queued for a worker`)
         if (frame.toUser) parts.push('your human was pinged')
-        return parts.length ? `Delivered — ${parts.join(', ')}.` : (frame.toUser ? 'Sent to your human.' : 'Delivered.')
+        // Nobody resolved (no live target, nothing queued, human not pinged) — say so plainly instead
+        // of a misleading "Delivered." The daemon also pushes an [Unknown addressee(s)…] notice when a
+        // token didn't match; this covers the no-mention / no-match case the ack itself reports.
+        return parts.length ? `Delivered — ${parts.join(', ')}.` : 'Reached no one — no addressee matched (check the @name, or call list_team).'
       }
       return 'Delivered to the peer.'
     case 'held': return 'Room is paused — your message is queued and will be delivered when it resumes.'

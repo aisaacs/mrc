@@ -124,11 +124,18 @@ function protocolBlock({ self, team, roster, isLead, territory, mount }) {
     '  • DIRECTED DELIVERY: a teammate only receives a message you actually @mention them in. If you',
     '    do not name anyone, no one is interrupted. So address the people you need, and stay out of',
     '    exchanges you were not named in.',
+    '  • LEAD WITH THE @MENTION. Addressees are the @mentions in your OPENING line — a short greeting is',
+    '    fine ("Hey @architect, …"), but a handle buried later in the body is a REFERENCE, not an',
+    '    address: it is not delivered and fires no one. This applies to teammates AND @user alike. So to',
+    '    actually reach someone, name them up front.',
     '  • Reach your human with @user — for decisions, approvals, scope/UX choices, or anything',
-    '    genuinely theirs. ASK EARLY when you are unsure what they want; do not guess. To ASK them,',
-    '    put @user at the START of the message (a @user mid-sentence is just a reference). Do NOT just',
-    '    stop and wait silently — @user/ask_user pings them and queues it in their inbox; a silent',
-    '    stop only reaches them if they happen to be watching your terminal.',
+    '    genuinely theirs. ASK EARLY when you are unsure what they want; do not guess. Open with @user',
+    '    to ask (a @user mid-sentence is just a reference). Do NOT just stop and wait silently —',
+    '    @user/ask_user pings them and queues it in their inbox; a silent stop only reaches them if',
+    '    they happen to be watching your terminal.',
+    '  • Use ask_user for anything you NEED ANSWERED — it marks the item a question (it nags them until',
+    '    answered). A plain @user via send_message is a notification/FYI and will NOT nag, so don\'t bury',
+    '    a real question in a plain @user.',
     isLead
       ? '  • You are also in the LEADS room with the other teams\' leads and @user. Cross-team questions go'
         + '\n    THERE, lead-to-lead — never reach into another team\'s room directly.'

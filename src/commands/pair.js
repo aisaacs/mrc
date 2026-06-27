@@ -35,6 +35,22 @@ function probeControl(port) {
   })
 }
 
+// Like probeControl, but returns the daemon's reported code version (or null). Used to confirm the
+// process answering the control port is the FRESH one — not an old daemon that survived a failed stop
+// (the new one would have EADDRINUSE-exited). Without this, a stale daemon reads as "up" and we'd
+// silently keep serving old code across a restart (#21 — the post-restart cluster's root cause).
+export function probeVersion(port) {
+  return new Promise((res) => {
+    if (!port) return res(null)
+    const c = net.connect(port, '127.0.0.1', () => c.write(JSON.stringify({ action: 'status' }) + '\n'))
+    let buf = ''; let done = false
+    const finish = (v) => { if (!done) { done = true; res(v); try { c.destroy() } catch {} } }
+    c.on('data', (d) => { buf += d; const i = buf.indexOf('\n'); if (i >= 0) { try { finish(JSON.parse(buf.slice(0, i)).version ?? null) } catch { finish(null) } } })
+    c.on('error', () => finish(null))
+    setTimeout(() => finish(null), 800)
+  })
+}
+
 function spawnDaemon(port, controlPort, notifyPort) {
   const child = spawn(process.execPath, [daemonScript(), String(port), String(controlPort), String(notifyPort || 0)], { detached: true, stdio: 'ignore' })
   child.unref()
@@ -43,9 +59,18 @@ async function waitUp(controlPort) {
   for (let i = 0; i < 50; i++) { await sleep(100); if (await probeControl(controlPort)) return true }
   return false
 }
+// Wait until the control port reports the EXPECTED version — i.e. the fresh daemon actually took the
+// port. Distinguishes "a new daemon bound" from "the old one is still answering" (the #21 stale-daemon
+// false-success: if the new daemon EADDRINUSE-exits because the old one survived the stop, probeControl
+// would still say "up" — but the version would be the OLD one, which this rejects).
+export async function waitUpVersion(controlPort, expected, attempts = 50) {
+  for (let i = 0; i < attempts; i++) { await sleep(100); if ((await probeVersion(controlPort)) === expected) return true }
+  return false
+}
 
-// Stop a running daemon: ask it to shut down (graceful), fall back to SIGTERM by recorded pid for
-// old daemons that predate the shutdown action, then wait until its control port goes quiet.
+// Stop a running daemon and CONFIRM the port is freed (so a same-port respawn won't EADDRINUSE). Escalate:
+// graceful shutdown → SIGTERM by recorded pid → SIGKILL by pid (last resort — a wedged daemon that
+// ignores the first two must not survive a restart and leave stale code serving, which is #21).
 async function stopDaemon(meta) {
   await new Promise((res) => {
     const c = net.connect(meta.controlPort, '127.0.0.1', () => c.write(JSON.stringify({ action: 'shutdown' }) + '\n'))
@@ -54,8 +79,10 @@ async function stopDaemon(meta) {
     setTimeout(() => { try { c.destroy() } catch {}; res() }, 600)
   })
   for (let i = 0; i < 20; i++) { if (!(await probeControl(meta.controlPort))) return true; await sleep(100) }
-  if (meta.pid) { try { process.kill(meta.pid) } catch {} }
-  for (let i = 0; i < 20; i++) { if (!(await probeControl(meta.controlPort))) return true; await sleep(100) }
+  if (meta.pid) { try { process.kill(meta.pid, 'SIGTERM') } catch {} }
+  for (let i = 0; i < 15; i++) { if (!(await probeControl(meta.controlPort))) return true; await sleep(100) }
+  if (meta.pid) { try { process.kill(meta.pid, 'SIGKILL') } catch {} }   // wedged — force it down so the port frees
+  for (let i = 0; i < 15; i++) { if (!(await probeControl(meta.controlPort))) return true; await sleep(100) }
   return false
 }
 
@@ -69,8 +96,10 @@ export async function ensureRoomDaemon({ portBase, notifyPort }) {
     process.stdout.write('  ◎ Refreshing the negotiation-room daemon (code changed)...')
     await stopDaemon(meta)
     spawnDaemon(meta.port, meta.controlPort, meta.notifyPort ?? notifyPort)
-    const ok = await waitUp(meta.controlPort)
-    console.log(ok ? ' ready.' : ' (could not rebind — booting a fresh one).')
+    // Verify the FRESH version answers (not the old daemon surviving a failed stop, #21) before reusing
+    // the same ports; otherwise fall through to a brand-new daemon on free ports.
+    const ok = await waitUpVersion(meta.controlPort, version)
+    console.log(ok ? ' ready.' : ' (could not rebind to current code — booting a fresh one).')
     if (ok) return { port: meta.port, controlPort: meta.controlPort, notifyPort: meta.notifyPort ?? notifyPort, version }
     // else fall through to a fresh daemon on new ports
   }
@@ -88,10 +117,14 @@ export async function ensureRoomDaemon({ portBase, notifyPort }) {
 export async function restartRoomDaemon() {
   const meta = readMeta()
   if (!meta) return { ok: false, error: 'no room daemon recorded yet (start a session first)' }
-  await stopDaemon(meta)
+  const version = daemonVersion()
+  const stopped = await stopDaemon(meta)
+  if (!stopped) return { ok: false, error: 'old daemon would not stop (still bound to its port) — run: pkill -f room-daemon.js, then retry' }
   spawnDaemon(meta.port, meta.controlPort, meta.notifyPort || 0)
-  const ok = await waitUp(meta.controlPort)
-  return ok ? { ok: true, port: meta.port } : { ok: false, error: 'could not rebind — run: pkill -f room-daemon.js' }
+  // Confirm the CURRENT code is the one now answering — not a stale daemon (#21). waitUp alone would
+  // false-succeed if the old process had survived; the version check is what makes the restart honest.
+  const ok = await waitUpVersion(meta.controlPort, version)
+  return ok ? { ok: true, port: meta.port, version } : { ok: false, error: 'new daemon did not come up on current code — run: pkill -f room-daemon.js' }
 }
 
 // `mrc rooms stop`: stop the daemon without respawning, and clear its record.
