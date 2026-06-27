@@ -43,7 +43,8 @@
   /* cards */
   .team { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:10px }
   .team .tn { font-weight:650; font-size:13px; margin-bottom:6px; display:flex; gap:8px; align-items:center }
-  .mem { display:flex; align-items:center; gap:8px; padding:3px 0; font-size:13px }
+  .mem { display:flex; align-items:center; gap:8px; padding:4px 6px; font-size:13px; cursor:pointer; border:1px solid transparent; border-radius:6px }
+  .mem:hover { background:var(--panel2) } .mem.sel { background:var(--panel2); border-color:var(--accent) }
   .mem .role { color:var(--dim); font-size:11px; margin-left:auto } .mem.lead .h{ color:var(--lead) }
   .rm { display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--line); border-radius:8px; margin:6px 0; cursor:pointer; background:var(--panel) }
   .rm:hover { border-color:#37506e } .rm.sel { border-color:var(--accent); background:var(--panel2) }
@@ -86,7 +87,6 @@
       <button data-nav="teams" class="on">🎩 Teams</button>
       <button data-nav="rooms">💬 Rooms</button>
       <button data-nav="inbox">📥 Inbox <span class="badge" id="inboxBadge" style="display:none"></span></button>
-      <button data-nav="console">🖥 Console</button>
       <div class="sp"></div>
       <button data-nav="build">＋ New team</button>
     </nav>
@@ -105,7 +105,7 @@ const ROLES = ['architect','engineer','critic','adversary','ultracritical','user
 const BACKENDS = ['claude','codex','qwen','gemini']
 
 const S = {
-  nav: 'teams', org: null, selRoom: null, selInbox: null, tab: 'thread', addingTo: null,
+  nav: 'teams', org: null, selRoom: null, selInbox: null, selMember: null, workerLog: '', tab: 'thread', addingTo: null,
   teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null,
   builder: { org:'shop', repo:'', teams:[ { name:'client', territory:'client', members:[
     {role:'architect',backend:'claude',lead:true,territory:''},{role:'engineer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
@@ -119,6 +119,14 @@ async function tick() {
   S.state = st && st.rooms ? st : { rooms:[], daemon:{} }
   if (!S.org) S.org = (S.teams.orgs && S.teams.orgs[0] && S.teams.orgs[0].org) || null
   if (S.selRoom && needRoomFetch()) S.room = await api('/api/room?id='+encodeURIComponent(S.selRoom)).catch(()=>null)
+  if (S.selMember) {
+    const m = memberByHandle(S.selMember)
+    if (m && m.tier==='worker') {
+      const room = mergedRooms().find(r=>r.team===m.team && r.kind==='team')
+      const rd = room ? await api('/api/room?id='+encodeURIComponent(room.roomId)).catch(()=>null) : null
+      S.workerLog = rd ? (rd.thread||'').split('\n').filter(l=>l.toLowerCase().includes(m.first.toLowerCase())).join('\n') : ''
+    }
+  }
   paint()
 }
 const needRoomFetch = () => S.nav!=='build'
@@ -155,7 +163,11 @@ const roomMembers = (id) => { const r=(S.teams.rooms||[]).find(x=>x.roomId===id)
 
 // ---- painting ----
 const launchFor = () => (S.teams.launch||[]).find(x=>x.org===S.org)
-const detailKey = () => S.nav==='build' ? 'build' : S.nav==='console' ? 'console:'+(launchFor()?.ttydUrl||'none') : S.selInbox!=null ? 'inbox:'+S.selInbox : S.selRoom ? 'room:'+S.selRoom+':'+S.tab : 'empty:'+S.nav
+const detailKey = () => S.nav==='build' ? 'build'
+  : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+(launchFor()?.ttydUrl||'none'))
+  : S.selInbox!=null ? 'inbox:'+S.selInbox
+  : S.selRoom ? 'room:'+S.selRoom+':'+S.tab
+  : 'empty:'+S.nav
 
 function paint() {
   // topbar
@@ -181,7 +193,7 @@ function renderList() {
     mid.innerHTML = teams.map(t => {
       const rooms = mergedRooms().filter(r => r.team===t && inOrg(r))
       return `<div class="team"><div class="tn">${esc(t)}</div>
-        ${byTeam[t].map(m=>{const s=memberState(m);return `<div class="mem ${m.lead?'lead':''}"><span class="dot ${s.cls}" title="${esc(s.label)}"></span>
+        ${byTeam[t].map(m=>{const s=memberState(m);return `<div class="mem ${m.lead?'lead':''} ${m.handle===S.selMember?'sel':''}" onclick="selMember('${esc(m.handle)}')" title="${m.tier==='worker'?'on-demand — click for activity':'click for terminal'}"><span class="dot ${s.cls}"></span>
           <span class="h">@${esc(m.first)}</span><span class="muted" style="font-size:11px">/${esc(m.backend)}</span>
           <span class="mstate ${s.cls}">${esc(s.label)}</span>
           <span class="role">${esc(m.role)}${m.lead?' ★':''}</span></div>`}).join('')}
@@ -204,15 +216,6 @@ function renderList() {
     mid.innerHTML = `<h2>Questions for you</h2>` + (ib.qs.length? ib.qs.map((q,i)=>`<div class="ib ${q.answered?'done':''} ${S.selInbox===i?'sel':''}" onclick="selInbox(${i})">
         <div class="who"><b>${esc(q.fromName||('@'+q.from))}</b> · ${esc(q.room)}${q.answered?' · answered':''}</div><div class="q">${esc(q.text)}</div></div>`).join('') : `<div class="muted">Nothing waiting. 🎉</div>`)
       + `<h2>Catch-ups to review</h2>` + (ib.cu.length? ib.cu.map(r=>`<div class="rm" onclick="selRoom('${esc(r.roomId)}',true)"><span class="nm">${esc(r.team||r.roomId)}</span><span class="meta">${r.unreviewed} unreviewed</span></div>`).join('') : `<div class="muted">None.</div>`)
-  } else if (S.nav==='console') {
-    const L = launchFor()
-    const live = orgMembers().filter(m=>m.tier==='live')
-    mid.innerHTML = `<h2>Console</h2>` + (L
-      ? `<div class="muted" style="margin-bottom:8px">● running · <code>${esc(L.session||'')}</code></div>
-         <div class="muted" style="margin:8px 0 4px">Show member:</div>`
-         + live.map(m=>{const s=memberState(m);return `<div class="rm" onclick="selWin('${esc(m.first)}')"><span class="dot ${s.cls}" title="${esc(s.label)}"></span><span class="nm">@${esc(m.first)}</span><span class="mstate ${s.cls}" style="margin-left:auto">${esc(s.label)}</span></div>`}).join('')
-         + `<button class="btn danger" style="margin-top:12px;width:100%" onclick="stopTeam()">■ Stop team</button>`
-      : `<div class="muted">Not launched.<br>Build a team and press <b>🚀 Launch</b>, or run <code>mrc team up</code>.</div>`)
   } else if (S.nav==='build') {
     mid.innerHTML = `<div class="muted" style="padding:6px">Compose your team in the panel →<br><br>Add teams &amp; members, pick roles and backends, watch the live preview, then <b>Save</b>, <b>Define</b>, or <b>🚀 Launch</b>.</div>`
   }
@@ -232,23 +235,47 @@ function amForm(t) {
 function renderDetail() {
   const d = $('#detail')
   if (S.nav==='build') return renderBuilder(d)
-  if (S.nav==='console') return renderConsole(d)
+  if (S.selMember) return renderMember(d)
   if (S.selInbox!=null) return renderInboxItem(d)
   if (S.selRoom) return renderRoom(d)
-  d.innerHTML = `<div class="empty">${S.nav==='inbox'?'Select a question or a catch-up.':'Select a room to watch its transcript and steer it.'}</div>`
+  d.innerHTML = `<div class="empty">${S.nav==='inbox'?'Select a question or a catch-up.':'Pick a member for its terminal/activity, or a room to watch the transcript and steer.'}</div>`
 }
-function renderConsole(d) {
+function renderMember(d) {
+  const m = memberByHandle(S.selMember)
+  if (!m) { d.innerHTML = `<div class="empty">Member gone.</div>`; return }
+  return m.tier==='worker' ? renderWorkerLog(d, m) : renderTerminal(d, m)
+}
+// Live member -> the embedded terminal (one ttyd serves the whole session; clicking a member just
+// switches the tmux window, so the iframe is NOT reloaded).
+function renderTerminal(d, m) {
   const L = launchFor()
-  if (!L) { d.innerHTML = `<div class="empty">No running team.<br><span class="muted">Build one and press <b>🚀 Launch</b> — then log in + accept the Channels prompt right here, all in the browser.</span></div>`; return }
-  if (!L.ttydUrl) { d.innerHTML = `<div class="empty">Team is running in tmux, but there's no embedded terminal.<br><span class="muted">Install <code>ttyd</code> (<code>brew install ttyd</code>) and relaunch to embed it here — or <code>tmux attach -t ${esc(L.session)}</code>.</span></div>`; return }
-  const live = orgMembers().filter(m=>m.tier==='live'); const ready = live.filter(m=>m.online).length; const starting = live.filter(m=>!m.online && m.launched).length
+  if (!L || !L.ttydUrl) {
+    d.innerHTML = `<div class="empty">${L
+      ? `@${esc(m.first)} is running in tmux, but there's no embedded terminal — install <code>ttyd</code> and relaunch, or <code>tmux attach -t ${esc(L.session)}</code>.`
+      : `@${esc(m.first)} isn't launched yet. Build + <b>🚀 Launch</b> the team (or <code>mrc team up</code>).`}</div>`
+    return
+  }
+  const live = orgMembers().filter(x=>x.tier==='live'); const ready = live.filter(x=>x.online).length; const starting = live.filter(x=>!x.online && x.launched).length
   d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:8px">
-      <b>Live terminal</b>
-      <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting — log in below</span>`:''} <a href="${esc(L.ttydUrl)}" target="_blank" style="margin-left:8px">open in new tab ↗</a></span></div>
-    <iframe src="${esc(L.ttydUrl)}" style="width:100%;height:70vh;border:1px solid var(--line);border-radius:8px;background:#000"></iframe>
-    <div class="muted" style="margin-top:6px">First launch: log in + accept the Channels prompt here — a member flips to 🟢 ready once it connects. Switch members in the left list (or Ctrl-b n in the terminal).</div>`
+      <b>@${esc(m.first)} <span class="muted">· terminal</span></b>
+      <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(L.ttydUrl)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny danger" style="margin-left:8px" onclick="stopTeam()">■ Stop team</button></span></div>
+    <iframe src="${esc(L.ttydUrl)}" style="width:100%;height:68vh;border:1px solid var(--line);border-radius:8px;background:#000"></iframe>
+    <div class="muted" style="margin-top:6px">First launch: log in + accept the Channels prompt here. Click a member on the left to switch the terminal to them (or Ctrl-b n).</div>`
+}
+// On-demand worker -> no terminal; show its recent activity from the team transcript.
+function renderWorkerLog(d, m) {
+  d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:6px">
+      <b>@${esc(m.first)} <span class="muted">/${esc(m.backend)} · ${esc(m.role)}</span></b>
+      <span class="mstate worker">on-demand</span></div>
+    <div class="muted" style="margin-bottom:8px">No terminal — this member runs when a teammate @mentions it. Recent activity from the team transcript:</div>
+    <pre class="thread" id="wlog">${esc(S.workerLog || '(no activity yet — @mention @'+m.first+' to put them to work)')}</pre>`
 }
 function patchDetail() {
+  if (S.selMember) {
+    const m = memberByHandle(S.selMember)
+    if (m && m.tier==='worker') { const w=$('#wlog'); if (w && w.textContent!==(S.workerLog||'')) { w.textContent = S.workerLog || '(no activity yet)'; w.scrollTop=w.scrollHeight } }
+    return
+  }
   if (S.selRoom && S.room) {
     const t = $('#thread'); if (t && S.tab==='thread' && t.textContent!==(S.room.thread||'')) { t.textContent=S.room.thread||''; t.scrollTop=t.scrollHeight }
     const sm = $('#summary'); if (sm && S.tab==='summary') sm.textContent = S.room.consensus||''
@@ -355,16 +382,20 @@ window.bSave=async()=>{const B=S.builder;const msg=$('#bMsg');if(!B.repo){msg.in
 window.bDefine=async()=>{const r=await api('/api/team-define',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})});$('#bMsg').innerHTML=r.ok?`<span class="good">◎ defined ${(r.rooms||[]).length} room(s)</span> <a href="#" onclick="go('teams');return false">view</a>`:`<span class="bad">✗ ${esc(r.error||'daemon down')}</span>`; if(r.ok){S.org=null;tick()}}
 
 // ---- actions ----
-window.go = (nav)=>{ S.nav=nav; if(nav!=='inbox')S.selInbox=null; S.addingTo=null; paint() }
+window.go = (nav)=>{ S.nav=nav; if(nav!=='inbox')S.selInbox=null; S.addingTo=null; S.selMember=null; paint() }
 window.startAddMember = (t)=>{ S.addingTo=t; renderList() }
 window.cancelAddMember = ()=>{ S.addingTo=null; renderList() }
 window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('#amBackend').value, territory=$('#amTerr').value.trim()
   const msg=$('#amMsg'); if(msg)msg.textContent='adding…'
   const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role,backend,territory})
   if(r&&r.ok){ S.addingTo=null; tick() } else { const m=$('#amMsg'); if(m)m.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
-window.selRoom = (id, openCu)=>{ S.selRoom=id; S.selInbox=null; if(openCu)S.tab='catchups'; S.room=null; tick() }
+window.selRoom = (id, openCu)=>{ S.selRoom=id; S.selInbox=null; S.selMember=null; if(openCu)S.tab='catchups'; S.room=null; tick() }
 window.openRoom = (id)=>{ S.nav='rooms'; selRoom(id) }
-window.selInbox = (i)=>{ S.selInbox=i; S.selRoom=null; paint() }
+window.selInbox = (i)=>{ S.selInbox=i; S.selRoom=null; S.selMember=null; paint() }
+window.selMember = (h)=>{ S.selRoom=null; S.selInbox=null; S.selMember=h
+  const m = memberByHandle(h)
+  if (m && m.tier==='worker') { S.workerLog=null; tick() }
+  else { if (m) postJSON('/api/team-select',{org:S.org,window:m.first}); paint() } }
 window.setTab = (t)=>{ S.tab=t; paintedKey=null; paint() }
 window.roomAct = async (a)=>{ if(a==='end'&&!confirm('Close this room?'))return; await post(a,{roomId:S.selRoom}); tick() }
 window.doSteer = async ()=>{ const tx=$('#steerTx'); const t=$('#steerT'); if(!tx||!tx.value.trim())return; await post('steer',{roomId:S.selRoom,target:t.value,text:tx.value.trim()}); tx.value=''; tick() }
