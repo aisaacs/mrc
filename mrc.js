@@ -69,6 +69,7 @@ Options:
   --colima-memory N    Memory (GB) for Colima VM (default: half host RAM, min 8)
 
 Commands:
+  mrc gui [path]                          Open the standalone GUI: build, launch & control a team
   mrc status                              Show active containers across repos
   mrc pick [path]                         Interactive session picker (arrow keys)
   mrc rooms [...]                         Watch/steer negotiation rooms (mrc rooms --help)
@@ -134,6 +135,25 @@ if (remaining[0] === 'rooms' || remaining[0] === 'room') {
 if (remaining[0] === 'team') {
   const { teamCommand } = await import('./src/commands/team.js')
   await teamCommand(remaining.slice(1))
+  process.exit(0)
+}
+
+// --- Subcommand: mrc gui [repo] — the standalone GUI. Boots the daemon + opens the dashboard scoped
+// to a repo, ready to build & launch a team. No API key, no other setup. ---
+if (remaining[0] === 'gui' || remaining[0] === 'studio') {
+  const repo = resolve(remaining[1] || '.')
+  const { ensureRoomDaemon } = await import('./src/commands/pair.js')
+  const { openBrowser } = await import('./src/rooms-dashboard.js')
+  const metaPath = resolve(process.env.HOME, '.local/share/mrc/room-daemon.json')
+  const readMeta = () => { try { return JSON.parse(readFileSync(metaPath, 'utf8')) } catch { return null } }
+  process.stdout.write('  🎩 Starting Mister Claude…')
+  try { await ensureRoomDaemon({ portBase: Number(process.env.MRC_PORT_BASE) || 7722, notifyPort: 0 }) } catch {}
+  let dp = readMeta()?.dashboardPort
+  for (let i = 0; !dp && i < 30; i++) { await new Promise((r) => setTimeout(r, 100)); dp = readMeta()?.dashboardPort }
+  if (!dp) { console.error('\n  ! the daemon is not serving a dashboard (MRC_DASHBOARD_PORT=0?).'); process.exit(1) }
+  const url = `http://127.0.0.1:${dp}/?repo=${encodeURIComponent(repo)}&org=${encodeURIComponent(basename(repo))}`
+  console.log(` ready.\n  ◎ ${url}\n    Build → pick a preset → 🚀 Launch. The dashboard stays up while it's open.`)
+  openBrowser(url)
   process.exit(0)
 }
 
