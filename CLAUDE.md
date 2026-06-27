@@ -59,7 +59,21 @@ Lets two running `mrc` sessions consult each other through a host-mediated relay
 - **`src/commands/rooms.js`** — the `mrc rooms` CLI (`status` / `brake` / `resume` / `steer` / `end` / `restart` / `stop` / `dashboard`) over the daemon's control socket.
 - **`src/rooms.js`** — room-dir manager for `~/.local/share/mrc/rooms/<roomId>/`: `ensureRoom`, `appendThread`, `writeConsensus`, `listRooms`.
 - **`src/rooms-dashboard.js`** + **`src/rooms-dashboard.html`** — a dependency-free localhost web dashboard (served from inside the daemon) showing every room's full `thread.log` + summary (live & historical), paginated per-pause **catch-up panes** (agent-written handoffs captured when a room pauses, with explicit mark-reviewed), and pause/resume/steer/end controls.
-- **`container/mrc-channel-server.js`** — container-side MCP "channel" server (loaded via `--dangerously-load-development-channels server:room`). Connects to the daemon and exposes `list_peers`/`ask_peer`/`reply`/`update_notes`/`pause_room`/`resume_room`, pushing peer messages into the session as `<channel>` tags.
+- **`container/mrc-channel-server.js`** — container-side MCP "channel" server (loaded via `--dangerously-load-development-channels server:room`). Connects to the daemon and exposes `list_peers`/`ask_peer`/`reply`/`update_notes`/`pause_room`/`resume_room`, pushing peer messages into the session as `<channel>` tags. In **team mode** (`MRC_MEMBER_HANDLE` set) it instead exposes `send_message`/`list_team`/`ask_user`.
+
+### Agent teams (multi-agent orchestration)
+
+Builds **on top of negotiation rooms**: generalizes the 2-party pairing into N-party **teams** of agent **members**, each in its own container, addressing each other by **@mention** and steered by the human from a web UI or any member's console. Declared in a `team.json` roster, launched with `mrc team up`. **Deep dive, topology, and the test/rebuild recipe live in `docs/agent-teams.md`.**
+
+- **`src/teams/names.js`** — French first-name pool (with Spaceballs easter eggs) + unique `first/backend` handles + @mention parsing.
+- **`src/teams/personas.js`** — role registry (architect/writer/critic/adversary/ultracritical/user-defender/researcher) + `buildPersona()`, the team protocol injected via `--append-system-prompt`.
+- **`src/teams/roster.js`** — parse/normalize `team.json` → members (unique handles, resolved territory/mount/tier, one lead per team) + derived rooms (one team room per team + a leads room with `@user`). Deterministic naming so members rebind across runs.
+- **`src/teams/room-engine.js`** — the generalized relay engine (transport-agnostic, injected I/O): member-set rooms, **directed @routing**, multi-room membership, room-tagged delivery, the `@user` inbox, brake/resume/turn-cap/steer for N members, the worker queue, and redefine-with-prune.
+- **`src/teams/worker-runner.js`** — drives non-Claude (task-worker) members: drains the worker queue, batches a burst into one invocation, runs the worker's CLI, posts the reply back.
+- **`src/commands/team.js`** — the `mrc team` CLI (`up`/`status`/`console`/`down`/`define`/`exec`), member launch wiring (territorial volumes, persona files, per-member session ids/volumes), and the worker container exec.
+- **`src/rooms-teams.html`** — the `/teams` web orchestrator (roster, rooms, per-room controls, the `@user` inbox, live transcript), served by the room daemon's dashboard.
+
+The daemon (`room-daemon.js`) runs the team engine + worker runner **alongside** legacy pairings; `mrc.js`/`config.js` gain a `team` subcommand and `--member`/`--roster` launch mode; `entrypoint.sh` injects the persona and has a one-shot worker-exec branch; `docker.js` adds `runWorkerExec`.
 
 ### Legacy (deprecated — do not modify)
 
@@ -91,6 +105,8 @@ Lets two running `mrc` sessions consult each other through a host-mediated relay
 - **Docker context resolution** — `mrc.js` searches for the Dockerfile in three locations: `<scriptDir>`, `~/.local/share/mrc/`, and `$MRC_HOME/`. This enables standalone binary installs separate from the Docker context.
 - **Negotiation rooms are host-mediated and sandbox-safe** — cross-session consultation flows session → host daemon → session over one sanctioned host port (no container-to-container network, no new firewall egress). Peer messages are always framed as untrusted data (`Peer (<name>) says: …`); only the human's steers are trusted (`[Human directive]: …`). Rooms are a host-controlled bind mount (`/rooms`), not network. Room ids hash the two sessions' conversation UUIDs, so resuming both conversations deterministically rejoins the same room (history preserved); closing a room is human-only.
 - **Rooms daemon + dashboard lifecycle** — one self-managing daemon serves all sessions (version-stamped, so it auto-refreshes when `room-daemon.js` changes; idle auto-shutdown). It also hosts the `mrc rooms dashboard` web UI, so the dashboard persists without a foreground tab and an open dashboard keeps the daemon alive. `consensus.md` is a *living shared summary* refreshed by either agent via `update_notes` (not a signed gate); the turn cap (default 100, `MRC_ROOM_TURN_CAP`) is a periodic check-in that grants another window on resume.
+
+- **Agent teams generalize rooms, federated and directed** — a team is N members in N containers on one host daemon. The anti-tangle design is three invariants: **containment** (members only reach their own rooms; cross-team only via the leads room, lead-to-lead), **scoped resolution** (`@role`/`@name` resolve within the originating room; `@user` is global), and **room-tagging** (so a lead in two rooms never confuses contexts). **Directed delivery** (a member only receives messages it's @mentioned in) is the floor control that prevents the N-way autonomous-volley explosion. **Territorial write isolation** avoids file contention (read-only `/workspace` except a member's own sub-tree, mounted rw on top) and **the human commits**. **Heterogeneity tiers by transport**: Claude members are live `/channels` participants; non-Claude (Codex/Qwen) members are forced to **task-workers** — a directed @mention invokes their CLI for one turn (the channel transport is Claude-only). A teammate's message — even the architect's — is **untrusted peer data**; only `[Human directive]`/`[Human reply]` is authoritative.
 
 ## CLI Reference
 
@@ -125,6 +141,11 @@ Commands:
   mrc rooms brake|resume|end [room-id]    Pause / resume / close a room
   mrc rooms steer [--target a|b] <text>   Inject a trusted [Human directive] into a room
   mrc rooms restart|stop                  Refresh / stop the room daemon
+  mrc team up [path]                      Launch a team of agents from team.json (tmux)
+  mrc team status [path]                  Show the org, rooms, and the @user inbox
+  mrc team console <handle> [path]        Attach to a running member's terminal
+  mrc team exec <handle> "prompt"         Run a task-worker (codex/qwen) turn manually
+  mrc team down|define [path]             Close the org's rooms / push roster without launching
 
 Config files (~/.mrcrc or <repo>/.mrcrc, one flag per line):
   # Example ~/.mrcrc

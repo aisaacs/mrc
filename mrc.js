@@ -72,6 +72,7 @@ Commands:
   mrc status                              Show active containers across repos
   mrc pick [path]                         Interactive session picker (arrow keys)
   mrc rooms [...]                         Watch/steer negotiation rooms (mrc rooms --help)
+  mrc team [...]                          Assemble/launch a team of agents (mrc team help)
 
 Session management:
   mrc sessions ls [path]                  List saved sessions
