@@ -1,4 +1,5 @@
 // Persistent host-side daemon for ambient pairing.
+// (rev: unified teams-first dashboard — bump so a running daemon auto-refreshes to serve it.)
 //
 // Every room-enabled session's channel connects here at launch and registers (repo basename +
 // a display label = the picked session name, if any). It stays dormant until the human picks a

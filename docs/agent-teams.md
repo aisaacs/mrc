@@ -122,12 +122,18 @@ never a silent drop.
 
 ## 6. The web orchestrator — "the real Mister Claude"
 
-The daemon-hosted dashboard gains a **/teams** page (`src/rooms-teams.html`): the org roster
-(members by team, online dots, lead/role/backend/tier), the rooms with live state, per-room controls
-(pause/resume/close + **steer any member or everyone**), the live transcript, and — the key human
-surface — the **@user inbox**: a member's `@user` question lands here; you answer and it routes back
-as `[Human reply]`. You can also drop into any live member's terminal with `mrc team console
-<handle>` (the members run in a tmux session).
+The daemon-hosted dashboard is a **unified, teams-first** single-page app (`src/dashboard.html`) — a
+3-pane workspace (nav rail → list → detail) with four destinations:
+- **Teams** (home): the org roster (members by team, online dots, lead/role/backend/tier) + each
+  team's rooms; click a room → its transcript + steer.
+- **Rooms**: every room (team + leads + legacy 2-party consult + history) with live state.
+- **Inbox** (first-class): the **@user** queue — a member's `@user` question lands here; you answer
+  and it routes back as `[Human reply]` — plus catch-ups awaiting review.
+- **Build**: the in-app team-builder (compose → live preview → Save team.json / Define rooms).
+
+Per-room detail has Transcript / Summary / Catch-up tabs and **steer any member or everyone** +
+pause/resume/close. You can also drop into any live member's terminal with `mrc team console
+<handle>` (members run in a tmux session).
 
 ---
 
@@ -151,7 +157,8 @@ as `[Human reply]`. You can also drop into any live member's terminal with `mrc 
   member launch wiring, persona files, territorial volumes, worker exec.
 - `container/mrc-channel-server.js` — team mode: registers as a member; `send_message`/`list_team`/
   `ask_user` tools + team instructions.
-- `src/rooms-dashboard.js` + `src/rooms-teams.html` — `/teams` page, `/api/teams`, `answer` action.
+- `src/rooms-dashboard.js` + `src/dashboard.html` — the unified teams-first web app + its endpoints
+  (`/api/teams`, `/api/team-preview|save|define`, the `answer` action).
 - `mrc.js` / `src/config.js` — `team` subcommand, `--member`/`--roster`, member-mode launch.
 - `entrypoint.sh` — `--append-system-prompt` for members; one-shot worker exec branch.
 - `src/docker.js` — `runWorkerExec`. `src/rooms.js` — `saveOrgs`/`loadOrgs`.

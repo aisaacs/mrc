@@ -17,10 +17,7 @@ import { parseRoster, validateRoster } from './teams/roster.js'
 const metaPath = () => join(homedir(), '.local', 'share', 'mrc', 'room-daemon.json')
 const daemonMeta = () => { try { return JSON.parse(readFileSync(metaPath(), 'utf8')) } catch { return null } }
 const readIf = (f) => { try { return readFileSync(f, 'utf8') } catch { return '' } }
-const HTML_FILE = fileURLToPath(new URL('./rooms-dashboard.html', import.meta.url))
-const TEAMS_HTML = fileURLToPath(new URL('./rooms-teams.html', import.meta.url))
-const BUILDER_HTML = fileURLToPath(new URL('./rooms-team-builder.html', import.meta.url))
-
+const HTML_FILE = fileURLToPath(new URL('./dashboard.html', import.meta.url))   // unified, teams-first app
 // Normalize a roster object/JSON into { norm, validation } or { error }. Pure — no disk/daemon.
 function previewRoster(input) {
   try {
@@ -90,13 +87,11 @@ async function handle(req, res) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
       return res.end(readFileSync(HTML_FILE))   // re-read each load so the page can be edited live
     }
-    if (req.method === 'GET' && url.pathname === '/teams') {
+    // The unified app handles teams/rooms/inbox/build client-side; these paths serve it for back-compat
+    // (and /teams/new deep-links to the builder view).
+    if (req.method === 'GET' && (url.pathname === '/teams' || url.pathname === '/teams/new')) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-      return res.end(readFileSync(TEAMS_HTML))
-    }
-    if (req.method === 'GET' && url.pathname === '/teams/new') {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-      return res.end(readFileSync(BUILDER_HTML))
+      return res.end(readFileSync(HTML_FILE))
     }
     // Team builder: preview (pure), save team.json to a repo, or define rooms on the daemon.
     if (req.method === 'POST' && (url.pathname === '/api/team-preview' || url.pathname === '/api/team-save' || url.pathname === '/api/team-define')) {

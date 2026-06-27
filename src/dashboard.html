@@ -1,0 +1,316 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Mister Claude</title>
+<style>
+  :root { --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --line:#262b36; --fg:#e6e9ef; --dim:#8b93a3;
+          --accent:#7aa2f7; --good:#7bd88f; --warn:#e0af68; --bad:#f7768e; --lead:#bb9af7; }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif; height:100vh; overflow:hidden }
+  code,pre,.mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace }
+  a { color:var(--accent); text-decoration:none }
+  /* layout */
+  .app { display:grid; grid-template-rows:50px 1fr; height:100vh }
+  header { display:flex; align-items:center; gap:12px; padding:0 16px; border-bottom:1px solid var(--line); background:var(--panel) }
+  header h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:.2px }
+  header .spacer { flex:1 }
+  .main { display:grid; grid-template-columns:120px 300px 1fr; min-height:0 }
+  nav.rail { border-right:1px solid var(--line); padding:10px 8px; display:flex; flex-direction:column; gap:4px; background:#13151b }
+  nav.rail button { display:flex; align-items:center; gap:8px; width:100%; text-align:left; background:transparent; border:1px solid transparent;
+                    border-radius:8px; padding:8px 10px; color:var(--dim); cursor:pointer; font-size:13px }
+  nav.rail button:hover { background:var(--panel) } nav.rail button.on { background:var(--panel2); color:var(--fg); border-color:var(--line) }
+  nav.rail .sp { flex:1 }
+  .list { border-right:1px solid var(--line); overflow:auto; padding:10px }
+  .detail { overflow:auto; padding:16px 20px; min-width:0 }
+  /* pills / badges */
+  .pill { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--dim) }
+  .pill.on { color:var(--good); border-color:#2c4533 } .pill.off { color:var(--bad); border-color:#4a2a31 }
+  .badge { font-size:10px; background:#3a2f4f; color:#d7c5f5; border-radius:999px; padding:0 6px; margin-left:auto }
+  .state { font-size:10px; padding:1px 7px; border-radius:6px; border:1px solid var(--line); color:var(--dim) }
+  .state.Running { color:var(--good) } .state.Paused { color:var(--warn) } .state.History { color:var(--dim) }
+  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--dim); margin:16px 0 8px } h2:first-child { margin-top:4px }
+  .dim { color:var(--dim) } .muted { color:var(--dim); font-size:12px } .good{color:var(--good)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+  .h { font-family:ui-monospace,monospace; font-size:12.5px }
+  .dot { width:8px; height:8px; border-radius:50%; background:#3a4150; display:inline-block; flex:0 0 auto }
+  .dot.online { background:var(--good); box-shadow:0 0 6px #7bd88f88 } .dot.worker { background:var(--warn) }
+  /* cards */
+  .team { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:10px 12px; margin-bottom:10px }
+  .team .tn { font-weight:650; font-size:13px; margin-bottom:6px; display:flex; gap:8px; align-items:center }
+  .mem { display:flex; align-items:center; gap:8px; padding:3px 0; font-size:13px }
+  .mem .role { color:var(--dim); font-size:11px; margin-left:auto } .mem.lead .h{ color:var(--lead) }
+  .rm { display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--line); border-radius:8px; margin:6px 0; cursor:pointer; background:var(--panel) }
+  .rm:hover { border-color:#37506e } .rm.sel { border-color:var(--accent); background:var(--panel2) }
+  .rm .nm { font-weight:600; font-size:13px } .rm .meta { color:var(--dim); font-size:11px; margin-left:auto }
+  .ib { border:1px solid #3a2f4f; background:#1a1622; border-radius:9px; padding:9px 11px; margin-bottom:7px; cursor:pointer }
+  .ib:hover { border-color:#5a4a7a } .ib.sel { border-color:var(--lead) } .ib .who{ font-size:12px; color:var(--dim) } .ib .who b{ color:var(--fg) }
+  .ib .q { margin-top:3px } .ib.done { opacity:.5 }
+  /* controls */
+  textarea,input,select { background:#11141b; color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:7px 9px; font:13px/1.4 inherit; width:100% }
+  textarea { resize:vertical; min-height:38px }
+  button.btn { background:var(--panel2); color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:6px 12px; cursor:pointer; font-size:12.5px }
+  button.btn:hover { border-color:#3a4150 } button.primary { background:#23314d; border-color:#33507e; color:#cfe0ff } button.danger { background:#2a1b21; border-color:#5a3540; color:#f4a6b4 }
+  button.tiny { padding:3px 8px; font-size:11px }
+  .row { display:flex; gap:8px; align-items:center } .row.wrap{ flex-wrap:wrap } .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:10px }
+  .tabs { display:flex; gap:6px; margin:14px 0 10px } .tabs button { background:transparent; border:1px solid transparent; color:var(--dim); border-radius:7px; padding:5px 10px; cursor:pointer; font-size:12.5px }
+  .tabs button.on { background:var(--panel2); color:var(--fg); border-color:var(--line) }
+  pre.thread { background:#0b0d12; border:1px solid var(--line); border-radius:10px; padding:14px; white-space:pre-wrap; word-break:break-word; font-size:12.5px; max-height:62vh; overflow:auto }
+  .pane { background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:10px 12px; margin-bottom:8px }
+  .pane.unrev { border-color:#5a4a7a }
+  .card { background:#0b0d12; border:1px solid var(--line); border-radius:8px; padding:9px 11px; margin:6px 0; white-space:pre-wrap; font-size:12.5px }
+  .empty { color:var(--dim); padding:40px 20px; text-align:center } label{ display:block; font-size:12px; color:var(--dim); margin:8px 0 3px }
+  .memrow { display:grid; grid-template-columns:1.3fr 1fr auto 1.1fr auto; gap:8px; align-items:center; padding:5px 0; border-top:1px solid var(--line) }
+  .memrow .lead { display:flex; align-items:center; gap:5px; font-size:12px; color:var(--dim); white-space:nowrap } .memrow input[type=checkbox]{ width:auto }
+  .roomtag { display:inline-block; font-size:11px; border:1px solid var(--line); border-radius:6px; padding:1px 7px; margin:2px 4px 2px 0; color:var(--dim) }
+</style>
+</head>
+<body>
+<div class="app">
+  <header>
+    <h1>🎩 Mister Claude</h1>
+    <select id="orgSel" style="width:auto;display:none"></select>
+    <span class="spacer"></span>
+    <span class="pill" id="needPill" style="display:none"></span>
+    <span class="pill off" id="daemonPill">daemon ?</span>
+  </header>
+  <div class="main">
+    <nav class="rail" id="rail">
+      <button data-nav="teams" class="on">🎩 Teams</button>
+      <button data-nav="rooms">💬 Rooms</button>
+      <button data-nav="inbox">📥 Inbox <span class="badge" id="inboxBadge" style="display:none"></span></button>
+      <div class="sp"></div>
+      <button data-nav="build">＋ New team</button>
+    </nav>
+    <div class="list" id="mid"></div>
+    <div class="detail" id="detail"></div>
+  </div>
+</div>
+<script>
+const $ = (s, r=document) => r.querySelector(s)
+const esc = (s) => String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
+const api = (p, o) => fetch(p, o).then(r => r.json())
+const post = (action, extra={}) => api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ action, ...extra }) })
+
+const ROLES = ['architect','writer','critic','adversary','ultracritical','user-defender','researcher']
+const BACKENDS = ['claude','codex','qwen','gemini']
+
+const S = {
+  nav: 'teams', org: null, selRoom: null, selInbox: null, tab: 'thread',
+  teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null,
+  builder: { org:'shop', repo:'', teams:[ { name:'client', territory:'client', members:[
+    {role:'architect',backend:'claude',lead:true,territory:''},{role:'writer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
+}
+let paintedKey = null
+
+// ---- data ----
+async function tick() {
+  const [t, st] = await Promise.all([ api('/api/teams').catch(()=>S.teams), api('/api/state').catch(()=>S.state) ])
+  S.teams = t && t.members ? t : { members:[], rooms:[], userInbox:[], orgs:[] }
+  S.state = st && st.rooms ? st : { rooms:[], daemon:{} }
+  if (!S.org) S.org = (S.teams.orgs && S.teams.orgs[0] && S.teams.orgs[0].org) || null
+  if (S.selRoom && needRoomFetch()) S.room = await api('/api/room?id='+encodeURIComponent(S.selRoom)).catch(()=>null)
+  paint()
+}
+const needRoomFetch = () => S.nav!=='build'
+
+// merge live engine team rooms with all room dirs (consult pairings + history)
+function mergedRooms() {
+  const eng = new Map((S.teams.rooms||[]).map(r => [r.roomId, { ...r, live:true, source:'team' }]))
+  const out = []
+  for (const r of (S.state.rooms||[])) {
+    const e = eng.get(r.roomId)
+    if (e) { out.push({ ...e, unreviewed:r.unreviewed, updatedAt:r.updatedAt }); eng.delete(r.roomId) }
+    else out.push({ roomId:r.roomId, team:null, kind:(r.a&&r.b?'consult':'room'), state:r.state, live:!!r.live, turn:r.turn, members:[], unreviewed:r.unreviewed||0, updatedAt:r.updatedAt||0, a:r.a, b:r.b, source:'room' })
+  }
+  for (const e of eng.values()) out.push({ ...e, unreviewed:0, updatedAt:Date.now() })
+  return out.filter(r => !S.org || !r.org || r.org===S.org)
+    .sort((x,y)=>(Number((y.unreviewed||0)>0)-Number((x.unreviewed||0)>0))||(Number(!!y.live)-Number(!!x.live))||((y.updatedAt||0)-(x.updatedAt||0)))
+}
+const orgMembers = () => (S.teams.members||[]).filter(m => !S.org || !m.org || m.org===S.org)
+function inbox() {
+  const qs = (S.teams.userInbox||[])
+  const cu = mergedRooms().filter(r => (r.unreviewed||0)>0)
+  return { qs, cu, need: qs.filter(q=>!q.answered).length + cu.reduce((a,c)=>a+(c.unreviewed||0),0) }
+}
+const memberByHandle = (h) => orgMembers().find(m => m.handle===h)
+const roomMembers = (id) => { const r=(S.teams.rooms||[]).find(x=>x.roomId===id); return r ? r.members.filter(x=>x!=='@user') : [] }
+
+// ---- painting ----
+const detailKey = () => S.nav==='build' ? 'build' : S.selInbox!=null ? 'inbox:'+S.selInbox : S.selRoom ? 'room:'+S.selRoom+':'+S.tab : 'empty:'+S.nav
+
+function paint() {
+  // topbar
+  const ib = inbox()
+  const dp = $('#daemonPill'); const up = (S.state.daemon&&S.state.daemon.running) || (S.teams.members||[]).length>0
+  dp.className = 'pill '+(up?'on':'off'); dp.textContent = up?'daemon up':'daemon down'
+  const np = $('#needPill'); if (ib.need){ np.style.display=''; np.className='pill'; np.style.color='#d7c5f5'; np.style.borderColor='#5a4a7a'; np.textContent='📥 '+ib.need+' need you' } else np.style.display='none'
+  const bd = $('#inboxBadge'); if (ib.need){ bd.style.display=''; bd.textContent=ib.need } else bd.style.display='none'
+  const orgs = (S.teams.orgs||[]).map(o=>o.org)
+  const os = $('#orgSel'); if (orgs.length>1){ os.style.display=''; os.innerHTML=orgs.map(o=>`<option ${o===S.org?'selected':''}>${esc(o)}</option>`).join(''); os.onchange=()=>{S.org=os.value;S.selRoom=null;S.selInbox=null;paint()} } else os.style.display='none'
+  for (const b of document.querySelectorAll('[data-nav]')) b.classList.toggle('on', b.dataset.nav===S.nav)
+  renderList()
+  const key = detailKey()
+  if (key!==paintedKey) { renderDetail(); paintedKey=key } else patchDetail()
+}
+
+function renderList() {
+  const mid = $('#mid')
+  if (S.nav==='teams') {
+    const byTeam = {}; for (const m of orgMembers()) (byTeam[m.team] ||= []).push(m)
+    const teams = Object.keys(byTeam)
+    if (!teams.length) { mid.innerHTML = `<div class="empty">No team yet.<br><a href="#" onclick="go('build');return false">＋ Assemble one</a></div>`; return }
+    mid.innerHTML = teams.map(t => {
+      const rooms = mergedRooms().filter(r => r.team===t)
+      return `<div class="team"><div class="tn">${esc(t)}</div>
+        ${byTeam[t].map(m=>`<div class="mem ${m.lead?'lead':''}"><span class="dot ${m.online?'online':m.tier==='worker'?'worker':''}"></span>
+          <span class="h">@${esc(m.first)}</span><span class="muted" style="font-size:11px">/${esc(m.backend)}</span>
+          <span class="role">${esc(m.role)}${m.lead?' ★':''}${m.tier==='worker'?' · worker':''}</span></div>`).join('')}
+        ${rooms.map(r=>`<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')"><span class="nm">${esc(r.team||r.roomId)}</span>
+          <span class="state ${r.state}">${esc(r.state)}</span><span class="meta">t${r.turn||0}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`).join('')}
+      </div>`
+    }).join('')
+  } else if (S.nav==='rooms') {
+    const rs = mergedRooms()
+    mid.innerHTML = `<h2>All rooms</h2>` + (rs.length? rs.map(r=>`<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')">
+      <span class="nm">${esc(r.team||label2(r))}</span><span class="state ${r.state}">${esc(r.state)}</span>
+      <span class="meta">${esc(r.kind||'')}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`).join('') : `<div class="empty">No rooms.</div>`)
+  } else if (S.nav==='inbox') {
+    const ib = inbox()
+    mid.innerHTML = `<h2>Questions for you</h2>` + (ib.qs.length? ib.qs.map((q,i)=>`<div class="ib ${q.answered?'done':''} ${S.selInbox===i?'sel':''}" onclick="selInbox(${i})">
+        <div class="who"><b>@${esc(q.fromName||q.from)}</b> · ${esc(q.room)}${q.answered?' · answered':''}</div><div class="q">${esc(q.text)}</div></div>`).join('') : `<div class="muted">Nothing waiting. 🎉</div>`)
+      + `<h2>Catch-ups to review</h2>` + (ib.cu.length? ib.cu.map(r=>`<div class="rm" onclick="selRoom('${esc(r.roomId)}',true)"><span class="nm">${esc(r.team||r.roomId)}</span><span class="meta">${r.unreviewed} unreviewed</span></div>`).join('') : `<div class="muted">None.</div>`)
+  } else if (S.nav==='build') {
+    mid.innerHTML = `<div class="muted" style="padding:6px">Compose your team in the panel →<br><br>Add teams &amp; members, pick roles and backends, watch the live preview, then <b>Save team.json</b> or <b>Define rooms</b>.</div>`
+  }
+}
+const label2 = (r) => r.a&&r.b ? `${r.a} ⇄ ${r.b}` : r.roomId
+
+// ---- detail renderers ----
+function renderDetail() {
+  const d = $('#detail')
+  if (S.nav==='build') return renderBuilder(d)
+  if (S.selInbox!=null) return renderInboxItem(d)
+  if (S.selRoom) return renderRoom(d)
+  d.innerHTML = `<div class="empty">${S.nav==='inbox'?'Select a question or a catch-up.':'Select a room to watch its transcript and steer it.'}</div>`
+}
+function patchDetail() {
+  if (S.selRoom && S.room) {
+    const t = $('#thread'); if (t && S.tab==='thread' && t.textContent!==(S.room.thread||'')) { t.textContent=S.room.thread||''; t.scrollTop=t.scrollHeight }
+    const sm = $('#summary'); if (sm && S.tab==='summary') sm.textContent = S.room.consensus||''
+  }
+}
+
+function renderRoom(d) {
+  const r = mergedRooms().find(x=>x.roomId===S.selRoom) || { roomId:S.selRoom, state:'History', kind:'room' }
+  const isTeam = !!(S.teams.rooms||[]).find(x=>x.roomId===S.selRoom)
+  const mem = roomMembers(S.selRoom)
+  const steerOpts = isTeam
+    ? ['<option value="all">everyone</option>'].concat(mem.map(h=>{const m=memberByHandle(h);return `<option value="${esc(h)}">${m?'@'+m.first+' ('+m.role+')':esc(h)}</option>`})).join('')
+    : ['both','a','b'].map(x=>`<option value="${x}">${x==='both'?'both sides':'side '+x}</option>`).join('')
+  const cu = (S.room&&S.room.catchups)||[]; const unrev = cu.filter(c=>c.status==='ready'&&!c.reviewedAt).length
+  d.innerHTML = `
+    <div class="row wrap" style="justify-content:space-between;align-items:flex-start">
+      <div><b>${esc(r.team||label2(r))}</b> <span class="muted">[${esc(r.kind||'room')}]</span> <span class="state ${r.state}">${esc(r.state)}${r.pauseReason?(' · '+esc(r.pauseReason)):''}</span></div>
+      <div class="row"><button class="btn" onclick="roomAct('brake')">⏸ Pause</button><button class="btn" onclick="roomAct('resume')">▶ Resume</button><button class="btn danger" onclick="roomAct('end')">✕ Close</button></div>
+    </div>
+    <h2>Steer — trusted [Human directive]</h2>
+    <div class="row"><select id="steerT" style="max-width:220px">${steerOpts}</select><textarea id="steerTx" placeholder="Direct the team or a member…"></textarea><button class="btn primary" onclick="doSteer()">Send</button></div>
+    <div class="tabs">
+      <button class="${S.tab==='thread'?'on':''}" onclick="setTab('thread')">Transcript</button>
+      <button class="${S.tab==='summary'?'on':''}" onclick="setTab('summary')">Summary</button>
+      <button class="${S.tab==='catchups'?'on':''}" onclick="setTab('catchups')">Catch-ups${unrev?` · ${unrev}`:''}</button>
+    </div>
+    <div id="tabbody"></div>`
+  renderTab()
+}
+function renderTab() {
+  const b = $('#tabbody'); if (!b) return
+  if (S.tab==='thread') b.innerHTML = `<pre class="thread" id="thread">${esc((S.room&&S.room.thread)||'(no messages yet)')}</pre>`
+  else if (S.tab==='summary') b.innerHTML = `<pre class="thread" id="summary">${esc((S.room&&S.room.consensus)||'(no summary)')}</pre>`
+  else {
+    const cu = (S.room&&S.room.catchups)||[]
+    b.innerHTML = cu.length ? [...cu].reverse().map(c=>`<div class="pane ${(c.status==='ready'&&!c.reviewedAt)?'unrev':''}">
+      <div class="row" style="justify-content:space-between"><b>Catch-up #${c.seq}</b> <span class="muted">${esc(c.pauseReason||'')} · ${c.status}${c.reviewedAt?' · reviewed':''}</span></div>
+      ${Object.values(c.handoffs||{}).map(h=>`<div class="card"><b>${esc(h.name||'')}</b>\n${esc(h.text||'')}</div>`).join('')||'<div class="muted">waiting for handoffs…</div>'}
+      ${(c.status==='ready'&&!c.reviewedAt)?`<button class="btn tiny" onclick="reviewCu(${c.seq})">Mark reviewed</button>`:''}</div>`).join('')
+      : `<div class="muted">No catch-ups. (Auto handoffs fire when a room pauses; mainly used by 2-party consults today.)</div>`
+  }
+}
+function renderInboxItem(d) {
+  const q = (S.teams.userInbox||[])[S.selInbox]
+  if (!q) { d.innerHTML = `<div class="empty">Question gone.</div>`; return }
+  d.innerHTML = `<h2>A member needs you</h2>
+    <div class="pane"><div class="who muted"><b style="color:var(--fg)">@${esc(q.fromName||q.from)}</b> in <b>${esc(q.room)}</b></div>
+    <div style="margin:8px 0;white-space:pre-wrap">${esc(q.text)}</div>
+    ${q.answered? `<div class="muted">↳ ${esc(q.answer||'')}</div>` :
+      `<textarea id="ansTx" placeholder="Your reply (routes back as [Human reply])…"></textarea><div style="margin-top:8px"><button class="btn primary" onclick="answer(${S.selInbox})">Send reply</button> <button class="btn" onclick="openRoom('${esc(q.roomId)}')">Open room</button></div>`}</div>`
+}
+
+// ---- builder ----
+function renderBuilder(d) {
+  const B = S.builder
+  d.innerHTML = `<div style="display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start">
+    <div>
+      <div class="grid2"><div><label>Org</label><input id="bOrg" value="${esc(B.org)}"></div><div><label>Repo path (host)</label><input id="bRepo" value="${esc(B.repo)}" placeholder="/Users/you/code/app"></div></div>
+      <h2>Teams</h2><div id="bTeams"></div><button class="btn" onclick="bAddTeam()">＋ Add team</button>
+      <div class="row" style="margin-top:14px"><button class="btn primary" onclick="bSave()">💾 Save team.json</button><button class="btn" onclick="bDefine()">◎ Define rooms</button><span id="bMsg" class="muted"></span></div>
+      <div class="muted" style="margin-top:8px">Then launch live members: <code id="bCmd">mrc team up</code></div>
+    </div>
+    <div><h2>Preview</h2><div id="bPrev" class="muted">…</div></div></div>`
+  $('#bOrg').oninput = e=>{B.org=e.target.value;bPreview()}
+  $('#bRepo').oninput = e=>{B.repo=e.target.value;$('#bCmd').textContent='cd '+(B.repo||'<repo>')+' && mrc team up';bPreview()}
+  bRenderTeams(); bPreview()
+}
+function bRenderTeams() {
+  const B = S.builder
+  $('#bTeams').innerHTML = B.teams.map((t,ti)=>`<div class="team">
+    <div class="row" style="align-items:flex-end;gap:8px"><div style="flex:2"><label>Team</label><input value="${esc(t.name)}" oninput="bSet(${ti},null,'name',this.value)"></div>
+      <div style="flex:2"><label>Territory</label><input value="${esc(t.territory)}" placeholder="." oninput="bSet(${ti},null,'territory',this.value)"></div>
+      <button class="btn tiny" onclick="bDelTeam(${ti})">✕</button></div>
+    ${t.members.map((m,mi)=>`<div class="memrow">
+      <select onchange="bSet(${ti},${mi},'role',this.value)">${ROLES.map(o=>`<option ${o===m.role?'selected':''}>${o}</option>`).join('')}</select>
+      <select onchange="bSet(${ti},${mi},'backend',this.value)">${BACKENDS.map(o=>`<option ${o===m.backend?'selected':''}>${o}</option>`).join('')}</select>
+      <label class="lead"><input type="checkbox" ${m.lead?'checked':''} onchange="bSet(${ti},${mi},'lead',this.checked)"> lead</label>
+      <input value="${esc(m.territory)}" placeholder="territory" oninput="bSet(${ti},${mi},'territory',this.value)">
+      <button class="btn tiny" onclick="bDelMem(${ti},${mi})">✕</button></div>`).join('')}
+    <div style="margin-top:8px"><button class="btn tiny" onclick="bAddMem(${ti})">＋ member</button></div></div>`).join('')
+}
+window.bSet=(ti,mi,k,v)=>{const B=S.builder; if(mi==null)B.teams[ti][k]=v; else if(k==='lead'&&v)B.teams[ti].members.forEach((mm,j)=>mm.lead=(j===mi)); else B.teams[ti].members[mi][k]=v; if(k==='lead'){bRenderTeams()} bPreview()}
+window.bAddTeam=()=>{S.builder.teams.push({name:'team'+(S.builder.teams.length+1),territory:'.',members:[{role:'architect',backend:'claude',lead:true,territory:''}]});bRenderTeams();bPreview()}
+window.bDelTeam=(ti)=>{S.builder.teams.splice(ti,1);bRenderTeams();bPreview()}
+window.bAddMem=(ti)=>{S.builder.teams[ti].members.push({role:'writer',backend:'claude',lead:false,territory:''});bRenderTeams();bPreview()}
+window.bDelMem=(ti,mi)=>{S.builder.teams[ti].members.splice(mi,1);bRenderTeams();bPreview()}
+function bRoster(){const B=S.builder;return {org:B.org||'org',repo:B.repo||undefined,teams:B.teams.map(t=>({name:t.name,territory:t.territory||'.',members:t.members.map(m=>{const o={role:m.role,backend:m.backend};if(m.lead)o.lead=true;if(m.territory)o.territory=m.territory;return o})}))}}
+let bTimer=null
+function bPreview(){clearTimeout(bTimer);bTimer=setTimeout(async()=>{
+  const r=await api('/api/team-preview',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})})
+  const el=$('#bPrev'); if(!el)return
+  if(!r.ok){el.innerHTML=`<div class="bad">⚠ ${esc(r.error)}</div>`;return}
+  const v=r.validation||{warnings:[],errors:[]}
+  el.innerHTML = r.members.map(m=>`<div class="pane" style="padding:7px 10px;margin-bottom:6px"><span class="h">@${esc(m.handle)}</span> <span class="muted">${esc(m.roleLabel)}${m.lead?' ★':''} · ${esc(m.team)} · ${m.tier==='worker'?'worker':'live'}</span></div>`).join('')
+    +`<h2>Rooms</h2>`+r.rooms.map(rm=>`<span class="roomtag">${esc(rm.team||rm.kind)}</span>`).join('')
+    +(v.warnings.length?`<h2>Warnings</h2>`+v.warnings.map(w=>`<div class="warn" style="font-size:12px">⚠ ${esc(w)}</div>`).join(''):'')
+},250)}
+window.bSave=async()=>{const B=S.builder;const msg=$('#bMsg');if(!B.repo){msg.innerHTML='<span class="bad">set a repo path</span>';return}
+  const r=await api('/api/team-save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({repo:B.repo,roster:bRoster()})});msg.innerHTML=r.ok?`<span class="good">✓ ${esc(r.path)}</span>`:`<span class="bad">✗ ${esc(r.error)}</span>`}
+window.bDefine=async()=>{const r=await api('/api/team-define',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})});$('#bMsg').innerHTML=r.ok?`<span class="good">◎ defined ${(r.rooms||[]).length} room(s)</span> <a href="#" onclick="go('teams');return false">view</a>`:`<span class="bad">✗ ${esc(r.error||'daemon down')}</span>`; if(r.ok){S.org=null;tick()}}
+
+// ---- actions ----
+window.go = (nav)=>{ S.nav=nav; if(nav!=='inbox')S.selInbox=null; paint() }
+window.selRoom = (id, openCu)=>{ S.selRoom=id; S.selInbox=null; if(openCu)S.tab='catchups'; S.room=null; tick() }
+window.openRoom = (id)=>{ S.nav='rooms'; selRoom(id) }
+window.selInbox = (i)=>{ S.selInbox=i; S.selRoom=null; paint() }
+window.setTab = (t)=>{ S.tab=t; paintedKey=null; paint() }
+window.roomAct = async (a)=>{ if(a==='end'&&!confirm('Close this room?'))return; await post(a,{roomId:S.selRoom}); tick() }
+window.doSteer = async ()=>{ const tx=$('#steerTx'); const t=$('#steerT'); if(!tx||!tx.value.trim())return; await post('steer',{roomId:S.selRoom,target:t.value,text:tx.value.trim()}); tx.value=''; tick() }
+window.reviewCu = async (seq)=>{ await post('review',{roomId:S.selRoom,seq}); S.room=await api('/api/room?id='+encodeURIComponent(S.selRoom)); paintedKey=null; paint() }
+window.answer = async (i)=>{ const tx=$('#ansTx'); if(!tx||!tx.value.trim())return; await post('answer',{i,text:tx.value.trim()}); S.selInbox=null; S.nav='inbox'; tick() }
+
+for (const b of document.querySelectorAll('[data-nav]')) b.onclick = ()=>go(b.dataset.nav)
+// deep link: /teams/new -> build
+if (location.pathname.endsWith('/new')) S.nav='build'
+tick(); setInterval(tick, 1500)
+</script>
+</body>
+</html>

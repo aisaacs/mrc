@@ -336,9 +336,9 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
   function status() {
     return {
       orgs: [...orgs.values()],
-      members: [...members.values()].map((m) => ({ handle: m.handle, first: m.first, role: m.role, team: m.team, lead: m.lead, backend: m.backend, tier: m.tier, online: online(m.handle) })),
+      members: [...members.values()].map((m) => ({ handle: m.handle, first: m.first, role: m.role, team: m.team, lead: m.lead, backend: m.backend, tier: m.tier, org: m.org, online: online(m.handle) })),
       rooms: [...rooms.values()].map((r) => ({
-        roomId: r.roomId, kind: r.kind, team: r.team, state: r.state, pauseReason: r.pauseReason,
+        roomId: r.roomId, kind: r.kind, team: r.team, org: r.org, state: r.state, pauseReason: r.pauseReason,
         turn: r.turn, turnCap: r.turnCap, members: [...r.members.keys()],
       })),
       userInbox: userInbox.map((x, i) => ({ i, ...x })),
