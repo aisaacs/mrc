@@ -439,7 +439,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     const m = mem(item.org, item.from)
     if (m?.sessionId) send?.(m.sessionId, { type: 'directive', room: room.roomId, text: `${marker}: ${text}` })
     else workerQueue.push({ org: item.org, roomId: room.roomId, toHandle: item.from, fromHandle: '@user', text: `${marker}: ${text}`, at: now(), directive: true })
-    item.answered = true; item.answer = text
+    item.answered = true; item.answer = text; item.answeredVia = via || 'dashboard'   // #24: which surface resolved it, so the OTHER surface can show "answered via …"
     _append(room.roomId, `${ts()} HUMAN -> ${nameOf(item.org, item.from)}: ${text} (re #${item.id})`, { reqid: item.id })   // #18: trusted reqid → the dashboard makes a jump from the field, not a text-scan
     _inbox('resolved', item)
     return { ok: true }

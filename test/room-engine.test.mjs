@@ -291,6 +291,22 @@ test('engine: the trusted qid/reqid is emitted as APPEND META, not just in the t
   assert.equal(rline.meta?.reqid, item.id, 'the human reply carries reqid meta = the answered id')
 })
 
+test('engine: answerUser records which surface resolved it (answeredVia) for cross-surface close (#24)', () => {
+  const h = harness(TEAM)
+  const engineer = h.handle('engineer')
+  h.engine.route({ fromHandle: engineer, roomId: teamRoomId('shop', 'client'), text: '@user A?', kind: 'question' })
+  h.engine.route({ fromHandle: engineer, roomId: teamRoomId('shop', 'client'), text: '@user B?', kind: 'question' })
+  const [a, b] = h.engine.status().userInbox
+  h.engine.answerUser(a.id, 'from the dashboard')
+  h.engine.answerUser(b.id, 'from my phone', { via: 'telegram' })
+  const inbox = h.engine.status().userInbox
+  assert.equal(inbox.find((x) => x.id === a.id).answeredVia, 'dashboard', 'a plain answer is tagged dashboard')
+  assert.equal(inbox.find((x) => x.id === b.id).answeredVia, 'telegram', 'a Telegram answer is tagged telegram (so the web panel can say "via Telegram")')
+  // The stale-guard still rejects a SECOND answer (the double-answer the cross-surface close prevents).
+  const late = h.engine.answerUser(b.id, 'late dashboard reply')
+  assert.equal(late.ok, false); assert.equal(late.stale, true)
+})
+
 test('engine: a NOTIFICATION is replyable — answerUser routes exactly one [Human reply] (#15)', () => {
   const h = harness(TEAM)
   const engineer = h.handle('engineer')

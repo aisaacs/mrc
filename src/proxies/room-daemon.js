@@ -258,7 +258,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
   const pushKey = (org, id) => `${org}\x00${id}`
   // H1: speaker · HOME TEAM (the lead's own team in a federated org, not the leads-room id — a @user
   // question always originates in the leads room, so item.room would just be "<org>--leads").
-  const tgAttribution = (item) => `${item.fromName}${item.role ? ` (${item.role})` : ''}${item.team ? ` · ${item.team}` : ''}`
+  // #24: stamp the SAME #N the dashboard/CLI show, so a question is referenceable across all three
+  // surfaces (and the dashboard reply line reads `(re #N)` for the question the human answered here).
+  const tgAttribution = (item) => `${item.fromName}${item.role ? ` (${item.role})` : ''}${item.team ? ` · ${item.team}` : ''} · #${item.id}`
   const tgQuestionText = (item) => `❓ ${tgAttribution(item)}\n\n${item.text}\n\n↩️ Reply to this message to answer.`   // H2: reply hint
   const tgResolvedText = (item) => `${tgAttribution(item)}\n\n${item.text}\n\n${item.answered ? `✅ Answered: ${item.answer || ''}` : '✕ Dismissed'}`
   // Engine inbox lifecycle → Telegram. QUESTIONS-ONLY push (notifications stay in the dashboard). On

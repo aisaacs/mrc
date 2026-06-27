@@ -116,6 +116,7 @@
   #flash .fl { pointer-events:auto; margin-top:9px; max-width:680px; padding:9px 14px; border-radius:9px; font-size:13px; box-shadow:0 5px 20px rgba(0,0,0,.5); display:flex; gap:12px; align-items:center }
   #flash .fl.err { background:#3a1518; border:1px solid #7a2630; color:#ffd9dc }
   #flash .fl.stale { background:#1d2740; border:1px solid #3f5d97; color:#dbe6ff }
+  #flash .fl.note { background:#13263a; border:1px solid #2f5d8f; color:#cfe3ff }
   #flash .fl .x { cursor:pointer; opacity:.7; margin-left:2px } #flash .fl .x:hover { opacity:1 }
   #flash .fl .btn { padding:3px 11px; font-size:12px }
 </style>
@@ -168,6 +169,8 @@ function renderFlash() {
   if (!S.flash) { el.innerHTML=''; return }
   el.innerHTML = S.flash.kind==='stale'
     ? `<div class="fl stale">⟳ Session refreshed — the daemon restarted. Reload to continue.<button class="btn primary" onclick="location.reload()">Reload</button></div>`
+    : S.flash.kind==='note'
+    ? `<div class="fl note">ℹ ${esc(S.flash.text)}<span class="x" title="dismiss" onclick="dismissFlash()">✕</span></div>`
     : `<div class="fl err">⚠ ${esc(S.flash.text)}<span class="x" title="dismiss" onclick="dismissFlash()">✕</span></div>`
 }
 window.dismissFlash = () => { S.flash=null; renderFlash() }
@@ -296,9 +299,14 @@ const roomMembers = (id) => { const r=(S.teams.rooms||[]).find(x=>x.roomId===id)
 
 // ---- painting ----
 const launchFor = () => (S.teams.launch||[]).find(x=>x.org===S.org && x.running)   // a stale (crashed) launch is not a terminal
+const inboxItem = (id) => (S.teams.userInbox||[]).find(x=>x.id===id)
+// #24: fold the item's RESOLUTION into the key so a REMOTE resolve (e.g. answered via Telegram) flips
+// the key → renderDetail re-runs → the open reply box is replaced by the read-only answered view
+// (instead of patchDetail leaving a now-stale textarea sitting there). 'gone' if it vanished.
+const inboxSig = (id) => { const q=inboxItem(id); return q ? (q.answered?'a':q.dismissed?'d':'o') : 'gone' }
 const detailKey = () => S.building ? 'build'
   : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+(launchFor()?.ttydUrl||'none'))
-  : S.selInbox!=null ? 'inbox:'+S.selInbox
+  : S.selInbox!=null ? 'inbox:'+S.selInbox+':'+inboxSig(S.selInbox)
   : S.selRoom ? 'room:'+S.selRoom+':'+S.tab
   : 'empty'
 
@@ -529,7 +537,10 @@ function renderInboxItem(d) {
   if (!q) { d.innerHTML = `<div class="empty">Message gone.</div>`; return }
   const isQ = q.type==='question'
   const head = isQ ? '❓ A member needs you' : '🔔 Notification'
-  const done = q.answered ? `<div class="muted">↳ ${esc(q.answer||'')}</div>`
+  // #24: when an item was resolved on ANOTHER surface (answered via Telegram), say so — the reply box
+  // here just closed under the user, and a silent vanish would read as a bug. Show how it resolved.
+  const viaTg = q.answeredVia === 'telegram'
+  const done = q.answered ? `<div class="good" style="font-size:12px">✓ Answered${viaTg?' via Telegram':''}</div><div class="muted">↳ ${esc(q.answer||'')}</div>`
     : q.dismissed ? `<div class="muted">↳ dismissed — re-open to act on it</div>` : ''
   // EVERY open item is replyable (#15) — a reply routes a [Human reply] via answerUser (open-revalidation
   // stale-guards a double-answer). A notification differs only in framing ("reply optional", it never
@@ -635,7 +646,12 @@ window.doSteer = async ()=>{ const tx=$('#steerTx'); const t=$('#steerT'); if(!t
 window.reviewCu = async (seq)=>{ const r=await act('review',{roomId:S.selRoom,seq}); if(!r.ok)return flashFail(r); S.flash=null; S.room=await api('/api/room?id='+encodeURIComponent(S.selRoom)); paintedKey=null; paint() }
 // #20: confirm the reply landed (2xx) BEFORE closing the panel. A 403 (stale token) / network / 500 keeps
 // the item open and surfaces the error — never optimistic-close (that was the silent-swallow @user hit).
-window.answer = async (i)=>{ const tx=$('#ansTx'); if(!tx||!tx.value.trim())return; const r=await act('answer',{i,text:tx.value.trim()}); if(!r.ok)return flashFail(r); S.flash=null; S.selInbox=null; tick() }
+window.answer = async (i)=>{ const tx=$('#ansTx'); if(!tx||!tx.value.trim())return; const r=await act('answer',{i,text:tx.value.trim()})
+  // #24 stale-guard: it was resolved elsewhere (answered via Telegram / another window) between opening
+  // the box and hitting Send. Do NOT swallow — tell the user their reply didn't go, and let the panel
+  // re-render to the answered view (selInbox kept; detailKey now reflects the resolution).
+  if(!r.ok){ if(/already (answered|dismissed)/i.test(r.error||'')){ S.flash={kind:'note',text:'Already resolved (answered via Telegram or another window) — your reply was not sent.'}; renderFlash(); tick(); return } return flashFail(r) }
+  S.flash=null; S.selInbox=null; tick() }
 // Dismiss without replying (#11). A QUESTION is a permanent-loss-on-misclick path → confirm first
 // (the ✕ sits next to Send reply); a NOTIFICATION is fast FYI triage → instant, no confirm.
 window.dismissInbox = async (id)=>{
