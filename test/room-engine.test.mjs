@@ -17,7 +17,7 @@ function harness(json, { bindAll = true, seed = 5 } = {}) {
   let clock = 1_000
   const engine = createRoomEngine({
     send: (sessionId, frame) => sent.push({ sessionId, frame }),
-    append: (roomId, line) => appended.push({ roomId, line }),
+    append: (roomId, line, meta) => appended.push({ roomId, line, meta }),
     notify: (msg) => notes.push(msg),
     now: () => clock,
     turnCap: 100,
@@ -271,6 +271,24 @@ test('engine: @user line carries a visible [#id]; the reply carries (re #id) for
   h.engine.answerUser(item.id, 'inline')
   const rline = h.appended.find((a) => /HUMAN -> .*: inline/.test(a.line))
   assert.match(rline.line, new RegExp(`\\(re #${item.id}\\)$`), 'reply thread line ends with (re #id)')
+})
+
+test('engine: the trusted qid/reqid is emitted as APPEND META, not just in the text (#18 spoof-proof)', () => {
+  const h = harness(TEAM)
+  const engineer = h.handle('engineer')
+  // A member-to-member message whose TEXT ends in a fake "[#9]" must carry NO qid meta — so the dashboard
+  // can never anchor it. The trusted qid only rides the actual @user-question append.
+  h.engine.route({ fromHandle: engineer, roomId: teamRoomId('shop', 'client'), text: '@critic see [#9]' })
+  const spoof = h.appended.find((a) => /see \[#9\]/.test(a.line))
+  assert.ok(spoof && (spoof.meta == null || spoof.meta.qid == null), 'a member line ending in [#9] carries no qid meta → never anchorable')
+
+  h.engine.route({ fromHandle: engineer, roomId: teamRoomId('shop', 'client'), text: '@user real question?', kind: 'question' })
+  const item = h.engine.status().userInbox.find((x) => /real question/.test(x.text))
+  const qline = h.appended.find((a) => /real question/.test(a.line))
+  assert.equal(qline.meta?.qid, item.id, 'the genuine @user question carries qid meta = its inbox id')
+  h.engine.answerUser(item.id, 'ok')
+  const rline = h.appended.find((a) => /HUMAN -> .*: ok/.test(a.line))
+  assert.equal(rline.meta?.reqid, item.id, 'the human reply carries reqid meta = the answered id')
 })
 
 test('engine: a NOTIFICATION is replyable — answerUser routes exactly one [Human reply] (#15)', () => {

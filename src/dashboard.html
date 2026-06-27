@@ -447,7 +447,7 @@ function patchDetail() {
     return
   }
   if (S.selRoom && S.room) {
-    const t = $('#thread'); if (t && S.tab==='thread' && t.dataset.raw!==(S.room.thread||'')) followScroll(t, () => { const raw=S.room.thread||''; t.dataset.raw=raw; t.innerHTML = raw?threadHTML(raw):'(no messages yet)' })
+    const t = $('#thread'); if (t && S.tab==='thread' && t.dataset.raw!==(S.room.thread||'')) followScroll(t, () => { const raw=S.room.thread||''; t.dataset.raw=raw; t.innerHTML = threadBodyHTML(S.room) })
     const sm = $('#summary'); if (sm && S.tab==='summary') sm.textContent = S.room.consensus||''
   }
 }
@@ -485,26 +485,35 @@ function renderRoom(d) {
     <div id="tabbody"></div>`
   renderTab()
 }
-// Render the raw thread.log into per-message lines, turning the DAEMON's EOL `[#N]` (question) into a
-// jump ANCHOR (id="q<N>") and its `(re #N)` (reply) into a clickable jump (#18). Only the daemon's
-// exact-EOL token is treated as a marker — a member's `#5`/`[#5]` in prose is plain esc()'d text, never
-// an anchor. Ids are deduped (first wins) so the DOM never has a duplicate anchor to hijack a jump.
-function threadHTML(raw) {
-  const seen = new Set()
-  return String(raw||'').split('\n').map(line => {
-    if (!line) return '<div class="tline"> </div>'
-    let m = line.match(/^(.*) \[#(\d+)\]$/)
-    if (m) { const id=m[2], anchor = !seen.has(id); if(anchor) seen.add(id)
-      return `<div class="tline"${anchor?` id="q${id}"`:''}>${esc(m[1])} <span class="qnum">[#${id}]</span></div>` }
-    m = line.match(/^(.*) \(re #(\d+)\)$/)
-    if (m) return `<div class="tline">${esc(m[1])} <a class="qjump" onclick="jumpToQ(${m[2]})" title="jump to question #${m[2]}">re #${m[2]}</a></div>`
-    return `<div class="tline">${esc(line)}</div>`
+// Render the STRUCTURED transcript (#18). Each record is one logical message {t: line text, q: question
+// id|null, r: reply-to id|null}. The jump anchor (id="q<N>"), the `[#N]` chip, and the `re #N` jump link
+// derive ONLY from the daemon-authored q/r fields — never from scanning the line text. So a member's
+// `[#7]`/`(re #7)` in their own message (even a `\n`-injected fake line) is just esc()'d display text:
+// it cannot create an anchor, forge a jump link, or hijack a real question's #N. Spoof-proof by construction.
+function transcriptHTML(records) {
+  return (records||[]).map(rec => {
+    const t = String(rec.t||'')
+    if (rec.q != null) {
+      // The daemon's own ` [#q]` suffix is re-rendered as a styled chip from the trusted field; strip
+      // only that exact trailing token (a member's earlier `[#x]` mid-text stays as inert escaped text).
+      const body = esc(t.replace(/\s*\[#\d+\]\s*$/, ''))
+      return `<div class="tline" id="q${rec.q}">${body} <span class="qnum">[#${rec.q}]</span></div>`
+    }
+    if (rec.r != null) {
+      const body = esc(t.replace(/\s*\(re #\d+\)\s*$/, ''))
+      return `<div class="tline">${body} <a class="qjump" onclick="jumpToQ(${rec.r})" title="jump to question #${rec.r}">re #${rec.r}</a></div>`
+    }
+    return `<div class="tline">${esc(t)||' '}</div>`
   }).join('')
 }
+// Old room with only thread.log (no structured records yet) → render lines inert (no anchors). Safe:
+// we never re-derive trust from text. Used only as a fallback when the transcript is empty.
+const inertThreadHTML = (raw) => String(raw||'').split('\n').map(l => `<div class="tline">${esc(l)||' '}</div>`).join('')
+const threadBodyHTML = (room) => { const tx=(room&&room.transcript)||[]; const raw=(room&&room.thread)||''; return tx.length ? transcriptHTML(tx) : (raw ? inertThreadHTML(raw) : '(no messages yet)') }
 window.jumpToQ = (id)=>{ const el=$('#q'+id); if(!el)return; el.scrollIntoView({block:'center',behavior:'smooth'}); el.classList.add('qhi'); setTimeout(()=>el.classList.remove('qhi'),1400) }
 function renderTab() {
   const b = $('#tabbody'); if (!b) return
-  if (S.tab==='thread') { const raw=(S.room&&S.room.thread)||''; b.innerHTML = `<div class="thread" id="thread" tabindex="0">${raw?threadHTML(raw):'(no messages yet)'}</div>`; const t=$('#thread'); if(t){ t.dataset.raw=raw; t.scrollTop=t.scrollHeight } }
+  if (S.tab==='thread') { const raw=(S.room&&S.room.thread)||''; b.innerHTML = `<div class="thread" id="thread" tabindex="0">${threadBodyHTML(S.room)}</div>`; const t=$('#thread'); if(t){ t.dataset.raw=raw; t.scrollTop=t.scrollHeight } }
   else if (S.tab==='summary') b.innerHTML = `<pre class="thread" id="summary">${esc((S.room&&S.room.consensus)||'(no summary)')}</pre>`
   else {
     const cu = (S.room&&S.room.catchups)||[]
