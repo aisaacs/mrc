@@ -133,13 +133,13 @@ function mergedRooms() {
     else out.push({ roomId:r.roomId, team:null, kind:(r.a&&r.b?'consult':'room'), state:r.state, live:!!r.live, turn:r.turn, members:[], unreviewed:r.unreviewed||0, updatedAt:r.updatedAt||0, a:r.a, b:r.b, source:'room' })
   }
   for (const e of eng.values()) out.push({ ...e, unreviewed:0, updatedAt:Date.now() })
-  return out.filter(r => !S.org || !r.org || r.org===S.org)
-    .sort((x,y)=>(Number((y.unreviewed||0)>0)-Number((x.unreviewed||0)>0))||(Number(!!y.live)-Number(!!x.live))||((y.updatedAt||0)-(x.updatedAt||0)))
+  return out.sort((x,y)=>(Number((y.unreviewed||0)>0)-Number((x.unreviewed||0)>0))||(Number(!!y.live)-Number(!!x.live))||((y.updatedAt||0)-(x.updatedAt||0)))
 }
+const inOrg = (r) => !S.org || r.org===S.org   // team rooms carry org; org-less consults are NOT in any org
 const orgMembers = () => (S.teams.members||[]).filter(m => !S.org || !m.org || m.org===S.org)
 function inbox() {
   const qs = (S.teams.userInbox||[])
-  const cu = mergedRooms().filter(r => (r.unreviewed||0)>0)
+  const cu = mergedRooms().filter(r => (r.unreviewed||0)>0 && inOrg(r))
   return { qs, cu, need: qs.filter(q=>!q.answered).length + cu.reduce((a,c)=>a+(c.unreviewed||0),0) }
 }
 // Readiness: workers are on-demand; a live member is 'ready' once its channel registers, 'starting'
@@ -179,7 +179,7 @@ function renderList() {
     const teams = Object.keys(byTeam)
     if (!teams.length) { mid.innerHTML = `<div class="empty">No team yet.<br><a href="#" onclick="go('build');return false">＋ Assemble one</a></div>`; return }
     mid.innerHTML = teams.map(t => {
-      const rooms = mergedRooms().filter(r => r.team===t)
+      const rooms = mergedRooms().filter(r => r.team===t && inOrg(r))
       return `<div class="team"><div class="tn">${esc(t)}</div>
         ${byTeam[t].map(m=>{const s=memberState(m);return `<div class="mem ${m.lead?'lead':''}"><span class="dot ${s.cls}" title="${esc(s.label)}"></span>
           <span class="h">@${esc(m.first)}</span><span class="muted" style="font-size:11px">/${esc(m.backend)}</span>
@@ -192,9 +192,13 @@ function renderList() {
     }).join('')
   } else if (S.nav==='rooms') {
     const rs = mergedRooms()
-    mid.innerHTML = `<h2>All rooms</h2>` + (rs.length? rs.map(r=>`<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')">
+    const mine = rs.filter(inOrg), others = rs.filter(r=>!inOrg(r))
+    const row = (r) => `<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')">
       <span class="nm">${esc(r.team||label2(r))}</span><span class="state ${r.state}">${esc(r.state)}</span>
-      <span class="meta">${esc(r.kind||'')}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`).join('') : `<div class="empty">No rooms.</div>`)
+      <span class="meta">${esc(r.kind||'')}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`
+    mid.innerHTML = `<h2>${S.org?esc(S.org)+' rooms':'Rooms'}</h2>`
+      + (mine.length? mine.map(row).join('') : `<div class="muted">No rooms in this org.</div>`)
+      + (others.length? `<h2>Other — consults &amp; history</h2><div style="opacity:.55">${others.map(row).join('')}</div>` : '')
   } else if (S.nav==='inbox') {
     const ib = inbox()
     mid.innerHTML = `<h2>Questions for you</h2>` + (ib.qs.length? ib.qs.map((q,i)=>`<div class="ib ${q.answered?'done':''} ${S.selInbox===i?'sel':''}" onclick="selInbox(${i})">
