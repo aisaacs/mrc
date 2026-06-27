@@ -262,25 +262,31 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
   // surfaces (and the dashboard reply line reads `(re #N)` for the question the human answered here).
   const tgAttribution = (item) => `${item.fromName}${item.role ? ` (${item.role})` : ''}${item.team ? ` · ${item.team}` : ''} · #${item.id}`
   const tgQuestionText = (item) => `❓ ${tgAttribution(item)}\n\n${item.text}\n\n↩️ Reply to this message to answer.`   // H2: reply hint
+  // #25: FYIs (notifications) push too, with DISTINCT framing — 🔔 + "reply optional" (not "reply to
+  // answer"), mirroring the dashboard @you split so the user triages Telegram the same way. Still
+  // REPLYABLE (the #15 carryover): a reply routes a [Human reply] exactly like a question — framing says
+  // optional, capability says yes. It enters tgPushed like a question, so H4 edit-on-resolve applies.
+  const tgNotificationText = (item) => `🔔 ${tgAttribution(item)}\n\n${item.text}\n\n💬 FYI — reply optional.`
+  const tgNewText = (item) => (item.type === 'question' ? tgQuestionText(item) : tgNotificationText(item))
   const tgResolvedText = (item) => `${tgAttribution(item)}\n\n${item.text}\n\n${item.answered ? `✅ Answered: ${item.answer || ''}` : '✕ Dismissed'}`
-  // Engine inbox lifecycle → Telegram. QUESTIONS-ONLY push (notifications stay in the dashboard). On
-  // resolve (from ANY surface) the pushed message is edited in place (H4); reopen restores it.
+  // Engine inbox lifecycle → Telegram. BOTH questions and FYIs push (#25), with distinct framing; the
+  // dashboard badge stays questions-only (push ≠ nag — separate axes). On resolve (from ANY surface) the
+  // pushed message is edited in place (H4); reopen restores its original framing.
   async function handleInboxEvent(ev) {
     const { kind, item } = ev
     const s = tgStates.get(item.org)
-    // Diagnostic (#12 outbound): for a new QUESTION on a TG-configured org, log whether it pushes and,
-    // if not, exactly why — so "outbound silent" is never a mystery (covers the not-linked case too).
-    if (kind === 'new' && item.type === 'question' && s) daemonLog(`[tg ${item.org}] question #${item.id}: ${s.pinned ? `pushing → chat ${s.pinned.chatId}` : 'NOT pushed — bot not linked (Confirm the pairing in the dashboard)'}`)
+    // Diagnostic (#12/#25 outbound): for ANY new @user item on a TG-configured org, log whether it
+    // pushes and, if not, exactly why — so "outbound silent" is never a mystery (covers not-linked too).
+    if (kind === 'new' && s) daemonLog(`[tg ${item.org}] ${item.type || 'message'} #${item.id}: ${s.pinned ? `pushing → chat ${s.pinned.chatId}` : 'NOT pushed — bot not linked (Confirm the pairing in the dashboard)'}`)
     if (!s || !s.pinned) return
     if (kind === 'new') {
-      if (item.type !== 'question') return
-      const r = await tgSend({ token: s.token, chatId: s.pinned.chatId, text: tgQuestionText(item), fetchFn: tgFetch })
+      const r = await tgSend({ token: s.token, chatId: s.pinned.chatId, text: tgNewText(item), fetchFn: tgFetch })
       if (r.ok && r.messageId != null) { tgPushed.set(pushKey(item.org, item.id), { chatId: s.pinned.chatId, messageId: r.messageId }); s.lastPushError = null }
       else { s.lastPushError = r.error || 'no message id'; daemonLog(`[tg ${item.org}] push FAILED for inbox #${item.id}: ${s.lastPushError}`) }   // never silent — surfaces a stale chat_id / 400 / too-long, AND in the dashboard (tgView)
     } else if (kind === 'resolved' || kind === 'reopened') {
       const ref = tgPushed.get(pushKey(item.org, item.id))
       if (!ref) return
-      const e = await tgEdit({ token: s.token, chatId: ref.chatId, messageId: ref.messageId, text: kind === 'reopened' ? tgQuestionText(item) : tgResolvedText(item), fetchFn: tgFetch })
+      const e = await tgEdit({ token: s.token, chatId: ref.chatId, messageId: ref.messageId, text: kind === 'reopened' ? tgNewText(item) : tgResolvedText(item), fetchFn: tgFetch })
       if (!e.ok) daemonLog(`[tg ${item.org}] H4 edit FAILED for inbox #${item.id}: ${e.error}`)
     }
   }

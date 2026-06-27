@@ -112,7 +112,7 @@ test('daemon telegram: /start → pending → dashboard confirm → linked; auth
   daemon.stop()
 })
 
-test('daemon telegram step 4: question→push, reply→answer + H4 edit, stale reply, notification not pushed', async () => {
+test('daemon telegram step 4: question→push, reply→answer + H4 edit, stale reply, FYI push (#25)', async () => {
   process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-tgiso-`)   // isolate the rooms store per test (no cross-test org/tg-state leak)
   const port = await findFreePort(19350)
   const controlPort = await findFreePort(port + 1)
@@ -152,10 +152,18 @@ test('daemon telegram step 4: question→push, reply→answer + H4 edit, stale r
   reply('actually no', pushed.message_id, 11); await sleep(250)
   assert.ok(tg.sent.some((m) => /already resolved/.test(m.text)), 'stale reply rejected with a clear message')
 
-  // a NOTIFICATION (plain @user) is NOT pushed to Telegram (questions-only).
-  const beforeCount = tg.sent.length
+  // #25: a NOTIFICATION (plain @user) now ALSO pushes — with DISTINCT FYI framing (was questions-only).
   send({ type: 'say', id: 2, text: '@user heads up, deploy finished' }); await sleep(200)
-  assert.ok(!tg.sent.some((m) => /deploy finished/.test(m.text)), 'a notification is not pushed to Telegram')
+  const fyi = tg.sent.find((m) => /deploy finished/.test(m.text))
+  assert.ok(fyi, '#25: a notification IS pushed to Telegram')
+  assert.match(fyi.text, /🔔/); assert.match(fyi.text, /FYI — reply optional/)            // distinct framing
+  assert.ok(!/Reply to this message to answer/.test(fyi.text), '#25: an FYI is NOT framed as a question')
+  // #25: the FYI is REPLYABLE (capability yes, framing optional) — a reply routes a [Human reply] and H4-edits.
+  reply('thanks for the heads up', fyi.message_id, 12); await sleep(250)
+  assert.ok(tg.edits.some((e) => e.message_id === fyi.message_id && /Answered: thanks for the heads up/.test(e.text)), '#25: replying to an FYI resolves it (H4 edit) → proves it is replyable')
+  const ninbox = (await controlCall(controlPort, { action: 'team' })).userInbox.find((x) => /deploy finished/.test(x.text))
+  assert.equal(ninbox.type, 'notification', '#25: it stays type=notification → the dashboard badge (questions-only) never counts it')
+  assert.equal(ninbox.answered, true, 'the FYI reply was recorded')
 
   sock.destroy(); daemon.stop()
 })
