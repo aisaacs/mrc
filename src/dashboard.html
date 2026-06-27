@@ -248,7 +248,8 @@ function renderMember(d) {
 function renderTerminal(d, m) {
   const L = launchFor()
   if (!L || !L.ttydUrl) {
-    d.innerHTML = `<div class="empty">${L
+    d.innerHTML = `<div class="row" style="justify-content:flex-end;margin-bottom:8px"><button class="btn tiny" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove @${esc(m.first)}</button></div>
+      <div class="empty">${L
       ? `@${esc(m.first)} is running in tmux, but there's no embedded terminal — install <code>ttyd</code> and relaunch, or <code>tmux attach -t ${esc(L.session)}</code>.`
       : `@${esc(m.first)} isn't launched yet. Build + <b>🚀 Launch</b> the team (or <code>mrc team up</code>).`}</div>`
     return
@@ -256,7 +257,7 @@ function renderTerminal(d, m) {
   const live = orgMembers().filter(x=>x.tier==='live'); const ready = live.filter(x=>x.online).length; const starting = live.filter(x=>!x.online && x.launched).length
   d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:8px">
       <b>@${esc(m.first)} <span class="muted">· terminal</span></b>
-      <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(L.ttydUrl)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny danger" style="margin-left:8px" onclick="stopTeam()">■ Stop team</button></span></div>
+      <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(L.ttydUrl)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny" style="margin-left:8px" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove</button> <button class="btn tiny danger" onclick="stopTeam()">■ Stop team</button></span></div>
     <iframe src="${esc(L.ttydUrl)}" style="width:100%;height:68vh;border:1px solid var(--line);border-radius:8px;background:#000"></iframe>
     <div class="muted" style="margin-top:6px">First launch: log in + accept the Channels prompt here. Click a member on the left to switch the terminal to them (or Ctrl-b n).</div>`
 }
@@ -264,7 +265,7 @@ function renderTerminal(d, m) {
 function renderWorkerLog(d, m) {
   d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:6px">
       <b>@${esc(m.first)} <span class="muted">/${esc(m.backend)} · ${esc(m.role)}</span></b>
-      <span class="mstate worker">on-demand</span></div>
+      <span><span class="mstate worker">on-demand</span> <button class="btn tiny" style="margin-left:8px" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove</button></span></div>
     <div class="muted" style="margin-bottom:8px">No terminal — runs when a teammate @mentions it. Invocation log (request + result per call):</div>
     <pre class="thread" id="wlog">${esc(S.workerLog || '(no activity yet — @mention @'+m.first+' to put them to work)')}</pre>`
 }
@@ -417,6 +418,7 @@ window.doSteer = async ()=>{ const tx=$('#steerTx'); const t=$('#steerT'); if(!t
 window.reviewCu = async (seq)=>{ await post('review',{roomId:S.selRoom,seq}); S.room=await api('/api/room?id='+encodeURIComponent(S.selRoom)); paintedKey=null; paint() }
 window.answer = async (i)=>{ const tx=$('#ansTx'); if(!tx||!tx.value.trim())return; await post('answer',{i,text:tx.value.trim()}); S.selInbox=null; tick() }
 window.stopTeam = async ()=>{ if(!confirm('Stop the team? This closes all member terminals.'))return; await postJSON('/api/team-stop',{org:S.org}); tick() }
+window.removeMember = async (h, first)=>{ if(!confirm('Remove @'+first+' from the team? (updates team.json)'))return; await postJSON('/api/team-remove-member',{org:S.org,handle:h}); S.selMember=null; tick() }
 window.bLaunch = async ()=>{ const msg=$('#bMsg'); if(!msg)return; msg.innerHTML='<span class="muted">launching… first run builds the image (~minutes)</span>'
   const r=await postJSON('/api/team-launch',{roster:bRoster()})
   if(r&&r.ok){ msg.innerHTML='<span class="good">🚀 launching — pick each member to open its terminal and log in</span>'; S.org=bRoster().org||null; setOrgUrl(S.org); setTimeout(()=>{S.building=false;tick()},700) }

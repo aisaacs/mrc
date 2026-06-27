@@ -8,7 +8,7 @@
 // before. One daemon serves all sessions, so it outlives any single session.
 import net from 'node:net'
 import { spawn } from 'node:child_process'
-import { openSync, mkdirSync, appendFileSync, readFileSync } from 'node:fs'
+import { openSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -112,6 +112,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
     engine.defineOrg(def)
     for (const r of (def.rooms || [])) ensureRoom(r.roomId, def.org || '', r.team || '')
     orgDefs.set(def.org, def); saveOrgs([...orgDefs.values()])
+    // Keep the repo's team.json in sync with the live project. (teamMod is null during the startup
+    // restore, so we don't rewrite files on boot — only on user-initiated define/add/remove.)
+    if (teamMod && def.repo) { try { teamMod.writeTeamFile(def.repo, teamMod.rosterFromDef(def)) } catch {} }
     return (def.rooms || []).map((r) => r.roomId)
   }
   // A team member sent a directed message into a room. Route via the engine; ack the true outcome.
@@ -434,6 +437,22 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
           removeLaunch(f.org); reply({ ok: true }); continue
         }
         if (f.action === 'selectwin' && f.org) { reply({ ok: !!(teamMod && teamMod.tmuxSelectWindow(f.org, f.window)) }); continue }
+        if (f.action === 'removemember' && f.org && f.handle) {
+          if (!teamMod) { reply({ ok: false, error: 'launch helpers still loading — retry' }); continue }
+          const def = orgDefs.get(f.org)
+          if (!def) { reply({ ok: false, error: 'unknown org' }); continue }
+          try {
+            const m = engine.memberByHandle(f.handle)
+            const updated = teamMod.removeMemberFromRoster(teamMod.rosterFromDef(def), f.handle)
+            const { norm } = teamMod.materializeRoster(updated, def.repo)
+            orgRoster.set(norm.org, updated)
+            defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })   // prunes the member + syncs team.json
+            if (m && m.tier === 'live') teamMod.killMemberWindow(f.org, m.first)
+            daemonLog(`removemember ${f.org}: @${f.handle}`)
+            reply({ ok: true })
+          } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
+          continue
+        }
         if (f.action === 'getroster' && f.org) {
           // The CURRENT roster (with every member added since), so the builder edits live state instead
           // of resetting to the original. orgRoster tracks it; fall back to reconstructing from the def.

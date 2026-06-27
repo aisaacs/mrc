@@ -9,8 +9,19 @@ import { join } from 'node:path'
 import { parseRoster } from '../src/teams/roster.js'
 import {
   memberSessionId, memberWorkspaceVolumes, memberEnv, personaForMember, writePersonaFile, orgDef, memberLaunch, cleanWorkerOutput,
-  rosterFromDef, addMemberToRoster,
+  rosterFromDef, addMemberToRoster, removeMemberFromRoster,
 } from '../src/commands/team.js'
+
+test('removeMemberFromRoster drops the member and any team left empty', () => {
+  const roster = { org: 'shop', teams: [
+    { name: 'client', members: [{ name: 'Roland', role: 'architect', backend: 'claude', lead: true }, { name: 'Vespa', role: 'engineer', backend: 'claude' }] },
+    { name: 'solo', members: [{ name: 'Solo', role: 'engineer', backend: 'claude' }] },
+  ] }
+  const r1 = removeMemberFromRoster(roster, 'vespa/claude')
+  assert.equal(r1.teams.find((t) => t.name === 'client').members.length, 1, 'Vespa removed')
+  const r2 = removeMemberFromRoster(r1, 'solo/claude')
+  assert.ok(!r2.teams.find((t) => t.name === 'solo'), 'empty team dropped')
+})
 
 test('rosterFromDef round-trips a multi-team project (no team or member is lost)', () => {
   const n0 = parseRoster({ org: 'shop', teams: [
