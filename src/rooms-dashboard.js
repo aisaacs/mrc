@@ -83,16 +83,6 @@ function sendJSON(res, code, obj) { res.writeHead(code, { 'content-type': 'appli
 async function handle(req, res) {
   const url = new URL(req.url, 'http://127.0.0.1')
   try {
-    if (req.method === 'GET' && url.pathname === '/') {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-      return res.end(readFileSync(HTML_FILE))   // re-read each load so the page can be edited live
-    }
-    // The unified app handles teams/rooms/inbox/build client-side; these paths serve it for back-compat
-    // (and /teams/new deep-links to the builder view).
-    if (req.method === 'GET' && (url.pathname === '/teams' || url.pathname === '/teams/new')) {
-      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
-      return res.end(readFileSync(HTML_FILE))
-    }
     // Team builder: preview (pure), save team.json to a repo, or define rooms on the daemon.
     if (req.method === 'POST' && (url.pathname === '/api/team-preview' || url.pathname === '/api/team-save' || url.pathname === '/api/team-define')) {
       let body = ''
@@ -176,6 +166,12 @@ async function handle(req, res) {
         return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, j.action, extra))
       })
       return
+    }
+    // Catch-all: any non-API GET (/, /anigame, …) serves the single-page app, which reads the project
+    // from the path. Re-read the file each load so the page can be edited live.
+    if (req.method === 'GET' && !url.pathname.startsWith('/api/')) {
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+      return res.end(readFileSync(HTML_FILE))
     }
     res.writeHead(404, { 'content-type': 'text/plain' }); res.end('not found')
   } catch (e) {

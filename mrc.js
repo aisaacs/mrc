@@ -151,7 +151,7 @@ if (remaining[0] === 'gui' || remaining[0] === 'studio') {
   let dp = readMeta()?.dashboardPort
   for (let i = 0; !dp && i < 30; i++) { await new Promise((r) => setTimeout(r, 100)); dp = readMeta()?.dashboardPort }
   if (!dp) { console.error('\n  ! the daemon is not serving a dashboard (MRC_DASHBOARD_PORT=0?).'); process.exit(1) }
-  const url = `http://127.0.0.1:${dp}/?repo=${encodeURIComponent(repo)}&org=${encodeURIComponent(basename(repo))}`
+  const url = `http://127.0.0.1:${dp}/${encodeURIComponent(basename(repo))}?repo=${encodeURIComponent(repo)}`
   console.log(` ready.\n  ◎ ${url}\n    Build → pick a preset → 🚀 Launch. The dashboard stays up while it's open.`)
   openBrowser(url)
   process.exit(0)

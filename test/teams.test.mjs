@@ -162,6 +162,11 @@ test('roster: names are deterministic across runs (no rng passed) so members reb
   assert.equal(new Set(a).size, a.length, 'still unique')
 })
 
+test('roster: "project" is the friendly alias for "org"', () => {
+  const norm = parseRoster({ project: 'shop', teams: [{ name: 't', members: [{ role: 'architect', backend: 'claude', lead: true }] }] }, { repo: '/tmp/x' })
+  assert.equal(norm.org, 'shop')
+})
+
 test('roster: "qa" role aliases to the tester role', () => {
   const norm = parseRoster({ org: 'x', teams: [{ name: 't', members: [
     { role: 'architect', backend: 'claude', lead: true }, { role: 'qa', backend: 'claude' },

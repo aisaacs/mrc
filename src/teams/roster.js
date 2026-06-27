@@ -54,7 +54,7 @@ export function parseRoster(input, { repo, rng } = {}) {
   const data = typeof input === 'string' ? JSON.parse(input) : input
   if (!data || typeof data !== 'object') throw new Error('roster: not an object')
   const repoPath = data.repo || repo || process.cwd()
-  const org = data.org || basename(repoPath) || 'org'
+  const org = data.project || data.org || basename(repoPath) || 'org'   // "project" is the friendly name for "org"
   const teamsIn = Array.isArray(data.teams) ? data.teams : []
   rng = rng || rngFromString(`mrc-team:${org}`)   // stable per-org names by default
 

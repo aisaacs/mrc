@@ -99,7 +99,7 @@ const esc = (s) => String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<
 const api = (p, o) => fetch(p, o).then(r => r.json())
 const post = (action, extra={}) => api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ action, ...extra }) })
 const postJSON = (path, obj={}) => api(path, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(obj) })
-const setOrgUrl = (org) => { try { history.replaceState(null, '', location.pathname + (org ? '?org='+encodeURIComponent(org) : '')) } catch {} }
+const setOrgUrl = (org) => { try { history.replaceState(null, '', '/'+encodeURIComponent(org||'')) } catch {} }   // /anigame
 
 const ROLES = ['architect','engineer','critic','adversary','ultracritical','user-defender','researcher','tester','designer','sound-designer','composer']
 const BACKENDS = ['claude','codex','qwen','gemini']
@@ -118,7 +118,7 @@ async function tick() {
   S.teams = t && t.members ? t : { members:[], rooms:[], userInbox:[], orgs:[] }
   S.state = st && st.rooms ? st : { rooms:[], daemon:{} }
   if (!S.org) S.org = (S.teams.orgs && S.teams.orgs[0] && S.teams.orgs[0].org) || null
-  if (_scopedNav) { _scopedNav=false; const has=(S.teams.members||[]).some(m=>!_qOrg||m.org===_qOrg); S.building = !has; if (has && _qOrg) S.org=_qOrg }
+  if (_scopedNav) { _scopedNav=false; const has=(S.teams.members||[]).some(m=>!_proj||m.org===_proj); S.building = !has; if (has && _proj) S.org=_proj }
   if (S.selRoom && needRoomFetch()) S.room = await api('/api/room?id='+encodeURIComponent(S.selRoom)).catch(()=>null)
   if (S.selMember) {
     const m = memberByHandle(S.selMember)
@@ -331,7 +331,7 @@ function renderBuilder(d) {
   const B = S.builder
   d.innerHTML = `<div style="display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start">
     <div>
-      <div class="grid2"><div><label>Org</label><input id="bOrg" value="${esc(B.org)}"></div><div><label>Repo path (host)</label><input id="bRepo" value="${esc(B.repo)}" placeholder="/Users/you/code/app"></div></div>
+      <div class="grid2"><div><label>Project</label><input id="bOrg" value="${esc(B.org)}"></div><div><label>Repo path (host)</label><input id="bRepo" value="${esc(B.repo)}" placeholder="/Users/you/code/app"></div></div>
       <div style="margin-top:8px"><label>Start from a preset (optional)</label><select id="bPreset"><option value="">— preset —</option></select></div>
       <h2>Teams</h2><div id="bTeams"></div><button class="btn" onclick="bAddTeam()">＋ Add team</button>
       <div class="row" style="margin-top:14px"><button class="btn primary" onclick="bSave()">💾 Save team.json</button><button class="btn" onclick="bDefine()">◎ Define rooms</button><button class="btn" style="background:#1f3a26;border-color:#2f6b3f;color:#bfe6c8" onclick="bLaunch()">🚀 Launch</button><span id="bMsg" class="muted"></span></div>
@@ -410,11 +410,11 @@ window.bLaunch = async ()=>{ const msg=$('#bMsg'); if(!msg)return; msg.innerHTML
 // Scoped launch (mrc gui [repo]): pre-fill the builder from ?repo=&org=, then land on Build (or Teams
 // if a team for that org already exists — decided after the first data load).
 const _q = new URLSearchParams(location.search)
-const _qRepo = _q.get('repo'), _qOrg = _q.get('org')
-if (_qOrg) S.org = _qOrg                                   // ?org=<project> -> jump straight to it
-if (_qRepo) { S.builder.repo = _qRepo; if (_qOrg) S.builder.org = _qOrg }
+const _qRepo = _q.get('repo')
+const _proj = decodeURIComponent(location.pathname.replace(/^\/+/, '').split('/')[0] || '')   // /anigame -> anigame
+if (_proj) { S.org = _proj; S.builder.org = _proj }       // path is the project -> jump straight to it
+if (_qRepo) { S.builder.repo = _qRepo }
 let _scopedNav = !!_qRepo
-if (!_qRepo && location.pathname.endsWith('/new')) S.building=true
 tick(); setInterval(tick, 1500)
 </script>
 </body>
