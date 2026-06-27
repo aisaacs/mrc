@@ -123,9 +123,8 @@ async function tick() {
   if (S.selMember) {
     const m = memberByHandle(S.selMember)
     if (m && m.tier==='worker') {
-      const room = mergedRooms().find(r=>r.team===m.team && r.kind==='team')
-      const rd = room ? await api('/api/room?id='+encodeURIComponent(room.roomId)).catch(()=>null) : null
-      S.workerLog = rd ? (rd.thread||'').split('\n').filter(l=>l.toLowerCase().includes(m.first.toLowerCase())).join('\n') : ''
+      const r = await api('/api/worker-log?handle='+encodeURIComponent(m.handle)).catch(()=>null)
+      S.workerLog = r && r.ok ? (r.log||'') : ''
     }
   }
   paint()
@@ -195,7 +194,7 @@ function renderList() {
     let html = teams.map(t => `<div class="team"><div class="tn">${esc(t)}</div>${byTeam[t].map(memberRow).join('')}${S.addingTo===t ? amForm(t) : `<button class="btn tiny" style="margin-top:8px" onclick="startAddMember('${esc(t)}')">＋ add member</button>`}</div>`).join('')
     // Rooms as a section under the team list (the team rooms + the leads room; consults/history below)
     const rs = mergedRooms(); const mine = rs.filter(inOrg); const others = rs.filter(r=>!inOrg(r))
-    const roomRow = (r) => `<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')"><span class="nm">${esc(r.team||label2(r))}</span><span class="state ${r.state}">${esc(r.state)}</span><span class="meta">${esc(r.kind||'')}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`
+    const roomRow = (r) => `<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')" title="${r.turn!=null?`${r.turn} messages exchanged${r.turnCap?` — checks in with you at ${r.turnCap}`:''}`:''}"><span class="nm">${esc(r.team||label2(r))}</span><span class="state ${r.state}">${esc(r.state)}</span><span class="meta">${esc(r.kind||'')}${r.turn?` · ${r.turn} msgs`:''}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`
     html += `<h2>Rooms</h2>` + (mine.length? mine.map(roomRow).join('') : `<div class="muted" style="padding:2px 6px">none</div>`)
     if (others.length) html += `<h2>Other — consults &amp; history</h2><div style="opacity:.55">${others.map(roomRow).join('')}</div>`
     mid.innerHTML = html
@@ -255,7 +254,7 @@ function renderWorkerLog(d, m) {
   d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:6px">
       <b>@${esc(m.first)} <span class="muted">/${esc(m.backend)} · ${esc(m.role)}</span></b>
       <span class="mstate worker">on-demand</span></div>
-    <div class="muted" style="margin-bottom:8px">No terminal — this member runs when a teammate @mentions it. Recent activity from the team transcript:</div>
+    <div class="muted" style="margin-bottom:8px">No terminal — runs when a teammate @mentions it. Invocation log (request + result per call):</div>
     <pre class="thread" id="wlog">${esc(S.workerLog || '(no activity yet — @mention @'+m.first+' to put them to work)')}</pre>`
 }
 function patchDetail() {

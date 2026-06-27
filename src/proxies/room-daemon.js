@@ -8,14 +8,14 @@
 // before. One daemon serves all sessions, so it outlives any single session.
 import net from 'node:net'
 import { spawn } from 'node:child_process'
-import { openSync, mkdirSync, appendFileSync } from 'node:fs'
+import { openSync, mkdirSync, appendFileSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { ensureRoom, appendThread, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadLaunches, removeLaunch } from '../rooms.js'
 import { createRoomEngine } from '../teams/room-engine.js'
-import { createWorkerRunner } from '../teams/worker-runner.js'
+import { createWorkerRunner, workerLogPath } from '../teams/worker-runner.js'
 
 const MRC_JS = fileURLToPath(new URL('../../mrc.js', import.meta.url))
 
@@ -434,6 +434,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
           removeLaunch(f.org); reply({ ok: true }); continue
         }
         if (f.action === 'selectwin' && f.org) { reply({ ok: !!(teamMod && teamMod.tmuxSelectWindow(f.org, f.window)) }); continue }
+        if (f.action === 'workerlog' && f.handle) {
+          const m = engine.memberByHandle(f.handle)
+          let log = ''
+          if (m?.repo) { try { log = readFileSync(workerLogPath(m.repo, f.handle), 'utf8').slice(-20000) } catch {} }
+          reply({ ok: true, log }); continue
+        }
         // Add a member to a (possibly running) org: re-define from a PINNED roster (existing members
         // keep their names) + the new member, then launch just its terminal if the team is up.
         if (f.action === 'addmember' && f.org) {

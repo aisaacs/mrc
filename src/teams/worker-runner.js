@@ -8,6 +8,23 @@
 // prompt, post-back, per-worker serialization) is unit-tested with a fake invoker; the real invoker
 // runs a container and is validated via the rebuild recipe.
 
+import { appendFileSync, mkdirSync } from 'node:fs'
+import { join } from 'node:path'
+
+export const workerLogPath = (repo, handle) => join(repo, '.mrc', 'worker-logs', handle.replace(/[^a-z0-9]+/gi, '-') + '.log')
+
+// Append a detailed entry (request + result + timestamp) to a worker's own log file, so the dashboard
+// can show real per-invocation history rather than scraping the transcript.
+function logWorker(member, items, text, nameOf) {
+  if (!member.repo) return
+  try {
+    mkdirSync(join(member.repo, '.mrc', 'worker-logs'), { recursive: true })
+    const asked = items.map((it) => it.directive ? `  ${it.text}` : `  ${nameOf(it.fromHandle)}: ${it.text}`).join('\n')
+    appendFileSync(workerLogPath(member.repo, member.handle),
+      `${new Date().toISOString()}  @${member.first} (${member.role})\n asked:\n${asked}\n result: ${text}\n\n`)
+  } catch {}
+}
+
 // Build the single prompt handed to a worker for a batch of messages addressed to it. Pure.
 export function buildWorkerPrompt(member, items, nameOf = (h) => '@' + h) {
   const lines = items.map((it) => it.directive
@@ -45,6 +62,7 @@ export function createWorkerRunner({ engine, invoke, intervalMs = 2000, log = ()
       text = `[@${member.first} could not run: ${e?.message || e}]`
       log(`worker ${b.toHandle} failed: ${e?.message || e}`)
     }
+    logWorker(member, b.items, text, nameOf)
     // Reply to whoever pinged the worker; if that's unclear, fall back to the room lead.
     const targets = senders.length ? senders
       : [...room.members.keys()].filter((k) => k !== member.handle && k !== '@user').slice(0, 1)
