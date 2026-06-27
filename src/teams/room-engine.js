@@ -18,6 +18,18 @@ import { extractMentions, parseMention } from './names.js'
 
 const norm = (s) => String(s || '').trim()
 
+// The @mentions at the START of a message are its ADDRESSEES; @mentions later in the prose are
+// references (e.g. "scope locked by @user"). Used so a passing @user reference isn't mistaken for a
+// question to the human. Allows leading connectors ("@a and @b, …").
+function leadingAddressees(text) {
+  const out = []
+  let s = String(text || '').trimStart()
+  const re = /^(?:and\s+|&\s*|,\s*)?@([a-z0-9._/-]+)\s*/i
+  let m
+  while ((m = s.match(re))) { out.push(m[1].toLowerCase()); s = s.slice(m[0].length) }
+  return out
+}
+
 export function createRoomEngine({ send, append, notify, now = () => Date.now(), turnCap = 100 } = {}) {
   const members = new Map()   // handle -> member def (sessionId bound when its live session connects)
   const rooms = new Map()     // roomId -> room state
@@ -137,13 +149,15 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
     const mentions = extractMentions(text)
     const targets = new Set()
     const unresolved = []
-    let toUser = false
     for (const tok of mentions) {
-      if (tok === 'user' || tok === 'user/human') { toUser = true; continue }
+      if (tok === 'user' || tok === 'user/human') continue   // @user handled via leading-addressee below
       const h = resolveInRoom(room, tok)
       if (h && h !== fromHandle) targets.add(h)
       else if (!h) unresolved.push(tok)
     }
+    // @user is a question for the human ONLY when it's a leading addressee (how ask_user phrases it),
+    // not a passing reference like "scope locked by @user" — otherwise the inbox fills with noise.
+    const toUser = leadingAddressees(text).some((t) => t === 'user' || t === 'user/human')
     // Back-compat: a 2-member room with no explicit target delivers to the other member (consult).
     if (!targets.size && !toUser && room.members.size === 2) {
       const other = [...room.members.keys()].find((k) => k !== fromHandle && k !== '@user')

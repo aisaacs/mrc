@@ -195,7 +195,7 @@ function renderList() {
   } else if (S.nav==='inbox') {
     const ib = inbox()
     mid.innerHTML = `<h2>Questions for you</h2>` + (ib.qs.length? ib.qs.map((q,i)=>`<div class="ib ${q.answered?'done':''} ${S.selInbox===i?'sel':''}" onclick="selInbox(${i})">
-        <div class="who"><b>@${esc(q.fromName||q.from)}</b> · ${esc(q.room)}${q.answered?' · answered':''}</div><div class="q">${esc(q.text)}</div></div>`).join('') : `<div class="muted">Nothing waiting. 🎉</div>`)
+        <div class="who"><b>${esc(q.fromName||('@'+q.from))}</b> · ${esc(q.room)}${q.answered?' · answered':''}</div><div class="q">${esc(q.text)}</div></div>`).join('') : `<div class="muted">Nothing waiting. 🎉</div>`)
       + `<h2>Catch-ups to review</h2>` + (ib.cu.length? ib.cu.map(r=>`<div class="rm" onclick="selRoom('${esc(r.roomId)}',true)"><span class="nm">${esc(r.team||r.roomId)}</span><span class="meta">${r.unreviewed} unreviewed</span></div>`).join('') : `<div class="muted">None.</div>`)
   } else if (S.nav==='console') {
     const L = launchFor()
@@ -279,7 +279,7 @@ function renderInboxItem(d) {
   const q = (S.teams.userInbox||[])[S.selInbox]
   if (!q) { d.innerHTML = `<div class="empty">Question gone.</div>`; return }
   d.innerHTML = `<h2>A member needs you</h2>
-    <div class="pane"><div class="who muted"><b style="color:var(--fg)">@${esc(q.fromName||q.from)}</b> in <b>${esc(q.room)}</b></div>
+    <div class="pane"><div class="who muted"><b style="color:var(--fg)">${esc(q.fromName||('@'+q.from))}</b> in <b>${esc(q.room)}</b></div>
     <div style="margin:8px 0;white-space:pre-wrap">${esc(q.text)}</div>
     ${q.answered? `<div class="muted">↳ ${esc(q.answer||'')}</div>` :
       `<textarea id="ansTx" placeholder="Your reply (routes back as [Human reply])…"></textarea><div style="margin-top:8px"><button class="btn primary" onclick="answer(${S.selInbox})">Send reply</button> <button class="btn" onclick="openRoom('${esc(q.roomId)}')">Open room</button></div>`}</div>`

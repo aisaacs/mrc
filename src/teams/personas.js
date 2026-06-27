@@ -126,7 +126,8 @@ function protocolBlock({ self, team, roster, isLead, territory, mount }) {
     '    exchanges you were not named in.',
     '  • Reach your human with @user — for decisions, approvals, scope/UX choices, or anything',
     '    genuinely theirs. ASK EARLY when you are unsure what they want; do not guess, and do not',
-    '    wait for them to interrupt to find out you went the wrong way.',
+    '    wait for them to interrupt. To ASK them, put @user at the START of the message (a @user',
+    '    mid-sentence is just a reference, and will NOT reach them).',
     isLead
       ? '  • You are also in the LEADS room with the other teams\' leads and @user. Cross-team questions go'
         + '\n    THERE, lead-to-lead — never reach into another team\'s room directly.'

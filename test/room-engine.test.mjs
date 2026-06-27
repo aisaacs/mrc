@@ -194,6 +194,18 @@ test('engine: steer sends [Human directive] to all room members and clears held'
   assert.equal(h.deliveriesTo(engineer).length, 0, 'held backlog dropped by steer')
 })
 
+test('engine: @user mid-sentence is a reference, not a question (no inbox spam)', () => {
+  const h = harness(TEAM)
+  const arch = h.handle('architect'), engineer = h.handle('engineer')
+  // Addresses the engineer; merely references @user in prose -> must NOT become an inbox question.
+  h.engine.route({ fromHandle: arch, roomId: teamRoomId('shop', 'client'), text: '@engineer kickoff — scope is locked by @user, build the spine' })
+  assert.equal(h.engine.status().userInbox.length, 0, 'a passing @user reference does not hit the inbox')
+  assert.equal(h.deliveriesTo(engineer).length, 1, 'still delivered to the engineer')
+  // A leading @user IS a real question.
+  h.engine.route({ fromHandle: arch, roomId: teamRoomId('shop', 'client'), text: '@user should pieces be animals or candy?' })
+  assert.equal(h.engine.status().userInbox.length, 1, 'leading @user reaches the inbox')
+})
+
 test('engine: multi-room lead — room inferred from the @mentioned target', () => {
   const json = {
     org: 'shop',
