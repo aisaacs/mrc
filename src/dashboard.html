@@ -166,6 +166,12 @@
   #flash .fl.note { background:#13263a; border:1px solid #2f5d8f; color:#cfe3ff }
   #flash .fl .x { cursor:pointer; opacity:.7; margin-left:2px } #flash .fl .x:hover { opacity:1 }
   #flash .fl .btn { padding:3px 11px; font-size:12px }
+  /* #2b.3 micro-polish: smooth state transitions, active feedback, keyboard focus rings. Hover bgs stay
+     within the panel→panel2 range already verified AA, so text contrast does NOT regress on hover/active.
+     The focus-visible rings extend 2a's a11y to buttons/fields; every glyph + the existing rings stay. */
+  button.btn, .tabs button, .ptab, .mem, .rm, .ib, .tabhint, .pclose, .dismx, textarea, input, select, a { transition: background-color .14s ease, border-color .14s ease, color .14s ease, opacity .14s ease, transform .06s ease }
+  button.btn:active { transform: translateY(1px) }
+  button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-visible, .tabhint:focus-visible, [role=button]:focus-visible { outline:2px solid var(--accent); outline-offset:2px }
 </style>
 </head>
 <body>
@@ -414,7 +420,7 @@ function renderMain() {
     html += ib.questions.map(q=>`<div class="ib slim q ${S.selInbox===q.id?'sel':''}" onclick="selInbox(${q.id})"><span class=" qicon">❓</span> <b>${esc(q.fromName||('@'+q.from))}</b> <span class="muted">· ${esc(q.room)}</span></div>`).join('')
     html += ib.notifications.map(q=>`<div class="ib slim fyi ${S.selInbox===q.id?'sel':''}" onclick="selInbox(${q.id})"><span class="qicon">🔔</span> <b>${esc(q.fromName||('@'+q.from))}</b> <span class="muted">· ${esc(q.room)}</span><span class="dismx" title="Dismiss" onclick="event.stopPropagation();dismissInbox(${q.id})">✕</span></div>`).join('')
     html += ib.cu.map(r=>`<div class="rm" onclick="selRoom('${esc(r.roomId)}',true)"><span class="nm">${esc(r.team||r.roomId)}</span><span class="meta">${r.unreviewed} catch-up${r.unreviewed>1?'s':''}</span></div>`).join('')
-  } else html += `<div class="muted" style="padding:2px 6px 6px">No messages — members reach you here.</div>`
+  } else html += `<div class="muted" style="padding:2px 6px 6px">No messages — members reach you here.<div style="opacity:.5;font-style:italic;margin-top:1px">All quiet on Spaceball One.</div></div>`
   // Recover a mis-dismissed item: a collapsed "show dismissed" toggle reveals dismissed items, which
   // re-open from the detail (activates the dismissed branch; makes the silent-clear default reversible).
   if (ib.dismissed.length) {
