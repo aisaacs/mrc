@@ -107,6 +107,8 @@ export function parseArgs(argv) {
     agent: 'claude',
     room: '',
     rooms: true,   // cross-session negotiation rooms are ON by default (disable with --no-rooms)
+    member: '',    // team-member launch: this session is @member from the roster
+    roster: '',    // path to team.json (for --member launches)
   }
   const remaining = []
   const claudeArgs = []
@@ -145,6 +147,12 @@ export function parseArgs(argv) {
         break
       case '--rooms': config.rooms = true; break
       case '--no-rooms': config.rooms = false; break
+      case '--member':
+        if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.member = argv[++i]
+        break
+      case '--roster':
+        if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.roster = argv[++i]
+        break
       default: remaining.push(arg)
     }
   }

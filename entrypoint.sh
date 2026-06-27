@@ -58,9 +58,18 @@ case "$AGENT" in
       if [ -z "$RESUME_FLAG" ] && [ -n "${MRC_SESSION_ID:-}" ]; then
         SESSION_FLAG="--session-id ${MRC_SESSION_ID}"
       fi
-      claude --dangerously-skip-permissions \
-        --dangerously-load-development-channels server:room \
-        --mcp-config /tmp/mrc-room-mcp.json $SESSION_FLAG "$@"
+      # Team members carry a persona (role + protocol) injected via --append-system-prompt. Read from
+      # a file so backticks/$ in the prompt are not re-evaluated by the shell ($(cat …) is not rescanned).
+      if [ -n "${MRC_PERSONA_FILE:-}" ] && [ -f "${MRC_PERSONA_FILE}" ]; then
+        claude --dangerously-skip-permissions \
+          --dangerously-load-development-channels server:room \
+          --mcp-config /tmp/mrc-room-mcp.json \
+          --append-system-prompt "$(cat "${MRC_PERSONA_FILE}")" $SESSION_FLAG "$@"
+      else
+        claude --dangerously-skip-permissions \
+          --dangerously-load-development-channels server:room \
+          --mcp-config /tmp/mrc-room-mcp.json $SESSION_FLAG "$@"
+      fi
     else
       claude --dangerously-skip-permissions $RESUME_FLAG "$@"
     fi
