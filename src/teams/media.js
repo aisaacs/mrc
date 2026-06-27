@@ -78,7 +78,9 @@ const KEY_FOR = { image: 'GEMINI_API_KEY', sfx: 'ELEVEN_LABS_API_KEY', music: 'E
 // key mrc already has; returns null on any failure so generation falls back to the raw text.
 async function artDirect(rawRequest, kind, { apiKey, fetchFn = globalThis.fetch }) {
   if (!apiKey) return null
-  const system = `You are the ${kind === 'image' ? 'art' : 'audio'} director for a software team. A teammate sent the message below to a ${kind} generator. Reply ONLY with JSON. If it is a real request for a NEW ${kind} asset: {"prompt":"<concise standalone ${kind}-generation prompt>","name":"<2-4 word kebab filename, no extension>"}. If it is just feedback/approval/chatter and NOT a new asset request: {"skip":true}.`
+  const tField = kind === 'image' ? ',"transparent":true|false' : ''
+  const tNote = kind === 'image' ? ' Set "transparent":true for a sprite/icon/object that needs a cut-out (no background), false for a full scene/background.' : ''
+  const system = `You are the ${kind === 'image' ? 'art' : 'audio'} director for a software team. A teammate sent the message below to a ${kind} generator. Reply ONLY with JSON. If it is a real request for a NEW ${kind} asset: {"prompt":"<concise standalone ${kind}-generation prompt>","name":"<2-4 word kebab filename, no extension>"${tField}}.${tNote} If it is just feedback/approval/chatter and NOT a new asset request: {"skip":true}.`
   try {
     const res = await fetchFn('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -106,14 +108,25 @@ export async function generateMedia(member, { items = [], fetchFn } = {}) {
   const prompt = (ad?.prompt) || raw
   const fileBase = slug(ad?.name || prompt)
   const apiKey = repoEnvKey(member.repo, KEY_FOR[kind])   // per-repo .env first, then the global key
+  // Gemini can't emit real alpha (it paints a fake transparency checkerboard). For a cut-out asset,
+  // ask for a solid magenta background and chroma-key it to true transparency ourselves.
+  const CHROMA = { r: 255, g: 0, b: 255 }
+  const wantTransparent = kind === 'image' && (ad ? !!ad.transparent : /\btransparent\b|\bsprite\b|\bicon\b|\bcut-?out\b/i.test(raw))
+  const genPrompt = wantTransparent
+    ? `${prompt}. Render the subject centered on a SOLID FLAT pure magenta (#FF00FF) background that completely fills the frame — an actual solid color, NOT a transparency checkerboard.`
+    : prompt
   let asset
-  try { asset = await GENERATORS[kind](prompt, { apiKey, fetchFn }) }
+  try { asset = await GENERATORS[kind](genPrompt, { apiKey, fetchFn }) }
   catch (e) { return { text: `[@${member.first} couldn't generate it: ${e?.message || e}]` } }
+  let transparent = false
+  if (wantTransparent && asset.ext === 'png') {
+    try { const { chromaKey } = await import('./png.js'); asset = { ...asset, bytes: chromaKey(asset.bytes, CHROMA, 70) }; transparent = true } catch {}
+  }
   const territory = member.territory && member.territory !== '.' ? member.territory : 'assets'
   const dir = join(member.repo, territory)
   const name = `${fileBase}-${createHash('sha1').update(prompt + asset.bytes.length).digest('hex').slice(0, 6)}.${asset.ext}`
   try { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, name), asset.bytes) }
   catch (e) { return { text: `[@${member.first} generated it but couldn't write the file: ${e?.message || e}]` } }
   const rel = join(territory, name)
-  return { text: `Generated ${kind === 'image' ? 'image' : kind === 'sfx' ? 'sound effect' : 'music'}: \`${rel}\` (${(asset.bytes.length / 1024).toFixed(0)} KB) — from "${prompt.slice(0, 80)}".` }
+  return { text: `Generated ${kind === 'image' ? 'image' : kind === 'sfx' ? 'sound effect' : 'music'}: \`${rel}\`${transparent ? ' (transparent bg)' : ''} (${(asset.bytes.length / 1024).toFixed(0)} KB) — from "${prompt.slice(0, 80)}".` }
 }

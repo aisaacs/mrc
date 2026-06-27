@@ -7,6 +7,24 @@ import fs from 'node:fs'
 import { join } from 'node:path'
 import { isMediaRole, mediaPrompt, generateImage, generateMedia } from '../src/teams/media.js'
 import { repoEnvKey } from '../src/config.js'
+import { encodePNG, decodePNG } from '../src/teams/png.js'
+
+test('transparent asset: solid magenta background is chroma-keyed to real alpha', async () => {
+  const repo = fs.mkdtempSync(join(os.tmpdir(), 'mrc-media-'))
+  process.env.GEMINI_API_KEY = 'g'; process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY = 'a'
+  try {
+    const png = encodePNG(2, 1, new Uint8Array([255, 0, 255, 255 /* magenta bg */, 30, 180, 90, 255 /* subject */]))
+    const fetchFn = async (url) => String(url).includes('anthropic')
+      ? { ok: true, json: async () => ({ content: [{ text: '{"prompt":"a duck game piece","name":"duck-piece","transparent":true}' }] }) }
+      : { ok: true, json: async () => ({ candidates: [{ content: { parts: [{ inlineData: { mimeType: 'image/png', data: png.toString('base64') } }] } }] }) }
+    const member = { role: 'designer', repo, territory: 'assets', first: 'Côme' }
+    const out = await generateMedia(member, { items: [{ text: '@côme make a transparent duck sprite' }], fetchFn })
+    assert.match(out.text, /transparent bg/)
+    const dec = decodePNG(fs.readFileSync(join(repo, 'assets', fs.readdirSync(join(repo, 'assets'))[0])))
+    assert.equal(dec.data[3], 0, 'magenta bg pixel -> transparent')
+    assert.equal(dec.data[7], 255, 'subject kept opaque')
+  } finally { delete process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY }
+})
 
 test('repoEnvKey prefers the repo .env, then falls back to process.env', () => {
   const repo = fs.mkdtempSync(join(os.tmpdir(), 'mrc-key-'))
