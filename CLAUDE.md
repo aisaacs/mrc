@@ -38,7 +38,7 @@ The system has two layers: a **Node.js host launcher** (`mrc.js` + `src/`) and a
 
 ### Container-side (runs inside Docker)
 
-12. **`Dockerfile`** — Builds on `node:22-slim`. Installs Claude Code via native binary download, installs plugins from the official marketplace, installs Codex CLI (OpenAI), creates a non-root `coder` user, and grants passwordless sudo only for the firewall script.
+12. **`Dockerfile`** — Builds on `node:24-slim`. Installs Claude Code via native binary download, installs plugins from the official marketplace, installs Codex CLI (OpenAI), creates a non-root `coder` user, and grants passwordless sudo only for the firewall script.
 
 13. **`entrypoint.sh`** — Container startup. Waits for DNS (up to 30s), runs the firewall via sudo, runs `container-setup.js` for config merging, optionally logs in Codex, then starts the selected agent (`claude` or `codex`).
 

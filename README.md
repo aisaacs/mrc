@@ -30,7 +30,7 @@ Everything else is blocked. He'll get an immediate REJECT if he tries.
 ```
 mrc.js               # the command — builds, mounts, launches (Node.js)
 src/                  # host-side modules (colima, docker, config, proxies, sessions)
-Dockerfile           # his room — node:22-slim + Claude Code + firewall tools
+Dockerfile           # his room — node:24-slim + Claude Code + firewall tools
 entrypoint.sh        # waits for network, runs firewall, starts agent
 init-firewall.sh     # iptables + ipset whitelist — the lock on the door
 container/           # container-side scripts (setup, hooks, statusline)
@@ -296,7 +296,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 **Different Node version** — change the base image in the Dockerfile:
 
 ```dockerfile
-FROM node:20-slim    # or node:18-slim, etc.
+FROM node:22-slim    # or node:20-slim, etc.
 ```
 
 **Let him run free** (no firewall) — replace the ENTRYPOINT in the Dockerfile:
