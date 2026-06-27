@@ -129,3 +129,17 @@ export function saveOrgs(list) {
 export function loadOrgs() {
   try { return JSON.parse(readFileSync(orgsFile(), 'utf8')).orgs || [] } catch { return [] }
 }
+
+// --- GUI launch registry (org -> tmux session + embedded ttyd) ------------
+// Written by `mrc team up` (which runs the risky image build in ITS OWN process, so a build failure
+// can't take down the daemon), read by the daemon to report launch state to the dashboard.
+const launchesFile = () => join(daemonDir(), 'team-launches.json')
+export function loadLaunches() { try { return JSON.parse(readFileSync(launchesFile(), 'utf8')) } catch { return {} } }
+export function saveLaunch(org, info) {
+  const all = loadLaunches(); all[org] = { ...info, at: Date.now() }
+  try { mkdirSync(daemonDir(), { recursive: true }); writeFileSync(launchesFile(), JSON.stringify(all, null, 2)) } catch {}
+}
+export function removeLaunch(org) {
+  const all = loadLaunches(); delete all[org]
+  try { writeFileSync(launchesFile(), JSON.stringify(all, null, 2)) } catch {}
+}

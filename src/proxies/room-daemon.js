@@ -8,13 +8,20 @@
 // before. One daemon serves all sessions, so it outlives any single session.
 import net from 'node:net'
 import { spawn } from 'node:child_process'
+import { openSync, mkdirSync, appendFileSync } from 'node:fs'
+import { homedir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { ensureRoom, appendThread, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs } from '../rooms.js'
+import { ensureRoom, appendThread, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadLaunches, removeLaunch } from '../rooms.js'
 import { createRoomEngine } from '../teams/room-engine.js'
 import { createWorkerRunner } from '../teams/worker-runner.js'
 
 const MRC_JS = fileURLToPath(new URL('../../mrc.js', import.meta.url))
+
+// Daemon-level events (launch/worker) go to a plain log file — NOT appendThread, which targets a real
+// room dir and would both throw (no such room) and pollute the Rooms list with fake "launch" rooms.
+const daemonLog = (msg) => { try { appendFileSync(join(homedir(), '.local', 'share', 'mrc', 'daemon.log'), `${new Date().toISOString()} ${msg}\n`) } catch {} }
 
 // Worker invoker. Media members (designer/sound-designer/composer) generate an asset file via an API
 // call IN-PROCESS (the daemon loads .env, so it has GEMINI/ELEVEN keys, and gets the raw items).
@@ -91,10 +98,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
   const engine = createRoomEngine({ send, append: appendThread, notify, now: () => Date.now(), turnCap })
   // Drives non-Claude (task-worker) members: a queued mention invokes the worker's CLI and posts the
   // reply back. The invoker is injectable so tests don't spawn real processes.
-  const worker = createWorkerRunner({ engine, invoke: workerInvoke, intervalMs: workerPollMs, log: (m) => appendThread('worker', `${ts()} ${m}`) })
+  const worker = createWorkerRunner({ engine, invoke: workerInvoke, intervalMs: workerPollMs, log: (m) => daemonLog(`worker: ${m}`) })
   worker.start()
   const orgDefs = new Map()   // org -> roster def, persisted so team rooms survive a daemon refresh
-  const orgLaunch = new Map() // org -> { session, ttyd:{port,url,pid} } for a GUI-launched team
   const orgRoster = new Map() // org -> the raw team.json (so the GUI can launch a defined org)
   let teamMod = null          // lazily-loaded launch helpers (Docker/tmux/ttyd live here)
   import('../commands/team.js').then((m) => { teamMod = m }).catch(() => {})
@@ -388,33 +394,36 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
           continue
         }
         if (f.action === 'team') {
-          reply({ ok: true, ...engine.status(), launch: [...orgLaunch.entries()].map(([org, v]) => ({ org, session: v.session, ttydUrl: v.ttyd?.url || null, running: true })) })
+          const launches = loadLaunches()
+          reply({ ok: true, ...engine.status(), launch: Object.entries(launches).map(([org, v]) => ({ org, session: v.session, ttydUrl: v.ttydUrl || null, running: true })) })
           continue
         }
         if (f.action === 'answer') { reply(engine.answerUser(Number(f.i), String(f.text || ''))); continue }
-        // GUI launch lifecycle: spin up the live members (tmux + ttyd) so the human drives them in the
-        // browser. Fire-and-forget (the build can take minutes); the dashboard polls for the ttyd url.
+        // GUI launch: spin up the live members. The image BUILD must run in its own process —
+        // buildImage() calls process.exit(1) on failure, which would otherwise kill the daemon (and
+        // its dashboard). So spawn `mrc team up` detached, logging to <repo>/.mrc/launch.log; it writes
+        // the launch registry itself, which the dashboard reads via `team` status.
         if (f.action === 'launchteam') {
           if (!teamMod) { reply({ ok: false, error: 'launch helpers still loading — retry in a moment' }); continue }
           const roster = f.roster || orgRoster.get(f.org)
           if (!roster) { reply({ ok: false, error: 'no roster for this org — launch from the builder, or run mrc team up' }); continue }
-          reply({ ok: true, launching: true })
-          ;(async () => {
-            try {
-              const { norm, rosterPath } = teamMod.materializeRoster(roster, f.repo)
-              orgRoster.set(norm.org, roster)
-              defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
-              const r = await teamMod.startTeamSession(norm, norm.repo, { rosterPath })
-              if (r.ok) orgLaunch.set(norm.org, { session: r.session, ttyd: r.ttyd })
-              appendThread('launch', `${ts()} [launch ${norm.org}] ${r.ok ? 'session ' + r.session + ' ' + (r.ttyd?.url || '(no ttyd)') : 'FAILED: ' + r.error}`)
-            } catch (e) { appendThread('launch', `${ts()} [launch error] ${e?.message || e}`) }
-          })()
+          try {
+            const { norm, rosterPath } = teamMod.materializeRoster(roster, f.repo)
+            orgRoster.set(norm.org, roster)
+            defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
+            const logDir = join(norm.repo, '.mrc'); mkdirSync(logDir, { recursive: true })
+            let fd = 'ignore'; try { fd = openSync(join(logDir, 'launch.log'), 'a') } catch {}
+            const child = spawn(process.execPath, [MRC_JS, 'team', 'up', norm.repo, '--roster', rosterPath], { detached: true, stdio: ['ignore', fd, fd] })
+            child.unref()
+            daemonLog(`launch ${norm.org}: spawned mrc team up (pid ${child.pid}); log ${join(logDir, 'launch.log')}`)
+            reply({ ok: true, launching: true })
+          } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
           continue
         }
         if (f.action === 'stopteam' && f.org) {
           if (teamMod) teamMod.killTeamSession(f.org)
-          const l = orgLaunch.get(f.org); if (l?.ttyd?.pid) { try { process.kill(l.ttyd.pid) } catch {} }
-          orgLaunch.delete(f.org); reply({ ok: true }); continue
+          const l = loadLaunches()[f.org]; if (l?.ttydPid) { try { process.kill(l.ttydPid) } catch {} }
+          removeLaunch(f.org); reply({ ok: true }); continue
         }
         if (f.action === 'selectwin' && f.org) { reply({ ok: !!(teamMod && teamMod.tmuxSelectWindow(f.org, f.window)) }); continue }
         if (['brake', 'resume', 'steer', 'end'].includes(f.action) && f.roomId && engine.getRoom(f.roomId)) {
