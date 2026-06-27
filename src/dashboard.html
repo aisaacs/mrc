@@ -54,7 +54,8 @@
   /* layout */
   .app { display:grid; grid-template-rows:50px 1fr; height:100vh }
   header { display:flex; align-items:center; gap:12px; padding:0 16px; border-bottom:1px solid var(--line); background:var(--panel) }
-  header h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:.2px }
+  header h1 { font-size:15px; margin:0; font-weight:650; letter-spacing:.2px; display:flex; align-items:center; gap:7px }
+  .hatmark { fill:var(--accent); flex:0 0 auto; filter:drop-shadow(0 1px 2px rgba(0,0,0,.4)) }   /* the Mr. Claude top-hat (favicon, brand purple) */
   header .spacer { flex:1 }
   .main { display:grid; grid-template-columns:340px 1fr; min-height:0 }
   .list { border-right:1px solid var(--line); overflow:auto; padding:10px }
@@ -122,6 +123,8 @@
   .pane.unrev { border-color:var(--needs-edge) }
   .card { background:var(--inset); border:1px solid var(--line); border-radius:8px; padding:9px 11px; margin:6px 0; white-space:pre-wrap; font-size:12.5px }
   .empty { color:var(--dim); padding:40px 20px; text-align:center } label{ display:block; font-size:12px; color:var(--dim); margin:8px 0 3px }
+  .empty .hatwm { fill:var(--line); opacity:.8; margin-bottom:16px }   /* faint top-hat watermark on the idle canvas */
+  .empty .flavor { margin-top:12px; font-style:italic; opacity:.5; font-size:12px }   /* Spaceballs flavor — never load-bearing */
   .memrow { display:grid; grid-template-columns:1.3fr 1fr auto 1.1fr auto; gap:8px; align-items:center; padding:5px 0; border-top:1px solid var(--line) }
   .memrow .lead { display:flex; align-items:center; gap:5px; font-size:12px; color:var(--dim); white-space:nowrap } .memrow input[type=checkbox]{ width:auto }
   .roomtag { display:inline-block; font-size:11px; border:1px solid var(--line); border-radius:6px; padding:1px 7px; margin:2px 4px 2px 0; color:var(--dim) }
@@ -169,7 +172,7 @@
 <div id="flash"></div>
 <div class="app">
   <header>
-    <h1>🎩 Mister Claude</h1>
+    <h1><svg class="hatmark" viewBox="0 0 32 32" width="20" height="20" aria-hidden="true"><ellipse cx="16" cy="23.4" rx="12.8" ry="3.05"/><path d="M10.5 9 Q10.75 6.3 16 6.1 Q21.25 6.3 21.5 9 L22 22.6 L10 22.6 Z"/></svg>Mister Claude</h1>
     <div class="tabwrap">
       <button class="tabhint l" id="tabHintL" onclick="scrollTabs(-1)" title="needs-you on a tab scrolled off the left — click to reveal" hidden></button>
       <div class="tabstrip" id="tabs"></div>
@@ -482,7 +485,7 @@ function renderDetail() {
   if (S.selMember) return renderMember(d)
   if (S.selInbox!=null) return renderInboxItem(d)
   if (S.selRoom) return renderRoom(d)
-  d.innerHTML = `<div class="empty">Pick a member (terminal / log), a room (transcript &amp; steer), or an @you message — or ＋ New team.</div>`
+  d.innerHTML = `<div class="empty"><svg class="hatwm" viewBox="0 0 32 32" width="60" height="60" aria-hidden="true"><ellipse cx="16" cy="23.4" rx="12.8" ry="3.05"/><path d="M10.5 9 Q10.75 6.3 16 6.1 Q21.25 6.3 21.5 9 L22 22.6 L10 22.6 Z"/></svg><div>Pick a member (terminal / log), a room (transcript &amp; steer), or an @you message — or ＋ New project.</div><div class="flavor">May the Schwartz be with you.</div></div>`
 }
 function renderMember(d) {
   const m = memberByHandle(S.selMember)
