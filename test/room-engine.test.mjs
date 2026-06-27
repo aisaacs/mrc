@@ -252,6 +252,17 @@ test('engine: redefining an org prunes removed members and rooms (no ghosts)', (
   assert.ok(!handles.includes('pierre/claude'), 'removed member is gone')
 })
 
+test('engine: notifyRoom announces to existing live members, not the new/excepted one', () => {
+  const h = harness(TEAM)
+  const arch = h.handle('architect'), engineer = h.handle('engineer'), critic = h.handle('critic')
+  const n = h.engine.notifyRoom(teamRoomId('shop', 'client'), '[Team update] @Newbie joined', { except: critic })
+  const noticesTo = (hh) => h.sent.filter((s) => s.sessionId === h.sid(hh) && s.frame.type === 'notice' && /Newbie/.test(s.frame.text)).length
+  assert.equal(n, 2)
+  assert.equal(noticesTo(arch), 1)
+  assert.equal(noticesTo(engineer), 1)
+  assert.equal(noticesTo(critic), 0, 'excepted member not notified')
+})
+
 test('engine: unresolved mentions are reported, not silently dropped', () => {
   const h = harness(TEAM)
   const r = h.engine.route({ fromHandle: h.handle('architect'), roomId: teamRoomId('shop', 'client'), text: '@nobody hello' })

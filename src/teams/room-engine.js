@@ -294,6 +294,20 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
     return { ok: true, delivered }
   }
 
+  // Push a system notice to every live member of a room (e.g. "@X just joined"). Logged to the thread.
+  function notifyRoom(roomId, text, { except } = {}) {
+    const room = rooms.get(roomId)
+    if (!room) return 0
+    let n = 0
+    for (const h of room.members.keys()) {
+      if (h === '@user' || h === except) continue
+      const m = memberByHandle(h)
+      if (m?.sessionId && m.tier === 'live') { send?.(m.sessionId, { type: 'notice', room: roomId, text }); n++ }
+    }
+    _append(roomId, `${ts()} [${text}]`)
+    return n
+  }
+
   // The human answered an @user inbox item: route the reply back into the room as a [Human directive].
   function answerUser(idx, text) {
     const item = userInbox[idx]
@@ -363,7 +377,7 @@ export function createRoomEngine({ send, append, notify, now = () => Date.now(),
   return {
     defineOrg, bindSession, unbindSession, route, endRoom, post,
     roomsForSession, roomsForHandle, resolveTargets, resolveInRoom, findRoom,
-    doBrake, doResume, doSteer, answerUser, status, memberView, viewForSession, claimWorkerBatches,
+    doBrake, doResume, doSteer, answerUser, status, memberView, viewForSession, claimWorkerBatches, notifyRoom,
     // exposed for the daemon/dashboard + tests
     _rooms: rooms, _members: members, _userInbox: userInbox, _workerQueue: workerQueue,
     getRoom: (id) => rooms.get(id) || null,

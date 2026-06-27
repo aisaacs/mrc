@@ -450,6 +450,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
             const added = norm.members.find((m) => !prev.has(m.handle))
             let launched = false
             if (added && added.tier === 'live' && loadLaunches()[f.org]) { launched = !!teamMod.launchMemberWindow(f.org, norm.repo, rosterPath, added).ok }
+            // Tell the EXISTING team members a new member joined, so the architect actually brings them
+            // in (otherwise nobody knows the roster changed).
+            if (added) {
+              const teamRoom = norm.rooms.find((r) => r.kind === 'team' && r.team === added.team)?.roomId
+              if (teamRoom) engine.notifyRoom(teamRoom, `[Team update] @${added.first} (${added.roleLabel || added.role})${added.tier === 'worker' ? ', on-demand,' : ''} just joined this team. Bring them in with @${added.first} when their role helps — and consider whether any current or upcoming work is theirs. Call list_team for the full roster.`, { except: added.handle })
+            }
             daemonLog(`addmember ${norm.org}/${team}: ${added ? '@' + added.handle : '(none)'} launched=${launched}`)
             reply({ ok: true, member: added ? { handle: added.handle, first: added.first, role: added.role, tier: added.tier } : null, launched })
           } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
