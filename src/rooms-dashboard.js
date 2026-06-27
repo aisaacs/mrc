@@ -120,7 +120,7 @@ async function handle(req, res) {
     }
     // GUI launch lifecycle: start the live members (tmux + embeddable ttyd), stop them, or switch the
     // embedded terminal to a given member's window. All proxy to the daemon.
-    if (req.method === 'POST' && (url.pathname === '/api/team-launch' || url.pathname === '/api/team-stop' || url.pathname === '/api/team-select')) {
+    if (req.method === 'POST' && (url.pathname === '/api/team-launch' || url.pathname === '/api/team-stop' || url.pathname === '/api/team-select' || url.pathname === '/api/team-add-member')) {
       let body = ''
       req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
       req.on('end', async () => {
@@ -128,6 +128,7 @@ async function handle(req, res) {
         const cp = daemonMeta()?.controlPort
         if (url.pathname === '/api/team-launch') return sendJSON(res, 200, await ctrl(cp, 'launchteam', { roster: j.roster, org: j.org, repo: j.repo }))
         if (url.pathname === '/api/team-stop') return sendJSON(res, 200, await ctrl(cp, 'stopteam', { org: j.org }))
+        if (url.pathname === '/api/team-add-member') return sendJSON(res, 200, await ctrl(cp, 'addmember', { org: j.org, team: j.team, role: j.role, backend: j.backend, territory: j.territory }))
         return sendJSON(res, 200, await ctrl(cp, 'selectwin', { org: j.org, window: j.window }))
       })
       return

@@ -434,6 +434,27 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
           removeLaunch(f.org); reply({ ok: true }); continue
         }
         if (f.action === 'selectwin' && f.org) { reply({ ok: !!(teamMod && teamMod.tmuxSelectWindow(f.org, f.window)) }); continue }
+        // Add a member to a (possibly running) org: re-define from a PINNED roster (existing members
+        // keep their names) + the new member, then launch just its terminal if the team is up.
+        if (f.action === 'addmember' && f.org) {
+          if (!teamMod) { reply({ ok: false, error: 'launch helpers still loading — retry' }); continue }
+          const def = orgDefs.get(f.org)
+          if (!def) { reply({ ok: false, error: 'unknown org' }); continue }
+          try {
+            const prev = new Set(def.members.map((m) => m.handle))
+            const team = f.team || def.members[0]?.team
+            const updated = teamMod.addMemberToRoster(teamMod.rosterFromDef(def), team, { role: f.role, backend: f.backend, territory: f.territory })
+            const { norm, rosterPath } = teamMod.materializeRoster(updated, def.repo)
+            orgRoster.set(norm.org, updated)
+            defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
+            const added = norm.members.find((m) => !prev.has(m.handle))
+            let launched = false
+            if (added && added.tier === 'live' && loadLaunches()[f.org]) { launched = !!teamMod.launchMemberWindow(f.org, norm.repo, rosterPath, added).ok }
+            daemonLog(`addmember ${norm.org}/${team}: ${added ? '@' + added.handle : '(none)'} launched=${launched}`)
+            reply({ ok: true, member: added ? { handle: added.handle, first: added.first, role: added.role, tier: added.tier } : null, launched })
+          } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
+          continue
+        }
         if (['brake', 'resume', 'steer', 'end'].includes(f.action) && f.roomId && engine.getRoom(f.roomId)) {
           const room = engine.getRoom(f.roomId)
           if (f.action === 'brake') { const held = engine.doBrake(room, 'brake'); notify(`Room ${room.team || room.roomId}: paused (human)`); reply({ ok: true, held }) }

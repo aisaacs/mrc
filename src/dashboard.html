@@ -68,6 +68,8 @@
   .memrow { display:grid; grid-template-columns:1.3fr 1fr auto 1.1fr auto; gap:8px; align-items:center; padding:5px 0; border-top:1px solid var(--line) }
   .memrow .lead { display:flex; align-items:center; gap:5px; font-size:12px; color:var(--dim); white-space:nowrap } .memrow input[type=checkbox]{ width:auto }
   .roomtag { display:inline-block; font-size:11px; border:1px solid var(--line); border-radius:6px; padding:1px 7px; margin:2px 4px 2px 0; color:var(--dim) }
+  .amf { background:#0b0d12; border:1px solid #33507e; border-radius:8px; padding:8px; margin-top:6px }
+  .amf select, .amf input { font-size:12px; padding:5px 7px }
 </style>
 </head>
 <body>
@@ -103,7 +105,7 @@ const ROLES = ['architect','engineer','critic','adversary','ultracritical','user
 const BACKENDS = ['claude','codex','qwen','gemini']
 
 const S = {
-  nav: 'teams', org: null, selRoom: null, selInbox: null, tab: 'thread',
+  nav: 'teams', org: null, selRoom: null, selInbox: null, tab: 'thread', addingTo: null,
   teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null,
   builder: { org:'shop', repo:'', teams:[ { name:'client', territory:'client', members:[
     {role:'architect',backend:'claude',lead:true,territory:''},{role:'engineer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
@@ -165,7 +167,7 @@ function paint() {
   const orgs = (S.teams.orgs||[]).map(o=>o.org)
   const os = $('#orgSel'); if (orgs.length>1){ os.style.display=''; os.innerHTML=orgs.map(o=>`<option ${o===S.org?'selected':''}>${esc(o)}</option>`).join(''); os.onchange=()=>{S.org=os.value;S.selRoom=null;S.selInbox=null;paint()} } else os.style.display='none'
   for (const b of document.querySelectorAll('[data-nav]')) b.classList.toggle('on', b.dataset.nav===S.nav)
-  renderList()
+  if (!S.addingTo) renderList()   // freeze the list while the add-member form is open (don't clobber inputs)
   const key = detailKey()
   if (key!==paintedKey) { renderDetail(); paintedKey=key } else patchDetail()
 }
@@ -185,6 +187,7 @@ function renderList() {
           <span class="role">${esc(m.role)}${m.lead?' ★':''}</span></div>`}).join('')}
         ${rooms.map(r=>`<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')"><span class="nm">${esc(r.team||r.roomId)}</span>
           <span class="state ${r.state}">${esc(r.state)}</span><span class="meta">t${r.turn||0}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`).join('')}
+        ${S.addingTo===t ? amForm(t) : `<button class="btn tiny" style="margin-top:6px" onclick="startAddMember('${esc(t)}')">＋ add member</button>`}
       </div>`
     }).join('')
   } else if (S.nav==='rooms') {
@@ -211,6 +214,15 @@ function renderList() {
   }
 }
 const label2 = (r) => r.a&&r.b ? `${r.a} ⇄ ${r.b}` : r.roomId
+function amForm(t) {
+  return `<div class="amf">
+    <div class="muted" style="margin-bottom:5px">Add a member to <b>${esc(t)}</b>:</div>
+    <div class="row"><select id="amRole" style="flex:1.2">${ROLES.map(r=>`<option ${r==='engineer'?'selected':''}>${r}</option>`).join('')}</select>
+      <select id="amBackend" style="flex:1">${BACKENDS.map(b=>`<option>${b}</option>`).join('')}</select></div>
+    <input id="amTerr" placeholder="territory (e.g. server) — optional" style="margin-top:6px">
+    <div class="row" style="margin-top:6px"><button class="btn tiny primary" onclick="submitAddMember('${esc(t)}')">Add</button><button class="btn tiny" onclick="cancelAddMember()">Cancel</button> <span id="amMsg" class="muted"></span></div>
+  </div>`
+}
 
 // ---- detail renderers ----
 function renderDetail() {
@@ -339,7 +351,13 @@ window.bSave=async()=>{const B=S.builder;const msg=$('#bMsg');if(!B.repo){msg.in
 window.bDefine=async()=>{const r=await api('/api/team-define',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})});$('#bMsg').innerHTML=r.ok?`<span class="good">◎ defined ${(r.rooms||[]).length} room(s)</span> <a href="#" onclick="go('teams');return false">view</a>`:`<span class="bad">✗ ${esc(r.error||'daemon down')}</span>`; if(r.ok){S.org=null;tick()}}
 
 // ---- actions ----
-window.go = (nav)=>{ S.nav=nav; if(nav!=='inbox')S.selInbox=null; paint() }
+window.go = (nav)=>{ S.nav=nav; if(nav!=='inbox')S.selInbox=null; S.addingTo=null; paint() }
+window.startAddMember = (t)=>{ S.addingTo=t; renderList() }
+window.cancelAddMember = ()=>{ S.addingTo=null; renderList() }
+window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('#amBackend').value, territory=$('#amTerr').value.trim()
+  const msg=$('#amMsg'); if(msg)msg.textContent='adding…'
+  const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role,backend,territory})
+  if(r&&r.ok){ S.addingTo=null; tick() } else { const m=$('#amMsg'); if(m)m.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
 window.selRoom = (id, openCu)=>{ S.selRoom=id; S.selInbox=null; if(openCu)S.tab='catchups'; S.room=null; tick() }
 window.openRoom = (id)=>{ S.nav='rooms'; selRoom(id) }
 window.selInbox = (i)=>{ S.selInbox=i; S.selRoom=null; paint() }

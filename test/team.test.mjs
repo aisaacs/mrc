@@ -9,7 +9,22 @@ import { join } from 'node:path'
 import { parseRoster } from '../src/teams/roster.js'
 import {
   memberSessionId, memberWorkspaceVolumes, memberEnv, personaForMember, writePersonaFile, orgDef, memberLaunch, cleanWorkerOutput,
+  rosterFromDef, addMemberToRoster,
 } from '../src/commands/team.js'
+
+test('add-member preserves existing members\' names and appends the new one', () => {
+  const n0 = parseRoster({ org: 'shop', teams: [{ name: 'client', territory: '.', members: [
+    { role: 'architect', backend: 'claude', lead: true }, { role: 'engineer', backend: 'claude' },
+  ] }] }, { repo: '/tmp/shop' })
+  const before = n0.members.map((m) => m.handle)
+  const pinned = rosterFromDef({ org: n0.org, repo: n0.repo, members: n0.members })
+  const updated = addMemberToRoster(pinned, 'client', { role: 'engineer', backend: 'claude', territory: 'server' })
+  const n1 = parseRoster(updated, { repo: '/tmp/shop' })
+  for (const h of before) assert.ok(n1.members.some((m) => m.handle === h), `${h} preserved`)
+  assert.equal(n1.members.length, before.length + 1)
+  const added = n1.members.find((m) => !before.includes(m.handle))
+  assert.equal(added.role, 'engineer'); assert.equal(added.team, 'client'); assert.equal(added.territory, 'server')
+})
 
 function seededRng(seed = 1) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x100000000 } }
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
