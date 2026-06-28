@@ -138,7 +138,7 @@ The daemon-hosted dashboard is a **unified, teams-first** single-page app (`src/
 
 Per-room detail has Transcript / Summary / Catch-up tabs and **steer any member or everyone** +
 pause/resume/close. You can also drop into any live member's terminal with `mrc team console
-<handle>` (members run in a tmux session).
+<handle>` (each member runs in its own `dtach` session — `console` attaches it; detach with Ctrl-\, the member keeps running).
 
 **Project tabs — suspend vs delete (both non-destructive).** Each org is a tab (per-project context,
 an ❓ needs-you badge, an off-screen `‹N/N›` hint when a needy tab scrolls out of the strip).
@@ -235,7 +235,7 @@ Layered, and it **fails loud**:
 - `src/proxies/room-daemon.js` — engine + worker runner + **per-org Telegram bridges** alongside legacy
   pairings; `register` binds a member; control `defineOrg`/`team`/`answer`/`dismiss`/`reopen`/`removeorg`/
   `tg*` + brake/resume/steer/end; the dual `thread.log`/`transcript.jsonl` append; org + inbox + Telegram
-  persistence; tmux-reconciled launch records.
+  persistence; per-member dtach/ttyd-reconciled launch records.
 - `src/commands/team.js` — the `mrc team` CLI (`up`/`status`/`console`/`down`/`define`/`exec`),
   member launch wiring, persona files, territorial volumes, worker exec.
 - `src/commands/pair.js` — version-stamp-verified daemon restart (`probeVersion`/`waitUpVersion`) +
@@ -256,7 +256,7 @@ Layered, and it **fails loud**:
 ## 10. CLI
 
 ```
-mrc team up      [path] [--roster f]   push the roster to the daemon + launch live members (tmux)
+mrc team up      [path] [--roster f]   push the roster to the daemon + launch live members (dtach + ttyd)
 mrc team status  [path]                org, rooms, and the @user inbox
 mrc team console <handle> [path]       attach to a running member's terminal
 mrc team exec    <handle> "prompt"     run a task-worker turn manually
@@ -272,7 +272,7 @@ mrc team define  [path] [--roster f]   push the roster WITHOUT launching
 personas, the full room engine (directed routing, multi-room isolation, floor control, the @user inbox
 incl. questions/notifications + dismiss/reopen + `#N`/structured-transcript spoof-proofing, brake/resume,
 prune), socket-level daemon round-trips (define org → register → directed delivery → @user → brake/resume;
-inbox + Telegram persistence; org isolation; tmux-reconciled launch records), the **Telegram** transport
+inbox + Telegram persistence; org isolation; per-member dtach/ttyd-reconciled launch records), the **Telegram** transport
 + auth (pairing, allowlist, push framing, H4, one-bot-per-org), the **trust-marker defang**, the
 **dashboard CSRF + token-persist** gate, **restart version-stamp** verification, the launcher's pure
 pieces (session ids, territorial mounts, persona files), and the worker-runner core (batch/invoke/
@@ -286,7 +286,7 @@ memory volume).
 ```bash
 docker rmi mister-claude                 # container files changed (entrypoint, channel server)
 cat > team.json <<'EOF'  …  EOF          # see §1
-mrc team up                              # launches live members in tmux; accept the Channels prompt in each
+mrc team up                              # launches each live member in its own ttyd terminal; accept the Channels prompt in each
 mrc rooms dashboard                      # opens the teams-first dashboard (http://localhost:8787)
 #  in a member:  @critic please review client/src/auth.js
 #  a member asks you:  @user toasts or inline?   → answer it in the dashboard Inbox
@@ -299,7 +299,7 @@ mrc team exec @thierry "summarize the api contract"   # a task-worker turn
 
 - Container-path validation (above). Confirm `claude --append-system-prompt` in the pinned build.
 - Headless launch: the Channels accept prompt is interactive + non-persisted, so `mrc team up` still
-  needs a human accept per live member (it runs them in tmux). A persisted accept / GA channels would
+  needs a human accept per live member (each runs in its own ttyd terminal). A persisted accept / GA channels would
   let the web UI fully spin up a team.
 - Worker conversational memory across turns depends on the backend's own resume; today the substrate
   is a persistent per-member config volume.

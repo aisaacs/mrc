@@ -235,7 +235,7 @@ export function saveTgStates(map) {
   try { atomicWriteFileSync(tgFile(), JSON.stringify({ at: Date.now(), orgs: map }, null, 2)) } catch {}
 }
 
-// --- GUI launch registry (org -> tmux session + embedded ttyd) ------------
+// --- GUI launch registry (org -> per-member dtach sessions + ttyd viewers) ------------
 // Written by `mrc team up` (which runs the risky image build in ITS OWN process, so a build failure
 // can't take down the daemon), read by the daemon to report launch state to the dashboard.
 const launchesFile = () => join(daemonDir(), 'team-launches.json')

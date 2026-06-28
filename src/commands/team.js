@@ -3,12 +3,13 @@
 //   mrc team up      [path] [--roster f]   load roster, push it to the daemon, launch live members
 //   mrc team status  [path]                show the org, rooms, and @user inbox
 //   mrc team console <handle> [path]       attach to a running member's terminal (dtach)
-//   mrc team down    [path]                close the org's rooms (containers are left to exit)
+//   mrc team down    [path]                stop the org's members (kill ttyd + container) + close rooms
 //   mrc team define  [path]                push the roster to the daemon WITHOUT launching
 //
-// Live (Claude) members each run as their own `mrc <repo> --member <handle>` session in a tmux
-// window. Worker (non-Claude) members are declared in the org but invoked on demand (P5), so `up`
-// does not spawn a container for them.
+// Live (Claude) members each run as their own `mrc <repo> --member <handle>` session inside a persistent
+// `dtach` master (the session survives a console switch / dashboard close) with a per-member `ttyd`
+// viewer for the browser terminal. Worker (non-Claude) members are declared in the org but invoked on
+// demand (P5), so `up` does not spawn a container for them.
 import net from 'node:net'
 import { spawn, execFileSync, spawnSync } from 'node:child_process'
 import { memberSessionId } from '../teams/session-id.js'
@@ -28,7 +29,6 @@ import { loadLaunches, saveLaunch, setMemberLaunch, removeMemberLaunch } from '.
 const MRC_JS = fileURLToPath(new URL('../../mrc.js', import.meta.url))
 const daemonMetaPath = () => join(homedir(), '.local', 'share', 'mrc', 'room-daemon.json')
 const readMeta = () => { try { return JSON.parse(readFileSync(daemonMetaPath(), 'utf8')) } catch { return null } }
-const tmuxSession = (org) => `mrc-${String(org).toLowerCase().replace(/[^a-z0-9]+/g, '-')}`
 
 // --- pure helpers (unit-tested) -------------------------------------------
 
@@ -159,10 +159,6 @@ function memberArgv(repoPath, member, rosterPath) {
   return [MRC_JS, repoPath, '--member', member.handle, '--roster', rosterPath]
 }
 
-function hasTmux() {
-  try { execFileSync('tmux', ['-V'], { stdio: 'ignore' }); return true } catch { return false }
-}
-
 // Is a recorded process still alive? (signal 0 = existence check; EPERM still means it exists.)
 function pidAlive(pid) { if (!pid) return false; try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
 // A member session is alive only if its dtach master pid is alive AND its socket still exists — the
@@ -241,8 +237,6 @@ export function hasTtyd() { try { execFileSync('ttyd', ['--version'], { stdio: '
 // So presence ≠ exit-zero — we only treat ENOENT (binary not on PATH) as missing; a non-zero exit means
 // dtach IS installed (it just rejected our probe args).
 export function hasDtach() { try { execFileSync('dtach', ['-V'], { stdio: 'ignore' }); return true } catch (err) { return err?.code !== 'ENOENT' } }
-// (dead tmux helpers — nothing calls these after the dtach console rewire (chunk C); chunk D removes them.)
-export function tmuxSessionExists(session) { return spawnSync('tmux', ['has-session', '-t', session], { stdio: 'ignore' }).status === 0 }
 
 // #34: the set of a team's members whose SESSION is alive (the dtach master — NOT the ephemeral ttyd
 // viewer). Keyed by HANDLE; drives the daemon's launched-vs-online reconcile. A member is "launched"
@@ -277,8 +271,9 @@ export function killTeamSession(org) {
   return any
 }
 
-// Build the image once, then launch each live member in its OWN ttyd; persist the per-member registry.
-// ttyd is REQUIRED — it's the PTY holder now (no tmux fallback). Returns { ok, members, already, live }.
+// Build the image once, then launch each live member as its own dtach session + ttyd viewer; persist the
+// per-member registry. dtach (holds the session) AND ttyd (serves the browser terminal) are both REQUIRED
+// — no tmux fallback. Returns { ok, members, already, live }.
 export async function startTeamSession(norm, repoPath, { rosterPath } = {}) {
   const live = norm.members.filter((m) => m.tier === 'live')
   if (!live.length) return { ok: false, error: 'no live members to launch' }
@@ -388,7 +383,7 @@ export async function teamCommand(argv) {
     case 'help': case '-h': case '--help':
       console.log(`mrc team — assemble and launch a team of agents
 
-  mrc team up      [path] [--roster f | --preset name]   define + launch live members (tmux/ttyd)
+  mrc team up      [path] [--roster f | --preset name]   define + launch live members (dtach + ttyd)
   mrc team status  [path]                show the org, rooms, and @user inbox
   mrc team console <handle> [path]       attach to a running member's terminal
   mrc team down    [path]                close the org's rooms

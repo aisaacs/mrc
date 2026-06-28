@@ -131,7 +131,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
   worker.start()
   const orgDefs = new Map()   // org -> roster def, persisted so team rooms survive a daemon refresh
   const orgRoster = new Map() // org -> the raw team.json (so the GUI can launch a defined org)
-  let teamMod = null          // lazily-loaded launch helpers (Docker/tmux/ttyd live here)
+  let teamMod = null          // lazily-loaded launch helpers (Docker/dtach/ttyd live here)
   import('../commands/team.js').then((m) => { teamMod = m }).catch(() => {})
   // Org-disambiguation for the register path: a member's session id IS memberSessionId(org, handle)
   // (org-specific, pinned host-side at mrc.js launch). We forward-precompute it for every member so a
