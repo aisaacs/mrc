@@ -11,9 +11,11 @@ import { homedir } from 'node:os'
 import { join, dirname } from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { roomsRoot, roomDir, listRooms, readCatchups, updateCatchup, readTranscript } from './rooms.js'
+import { roomsRoot, roomDir, listRooms, readCatchups, updateCatchup, readTranscript, atomicWriteFileSync } from './rooms.js'
 import { findFreePort } from './ports.js'
-import { parseRoster, validateRoster } from './teams/roster.js'
+import { parseRoster, validateRoster, editPersona } from './teams/roster.js'
+import { ROLES } from './teams/personas.js'
+import { isMediaRole } from './teams/media.js'
 
 const metaPath = () => join(homedir(), '.local', 'share', 'mrc', 'room-daemon.json')
 const daemonMeta = () => { try { return JSON.parse(readFileSync(metaPath(), 'utf8')) } catch { return null } }
@@ -150,13 +152,36 @@ async function handle(req, res) {
           try { if (!repo || !statSync(repo).isDirectory()) throw new Error('repo must be an existing directory') }
           catch (e) { return sendJSON(res, 400, { ok: false, error: String(e?.message || e) }) }
           const file = join(repo, 'team.json')
-          try { writeFileSync(file, JSON.stringify(j.roster, null, 2) + '\n') } catch (e) { return sendJSON(res, 500, { ok: false, error: String(e?.message || e) }) }
+          // Atomic write: team.json is the authoritative source the launcher reads — a torn write would
+          // corrupt it and break launch. temp→fsync→rename (same helper the daemon's JSON state uses).
+          try { atomicWriteFileSync(file, JSON.stringify(j.roster, null, 2) + '\n') } catch (e) { return sendJSON(res, 500, { ok: false, error: String(e?.message || e) }) }
           return sendJSON(res, 200, { ok: true, path: file })
         }
         // team-define: push the org to the daemon so its rooms exist (does NOT launch containers).
         // Pass the raw roster too, so the daemon can later launch this defined org from the GUI.
         const def = { org: pv.org, repo: pv.repo, members: pv.members, rooms: pv.rooms }
         return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, 'defineOrg', { def, roster: j.roster }))
+      })
+      return
+    }
+    // Custom personas (#42): add/update/remove a custom role in the project's team.json. CSRF-gated
+    // above. The org→repo resolves server-side via getroster; the WRITE reuses team-save's path and
+    // editPersona's parse-gate, so the editor can never persist a team.json the launcher would reject.
+    if (req.method === 'POST' && url.pathname === '/api/personas') {
+      let body = ''
+      req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
+      req.on('end', async () => {
+        let j; try { j = JSON.parse(body || '{}') } catch { return sendJSON(res, 400, { ok: false, error: 'bad json' }) }
+        const op = j.op === 'remove' ? 'remove' : 'save'
+        const gr = await ctrl(daemonMeta()?.controlPort, 'getroster', { org: j.org })
+        const repo = gr?.repo || null
+        if (!repo) return sendJSON(res, 400, { ok: false, error: 'unknown org (no repo on record) — define or launch the team first' })
+        const file = join(repo, 'team.json')
+        let data; try { data = JSON.parse(readFileSync(file, 'utf8')) } catch (e) { return sendJSON(res, 400, { ok: false, error: `cannot read ${file}: ${String(e?.message || e)}` }) }
+        const r = editPersona(data, { op, key: j.key, persona: j.persona })
+        if (!r.ok) return sendJSON(res, 400, r)   // parse-gate / reference-refusal → surfaced to the editor, no write
+        try { atomicWriteFileSync(file, JSON.stringify(r.roster, null, 2) + '\n') } catch (e) { return sendJSON(res, 500, { ok: false, error: String(e?.message || e) }) }
+        return sendJSON(res, 200, { ok: true, path: file, personas: r.roster.personas || {} })
       })
       return
     }
@@ -200,6 +225,16 @@ async function handle(req, res) {
       const meta = daemonMeta()
       const r = meta?.controlPort ? await ctrl(meta.controlPort, 'getroster', { org: url.searchParams.get('org') }) : { ok: false }
       return sendJSON(res, 200, r)
+    }
+    // #42: the persona palette for the editor + builder role-chooser — read-only built-in role defs +
+    // this org's custom personas (read from its team.json on disk, the authoritative source).
+    if (req.method === 'GET' && url.pathname === '/api/personas') {
+      const builtin = Object.entries(ROLES).map(([key, d]) => ({ key, label: d.label, mandate: d.mandate, mount: d.mount, tier: d.tier, leadByDefault: !!d.leadByDefault, media: isMediaRole(key) }))
+      const gr = await ctrl(daemonMeta()?.controlPort, 'getroster', { org: url.searchParams.get('org') })
+      const repo = gr?.repo || null
+      let custom = {}
+      if (repo) { try { const tj = JSON.parse(readFileSync(join(repo, 'team.json'), 'utf8')); if (tj.personas && typeof tj.personas === 'object' && !Array.isArray(tj.personas)) custom = tj.personas } catch {} }
+      return sendJSON(res, 200, { ok: true, builtin, custom, repo })
     }
     if (req.method === 'GET' && url.pathname === '/api/worker-log') {
       const meta = daemonMeta()

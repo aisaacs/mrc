@@ -18,7 +18,7 @@ export function roomDir(roomId) { return join(roomsRoot(), roomId) }
 // temps from a prior crash are swept best-effort each write.
 let _tmpSeq = 0
 const corruptLog = () => join(homedir(), '.local', 'share', 'mrc', 'daemon.log')
-function atomicWriteFileSync(file, data) {
+export function atomicWriteFileSync(file, data) {
   const dir = dirname(file)
   mkdirSync(dir, { recursive: true })
   // Sweep STALE orphan temps from a crashed write — by AGE, not pid. atomicWriteFileSync is fully

@@ -726,7 +726,10 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
           // of resetting to the original. orgRoster tracks it; fall back to reconstructing from the def.
           let roster = orgRoster.get(f.org)
           if (!roster && orgDefs.get(f.org) && teamMod) roster = teamMod.rosterFromDef(orgDefs.get(f.org))
-          reply({ ok: true, roster: roster || null }); continue
+          // Also surface the repo so the dashboard can locate the org's team.json (the authoritative
+          // home of custom personas — orgDefs/rosterFromDef don't carry them). #42.
+          const repo = orgDefs.get(f.org)?.repo || roster?.repo || null
+          reply({ ok: true, roster: roster || null, repo }); continue
         }
         if (f.action === 'workerlog' && f.handle) {
           // Pass org so a handle shared across two orgs reads the RIGHT member's repo (their logs live

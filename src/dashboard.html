@@ -270,6 +270,15 @@ const setOrgUrl = (org) => { try { history.replaceState(null, '', '/'+encodeURIC
 
 const ROLES = ['architect','engineer','critic','adversary','ultracritical','user-defender','researcher','tester','designer','sound-designer','composer']
 const BACKENDS = ['claude','codex']   // agent backends only — media roles DERIVE their backend (below)
+// #42: the role chooser lists built-in roles PLUS this project's custom personas (so a member can pick
+// @advertiser). Custom keys that shadow a built-in are de-duped (the parser already forbids alias/media
+// shadows, so the only real overlap is an agent-role override, which we show once).
+const customRoleKeys = () => Object.keys((S.builder&&S.builder.personas)||{})
+const roleOptions = () => ROLES.concat(customRoleKeys().filter(k=>!ROLES.includes(k)))
+const aliasRole = (r) => r==='writer'?'engineer':(r==='qa'?'tester':r)
+// Which builder members currently resolve to a custom persona key (honoring writer/qa aliases) — the
+// local mirror of the server's removal refusal, so the UI warns before the round-trip.
+const membersUsingPersona = (k)=>{const out=[];for(const t of ((S.builder&&S.builder.teams)||[]))for(const m of (t.members||[]))if(aliasRole(m.role)===k)out.push((m.role||'engineer')+'@'+(t.name||'?'));return out}
 // A media role's backend is fixed by the role (mirrors roster.js/media.js), not a free pick.
 const MEDIA_ROLE_BACKEND = { designer:'gemini', 'sound-designer':'elevenlabs', composer:'elevenlabs' }
 const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
@@ -278,7 +287,7 @@ const S = {
   building: false, org: null, selRoom: null, selInbox: null, selMember: null, workerLog: '', tab: 'thread', addingTo: null, showDismissed: false, showOther: false, flash: null,
   notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
   teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null, sessions: [], _tick: 0,
-  builder: { org:'shop', repo:'', teams:[ { name:'client', territory:'client', members:[
+  builder: { org:'shop', repo:'', personas:{}, _pEdit:null, teams:[ { name:'client', territory:'client', members:[
     {role:'architect',backend:'claude',lead:true,territory:''},{role:'engineer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
 }
 let paintedKey = null
@@ -781,6 +790,7 @@ function renderBuilder(d) {
       <div class="grid2"><div><label>Project</label><input id="bOrg" value="${esc(B.org)}" placeholder="my-project"></div><div><label>Repo path (host)</label><input id="bRepo" value="${esc(B.repo)}" placeholder="/Users/you/code/app"></div></div>
       <div style="margin-top:8px"><label>Start from a preset (optional)</label><select id="bPreset"><option value="">— preset —</option></select></div>
       <h2>Teams</h2><div id="bTeams"></div><button class="btn" onclick="bAddTeam()">＋ Add team</button>
+      <h2 style="margin-top:18px">Custom roles <span class="muted" style="font-size:12px;font-weight:400">— project-specific experts, pickable as @mentions</span></h2><div id="bPersonas"></div>
       <div class="row" style="margin-top:14px"><button class="btn primary" onclick="bSave()">💾 Save team.json</button><button class="btn" onclick="bDefine()">◎ Define rooms</button><button class="btn" style="background:#1f3a26;border-color:#2f6b3f;color:#bfe6c8" onclick="bLaunch()">🚀 Launch</button><span id="bMsg" class="muted"></span></div>
       <div class="muted" style="margin-top:8px">Then launch live members: <code id="bCmd">mrc team up</code></div>
     </div>
@@ -790,7 +800,64 @@ function renderBuilder(d) {
   fetch('/api/team-presets').then(r=>r.json()).then(d=>{ const sel=$('#bPreset'); if(!sel)return
     sel.innerHTML='<option value="">— preset —</option>'+(d.presets||[]).map(p=>`<option value="${esc(p.name)}">${esc(p.title)}</option>`).join('')
     sel.onchange=()=>{ const p=(d.presets||[]).find(x=>x.name===sel.value); if(!p)return; S.builder.teams=JSON.parse(JSON.stringify(p.roster.teams)); renderBuilder($('#detail')) } }).catch(()=>{})
-  bRenderTeams(); bPreview()
+  bRenderTeams(); bRenderPersonas(); bPreview()
+}
+// ---- custom personas (#42) ----
+// The editor edits S.builder.personas (the working copy that the role-chooser + bRoster read). A save
+// also persists the single persona to the project's team.json via POST /api/personas — server-validated
+// by editPersona's parse-gate, 2xx-confirmed. The form stays OPEN on a real rejection (no optimistic
+// close); it collapses only on success or the expected "new project not on disk yet" case.
+function bRenderPersonas() {
+  const el = $('#bPersonas'); if (!el) return
+  const cps = S.builder.personas || {}; const keys = Object.keys(cps); const f = S.builder._pEdit
+  const list = keys.length ? keys.map(k=>{ const p=cps[k]||{}; const used=membersUsingPersona(k)
+    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)"><code style="flex:0 0 auto">@${esc(k)}</code>
+      <span class="muted" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.label||k)} · ${p.mount==='rw'?'rw':'ro'}${p.leadByDefault?' · lead':''}${used.length?' · '+used.length+' member'+(used.length>1?'s':''):''}</span>
+      <button class="btn tiny" style="flex:0 0 auto" onclick="bEditPersona('${esc(k)}')">edit</button>
+      <button class="btn tiny" style="flex:0 0 auto" ${used.length?`title="in use by ${esc(used.join(', '))}"`:''} onclick="bRemovePersona('${esc(k)}')">✕</button></div>` }).join('')
+    : `<div class="muted" style="font-size:12px">No custom roles yet — add one to define a project-specific expert (e.g. <code>@advertiser</code>).</div>`
+  el.innerHTML = list + `<div style="margin-top:8px">${f ? personaForm(f) : `<button class="btn tiny" onclick="bNewPersona()">＋ custom role</button>`}</div><div id="bPMsg" class="muted" style="font-size:12px;margin-top:4px"></div>`
+}
+function personaForm(f) {
+  const note = (f.mount==='rw' && f.backend==='codex')
+    ? `<div class="warn" style="font-size:11.5px;margin-top:5px">⚠ rw + codex worker — edits apply per directed invocation, not continuously.</div>` : ''
+  return `<div class="team" style="margin-top:6px">
+    <div class="grid2"><div><label for="pfKey">Key → @mention</label><input id="pfKey" value="${esc(f.key)}" ${f.editing?'disabled':''} placeholder="advertiser" oninput="bPF('key',this.value)"></div>
+      <div><label for="pfLabel">Label</label><input id="pfLabel" value="${esc(f.label)}" placeholder="Ad Strategist" oninput="bPF('label',this.value)"></div></div>
+    <div style="margin-top:6px"><label for="pfMandate">Charter (mandate)</label><textarea id="pfMandate" rows="4" placeholder="What this role owns and how it works on the team…" oninput="bPF('mandate',this.value)">${esc(f.mandate)}</textarea></div>
+    <div class="row" style="margin-top:6px;align-items:flex-end">
+      <div><label for="pfBackend">Backend <span class="muted" style="font-weight:400">(per member)</span></label><select id="pfBackend" onchange="bPF('backend',this.value)">${BACKENDS.map(b=>`<option ${b===f.backend?'selected':''}>${b}</option>`).join('')}</select></div>
+      <div><label for="pfMount">Write access</label><select id="pfMount" onchange="bPF('mount',this.value)"><option value="ro" ${f.mount!=='rw'?'selected':''}>read-only</option><option value="rw" ${f.mount==='rw'?'selected':''}>read-write</option></select></div>
+      <label class="lead"><input type="checkbox" ${f.leadByDefault?'checked':''} onchange="bPF('leadByDefault',this.checked)"> lead by default</label></div>${note}
+    <div class="row" style="margin-top:8px"><button class="btn primary tiny" onclick="bSavePersona()">Save role</button><button class="btn tiny" onclick="bCancelPersona()">cancel</button></div></div>`
+}
+window.bNewPersona=()=>{ S.builder._pEdit={ key:'', label:'', mandate:'', backend:'claude', mount:'ro', leadByDefault:false, editing:false }; bRenderPersonas() }
+window.bEditPersona=(k)=>{ const p=(S.builder.personas||{})[k]||{}; S.builder._pEdit={ key:k, label:p.label||'', mandate:p.mandate||'', backend:'claude', mount:p.mount==='rw'?'rw':'ro', leadByDefault:!!p.leadByDefault, editing:true }; bRenderPersonas() }
+window.bCancelPersona=()=>{ S.builder._pEdit=null; bRenderPersonas() }
+// Re-render only on the SELECT/checkbox fields (to refresh the rw+codex note) — never on the text inputs,
+// which would steal focus mid-type. Key validity is enforced server-side on save (the parse-gate).
+window.bPF=(k,v)=>{ const f=S.builder._pEdit; if(!f)return; f[k]=v; if(k==='mount'||k==='backend')bRenderPersonas() }
+window.bSavePersona=async()=>{ const f=S.builder._pEdit; if(!f)return; const key=String(f.key||'').trim()
+  const setMsg=(h)=>{ const m=$('#bPMsg'); if(m)m.innerHTML=h }
+  if(!key){ setMsg('<span class="bad">key required</span>'); return }
+  if(!String(f.mandate||'').trim()){ setMsg('<span class="bad">charter (mandate) required — it defines the role</span>'); return }
+  const persona={ label:(f.label||'').trim()||key, mandate:f.mandate||'', mount:f.mount==='rw'?'rw':'ro', leadByDefault:!!f.leadByDefault }
+  setMsg('<span class="muted">saving…</span>')
+  const r=await api('/api/personas',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({org:S.builder.org,op:'save',key,persona})}).catch(()=>({ok:false,error:'network error'}))
+  const localOnly = !r.ok && /unknown org/.test(r.error||'')   // new project not yet on disk — stage locally, team-save persists
+  if(r.ok || localOnly){ S.builder.personas=S.builder.personas||{}; S.builder.personas[key]=persona; S.builder._pEdit=null
+    bRenderPersonas(); bRenderTeams(); bPreview(); setMsg(r.ok?`<span class="good">✓ saved @${esc(key)} to project</span>`:`<span class="muted">added @${esc(key)} — 💾 Save team.json to persist</span>`) }
+  else setMsg(`<span class="bad">✗ ${esc(r.error)}</span>`)   // parse/reference rejection → keep the form open to fix
+}
+window.bRemovePersona=async(k)=>{ const setMsg=(h)=>{ const m=$('#bPMsg'); if(m)m.innerHTML=h }
+  const used=membersUsingPersona(k); if(used.length){ setMsg(`<span class="bad">@${esc(k)} is used by ${esc(used.join(', '))} — reassign first</span>`); return }
+  // Removing deletes the role from the project's team.json (when on disk) — confirm, matching the other
+  // disk-mutating actions (stopTeam/deleteProject). Recoverable by re-creating, so a plain confirm is enough.
+  if(!confirm(`Remove custom role @${k}? It will be deleted from this project's team.json. You can re-create it later.`))return
+  const r=await api('/api/personas',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({org:S.builder.org,op:'remove',key:k})}).catch(()=>({ok:false,error:'network error'}))
+  const localOnly = !r.ok && /unknown org/.test(r.error||'')
+  if(r.ok || localOnly){ delete S.builder.personas[k]; if(S.builder._pEdit&&S.builder._pEdit.key===k)S.builder._pEdit=null; bRenderPersonas(); bRenderTeams(); bPreview(); setMsg(`<span class="muted">removed @${esc(k)}</span>`) }
+  else setMsg(`<span class="bad">✗ ${esc(r.error)}</span>`)
 }
 function bRenderTeams() {
   const B = S.builder
@@ -799,7 +866,7 @@ function bRenderTeams() {
       <div style="flex:2"><label>Territory</label><input value="${esc(t.territory)}" placeholder="." oninput="bSet(${ti},null,'territory',this.value)"></div>
       <button class="btn tiny" onclick="bDelTeam(${ti})">✕</button></div>
     ${t.members.map((m,mi)=>`<div class="memrow">
-      <select onchange="bSet(${ti},${mi},'role',this.value)">${ROLES.map(o=>`<option ${o===m.role?'selected':''}>${o}</option>`).join('')}</select>
+      <select onchange="bSet(${ti},${mi},'role',this.value)">${roleOptions().map(o=>`<option ${o===m.role?'selected':''}>${o}</option>`).join('')}</select>
       ${mediaBackend(m.role)
         ? `<span class="bklock" aria-label="backend ${esc(mediaBackend(m.role))} — set by the media role, not editable" title="media role — backend is set by the role (not editable)">${esc(mediaBackend(m.role))}</span>`
         : `<select onchange="bSet(${ti},${mi},'backend',this.value)">${BACKENDS.map(o=>`<option ${o===m.backend?'selected':''}>${o}</option>`).join('')}</select>`}
@@ -817,7 +884,7 @@ window.bAddTeam=()=>{S.builder.teams.push({name:'team'+(S.builder.teams.length+1
 window.bDelTeam=(ti)=>{S.builder.teams.splice(ti,1);bRenderTeams();bPreview()}
 window.bAddMem=(ti)=>{S.builder.teams[ti].members.push({role:'engineer',backend:'claude',lead:false,territory:''});bRenderTeams();bPreview()}
 window.bDelMem=(ti,mi)=>{S.builder.teams[ti].members.splice(mi,1);bRenderTeams();bPreview()}
-function bRoster(){const B=S.builder;return {org:B.org||'org',repo:B.repo||undefined,teams:B.teams.map(t=>({name:t.name,territory:t.territory||'.',members:t.members.map(m=>{const o={role:m.role,backend:m.backend};if(m.lead)o.lead=true;if(m.territory)o.territory=m.territory;return o})}))}}
+function bRoster(){const B=S.builder;const r={org:B.org||'org',repo:B.repo||undefined,teams:B.teams.map(t=>({name:t.name,territory:t.territory||'.',members:t.members.map(m=>{const o={role:m.role,backend:m.backend};if(m.lead)o.lead=true;if(m.territory)o.territory=m.territory;return o})}))};if(B.personas&&Object.keys(B.personas).length)r.personas=B.personas;return r}
 let bTimer=null
 function bPreview(){clearTimeout(bTimer);bTimer=setTimeout(async()=>{
   const r=await api('/api/team-preview',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})})
@@ -833,7 +900,7 @@ window.bSave=async()=>{const B=S.builder;const msg=$('#bMsg');if(!B.repo){msg.in
 window.bDefine=async()=>{const r=await api('/api/team-define',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})});$('#bMsg').innerHTML=r.ok?`<span class="good">◎ defined ${(r.rooms||[]).length} room(s)</span> <a href="#" onclick="closeBuilder();return false">view</a>`:`<span class="bad">✗ ${esc(r.error||'daemon down')}</span>`; if(r.ok){S.org=bRoster().org||null; setOrgUrl(S.org); tick()}}
 
 // ---- actions ----
-const freshBuilder = () => ({ org:'', repo:'', teams:[{ name:'team', territory:'.', members:[
+const freshBuilder = () => ({ org:'', repo:'', personas:{}, _pEdit:null, teams:[{ name:'team', territory:'.', members:[
   {role:'architect',backend:'claude',lead:true,territory:''},
   {role:'engineer',backend:'claude',lead:false,territory:''},
   {role:'critic',backend:'claude',lead:false,territory:''} ] }] })
@@ -845,7 +912,10 @@ window.openBuilder = async (fresh)=>{ S.building=true; S.selMember=null; S.selRo
   if (!fresh && S.org && (S.teams.members||[]).some(m=>m.org===S.org)) {
     const r = await api('/api/team-roster?org='+encodeURIComponent(S.org)).catch(()=>null)
     if (r && r.ok && r.roster && (r.roster.teams||[]).length) {
-      S.builder = { org: r.roster.org||S.org, repo: r.roster.repo||S.builder.repo||'', teams: r.roster.teams }
+      S.builder = { org: r.roster.org||S.org, repo: r.roster.repo||S.builder.repo||'', personas:{}, _pEdit:null, teams: r.roster.teams }
+      // getroster drops personas (orgDefs/rosterFromDef don't carry them) — load them from team.json (#42).
+      const pr = await api('/api/personas?org='+encodeURIComponent(S.org)).catch(()=>null)
+      if (pr && pr.ok && pr.custom) S.builder.personas = pr.custom
       if (S.building) renderBuilder($('#detail'))
     }
   } }

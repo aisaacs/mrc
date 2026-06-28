@@ -75,6 +75,10 @@ function parsePersonas(raw) {
     if (ROLE_ALIASES[key]) throw new Error(`persona "${key}" collides with a built-in role alias ("${key}" → "${ROLE_ALIASES[key]}") — it would never resolve. Rename it, or define the canonical role "${ROLE_ALIASES[key]}".`)
     if (isMediaRole(key)) throw new Error(`persona "${key}" may not be redefined — media roles (designer/sound-designer/composer) are built-in`)
     if (!val || typeof val !== 'object' || Array.isArray(val)) throw new Error(`persona "${key}" must be an object with at least a "mandate"`)
+    // The mandate IS the role's definition — a charter-less custom persona makes buildPersona emit a
+    // role header with no instructions (silent uselessness). Enforce it HERE, the single boundary, so a
+    // hand-edited team.json fails loud at launch too (not just via the editor). Honors the message above.
+    if (!String(val.mandate ?? '').trim()) throw new Error(`persona "${key}" needs a non-empty "mandate" (its charter)`)
     map[key] = {
       label: val.label != null ? String(val.label) : key,
       mandate: val.mandate != null ? String(val.mandate) : '',
@@ -204,6 +208,55 @@ export function validateRoster(norm) {
     }
   }
   return { errors, warnings, ok: errors.length === 0 }
+}
+
+// Which members currently resolve to a given persona key (honoring the writer/qa aliases). Returns a
+// readable ref per member (pinned name, else "role@team") — enough to tell the human who to reassign
+// before a persona can be removed. Raw-structure scan (no parse/RNG needed), so it works even on a file
+// that wouldn't fully normalize.
+function membersUsingRole(data, key) {
+  const k = ROLE_ALIASES[key] || key
+  const refs = []
+  for (const t of (Array.isArray(data?.teams) ? data.teams : [])) {
+    for (const m of (Array.isArray(t.members) ? t.members : [])) {
+      const r = ROLE_ALIASES[m.role] || m.role || 'engineer'
+      if (r === k) refs.push(m.name ? String(m.name) : `${m.role || 'engineer'}@${t.name || '?'}`)
+    }
+  }
+  return refs
+}
+
+// Apply a single custom-persona edit to a parsed team.json and return the NEW team.json object — but only
+// if the result still parses. parseRoster runs parsePersonas (key/alias/media guards) + builds the members,
+// so this is the SINGLE SOURCE OF VALIDATION: the editor can never produce a team.json the launcher would
+// later reject. A remove is refused while any member still resolves to the persona (returns `usedBy`).
+//   editPersona(data, { op: 'save', key, persona })  → { ok, roster } | { ok:false, error }
+//   editPersona(data, { op: 'remove', key })         → { ok, roster } | { ok:false, error, usedBy }
+export function editPersona(data, { op, key, persona } = {}) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return { ok: false, error: 'no team.json to edit' }
+  const next = JSON.parse(JSON.stringify(data))
+  next.personas = next.personas && typeof next.personas === 'object' && !Array.isArray(next.personas) ? next.personas : {}
+  const k = String(key || '').trim()
+  if (!k) return { ok: false, error: 'persona key required' }
+  if (op === 'remove') {
+    const usedBy = membersUsingRole(next, k)
+    if (usedBy.length) return { ok: false, error: `persona "${k}" is still used by ${usedBy.map((r) => '@' + r).join(', ')} — reassign or remove ${usedBy.length > 1 ? 'them' : 'it'} first`, usedBy }
+    delete next.personas[k]
+  } else if (op === 'save') {
+    if (!persona || typeof persona !== 'object' || Array.isArray(persona)) return { ok: false, error: 'persona body required (object with at least a mandate)' }
+    // Whitelist to parsePersonas' known shape so junk/unknown fields (e.g. a stray `tier`) never persist
+    // into team.json (single trusted writer, but constrain it here). tier is intentionally absent (it's
+    // backend-derived, not a persona property). The empty-mandate reject lives in parsePersonas, which
+    // the parseRoster gate below runs — so a blank charter is refused there, the single source.
+    const clean = { label: String(persona.label || '').trim() || k, mandate: String(persona.mandate || '').trim() }
+    if (persona.mount != null) clean.mount = persona.mount === 'rw' ? 'rw' : 'ro'
+    if (persona.leadByDefault === true) clean.leadByDefault = true
+    next.personas[k] = clean
+  } else {
+    return { ok: false, error: `unknown persona op "${op}"` }
+  }
+  try { parseRoster(next, {}) } catch (e) { return { ok: false, error: String(e?.message || e) } }
+  return { ok: true, roster: next }
 }
 
 function ROLES_OK(role, customPersonas) {

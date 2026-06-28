@@ -3,7 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { pickFirstName, makeHandle, parseMention, extractMentions, stripMentions, backendFamily, FRENCH_NAMES } from '../src/teams/names.js'
 import { buildPersona, roleDef, ROLES } from '../src/teams/personas.js'
-import { parseRoster, validateRoster, teamRoomId, leadsRoomId } from '../src/teams/roster.js'
+import { parseRoster, validateRoster, editPersona, teamRoomId, leadsRoomId } from '../src/teams/roster.js'
 import { classifyTerminal } from '../src/commands/team.js'
 
 // Deterministic RNG for reproducible name draws.
@@ -147,6 +147,11 @@ test('roster: rejects crafted/unsafe persona keys and media-role redefinition (#
   }
   // a non-object personas block is a hard error
   assert.throws(() => parseRoster({ org: 'x', personas: [1, 2], teams: [{ name: 't', members: [{ role: 'engineer' }] }] }, { repo: '/tmp/x' }), /must be an object map/)
+  // a charter-less persona is rejected at the boundary — the mandate IS the role's definition
+  for (const bad of [{}, { mandate: '' }, { mandate: '   ' }, { label: 'X' }]) {
+    assert.throws(() => parseRoster({ org: 'x', personas: { advertiser: bad }, teams: [{ name: 't', members: [{ role: 'engineer' }] }] }, { repo: '/tmp/x' }),
+      /needs a non-empty "mandate"/, `should reject empty-mandate persona ${JSON.stringify(bad)}`)
+  }
 })
 
 test('roster: a custom persona leadByDefault claims lead when no architect is present (#42)', () => {
@@ -158,6 +163,58 @@ test('roster: a custom persona leadByDefault claims lead when no architect is pr
   const json2 = { org: 'x', personas: { pm: { mandate: 'c', leadByDefault: true } },
     teams: [{ name: 't', members: [{ role: 'pm', backend: 'claude' }, { role: 'architect', backend: 'claude' }] }] }
   assert.equal(parseRoster(json2, { repo: '/tmp/x', rng: seededRng(2) }).members.find((m) => m.lead).role, 'architect')
+})
+
+// --- #42 chunk B: editPersona (the /api/personas validated mutate core) ---
+
+test('editPersona: save adds a custom persona and the result still parses', () => {
+  const base = { org: 'x', teams: [{ name: 't', members: [{ role: 'engineer', backend: 'claude' }] }] }
+  const r = editPersona(base, { op: 'save', key: 'advertiser', persona: { label: 'Ad', mandate: 'write ads', mount: 'ro' } })
+  assert.equal(r.ok, true)
+  assert.deepEqual(r.roster.personas.advertiser, { label: 'Ad', mandate: 'write ads', mount: 'ro' })
+  // the returned roster is what gets written — confirm it round-trips through the parser cleanly
+  assert.doesNotThrow(() => parseRoster(r.roster, {}))
+  assert.equal(base.personas, undefined)   // input is not mutated
+})
+
+test('editPersona: rejects a save the parser would reject (bad/alias/media key) — single source of validation', () => {
+  const base = { org: 'x', teams: [{ name: 't', members: [{ role: 'engineer' }] }] }
+  assert.equal(editPersona(base, { op: 'save', key: 'bad key', persona: { mandate: 'm' } }).ok, false)
+  assert.match(editPersona(base, { op: 'save', key: 'writer', persona: { mandate: 'm' } }).error, /collides with a built-in role alias/)
+  assert.match(editPersona(base, { op: 'save', key: 'designer', persona: { mandate: 'm' } }).error, /may not be redefined/)
+  assert.equal(editPersona(base, { op: 'save', key: 'advertiser', persona: 'nope' }).ok, false)   // non-object body
+})
+
+test('editPersona: remove drops an unused persona but REFUSES while a member references it', () => {
+  const used = { org: 'x', personas: { advertiser: { mandate: 'ads' } },
+    teams: [{ name: 't', members: [{ role: 'engineer' }, { role: 'advertiser', name: 'Zoe' }] }] }
+  const refuse = editPersona(used, { op: 'remove', key: 'advertiser' })
+  assert.equal(refuse.ok, false)
+  assert.ok(refuse.usedBy.includes('Zoe'))
+  assert.match(refuse.error, /still used by/)
+  // once no member references it, removal succeeds and the result parses
+  const free = { org: 'x', personas: { advertiser: { mandate: 'ads' } }, teams: [{ name: 't', members: [{ role: 'engineer' }] }] }
+  const ok = editPersona(free, { op: 'remove', key: 'advertiser' })
+  assert.equal(ok.ok, true)
+  assert.equal(ok.roster.personas.advertiser, undefined)
+})
+
+test('editPersona: rejects empty mandate and whitelists the stored shape (#42 chunk B)', () => {
+  const base = { org: 'x', teams: [{ name: 't', members: [{ role: 'engineer' }] }] }
+  assert.match(editPersona(base, { op: 'save', key: 'advertiser', persona: { label: 'Ad', mandate: '   ' } }).error, /non-empty "mandate"/)
+  // junk/extra fields (a stray tier, arbitrary keys) are dropped — only {label,mandate,mount,leadByDefault} persist
+  const r = editPersona(base, { op: 'save', key: 'advertiser', persona: { label: 'Ad', mandate: 'm', mount: 'rw', leadByDefault: true, tier: 'live', junk: 1 } })
+  assert.equal(r.ok, true)
+  assert.deepEqual(r.roster.personas.advertiser, { label: 'Ad', mandate: 'm', mount: 'rw', leadByDefault: true })
+  // ro is the default — mount omitted when not rw, label falls back to the key
+  const r2 = editPersona(base, { op: 'save', key: 'advertiser', persona: { mandate: 'm' } })
+  assert.deepEqual(r2.roster.personas.advertiser, { label: 'advertiser', mandate: 'm' })
+})
+
+test('editPersona: guards bad inputs (no data, empty key, unknown op)', () => {
+  assert.equal(editPersona(null, { op: 'save', key: 'a', persona: { mandate: 'm' } }).ok, false)
+  assert.equal(editPersona({ teams: [] }, { op: 'save', key: '', persona: { mandate: 'm' } }).ok, false)
+  assert.match(editPersona({ teams: [] }, { op: 'frobnicate', key: 'a' }).error, /unknown persona op/)
 })
 
 test('personas: buildPersona injects identity, addressing, trust, territory, commit rule', () => {
