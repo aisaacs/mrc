@@ -158,7 +158,12 @@ export function parseRoster(input, { repo, rng } = {}) {
       // boundary, rather than mint a silent collision.
       if (seenHandles.has(handle)) throw new Error(`duplicate member handle "@${handle}" — two members resolve to the same name + backend ("${first}" / ${backend}). Member names must be unique per backend across the whole team; rename one.`)
       seenHandles.add(handle)
-      const tier = LIVE_BACKENDS.has(backend) ? def.tier : 'worker'
+      // #49: live-ness is a BACKEND capability (claude has the MCP channel; codex doesn't), NOT a role
+      // property — so a claude member is ALWAYS live, never demoted to worker by a role's tier (incl. the
+      // generic-fallback 'worker' an undefined/custom role would otherwise carry). Media roles already
+      // resolved a non-claude backend above (isMediaRole branch) → worker. def.tier is no longer consulted
+      // here (it remains role-intent documentation only).
+      const tier = LIVE_BACKENDS.has(backend) ? 'live' : 'worker'
       const mount = m.mount || def.mount
       const territory = resolveTerritory(m.territory, teamTerritory)
       const lead = m.lead === true

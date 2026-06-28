@@ -5,9 +5,11 @@
 
 // mount: 'rw' members may edit their territory; 'ro' members read everything but write nothing
 // (an actual capability boundary at the bind mount, not just etiquette).
-// tier: 'live' needs Claude's async channel injection (architect/critic listening while idle);
-// 'worker' members (any backend) are invoked per directed mention. A role's tier is a PREFERENCE —
-// the effective tier is forced to 'worker' for any non-Claude backend (no inbound-injection path).
+// tier: 'live' members listen on Claude's async channel (architect/critic, idle-listening); 'worker'
+// members are invoked per directed mention. The EFFECTIVE tier is decided by the BACKEND, not the role
+// (#49): a Claude backend is the only one with the inbound-injection channel, so a Claude member is
+// ALWAYS live and a non-Claude (codex / media gemini·elevenlabs) member is ALWAYS a worker. The per-role
+// `tier` below is now role-intent documentation only — it never demotes a Claude member to worker.
 export const ROLES = {
   architect: {
     label: 'Architect', mount: 'ro', tier: 'live', leadByDefault: true,

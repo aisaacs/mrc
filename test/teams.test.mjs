@@ -132,6 +132,18 @@ test('roster: tier is DERIVED from backend for custom roles — claude→live, c
   assert.equal(worker.members[0].personaDef.tier, 'worker')
 })
 
+test('roster: live-ness is backend-decided — a claude member is ALWAYS live; codex/media are workers (#49)', () => {
+  const tierOf = (json) => parseRoster(json, { repo: '/tmp/x', rng: seededRng(1) }).members[0].tier
+  // claude + UNDEFINED role (generic-fallback tier:'worker') → live (the #49 bug: came up on-demand)
+  assert.equal(tierOf({ org: 'x', teams: [{ name: 't', members: [{ role: 'ux-expert', backend: 'claude' }] }] }), 'live')
+  // claude + a built-in worker-PREFERENCE role (researcher def.tier:'worker') → live — role tier no longer demotes claude
+  assert.equal(tierOf({ org: 'x', teams: [{ name: 't', members: [{ role: 'researcher', backend: 'claude' }] }] }), 'live')
+  // claude + custom persona → live; codex → worker; media role (derives gemini/elevenlabs) → worker
+  assert.equal(tierOf({ org: 'x', personas: { ux: { mandate: 'design' } }, teams: [{ name: 't', members: [{ role: 'ux', backend: 'claude' }] }] }), 'live')
+  assert.equal(tierOf({ org: 'x', teams: [{ name: 't', members: [{ role: 'engineer', backend: 'codex' }] }] }), 'worker')
+  assert.equal(tierOf({ org: 'x', teams: [{ name: 't', members: [{ role: 'designer' }] }] }), 'worker')
+})
+
 test('roster: buildPersona emits the custom mandate via member.personaDef', () => {
   const json = JSON.stringify({ org: 'shop', personas: { advertiser: { label: 'Ad Strategist', mandate: 'SENTINEL-MANDATE-9f.' } },
     teams: [{ name: 'mkt', members: [{ role: 'advertiser', backend: 'claude' }] }] })
