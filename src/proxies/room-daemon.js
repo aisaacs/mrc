@@ -13,7 +13,7 @@ import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { ensureRoom, appendThread, appendTranscript, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadLaunches, removeLaunch, loadTgStates, saveTgStates, loadInbox, saveInbox } from '../rooms.js'
+import { ensureRoom, appendThread, appendTranscript, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadLaunches, removeLaunch, loadTgStates, saveTgStates, loadInbox, saveInbox, loadUserPrefs, saveUserPrefs } from '../rooms.js'
 import { createRoomEngine } from '../teams/room-engine.js'
 import { createWorkerRunner, workerLogPath } from '../teams/worker-runner.js'
 import { memberSessionId } from '../teams/session-id.js'
@@ -602,6 +602,26 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
           continue
         }
         if (f.action === 'sessions') { reply({ ok: true, sessions: listMrcContainers() }); continue }
+        // #42 chunk C: global runtime prefs (turn-cap + notification prefs). getprefs reports the LIVE
+        // values; setprefs applies the turn-cap live (engine + legacy pairings) and persists to
+        // user-prefs.json so it survives a restart (else it resets to the env/default).
+        if (f.action === 'getprefs') { reply({ ok: true, prefs: loadUserPrefs(), turnCap: engine.getTurnCap(), envTurnCap: process.env.MRC_ROOM_TURN_CAP ?? '' }); continue }
+        if (f.action === 'setprefs') {
+          const patch = {}
+          if (f.turnCap !== undefined) {
+            const n = engine.setTurnCap(f.turnCap); turnCap = n
+            for (const p of pairings.values()) {   // legacy pairings track the new cap too (mirror the engine path)
+              p.turnCap = n === 0 ? 0 : p.turn + n
+              if (n === 0 && p.state === 'Paused' && p.pauseReason === 'turnCap') doResume(p)   // C-1: un-stick a pairing paused on the cap
+            }
+            patch.turnCap = n
+          }
+          if (f.notify !== undefined && f.notify && typeof f.notify === 'object') {
+            patch.notify = { chime: f.notify.chime !== false, questions: f.notify.questions !== false, fyis: f.notify.fyis !== false }
+          }
+          const prefs = Object.keys(patch).length ? saveUserPrefs(patch) : loadUserPrefs()
+          reply({ ok: true, prefs, turnCap: engine.getTurnCap() }); continue
+        }
         if (f.action === 'killsession' && f.id) { daemonLog(`kill session ${f.id}`); reply({ ok: killContainer(f.id) }); continue }
         if (f.action === 'team') {
           const st = engine.status()
@@ -870,7 +890,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const controlPort = Number(process.argv[3])
   const notifyPort = Number(process.argv[4]) || 0
   const envCap = process.env.MRC_ROOM_TURN_CAP
-  const turnCap = envCap != null && envCap !== '' && Number.isFinite(Number(envCap)) ? Number(envCap) : undefined
+  let turnCap = envCap != null && envCap !== '' && Number.isFinite(Number(envCap)) ? Number(envCap) : undefined
+  // #42 chunk C: a turn-cap the human set in Settings is persisted and wins over the env/default on
+  // restart (else it would silently reset). Only the cap is global-persisted here; per-project prefs live elsewhere.
+  const prefCap = loadUserPrefs().turnCap
+  if (prefCap != null && Number.isFinite(Number(prefCap))) turnCap = Number(prefCap)
   // Serve the dashboard from inside the daemon so it persists without a foreground tab. Port is
   // allocated here so it can be recorded in room-daemon.json (MRC_DASHBOARD_PORT=0 disables it).
   const dashboardPort = process.env.MRC_DASHBOARD_PORT === '0' ? 0 : await findFreePort(Number(process.env.MRC_DASHBOARD_PORT) || 8787)

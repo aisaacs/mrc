@@ -170,6 +170,39 @@ test('engine: turn-cap check-in pauses the room at the cap', () => {
   assert.equal(room.pauseReason, 'turnCap')
 })
 
+test('engine: setTurnCap changes the cap live — raise re-bases rooms, 0 disables + resumes (#42c)', () => {
+  const json = { org: 'shop', teams: [{ name: 'client', members: [
+    { role: 'architect', backend: 'claude', name: 'a', lead: true }, { role: 'engineer', backend: 'claude', name: 'b' },
+  ] }] }
+  const mk = () => { const e = createRoomEngine({ send: () => {}, append: () => {}, notify: () => {}, turnCap: 2 })
+    const norm = parseRoster(json, { repo: '/tmp', rng: seededRng(1) })
+    e.defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
+    e.bindSession('shop', 'a/claude', 's1'); e.bindSession('shop', 'b/claude', 's2')
+    return { e, room: e.getRoom(teamRoomId('shop', 'client')) } }
+
+  // raise BEFORE hitting the old cap → live room re-based to a fresh window, so it doesn't pause at 2
+  const { e, room } = mk()
+  assert.equal(e.getTurnCap(), 2)
+  e.setTurnCap(10); assert.equal(e.getTurnCap(), 10)
+  e.route({ fromHandle: 'a/claude', roomId: room.roomId, text: '@b one' })
+  e.route({ fromHandle: 'a/claude', roomId: room.roomId, text: '@b two' })
+  assert.equal(room.state, 'Running', 'raised cap keeps a room that would have paused at 2 running')
+  // 0 disables the pause-after-N entirely
+  e.setTurnCap(0); assert.equal(room.turnCap, 0)
+  for (let i = 0; i < 6; i++) e.route({ fromHandle: 'a/claude', roomId: room.roomId, text: '@b x' + i })
+  assert.equal(room.state, 'Running', '0 disables → never pauses on turn-cap')
+  // junk / negative ignored — cap unchanged
+  e.setTurnCap('nonsense'); e.setTurnCap(-3); assert.equal(e.getTurnCap(), 0)
+
+  // a room already PAUSED on the cap resumes when the cap is disabled
+  const two = mk()
+  two.e.route({ fromHandle: 'a/claude', roomId: two.room.roomId, text: '@b one' })
+  two.e.route({ fromHandle: 'a/claude', roomId: two.room.roomId, text: '@b two' })
+  assert.equal(two.room.state, 'Paused')
+  two.e.setTurnCap(0)
+  assert.equal(two.room.state, 'Running', 'disabling the cap resumes a room paused on it')
+})
+
 test('engine: turn-cap pause raises a resolvable @you item — dedup + resolve-on-resume + reply-resumes (#35)', () => {
   const json = { org: 'shop', teams: [{ name: 'client', members: [
     { role: 'architect', backend: 'claude', name: 'a', lead: true }, { role: 'engineer', backend: 'claude', name: 'b' }, { role: 'critic', backend: 'claude', name: 'c' },

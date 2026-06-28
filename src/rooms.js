@@ -214,6 +214,19 @@ export function loadOrgs() {
   return (loadJsonFile(orgsFile(), {}) || {}).orgs || []
 }
 
+// --- global user prefs (#42 chunk C) --------------------------------------
+// Runtime knobs the human sets from the Settings tab that must survive a daemon restart — otherwise
+// they reset to the env/default each restart. Holds the GLOBAL runtime prefs (the team turn-cap + the
+// notification prefs). Per-project settings (Telegram) stay in their own per-repo store. Shallow
+// merge-on-write so two writers (turn-cap vs notify) never clobber each other's field.
+const userPrefsFile = () => join(daemonDir(), 'user-prefs.json')
+export function loadUserPrefs() { return loadJsonFile(userPrefsFile(), {}) || {} }
+export function saveUserPrefs(patch) {
+  const next = { ...loadUserPrefs(), ...(patch || {}) }
+  try { atomicWriteFileSync(userPrefsFile(), JSON.stringify(next, null, 2)) } catch {}
+  return next
+}
+
 // --- @user inbox durable store (#16) --------------------------------------
 // The engine's userInbox is in-memory; without this a `mrc rooms restart` (or a version-refresh)
 // loses every pending question/notification — a data-loss the human flagged. Persist the whole inbox

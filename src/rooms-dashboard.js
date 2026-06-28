@@ -185,6 +185,22 @@ async function handle(req, res) {
       })
       return
     }
+    // #42 chunk C: update global runtime prefs (turn-cap + notification prefs). CSRF-gated above; the
+    // turn-cap applies live + persists via the daemon's setprefs (engine.setTurnCap → user-prefs.json).
+    if (req.method === 'POST' && url.pathname === '/api/settings') {
+      let body = ''
+      req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
+      req.on('end', async () => {
+        let j; try { j = JSON.parse(body || '{}') } catch { return sendJSON(res, 400, { ok: false, error: 'bad json' }) }
+        const f = {}
+        if (j.turnCap !== undefined) { const n = Number(j.turnCap); if (!Number.isFinite(n) || n < 0) return sendJSON(res, 400, { ok: false, error: 'turn-cap must be a number ≥ 0 (0 disables the pause-after-N)' }); f.turnCap = Math.floor(n) }
+        if (j.notify !== undefined) { if (!j.notify || typeof j.notify !== 'object') return sendJSON(res, 400, { ok: false, error: 'notify must be an object' }); f.notify = j.notify }
+        if (!Object.keys(f).length) return sendJSON(res, 400, { ok: false, error: 'nothing to update' })
+        const r = await ctrl(daemonMeta()?.controlPort, 'setprefs', f)
+        return sendJSON(res, r?.ok ? 200 : 500, r?.ok ? r : { ok: false, error: r?.error || 'daemon did not apply settings' })
+      })
+      return
+    }
     // GUI launch lifecycle: start the live members (each in its own ttyd), stop them, add/remove a
     // member. All proxy to the daemon. (Member terminal switching is client-side now — each member has
     // its own ttyd, so the dashboard just swaps the iframe; the old /api/team-select is gone.)
@@ -235,6 +251,18 @@ async function handle(req, res) {
       let custom = {}
       if (repo) { try { const tj = JSON.parse(readFileSync(join(repo, 'team.json'), 'utf8')); if (tj.personas && typeof tj.personas === 'object' && !Array.isArray(tj.personas)) custom = tj.personas } catch {} }
       return sendJSON(res, 200, { ok: true, builtin, custom, repo })
+    }
+    // #42 chunk C: Settings — surface the env/localStorage-only knobs, each tagged scope + mutability.
+    if (req.method === 'GET' && url.pathname === '/api/settings') {
+      const gp = await ctrl(daemonMeta()?.controlPort, 'getprefs')
+      const np = (gp?.prefs || {}).notify || {}
+      const notify = { chime: np.chime !== false, questions: np.questions !== false, fyis: np.fyis !== false }   // all default ON (preserve prior behavior; both types notify, questions chime)
+      return sendJSON(res, 200, { ok: true,
+        turnCap: { value: gp?.turnCap ?? null, env: gp?.envTurnCap ?? '', scope: 'global', mutability: 'runtime' },
+        notify: { value: notify, scope: 'global', mutability: 'runtime' },
+        dashboardPort: { value: DASH_PORT || Number(process.env.MRC_DASHBOARD_PORT) || 8787, scope: 'global', mutability: 'launch' },
+        web: { scope: 'project', mutability: 'launch', note: 'outbound egress is the per-launch --web flag (off by default) — change it by relaunching with/without --web' },
+      })
     }
     if (req.method === 'GET' && url.pathname === '/api/worker-log') {
       const meta = daemonMeta()

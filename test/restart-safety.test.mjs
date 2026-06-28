@@ -5,7 +5,7 @@ import os from 'node:os'
 import fs from 'node:fs'
 import { join } from 'node:path'
 import { daemonVersion } from '../src/daemon-version.js'
-import { saveInbox, loadInbox } from '../src/rooms.js'
+import { saveInbox, loadInbox, loadUserPrefs, saveUserPrefs } from '../src/rooms.js'
 
 test('#21b daemonVersion: deterministic; changes on ANY .js edit/add (incl. nested); ignores non-.js', () => {
   const dir = fs.mkdtempSync(`${os.tmpdir()}/mrc-ver-`)
@@ -34,6 +34,21 @@ test('#21b: the REAL src tree stamp is a stable 12-hex (and would catch an engin
   // The production no-arg call hashes the whole src/ tree — so config.js, constants.js, room-engine.js,
   // trust.js, telegram*.js are all in scope by construction (every .js under src/). Just sanity-check shape.
   assert.match(daemonVersion(), /^[0-9a-f]{12}$/)
+})
+
+test('#42c user-prefs store: default {}, atomic shallow-merge keeps independent fields, corrupt → {}', () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-prefs-`)
+  assert.deepEqual(loadUserPrefs(), {}, 'missing file → {} default')
+  saveUserPrefs({ turnCap: 300 })
+  assert.equal(loadUserPrefs().turnCap, 300)
+  // a second writer (notify) must NOT clobber the turn-cap field — shallow merge-on-write
+  saveUserPrefs({ notify: { chime: false, questions: true, fyis: true } })
+  const p = loadUserPrefs()
+  assert.equal(p.turnCap, 300, 'turn-cap survives the notify write')
+  assert.deepEqual(p.notify, { chime: false, questions: true, fyis: true })
+  // corrupt file → {} fallback (loadJsonFile quarantines), never a throw
+  fs.writeFileSync(join(process.env.HOME, '.local', 'share', 'mrc', 'user-prefs.json'), '{bad json')
+  assert.deepEqual(loadUserPrefs(), {})
 })
 
 test('#F2 inbox durability: atomic round-trip; a corrupt file logs + preserves aside, never a silent []', () => {

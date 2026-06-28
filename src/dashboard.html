@@ -102,6 +102,15 @@
   .mstate.ready{color:var(--good)} .mstate.starting{color:var(--warn)} .mstate.worker{color:var(--worker)} .mstate.off{color:var(--dim)}
   /* cards */
   .team { background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:12px 12px 10px; margin-bottom:12px }
+  /* settings tab (#42c) */
+  .sblk { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:11px 13px; margin-bottom:12px }
+  .sblk .srow { display:flex; align-items:center; gap:7px; flex-wrap:wrap }
+  .sblk .srow b { font-size:14px }
+  .sblk .shelp { color:var(--dim); font-size:12px; margin:4px 0 8px; line-height:1.45 }
+  .setck { display:flex; align-items:center; gap:7px; font-size:13px; color:var(--fg); margin:3px 0 } .setck input { width:auto }
+  .stag { font-size:9.5px; font-weight:700; letter-spacing:.04em; padding:2px 6px; border-radius:4px; border:1px solid var(--line); white-space:nowrap }
+  .stag.g { color:var(--accent); border-color:var(--accent) } .stag.p { color:var(--info); border-color:var(--info) }
+  .stag.r { color:var(--online); border-color:var(--online) } .stag.l { color:var(--warning); border-color:var(--warning) }
   .team .tn { font-weight:650; font-size:13px; margin-bottom:8px; padding:0 2px; display:flex; gap:8px; align-items:center }
   /* member cards (Côme's mockup): dot · name (bold, line 1, no truncation) / role (dim, line 2) · status,
      with a reserved slim slot on the right for the future per-member bar (not populated yet). */
@@ -284,8 +293,9 @@ const MEDIA_ROLE_BACKEND = { designer:'gemini', 'sound-designer':'elevenlabs', c
 const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
 
 const S = {
-  building: false, org: null, selRoom: null, selInbox: null, selMember: null, workerLog: '', tab: 'thread', addingTo: null, showDismissed: false, showOther: false, flash: null,
+  building: false, org: null, selRoom: null, selInbox: null, selMember: null, selSettings: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, showDismissed: false, showOther: false, flash: null,
   notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
+  notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
   teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null, sessions: [], _tick: 0,
   builder: { org:'shop', repo:'', personas:{}, _pEdit:null, teams:[ { name:'client', territory:'client', members:[
     {role:'architect',backend:'claude',lead:true,territory:''},{role:'engineer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
@@ -293,7 +303,9 @@ const S = {
 let paintedKey = null
 
 // ---- data ----
+let _prefsLoaded = false
 async function tick() {
+  if (!_prefsLoaded) { _prefsLoaded = true; api('/api/settings').then(r=>{ if (r && r.ok && r.notify && r.notify.value) S.notifyPrefs = r.notify.value }).catch(()=>{}) }   // #42c: load notify prefs once for the OS-notify gate
   const [t, st] = await Promise.all([ api('/api/teams').catch(()=>S.teams), api('/api/state').catch(()=>S.state) ])
   S.teams = t && t.members ? t : { members:[], rooms:[], userInbox:[], orgs:[] }
   S.state = st && st.rooms ? st : { rooms:[], daemon:{} }
@@ -356,7 +368,7 @@ function orgNeed(org) {
 // A launch record only counts as "running" if the daemon reconciled it as live (≥1 member session up,
 // or still building) — a stale record from a crash reports running:false, so ▶ Resume/🚀 Launch comes back.
 const orgRunning = (org) => (S.teams.launch||[]).some(l=>l.org===org && l.running) || (S.teams.members||[]).some(m=>m.org===org && m.tier==='live' && (m.online||m.launched))
-function switchOrg(org) { if (org===S.org) return; S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; setOrgUrl(org); paint() }
+function switchOrg(org) { if (org===S.org) return; S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; S.selSettings=false; setOrgUrl(org); paint() }
 window.switchOrg = switchOrg
 
 // Browser-style project tabs: one per defined org. Chrome-stable — tabs keep a FIXED position
@@ -430,6 +442,7 @@ const inboxItem = (id) => (S.teams.userInbox||[]).find(x=>x.id===id)
 // (instead of patchDetail leaving a now-stale textarea sitting there). 'gone' if it vanished.
 const inboxSig = (id) => { const q=inboxItem(id); return q ? (q.answered?'a':q.dismissed?'d':'o') : 'gone' }
 const detailKey = () => S.building ? 'build'
+  : S.selSettings ? 'settings:'+(S.settings?(S.settings._failed?'x':'1'):'0')
   : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+S.selMember+':'+(launchFor()?.members?.[S.selMember]?.state||'none'))
   : S.selInbox!=null ? 'inbox:'+S.selInbox+':'+inboxSig(S.selInbox)
   : S.selRoom ? 'room:'+S.selRoom+':'+S.tab
@@ -547,6 +560,7 @@ function renderMain() {
   if (others.length) html += `<div class="muted focusable" role="button" tabindex="0" aria-expanded="${!!S.showOther}" style="margin-top:14px;padding:3px 6px;cursor:pointer;font-size:12px;user-select:none;border-radius:5px" onclick="toggleOther()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleOther()}else if(event.key==='Escape'&&S.showOther){toggleOther()}">${S.showOther?'▾':'▸'} Consults &amp; history <span style="opacity:.7">(${others.length})</span></div>`
     + (S.showOther ? `<div style="margin-top:4px">${others.map(roomRow).join('')}</div>` : '')
   html += `<div style="margin:14px 0 8px;display:flex;gap:8px">${teams.length?`<button class="btn" style="flex:1" onclick="openBuilder()">✎ Edit teams</button>`:''}<button class="btn ${teams.length?'':'primary'}" style="flex:1" onclick="newProject()">＋ New project</button></div>`
+  html += `<div style="margin:2px 0 12px"><div class="muted focusable ${S.selSettings?'sel':''}" role="button" tabindex="0" aria-pressed="${!!S.selSettings}" style="padding:5px 6px;cursor:pointer;font-size:12.5px;user-select:none;border-radius:5px" onclick="openSettings()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openSettings()}">⚙ Settings</div></div>`
   // Delete (#13): a DELIBERATE control distinct from the tab ✕ (which only suspends). Forgets the
   // project from the daemon + stops its sessions; deletes nothing on disk — re-addable via `mrc team up`.
   if (S.org && teams.length) html += `<div style="margin:0 0 18px"><button class="btn danger tiny" onclick="deleteProject()">🗑 Delete project</button></div>`
@@ -583,6 +597,7 @@ function amForm(t) {
 function renderDetail() {
   const d = $('#detail')
   if (S.building) return renderBuilder(d)
+  if (S.selSettings) return renderSettings(d)
   if (S.selMember) return renderMember(d)
   if (S.selInbox!=null) return renderInboxItem(d)
   if (S.selRoom) return renderRoom(d)
@@ -906,7 +921,7 @@ const freshBuilder = () => ({ org:'', repo:'', personas:{}, _pEdit:null, teams:[
   {role:'critic',backend:'claude',lead:false,territory:''} ] }] })
 window.newProject = ()=>openBuilder(true)
 // fresh=true -> a blank new project; otherwise load the CURRENT project's roster so editing EXTENDS it.
-window.openBuilder = async (fresh)=>{ S.building=true; S.selMember=null; S.selRoom=null; S.selInbox=null
+window.openBuilder = async (fresh)=>{ S.building=true; S.selMember=null; S.selRoom=null; S.selInbox=null; S.selSettings=false
   if (fresh) S.builder = freshBuilder()
   paint()
   if (!fresh && S.org && (S.teams.members||[]).some(m=>m.org===S.org)) {
@@ -920,6 +935,55 @@ window.openBuilder = async (fresh)=>{ S.building=true; S.selMember=null; S.selRo
     }
   } }
 window.closeBuilder = ()=>{ S.building=false; paint() }
+
+// ---- settings (#42 chunk C) ----
+window.openSettings = async ()=>{ S.selSettings=true; S.building=false; S.selRoom=S.selMember=S.selInbox=null; S.settings=null; paint()
+  const r = await api('/api/settings').catch(()=>null)
+  // A 404/null means the endpoint isn't live on the CURRENT daemon yet (it's served fresh per-request, but
+  // /api/settings only exists after a daemon reload) — flag it so the tab SAYS so instead of "Loading…" forever.
+  if (r && r.ok) { S.settings=r; if (r.notify && r.notify.value) S.notifyPrefs=r.notify.value }
+  else S.settings = { _failed: true }
+  if (S.selSettings) renderDetail() }
+const sBadge = (scope,mut)=>`<span class="stag ${scope==='global'?'g':'p'}">${scope==='global'?'GLOBAL':'PER-PROJECT'}</span><span class="stag ${mut==='runtime'?'r':'l'}">${mut==='runtime'?'RUNTIME':'LAUNCH-TIME'}</span>`
+function renderSettings(d) {
+  const s = S.settings
+  if (!s) { d.innerHTML = `<h2>Settings</h2><div class="muted">Loading…</div>`; return }
+  if (s._failed) { d.innerHTML = `<h2>Settings</h2><div class="sblk"><div class="shelp" style="margin:0">⚠ Settings need a daemon restart to take effect — run <code>mrc rooms restart</code>. The <code>/api/settings</code> endpoint isn't live on the current daemon yet; this tab will work once it reloads.</div></div>`; return }
+  const tc=s.turnCap||{}, nf=(s.notify&&s.notify.value)||{}, dp=s.dashboardPort||{}, web=s.web||{}
+  const perm = ('Notification' in window) ? Notification.permission : 'denied'
+  d.innerHTML = `<h2>Settings</h2>
+    <div class="sblk"><div class="srow"><b>Team turn-cap</b> ${sBadge('global','runtime')}</div>
+      <div class="shelp">Pause a room for a check-in after this many messages, so a long autonomous run doesn't drift unattended. <b>0 disables</b> the pause.${tc.env!==''&&tc.env!=null?` Env default: <code>${esc(String(tc.env))}</code>.`:''}</div>
+      <div class="row"><input id="setTurnCap" type="number" min="0" step="1" aria-label="turn-cap" value="${tc.value==null?'':esc(String(tc.value))}" style="max-width:120px"><button class="btn primary tiny" onclick="saveTurnCap()">Apply</button><span id="setTurnCapMsg" class="muted" style="font-size:12px"></span></div></div>
+    <div class="sblk"><div class="srow"><b>Notifications</b> ${sBadge('global','runtime')}</div>
+      <div class="shelp">Browser alerts + chime for new @you messages. Permission: <b>${perm}</b>${perm!=='granted'?` — <a href="#" onclick="enableNotifyPerm();return false">enable</a>`:''}.</div>
+      <label class="setck"><input type="checkbox" id="nfChime" ${nf.chime!==false?'checked':''} onchange="saveNotify()"> Play chime on questions</label>
+      <label class="setck"><input type="checkbox" id="nfQ" ${nf.questions!==false?'checked':''} onchange="saveNotify()"> Notify on questions (❓)</label>
+      <label class="setck"><input type="checkbox" id="nfF" ${nf.fyis!==false?'checked':''} onchange="saveNotify()"> Notify on FYIs (🔔)</label>
+      <span id="setNotifyMsg" class="muted" style="font-size:12px"></span></div>
+    <div class="sblk"><div class="srow"><b>Dashboard port</b> ${sBadge('global','launch')}</div>
+      <div class="shelp">Currently <code>${esc(String(dp.value))}</code>. Set <code>MRC_DASHBOARD_PORT</code> in your environment — applies next daemon restart.</div></div>
+    <div class="sblk"><div class="srow"><b>Telegram</b> ${sBadge('project','runtime')}</div>
+      <div class="shelp">Per-project bridge to your @you inbox. ${S.org?`Pair it from the <b>${esc(S.org)}</b> project view (the Telegram panel).`:'Select a project to pair it.'} Configured by the repo's <code>.env</code> bot token.</div></div>
+    <div class="sblk"><div class="srow"><b>Outbound egress (--web)</b> ${sBadge('project','launch')}</div>
+      <div class="shelp">${esc(web.note||'')}</div></div>`
+}
+window.saveTurnCap = async ()=>{ const el=$('#setTurnCap'); const set=(h)=>{const m=$('#setTurnCapMsg'); if(m)m.innerHTML=h}; if(!el)return
+  const v=el.value.trim(); if(v===''||!Number.isFinite(Number(v))||Number(v)<0){ set('<span class="bad">enter a number ≥ 0</span>'); return }
+  set('<span class="muted">saving…</span>')
+  const r=await api('/api/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({turnCap:Math.floor(Number(v))})}).catch(()=>({ok:false,error:'network error'}))
+  if(r.ok){ if(S.settings&&S.settings.turnCap)S.settings.turnCap.value=r.turnCap; set(`<span class="good">✓ ${r.turnCap===0?'pause disabled':'cap set to '+r.turnCap}</span>`) }
+  else set(`<span class="bad">✗ ${esc(r.error)}</span>`) }
+window.saveNotify = async ()=>{ const set=(h)=>{const m=$('#setNotifyMsg'); if(m)m.innerHTML=h}
+  const notify={ chime:!!$('#nfChime')?.checked, questions:!!$('#nfQ')?.checked, fyis:!!$('#nfF')?.checked }
+  set('<span class="muted">saving…</span>')
+  const r=await api('/api/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({notify})}).catch(()=>({ok:false,error:'network error'}))
+  if(r.ok){ const v=(r.prefs&&r.prefs.notify)||notify; S.notifyPrefs=v; if(S.settings&&S.settings.notify)S.settings.notify.value=v; set('<span class="good">✓ saved</span>') }
+  else set(`<span class="bad">✗ ${esc(r.error)}</span>`) }
+window.enableNotifyPerm = async ()=>{ if(!('Notification' in window))return; let p=Notification.permission
+  if(p==='default'){ try{ p=await Notification.requestPermission() }catch{ p='denied' } }
+  if(p==='granted'){ S.notifyEnabled=true; try{ localStorage.setItem('mrc-notify','1') }catch{}; updateNotifyBtn() }
+  if(S.selSettings)renderDetail() }
 window.launchTeam = async ()=>{ const r=await postJSON('/api/team-launch',{org:S.org}); if(!(r&&r.ok)) alert('Launch failed: '+((r&&r.error)||'unknown')); tick() }
 window.startAddMember = (t)=>{ S.addingTo=t; renderMain() }
 window.cancelAddMember = ()=>{ S.addingTo=null; renderMain() }
@@ -927,10 +991,10 @@ window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('
   const msg=$('#amMsg'); if(msg)msg.textContent='adding…'
   const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role,backend,territory})
   if(r&&r.ok){ S.addingTo=null; tick() } else { const m=$('#amMsg'); if(m)m.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
-window.selRoom = (id, openCu)=>{ S.selRoom=id; S.selInbox=null; S.selMember=null; S.building=false; if(openCu)S.tab='catchups'; else S.tab='thread'; S.room=null; tick() }
+window.selRoom = (id, openCu)=>{ S.selRoom=id; S.selInbox=null; S.selMember=null; S.building=false; S.selSettings=false; if(openCu)S.tab='catchups'; else S.tab='thread'; S.room=null; tick() }
 window.openRoom = (id)=>{ selRoom(id) }
-window.selInbox = (i)=>{ S.selInbox=i; S.selRoom=null; S.selMember=null; S.building=false; paint() }
-window.selMember = (h)=>{ S.selRoom=null; S.selInbox=null; S.building=false; S.selMember=h
+window.selInbox = (i)=>{ S.selInbox=i; S.selRoom=null; S.selMember=null; S.building=false; S.selSettings=false; paint() }
+window.selMember = (h)=>{ S.selRoom=null; S.selInbox=null; S.building=false; S.selSettings=false; S.selMember=h
   const m = memberByHandle(h)
   // #34/B: each member has its OWN ttyd, so selecting one just swaps the embedded iframe (via detailKey);
   // no server round-trip (the old /api/team-select → tmux select-window is gone).
@@ -980,12 +1044,16 @@ const inboxKey = (q)=> (q.org||'')+'#'+q.id
 function notifyNewInbox(items) {
   const open = (items||[]).filter(q => !q.answered && !q.dismissed)   // open @you items, ALL orgs
   if (!_inboxSeeded) { open.forEach(q => _seenInbox.add(inboxKey(q))); _inboxSeeded = true; return }
-  const fresh = open.filter(q => !_seenInbox.has(inboxKey(q)))
+  let fresh = open.filter(q => !_seenInbox.has(inboxKey(q)))
   fresh.forEach(q => _seenInbox.add(inboxKey(q)))
   if (!fresh.length || !S.notifyEnabled) return
   if (!('Notification' in window) || Notification.permission !== 'granted') return
+  // Server-persisted prefs (#42c) decide WHICH events notify (question vs FYI) + whether the chime sounds.
+  const pr = S.notifyPrefs || { chime:true, questions:true, fyis:true }
+  fresh = fresh.filter(q => q.type==='question' ? pr.questions!==false : pr.fyis!==false)
+  if (!fresh.length) return
   fresh.forEach(fireNotification)
-  if (fresh.some(q => q.type==='question')) playChime()   // chime only for needs-you questions; FYIs notify silently (push≠nag in the OS layer)
+  if (pr.chime!==false && fresh.some(q => q.type==='question')) playChime()   // chime only for needs-you questions; FYIs notify silently (push≠nag in the OS layer)
 }
 function fireNotification(q) {
   const isQ = q.type==='question'

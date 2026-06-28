@@ -567,6 +567,22 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     return { ok: true }
   }
 
+  // #42 chunk C: change the team turn-cap at RUNTIME. Updates the default for new rooms + the resume
+  // re-grant size, and applies LIVE to every existing room so the change takes effect without waiting
+  // for a resume: 0 disables the pause-after-N entirely (and resumes any room currently paused on it);
+  // otherwise each room gets a fresh window from its current turn.
+  function setTurnCap(n) {
+    const v = Number(n)
+    if (!Number.isFinite(v) || v < 0) return turnCap   // ignore junk — keep the current cap
+    turnCap = Math.floor(v)
+    for (const room of rooms.values()) {
+      room.turnCap = turnCap === 0 ? 0 : room.turn + turnCap
+      if (turnCap === 0 && room.state === 'Paused' && room.pauseReason === 'turnCap') doResume(room)
+    }
+    return turnCap
+  }
+  const getTurnCap = () => turnCap
+
   function status() {
     const allMembers = []
     for (const omap of members.values()) for (const m of omap.values()) allMembers.push(m)
@@ -586,6 +602,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     defineOrg, bindSession, unbindSession, route, endRoom, removeOrg, post,
     roomsForSession, roomsForHandle, resolveTargets, resolveInRoom, findRoom,
     doBrake, doResume, doSteer, answerUser, dismissUser, reopenUser, restoreInbox, status, memberView, viewForSession, claimWorkerBatches, notifyRoom,
+    setTurnCap, getTurnCap,
     // exposed for the daemon/dashboard + tests
     _rooms: rooms, _members: members, _userInbox: userInbox, _workerQueue: workerQueue,
     getRoom: (id) => rooms.get(id) || null,
