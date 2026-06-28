@@ -48,11 +48,41 @@ function resolveTerritory(raw, fallback) {
 // internal hyphens, so accented names ("côme") and hyphenated ones ("jean-luc") pass; reject spaces,
 // quotes, slashes, dots, and every shell metacharacter (' " ` $ ; | & < > ( ) \ newline …).
 const SAFE_NAME = /^[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?$/u
-function assertSafeName(name, role) {
+function assertSafeName(name, role, kind = 'member name') {
   const s = String(name)
   if (!SAFE_NAME.test(s)) {
-    throw new Error(`member name ${JSON.stringify(s)}${role ? ` (role "${role}")` : ''} is invalid — names may contain only letters, digits, and internal hyphens (no spaces, quotes, slashes, dots, or shell metacharacters). Fix it in team.json.`)
+    throw new Error(`${kind} ${JSON.stringify(s)}${role ? ` (role "${role}")` : ''} is invalid — names may contain only letters, digits, and internal hyphens (no spaces, quotes, slashes, dots, or shell metacharacters). Fix it in team.json.`)
   }
+}
+
+// Custom personas — team.json top-level `personas`: { <key>: { label, mandate, mount?, leadByDefault? } }.
+// Each KEY becomes a usable @role (and an @mention surface), so validate it like a member name (#36 —
+// reject shell/handle-hostile keys at the parse boundary). Custom personas are AGENT charters only: a key
+// may NOT redefine a built-in MEDIA role (designer/sound-designer/composer) — those stay built-in because
+// they carry generation logic (media.js), not just a charter. NOTE: tier is intentionally NOT read here —
+// it is derived from the backend at the member layer (claude→live, codex→worker, #32).
+function parsePersonas(raw) {
+  const map = {}
+  if (raw == null) return map
+  if (typeof raw !== 'object' || Array.isArray(raw)) {
+    throw new Error('team.json "personas" must be an object map of { key: { label, mandate, mount?, leadByDefault? } }')
+  }
+  for (const [key, val] of Object.entries(raw)) {
+    assertSafeName(key, null, 'persona key')   // keys become @mentions — reject crafted ones
+    // A key that IS a built-in alias ("writer"→"engineer", "qa"→"tester") would silently never resolve —
+    // roleDef aliases the role BEFORE the custom lookup, so the custom def is dead. Reject (same class as
+    // the media reject) rather than ship a foot-gun where `personas.writer` is quietly ignored.
+    if (ROLE_ALIASES[key]) throw new Error(`persona "${key}" collides with a built-in role alias ("${key}" → "${ROLE_ALIASES[key]}") — it would never resolve. Rename it, or define the canonical role "${ROLE_ALIASES[key]}".`)
+    if (isMediaRole(key)) throw new Error(`persona "${key}" may not be redefined — media roles (designer/sound-designer/composer) are built-in`)
+    if (!val || typeof val !== 'object' || Array.isArray(val)) throw new Error(`persona "${key}" must be an object with at least a "mandate"`)
+    map[key] = {
+      label: val.label != null ? String(val.label) : key,
+      mandate: val.mandate != null ? String(val.mandate) : '',
+      ...(val.mount != null ? { mount: val.mount === 'rw' ? 'rw' : 'ro' } : {}),
+      leadByDefault: val.leadByDefault === true,
+    }
+  }
+  return map
 }
 
 export function teamRoomId(org, team) { return `${slug(org)}--${slug(team)}--team` }
@@ -74,6 +104,7 @@ export function parseRoster(input, { repo, rng } = {}) {
   const repoPath = data.repo || repo || process.cwd()
   const org = data.project || data.org || basename(repoPath) || 'org'   // "project" is the friendly name for "org"
   const teamsIn = Array.isArray(data.teams) ? data.teams : []
+  const customPersonas = parsePersonas(data.personas)
   rng = rng || rngFromString(`mrc-team:${org}`)   // stable per-org names by default
 
   const taken = new Set()
@@ -92,7 +123,7 @@ export function parseRoster(input, { repo, rng } = {}) {
     const memsIn = Array.isArray(t.members) ? t.members : []
     const normMembers = memsIn.map((m) => {
       const role = ROLE_ALIASES[m.role] || m.role || 'engineer'   // "writer" -> "engineer" (back-compat)
-      const def = roleDef(role)
+      const def = roleDef(role, customPersonas)   // custom persona → built-in ROLE → generic fallback
       // One axis: agent OR media-maker. A media role DERIVES its backend (gemini/elevenlabs) and ignores
       // any declared one; an agent role keeps its declared backend but should be claude/codex. Either case
       // carries a `backendNote` when something's off so it's never silent (validateRoster surfaces it).
@@ -114,17 +145,23 @@ export function parseRoster(input, { repo, rng } = {}) {
       const mount = m.mount || def.mount
       const territory = resolveTerritory(m.territory, teamTerritory)
       const lead = m.lead === true
+      // Resolved persona for this member: label/mandate/leadByDefault from the (custom or built-in)
+      // def, with the EFFECTIVE mount + backend-derived tier folded in. buildPersona consumes this.
+      const personaDef = { label: def.label, mandate: def.mandate, mount, tier, leadByDefault: def.leadByDefault === true, custom: !!def.custom }
       return {
         id: `${slug(org)}:${slug(teamName)}:${handle.replace('/', '-')}`,
         first, backend, handle,
         role, roleLabel: def.label,
-        team: teamName, lead, tier, territory, mount,
+        team: teamName, lead, tier, territory, mount, personaDef,
         ...(backendNote ? { backendNote } : {}),
       }
     })
-    // Exactly one lead per team: honor an explicit lead, else the first architect, else the first member.
+    // Exactly one lead per team: honor an explicit lead, else the first architect, else a custom persona
+    // that opts in via leadByDefault (e.g. a "project-manager" role), else the first member. The
+    // leadByDefault clause sits AFTER the architect check so existing teams are unchanged — architect
+    // wins ties; it only claims the lead a team without an architect would otherwise hand to member[0].
     const explicit = normMembers.find((m) => m.lead)
-    const lead = explicit || normMembers.find((m) => m.role === 'architect') || normMembers[0]
+    const lead = explicit || normMembers.find((m) => m.role === 'architect') || normMembers.find((m) => m.personaDef?.leadByDefault) || normMembers[0]
     for (const m of normMembers) m.lead = m === lead
     leadHandle = lead ? lead.handle : null
     for (const m of normMembers) { members.push(m); memberIds.push(m.handle) }
@@ -140,7 +177,7 @@ export function parseRoster(input, { repo, rng } = {}) {
     rooms.push({ roomId: leadsRoomId(org), kind: 'leads', team: null, members: [...leadHandles, '@user'] })
   }
 
-  return { org, repo: repoPath, members, teams, rooms }
+  return { org, repo: repoPath, members, teams, rooms, customPersonas }
 }
 
 export function validateRoster(norm) {
@@ -150,7 +187,7 @@ export function validateRoster(norm) {
   for (const m of norm.members) {
     // Surface any backend override parseMember had to make (agent-coerce or media-derive) — never silent.
     if (m.backendNote) warnings.push(`member @${m.handle}: ${m.backendNote}`)
-    if (!ROLES_OK(m.role)) warnings.push(`member @${m.handle}: unknown role "${m.role}" (treated generically)`)
+    if (!ROLES_OK(m.role, norm.customPersonas)) warnings.push(`member @${m.handle}: unknown role "${m.role}" (treated generically)`)
     if (m.mount === 'rw' && m.backend !== 'claude' && m.tier !== 'worker') {
       warnings.push(`member @${m.handle}: rw worker — edits apply per directed invocation`)
     }
@@ -169,9 +206,12 @@ export function validateRoster(norm) {
   return { errors, warnings, ok: errors.length === 0 }
 }
 
-function ROLES_OK(role) {
-  // Mirrors personas.ROLES keys without importing the whole map; unknown roles are allowed (warned).
-  return ['architect', 'engineer', 'critic', 'adversary', 'ultracritical', 'user-defender', 'researcher', 'tester', 'designer', 'sound-designer', 'composer'].includes(role)
+function ROLES_OK(role, customPersonas) {
+  // Mirrors personas.ROLES keys without importing the whole map; a team.json custom persona key counts
+  // as known too. Unknown roles are allowed (warned + treated generically).
+  const r = ROLE_ALIASES[role] || role
+  if (customPersonas && Object.prototype.hasOwnProperty.call(customPersonas, r)) return true
+  return ['architect', 'engineer', 'critic', 'adversary', 'ultracritical', 'user-defender', 'researcher', 'tester', 'designer', 'sound-designer', 'composer'].includes(r)
 }
 
 function territoriesOverlap(a, b) {

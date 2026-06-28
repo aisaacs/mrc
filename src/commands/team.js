@@ -67,7 +67,7 @@ export function personaForMember(norm, member) {
   const roster = norm.members.filter((m) => m.team === member.team)
     .map((m) => ({ first: m.first, handle: m.handle, roleLabel: m.roleLabel, lead: m.lead }))
   const self = { first: member.first, handle: member.handle, roleLabel: member.roleLabel }
-  return buildPersona({ self, team: member.team, roster, isLead: member.lead, territory: member.territory, mount: member.mount, role: member.role })
+  return buildPersona({ self, team: member.team, roster, isLead: member.lead, territory: member.territory, mount: member.mount, role: member.role, personaDef: member.personaDef })
 }
 
 const personaSlug = (handle) => handle.replace(/[^a-z0-9]+/gi, '-')

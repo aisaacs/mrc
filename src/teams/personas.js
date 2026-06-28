@@ -101,8 +101,24 @@ export const ROLES = {
 // friendlier name). Old/either spelling resolves to the canonical role.
 export const ROLE_ALIASES = { writer: 'engineer', qa: 'tester' }
 
-export function roleDef(role) {
+// Resolve a role to its persona definition. Precedence: a team.json CUSTOM persona (`customPersonas`,
+// keyed by role) → a built-in ROLE → a generic read-only fallback. Custom personas are charters for
+// AGENT members only (claude/codex); they carry label/mandate/mount/leadByDefault but NEVER a tier —
+// the effective tier is DERIVED from the backend at the roster layer (claude→live, codex→worker, #32).
+// So a custom def advertises the 'live' preference and lets that derivation force 'worker' for non-claude.
+export function roleDef(role, customPersonas) {
   const r = ROLE_ALIASES[role] || role
+  const custom = customPersonas && Object.prototype.hasOwnProperty.call(customPersonas, r) ? customPersonas[r] : null
+  if (custom) {
+    return {
+      label: custom.label || r,
+      mount: custom.mount === 'rw' ? 'rw' : 'ro',
+      tier: 'live',   // preference only; the roster's backend derivation forces 'worker' for non-claude
+      leadByDefault: custom.leadByDefault === true,
+      mandate: custom.mandate || '',
+      custom: true,
+    }
+  }
   return ROLES[r] || { label: r, mount: 'ro', tier: 'worker', leadByDefault: false, mandate: '' }
 }
 
@@ -156,9 +172,11 @@ function protocolBlock({ self, team, roster, isLead, territory, mount }) {
 }
 
 // Build the full --append-system-prompt text for a member. `roster` is the list of team members
-// (each {first, handle, roleLabel, lead}); `self` is this member's entry.
-export function buildPersona({ self, team, roster, isLead, territory, mount, role, extra }) {
-  const def = roleDef(role)
+// (each {first, handle, roleLabel, lead}); `self` is this member's entry. `personaDef` is the member's
+// resolved definition (parseRoster attaches it as member.personaDef) — pass it so a CUSTOM role's
+// label/mandate flow through; without it we fall back to the built-in roleDef(role).
+export function buildPersona({ self, team, roster, isLead, territory, mount, role, personaDef, extra }) {
+  const def = personaDef || roleDef(role)
   return [
     protocolBlock({ self, team, roster, isLead, territory, mount }),
     '',

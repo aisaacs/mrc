@@ -72,6 +72,94 @@ test('personas: every role has a mandate and a mount/tier', () => {
   assert.equal(roleDef('nonsense').label, 'nonsense')   // generic fallback
 })
 
+// --- #42 chunk A: custom personas (team.json top-level `personas`) ---
+
+test('personas: roleDef resolves a custom persona ahead of built-ins; tier preference is live', () => {
+  const cps = { advertiser: { label: 'Ad Strategist', mandate: 'You write the campaign brief.', mount: 'rw' } }
+  const def = roleDef('advertiser', cps)
+  assert.equal(def.label, 'Ad Strategist')
+  assert.equal(def.mandate, 'You write the campaign brief.')
+  assert.equal(def.mount, 'rw')
+  assert.equal(def.tier, 'live')   // preference; backend derivation forces worker for non-claude
+  assert.equal(def.custom, true)
+  // a custom key may also OVERRIDE a built-in agent role
+  assert.equal(roleDef('critic', { critic: { label: 'Mega Critic', mandate: 'x' } }).label, 'Mega Critic')
+  // unknown + no custom → generic fallback (unchanged)
+  assert.equal(roleDef('advertiser').label, 'advertiser')
+})
+
+test('roster: a custom-persona member carries personaDef (custom label+mandate) and roleLabel', () => {
+  const json = JSON.stringify({ org: 'shop', personas: { advertiser: { label: 'Ad Strategist', mandate: 'Own the ad copy.' } },
+    teams: [{ name: 'mkt', members: [{ role: 'advertiser', backend: 'claude', lead: true }] }] })
+  const norm = parseRoster(json, { repo: '/tmp/shop', rng: seededRng(11) })
+  const m = norm.members[0]
+  assert.equal(m.role, 'advertiser')
+  assert.equal(m.roleLabel, 'Ad Strategist')
+  assert.equal(m.personaDef.label, 'Ad Strategist')
+  assert.equal(m.personaDef.mandate, 'Own the ad copy.')
+  assert.equal(m.personaDef.custom, true)
+  assert.ok(norm.customPersonas.advertiser, 'customPersonas map is surfaced on the norm')
+})
+
+test('roster: tier is DERIVED from backend for custom roles — claude→live, codex→worker (#32)', () => {
+  const personas = { advertiser: { mandate: 'ads' } }
+  const live = parseRoster({ org: 'x', personas, teams: [{ name: 't', members: [{ role: 'advertiser', backend: 'claude' }] }] }, { repo: '/tmp/x', rng: seededRng(1) })
+  assert.equal(live.members[0].tier, 'live')
+  assert.equal(live.members[0].personaDef.tier, 'live')
+  const worker = parseRoster({ org: 'x', personas, teams: [{ name: 't', members: [{ role: 'advertiser', backend: 'codex' }] }] }, { repo: '/tmp/x', rng: seededRng(1) })
+  assert.equal(worker.members[0].tier, 'worker')
+  assert.equal(worker.members[0].personaDef.tier, 'worker')
+})
+
+test('roster: buildPersona emits the custom mandate via member.personaDef', () => {
+  const json = JSON.stringify({ org: 'shop', personas: { advertiser: { label: 'Ad Strategist', mandate: 'SENTINEL-MANDATE-9f.' } },
+    teams: [{ name: 'mkt', members: [{ role: 'advertiser', backend: 'claude' }] }] })
+  const norm = parseRoster(json, { repo: '/tmp/shop', rng: seededRng(12) })
+  const m = norm.members[0]
+  const roster = norm.members.map((x) => ({ first: x.first, handle: x.handle, roleLabel: x.roleLabel, lead: x.lead }))
+  const text = buildPersona({ self: { first: m.first, handle: m.handle, roleLabel: m.roleLabel }, team: m.team, roster, isLead: m.lead, territory: m.territory, mount: m.mount, role: m.role, personaDef: m.personaDef })
+  assert.match(text, /SENTINEL-MANDATE-9f\./)
+  assert.match(text, /YOUR ROLE — Ad Strategist:/)
+})
+
+test('roster: a custom role is NOT flagged unknown by validateRoster (warns only for truly unknown)', () => {
+  const known = parseRoster({ org: 'x', personas: { advertiser: { mandate: 'ads' } },
+    teams: [{ name: 't', members: [{ role: 'advertiser', backend: 'claude' }] }] }, { repo: '/tmp/x', rng: seededRng(1) })
+  assert.ok(!validateRoster(known).warnings.some((w) => /unknown role/.test(w)))
+  const unknown = parseRoster({ org: 'x', teams: [{ name: 't', members: [{ role: 'phantom', backend: 'claude' }] }] }, { repo: '/tmp/x', rng: seededRng(1) })
+  assert.ok(validateRoster(unknown).warnings.some((w) => /unknown role "phantom"/.test(w)))
+  assert.equal(unknown.members[0].roleLabel, 'phantom')   // generic fallback, still launches
+})
+
+test('roster: rejects crafted/unsafe persona keys and media-role redefinition (#36 + media built-in)', () => {
+  for (const key of ['bad key', 'a/b', 'x;rm', '@evil', '../x', 'q"x']) {
+    assert.throws(() => parseRoster({ org: 'x', personas: { [key]: { mandate: 'm' } }, teams: [{ name: 't', members: [{ role: 'engineer' }] }] }, { repo: '/tmp/x' }),
+      /persona key .* is invalid/, `should reject persona key ${JSON.stringify(key)}`)
+  }
+  for (const media of ['designer', 'sound-designer', 'composer']) {
+    assert.throws(() => parseRoster({ org: 'x', personas: { [media]: { mandate: 'm' } }, teams: [{ name: 't', members: [{ role: 'engineer' }] }] }, { repo: '/tmp/x' }),
+      /may not be redefined/, `should reject media-role persona ${media}`)
+  }
+  // a key that IS a built-in alias would silently never resolve — reject it (foot-gun, same class)
+  for (const alias of ['writer', 'qa']) {
+    assert.throws(() => parseRoster({ org: 'x', personas: { [alias]: { mandate: 'm' } }, teams: [{ name: 't', members: [{ role: 'engineer' }] }] }, { repo: '/tmp/x' }),
+      /collides with a built-in role alias/, `should reject alias persona key ${alias}`)
+  }
+  // a non-object personas block is a hard error
+  assert.throws(() => parseRoster({ org: 'x', personas: [1, 2], teams: [{ name: 't', members: [{ role: 'engineer' }] }] }, { repo: '/tmp/x' }), /must be an object map/)
+})
+
+test('roster: a custom persona leadByDefault claims lead when no architect is present (#42)', () => {
+  const json = { org: 'x', personas: { pm: { label: 'Project Manager', mandate: 'coordinate', leadByDefault: true } },
+    teams: [{ name: 't', members: [{ role: 'engineer', backend: 'claude' }, { role: 'pm', backend: 'claude' }] }] }
+  const lead = parseRoster(json, { repo: '/tmp/x', rng: seededRng(1) }).members.find((m) => m.lead)
+  assert.equal(lead.role, 'pm')
+  // architect still wins the tie when present → no behavior change for existing teams
+  const json2 = { org: 'x', personas: { pm: { mandate: 'c', leadByDefault: true } },
+    teams: [{ name: 't', members: [{ role: 'pm', backend: 'claude' }, { role: 'architect', backend: 'claude' }] }] }
+  assert.equal(parseRoster(json2, { repo: '/tmp/x', rng: seededRng(2) }).members.find((m) => m.lead).role, 'architect')
+})
+
 test('personas: buildPersona injects identity, addressing, trust, territory, commit rule', () => {
   const roster = [
     { first: 'Roland', handle: 'roland/claude', roleLabel: 'Architect', lead: true },
