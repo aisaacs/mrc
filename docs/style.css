@@ -292,6 +292,31 @@ ul, ol { margin: 0 0 18px 0; padding-left: 0; list-style: none; }
 .callout.tip    { border-left-color: var(--green); }
 .callout.tip .callout-title { color: var(--green); }
 
+/* ─── #4a — teams "act two": purple accent (bridges to the dashboard), scoped to #teams so the rest of the site stays green ─── */
+#teams {
+  --tacc:#a78bfa; --tacc-soft:#c4b5fd; --tacc-dim:#6a4a9a; --tacc-glow:rgba(167,139,250,.22);
+  background:
+    radial-gradient(120% 90% at 22% -15%, rgba(167,139,250,.10), transparent 60%),
+    repeating-linear-gradient(135deg, rgba(167,139,250,.045) 0 1px, transparent 1px 24px),
+    var(--bg-soft);
+  border-top-color: var(--tacc-dim);
+}
+#teams .section-label { color: var(--tacc); }
+#teams .section-label::before { color: var(--tacc-dim); }
+#teams h2 { color: var(--tacc-soft); }
+#teams .hatmark { width:.92em; height:.92em; vertical-align:-2px; margin-right:5px; fill: var(--tacc); filter: drop-shadow(0 1px 3px rgba(0,0,0,.45)); }
+#teams .card { border-color: rgba(167,139,250,.26); }
+#teams .card h3 { color: var(--tacc-soft); }
+#teams .card::before { background: linear-gradient(90deg, transparent, var(--tacc), transparent); }
+#teams .card:hover { border-color: var(--tacc); box-shadow: 0 12px 30px rgba(167,139,250,.16); }
+#teams .card .icon { filter: drop-shadow(0 0 8px var(--tacc-glow)); }
+#teams .tag { color: var(--tacc); border-color: var(--tacc-dim); }
+#teams .step-num { color: var(--tacc); text-shadow: 0 0 10px var(--tacc-glow); }
+#teams .callout { border-left-color: var(--tacc); }
+#teams .callout .callout-title { color: var(--tacc); }
+#teams .btn-ghost { color: var(--tacc-soft); border-color: var(--tacc-dim); }
+#teams .btn-ghost:hover { border-color: var(--tacc); background: rgba(167,139,250,.08); color: var(--tacc-soft); }
+
 /* ─── Hero ─── */
 .hero { padding: 76px 0 64px; text-align: center; position: relative; }
 .hero-glow {
