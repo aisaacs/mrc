@@ -94,9 +94,9 @@ Set up per the docs (`docs/agent-teams.md` §7):
 
 ---
 
-### 6. Worker-exec (non-Claude member) — the INTEGRATED room path  ⏱️ ~1 min  *(conditional — needs a codex/qwen member)*
-If the roster has **no** `codex`/`qwen` member, mark this **SKIPPED** (don't pass it). The `web`/`backend`
-presets include one; otherwise add a `{ "role": "...", "backend": "codex" }` member.
+### 6. Worker-exec (non-Claude member) — the INTEGRATED room path  ⏱️ ~1 min  *(conditional — needs a `codex` worker)*
+If the roster has **no** `codex` member, mark this **SKIPPED** (don't pass it). The `web`/`backend`
+presets include one; otherwise add a `{ "role": "...", "backend": "codex" }` member. **Use `codex` specifically:** only `api.openai.com` is firewall-whitelisted, so a `qwen`/`gemini` worker fails *at the firewall* unless you launch with `--web` — testing with `codex` keeps a failure attributable to the worker path, not egress.
 
 **Primary proof — use an @mention, NOT `mrc team exec`.** From another member's console (or a steer), @mention the worker:
 ```
@@ -124,3 +124,14 @@ mrc rooms dashboard               # relaunch
 **Reporting:** note PASS/FAIL per numbered check. Any ❌ is a real container-path regression worth filing
 (the host suite wouldn't have caught it). The manual 🖐️ steps (Channels accept, Telegram Confirm) are the
 intended human-in-the-loop controls, not failures.
+
+---
+
+### Coverage gaps — what this checklist does NOT yet prove  *(future #5 hardening; honest scope, not silent)*
+Stated plainly so "ran the smoke test" isn't read as "the whole container path is proven":
+- **Territorial rw/ro mount boundary** (the "read-only by capability, not etiquette" claim, agent-teams.md §4) is unproven. *To add:* in a **read-only member's** console, `echo x > /workspace/<some-file>` must **fail with an FS permission error** (not the agent politely declining); an rw engineer can write its own territory but **not** a sibling team's.
+- **Media members (host-side path):** @mentioning a designer/composer runs generation **host-side** (no container, untrusted-text-driven, **no cost cap** today) — a ping there spends a real API call. Not covered; conditional check + that caveat belong here if a roster includes one.
+- **Persona injection:** nothing explicitly confirms `--append-system-prompt` took (a member knows its handle/role) — check #3 only shows it implicitly.
+- **tgPushed-not-persisted:** a Telegram reply sent *after* a daemon restart maps to nothing and falls back to a broadcast directive — check #5's restart is *before* the push, so this degradation isn't exercised.
+
+These are gaps in the *test*, not known code regressions; they're in the captured backlog.
