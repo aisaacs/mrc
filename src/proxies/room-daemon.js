@@ -132,7 +132,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
   const orgDefs = new Map()   // org -> roster def, persisted so team rooms survive a daemon refresh
   const orgRoster = new Map() // org -> the raw team.json (so the GUI can launch a defined org)
   let teamMod = null          // lazily-loaded launch helpers (Docker/dtach/ttyd live here)
-  import('../commands/team.js').then((m) => { teamMod = m }).catch(() => {})
+  // If this import fails, teamMod stays null and the reconcile serves EMPTY launch data (no members,
+  // running:false) → every dashboard terminal goes blank/empty uniformly, with no other symptom. That was
+  // a silent-failure trap (the old `.catch(()=>{})`): surface it LOUDLY so a broken/NUL'd team.js or a
+  // load error is diagnosable instead of masquerading as "all terminals vanished". (#41 / no-silent-failure.)
+  import('../commands/team.js').then((m) => { teamMod = m }).catch((e) => {
+    try { daemonLog(`[FATAL/teamMod] launch helpers (commands/team.js) failed to import — terminals + launch state will be EMPTY until fixed: ${e?.stack || e?.message || e}`) } catch {}
+  })
   // Org-disambiguation for the register path: a member's session id IS memberSessionId(org, handle)
   // (org-specific, pinned host-side at mrc.js launch). We forward-precompute it for every member so a
   // registering channel binds to the RIGHT org even when two orgs share a bare handle — host-only, no
