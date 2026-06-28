@@ -162,6 +162,11 @@
   .empty .hatwm { fill:var(--line); opacity:.8; margin-bottom:16px }   /* faint top-hat watermark on the idle canvas */
   .empty .flavor { margin-top:12px; font-style:italic; opacity:.5; font-size:12px }   /* Spaceballs flavor — never load-bearing */
   .memrow { display:grid; grid-template-columns:1.3fr 1fr auto 1.1fr auto; gap:8px; align-items:center; padding:5px 0; border-top:1px solid var(--line) }
+  /* #44: member name line above each member row */
+  .bmem { border-top:1px solid var(--line); padding-top:6px; margin-top:4px }
+  .bmem .memrow { border-top:none; padding-top:2px; margin-top:0 }
+  .bmemname { display:flex; align-items:center; gap:6px }
+  .bmemname .bnm { flex:0 0 170px; font-weight:600 }
   .memrow .lead { display:flex; align-items:center; gap:5px; font-size:12px; color:var(--dim); white-space:nowrap } .memrow input[type=checkbox]{ width:auto }
   /* locked, role-derived backend for media makers (no generic select) */
   .bklock { font-size:12px; padding:5px 7px; border:1px dashed var(--line); border-radius:6px; color:var(--dim); background:var(--inset); white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
@@ -285,6 +290,20 @@ const BACKENDS = ['claude','codex']   // agent backends only — media roles DER
 const customRoleKeys = () => Object.keys((S.builder&&S.builder.personas)||{})
 const roleOptions = () => ROLES.concat(customRoleKeys().filter(k=>!ROLES.includes(k)))
 const aliasRole = (r) => r==='writer'?'engineer':(r==='qa'?'tester':r)
+// #44: member-naming. SAFE_NAME mirrors roster.js assertSafeName (#36) for the inline field error — the
+// server boundary (parseRoster/team-preview) still enforces it; this is defense-in-depth + fast feedback.
+const SAFE_NAME_RE = /^[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?$/u
+const allBuilderNames = ()=>{ const s=new Set(); for(const t of (S.builder.teams||[])) for(const m of (t.members||[])) if(m.name) s.add(String(m.name).toLowerCase()); return s }
+function suggestName(style, taken){ const pool=S.namePools&&S.namePools.pools&&S.namePools.pools[style]; if(!pool||!pool.length) return ''
+  const free=pool.filter(n=>!taken.has(n.toLowerCase())); if(free.length) return free[Math.floor(Math.random()*free.length)]
+  for(let i=2;;i++){ const c=pool[Math.floor(Math.random()*pool.length)]+i; if(!taken.has(c.toLowerCase())) return c } }
+// Fill suggested names for AUTO members (those not hand-typed). Idempotent by default: only fills EMPTY
+// auto names (so a re-render never re-rolls a stable name). force=true (style change) clears auto names
+// first for a full re-roll. 'custom' style = free-type → leave auto names blank.
+function autofillNames(force){ const style=S.builder.nameStyle||'french'
+  if(force) for(const t of (S.builder.teams||[])) for(const m of (t.members||[])) if(m._nameAuto!==false) m.name=''
+  if(style==='custom' || !S.namePools) return
+  for(const t of (S.builder.teams||[])) for(const m of (t.members||[])) if(m._nameAuto!==false && !m.name) m.name=suggestName(style, allBuilderNames()) }
 // Which builder members currently resolve to a custom persona key (honoring writer/qa aliases) — the
 // local mirror of the server's removal refusal, so the UI warns before the round-trip.
 const membersUsingPersona = (k)=>{const out=[];for(const t of ((S.builder&&S.builder.teams)||[]))for(const m of (t.members||[]))if(aliasRole(m.role)===k)out.push((m.role||'engineer')+'@'+(t.name||'?'));return out}
@@ -297,7 +316,8 @@ const S = {
   notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
   notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
   teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null, sessions: [], _tick: 0,
-  builder: { org:'shop', repo:'', personas:{}, _pEdit:null, teams:[ { name:'client', territory:'client', members:[
+  namePools: null,   // #44: {styles, pools} from /api/names, loaded once when the builder opens
+  builder: { org:'shop', repo:'', personas:{}, _pEdit:null, nameStyle:'french', teams:[ { name:'client', territory:'client', members:[
     {role:'architect',backend:'claude',lead:true,territory:''},{role:'engineer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
 }
 let paintedKey = null
@@ -803,7 +823,8 @@ function renderBuilder(d) {
   d.innerHTML = `<div style="display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start">
     <div>
       <div class="grid2"><div><label>Project</label><input id="bOrg" value="${esc(B.org)}" placeholder="my-project"></div><div><label>Repo path (host)</label><input id="bRepo" value="${esc(B.repo)}" placeholder="/Users/you/code/app"></div></div>
-      <div style="margin-top:8px"><label>Start from a preset (optional)</label><select id="bPreset"><option value="">— preset —</option></select></div>
+      <div class="grid2" style="margin-top:8px"><div><label>Start from a preset (optional)</label><select id="bPreset"><option value="">— preset —</option></select></div>
+        <div><label>Name style</label><select id="bNameStyle" onchange="bSetStyle(this.value)">${((S.namePools&&S.namePools.styles)||['french']).map(st=>`<option value="${esc(st)}" ${st===(B.nameStyle||'french')?'selected':''}>${esc(st)}</option>`).join('')}</select>${(B.teams||[]).some(t=>(t.members||[]).some(m=>m._nameAuto===false && m.name))?`<div class="muted" style="font-size:11px;margin-top:3px">existing names are kept on a style change — 🎲 a member to restyle it</div>`:''}</div></div>
       <h2>Teams</h2><div id="bTeams"></div><button class="btn" onclick="bAddTeam()">＋ Add team</button>
       <h2 style="margin-top:18px">Custom roles <span class="muted" style="font-size:12px;font-weight:400">— project-specific experts, pickable as @mentions</span></h2><div id="bPersonas"></div>
       <div class="row" style="margin-top:14px"><button class="btn primary" onclick="bSave()">💾 Save team.json</button><button class="btn" onclick="bDefine()">◎ Define rooms</button><button class="btn" style="background:#1f3a26;border-color:#2f6b3f;color:#bfe6c8" onclick="bLaunch()">🚀 Launch</button><span id="bMsg" class="muted"></span></div>
@@ -814,7 +835,10 @@ function renderBuilder(d) {
   $('#bRepo').oninput = e=>{B.repo=e.target.value;$('#bCmd').textContent='cd '+(B.repo||'<repo>')+' && mrc team up';bPreview()}
   fetch('/api/team-presets').then(r=>r.json()).then(d=>{ const sel=$('#bPreset'); if(!sel)return
     sel.innerHTML='<option value="">— preset —</option>'+(d.presets||[]).map(p=>`<option value="${esc(p.name)}">${esc(p.title)}</option>`).join('')
-    sel.onchange=()=>{ const p=(d.presets||[]).find(x=>x.name===sel.value); if(!p)return; S.builder.teams=JSON.parse(JSON.stringify(p.roster.teams)); renderBuilder($('#detail')) } }).catch(()=>{})
+    sel.onchange=()=>{ const p=(d.presets||[]).find(x=>x.name===sel.value); if(!p)return; S.builder.teams=JSON.parse(JSON.stringify(p.roster.teams)); autofillNames(); renderBuilder($('#detail')) } }).catch(()=>{})
+  // #44: load the name-style pools once, then auto-name members (idempotent — keeps any already-set names).
+  if(!S.namePools){ fetch('/api/names').then(r=>r.json()).then(d=>{ if(d&&d.ok){ S.namePools={styles:d.styles,pools:d.pools}; autofillNames(); if(S.building&&!S.selSettings)renderBuilder($('#detail')) } }).catch(()=>{}) }
+  else autofillNames()
   bRenderTeams(); bRenderPersonas(); bPreview()
 }
 // ---- custom personas (#42) ----
@@ -880,14 +904,16 @@ function bRenderTeams() {
     <div class="row" style="align-items:flex-end;gap:8px"><div style="flex:2"><label>Team</label><input value="${esc(t.name)}" oninput="bSet(${ti},null,'name',this.value)"></div>
       <div style="flex:2"><label>Territory</label><input value="${esc(t.territory)}" placeholder="." oninput="bSet(${ti},null,'territory',this.value)"></div>
       <button class="btn tiny" onclick="bDelTeam(${ti})">✕</button></div>
-    ${t.members.map((m,mi)=>`<div class="memrow">
-      <select onchange="bSet(${ti},${mi},'role',this.value)">${roleOptions().map(o=>`<option ${o===m.role?'selected':''}>${o}</option>`).join('')}</select>
-      ${mediaBackend(m.role)
-        ? `<span class="bklock" aria-label="backend ${esc(mediaBackend(m.role))} — set by the media role, not editable" title="media role — backend is set by the role (not editable)">${esc(mediaBackend(m.role))}</span>`
-        : `<select onchange="bSet(${ti},${mi},'backend',this.value)">${BACKENDS.map(o=>`<option ${o===m.backend?'selected':''}>${o}</option>`).join('')}</select>`}
-      <label class="lead"><input type="checkbox" ${m.lead?'checked':''} onchange="bSet(${ti},${mi},'lead',this.checked)"> lead</label>
-      <input value="${esc(m.territory)}" placeholder="territory" oninput="bSet(${ti},${mi},'territory',this.value)">
-      <button class="btn tiny" onclick="bDelMem(${ti},${mi})">✕</button></div>`).join('')}
+    ${t.members.map((m,mi)=>{ const style=B.nameStyle||'french'; const nmErr=(m.name && !SAFE_NAME_RE.test(m.name))?'<span class="bad" style="font-size:11px">letters, digits, internal hyphens only</span>':''; return `<div class="bmem">
+      <div class="bmemname"><input class="bnm" value="${esc(m.name||'')}" placeholder="${style==='custom'?'name (free-type)':'(auto)'}" aria-label="member name" oninput="bSetName(${ti},${mi},this.value)">${style!=='custom'?`<button class="btn tiny" title="suggest another name" onclick="bRerollName(${ti},${mi})">🎲</button>`:''}<span id="nmerr-${ti}-${mi}">${nmErr}</span></div>
+      <div class="memrow">
+        <select onchange="bSet(${ti},${mi},'role',this.value)">${roleOptions().map(o=>`<option ${o===m.role?'selected':''}>${o}</option>`).join('')}</select>
+        ${mediaBackend(m.role)
+          ? `<span class="bklock" aria-label="backend ${esc(mediaBackend(m.role))} — set by the media role, not editable" title="media role — backend is set by the role (not editable)">${esc(mediaBackend(m.role))}</span>`
+          : `<select onchange="bSet(${ti},${mi},'backend',this.value)">${BACKENDS.map(o=>`<option ${o===m.backend?'selected':''}>${o}</option>`).join('')}</select>`}
+        <label class="lead"><input type="checkbox" ${m.lead?'checked':''} onchange="bSet(${ti},${mi},'lead',this.checked)"> lead</label>
+        <input value="${esc(m.territory)}" placeholder="territory" oninput="bSet(${ti},${mi},'territory',this.value)">
+        <button class="btn tiny" onclick="bDelMem(${ti},${mi})">✕</button></div></div>`}).join('')}
     <div style="margin-top:8px"><button class="btn tiny" onclick="bAddMem(${ti})">＋ member</button></div></div>`).join('')
 }
 window.bSet=(ti,mi,k,v)=>{const B=S.builder; if(mi==null)B.teams[ti][k]=v; else if(k==='lead'&&v)B.teams[ti].members.forEach((mm,j)=>mm.lead=(j===mi)); else B.teams[ti].members[mi][k]=v;
@@ -895,11 +921,20 @@ window.bSet=(ti,mi,k,v)=>{const B=S.builder; if(mi==null)B.teams[ti][k]=v; else 
   // restores a valid agent backend (claude/codex) if it was a media one. Re-render so the control swaps.
   if(mi!=null && k==='role'){const m=B.teams[ti].members[mi]; const mb=mediaBackend(v); m.backend = mb || (BACKENDS.includes(m.backend)?m.backend:'claude')}
   if(k==='lead'||k==='role'){bRenderTeams()} bPreview()}
-window.bAddTeam=()=>{S.builder.teams.push({name:'team'+(S.builder.teams.length+1),territory:'.',members:[{role:'architect',backend:'claude',lead:true,territory:''}]});bRenderTeams();bPreview()}
+// #44: a new member/team gets a suggested free name in the current style (blank for free-type 'custom').
+const bSuggest=()=>{ const style=S.builder.nameStyle||'french'; return style==='custom'?'':suggestName(style,allBuilderNames()) }
+window.bAddTeam=()=>{S.builder.teams.push({name:'team'+(S.builder.teams.length+1),territory:'.',members:[{role:'architect',backend:'claude',lead:true,territory:'',name:bSuggest(),_nameAuto:true}]});bRenderTeams();bPreview()}
 window.bDelTeam=(ti)=>{S.builder.teams.splice(ti,1);bRenderTeams();bPreview()}
-window.bAddMem=(ti)=>{S.builder.teams[ti].members.push({role:'engineer',backend:'claude',lead:false,territory:''});bRenderTeams();bPreview()}
+window.bAddMem=(ti)=>{S.builder.teams[ti].members.push({role:'engineer',backend:'claude',lead:false,territory:'',name:bSuggest(),_nameAuto:true});bRenderTeams();bPreview()}
 window.bDelMem=(ti,mi)=>{S.builder.teams[ti].members.splice(mi,1);bRenderTeams();bPreview()}
-function bRoster(){const B=S.builder;const r={org:B.org||'org',repo:B.repo||undefined,teams:B.teams.map(t=>({name:t.name,territory:t.territory||'.',members:t.members.map(m=>{const o={role:m.role,backend:m.backend};if(m.lead)o.lead=true;if(m.territory)o.territory=m.territory;return o})}))};if(B.personas&&Object.keys(B.personas).length)r.personas=B.personas;return r}
+// Hand-typing a name clears _nameAuto so a style change / 🎲 never clobbers it. No re-render (focus) —
+// update the inline #36 error span directly.
+window.bSetName=(ti,mi,v)=>{ const m=S.builder.teams[ti].members[mi]; m.name=v; m._nameAuto=false
+  const err=$('#nmerr-'+ti+'-'+mi); if(err) err.innerHTML=(v && !SAFE_NAME_RE.test(v))?'<span class="bad" style="font-size:11px">letters, digits, internal hyphens only</span>':''
+  bPreview() }
+window.bRerollName=(ti,mi)=>{ const m=S.builder.teams[ti].members[mi]; const taken=allBuilderNames(); if(m.name)taken.delete(String(m.name).toLowerCase()); m.name=suggestName(S.builder.nameStyle||'french',taken); m._nameAuto=true; bRenderTeams(); bPreview() }
+window.bSetStyle=(v)=>{ S.builder.nameStyle=v; autofillNames(true); bRenderTeams(); bPreview() }   // re-roll AUTO names only; hand-typed stay
+function bRoster(){const B=S.builder;const r={org:B.org||'org',repo:B.repo||undefined,teams:B.teams.map(t=>({name:t.name,territory:t.territory||'.',members:t.members.map(m=>{const o={role:m.role,backend:m.backend};if(m.lead)o.lead=true;if(m.territory)o.territory=m.territory;if(m.name&&String(m.name).trim())o.name=String(m.name).trim();return o})}))};if(B.personas&&Object.keys(B.personas).length)r.personas=B.personas;return r}
 let bTimer=null
 function bPreview(){clearTimeout(bTimer);bTimer=setTimeout(async()=>{
   const r=await api('/api/team-preview',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})})
@@ -915,7 +950,7 @@ window.bSave=async()=>{const B=S.builder;const msg=$('#bMsg');if(!B.repo){msg.in
 window.bDefine=async()=>{const r=await api('/api/team-define',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})});$('#bMsg').innerHTML=r.ok?`<span class="good">◎ defined ${(r.rooms||[]).length} room(s)</span> <a href="#" onclick="closeBuilder();return false">view</a>`:`<span class="bad">✗ ${esc(r.error||'daemon down')}</span>`; if(r.ok){S.org=bRoster().org||null; setOrgUrl(S.org); tick()}}
 
 // ---- actions ----
-const freshBuilder = () => ({ org:'', repo:'', personas:{}, _pEdit:null, teams:[{ name:'team', territory:'.', members:[
+const freshBuilder = () => ({ org:'', repo:'', personas:{}, _pEdit:null, nameStyle:'french', teams:[{ name:'team', territory:'.', members:[
   {role:'architect',backend:'claude',lead:true,territory:''},
   {role:'engineer',backend:'claude',lead:false,territory:''},
   {role:'critic',backend:'claude',lead:false,territory:''} ] }] })
@@ -927,7 +962,9 @@ window.openBuilder = async (fresh)=>{ S.building=true; S.selMember=null; S.selRo
   if (!fresh && S.org && (S.teams.members||[]).some(m=>m.org===S.org)) {
     const r = await api('/api/team-roster?org='+encodeURIComponent(S.org)).catch(()=>null)
     if (r && r.ok && r.roster && (r.roster.teams||[]).length) {
-      S.builder = { org: r.roster.org||S.org, repo: r.roster.repo||S.builder.repo||'', personas:{}, _pEdit:null, teams: r.roster.teams }
+      S.builder = { org: r.roster.org||S.org, repo: r.roster.repo||S.builder.repo||'', personas:{}, _pEdit:null, nameStyle:'french', teams: r.roster.teams }
+      // #44: members loaded with a pinned name are NOT auto — never re-roll a name the roster already has.
+      for (const t of (S.builder.teams||[])) for (const m of (t.members||[])) m._nameAuto = !m.name
       // getroster drops personas (orgDefs/rosterFromDef don't carry them) — load them from team.json (#42).
       const pr = await api('/api/personas?org='+encodeURIComponent(S.org)).catch(()=>null)
       if (pr && pr.ok && pr.custom) S.builder.personas = pr.custom

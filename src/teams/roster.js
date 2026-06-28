@@ -48,10 +48,10 @@ function resolveTerritory(raw, fallback) {
 // internal hyphens, so accented names ("côme") and hyphenated ones ("jean-luc") pass; reject spaces,
 // quotes, slashes, dots, and every shell metacharacter (' " ` $ ; | & < > ( ) \ newline …).
 const SAFE_NAME = /^[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?$/u
-function assertSafeName(name, role, kind = 'member name') {
+export function assertSafeName(name, role, kind = 'member name') {
   const s = String(name)
   if (!SAFE_NAME.test(s)) {
-    throw new Error(`${kind} ${JSON.stringify(s)}${role ? ` (role "${role}")` : ''} is invalid — names may contain only letters, digits, and internal hyphens (no spaces, quotes, slashes, dots, or shell metacharacters). Fix it in team.json.`)
+    throw new Error(`${kind} ${JSON.stringify(s)}${role ? ` (role "${role}")` : ''} is invalid — names may contain only letters, digits, and internal hyphens (no spaces, quotes, slashes, dots, or shell metacharacters). Fix it.`)
   }
 }
 
@@ -119,6 +119,14 @@ export function parseRoster(input, { repo, rng } = {}) {
 
   const members = []
   const teams = []
+  // #44-1: handles are org-wide unique (the dtach socket, docker `mrc.member` label, launch registry, and
+  // engine room-member Set all key on org+handle, team-independent). Two members resolving to the same
+  // name+backend would silently collide (one clobbers the other's socket/launch/label, @mentions ambiguate).
+  // Auto-assigned names already dodge this via `taken`, but two PINNED same-name+backend members don't —
+  // so enforce uniqueness HERE, the single parse boundary (catches the builder, launch, AND a hand-edited
+  // team.json). REJECT loud (not silent auto-uniquify, which would surprise). Honors roster.js's own
+  // "every member gets a unique handle" contract (lines 16-17).
+  const seenHandles = new Set()
   for (const t of teamsIn) {
     const teamName = t.name || `team-${teams.length + 1}`
     const teamTerritory = resolveTerritory(t.territory, '.')
@@ -145,6 +153,11 @@ export function parseRoster(input, { repo, rng } = {}) {
       const first = m.name ? String(m.name) : pickFirstName(taken, rng)
       taken.add(first.toLowerCase())
       const handle = makeHandle(first, backend)
+      // #44-1: org-wide handle uniqueness. Dedup on the FINAL handle (first/backendFamily) so roland/claude
+      // and roland/codex stay distinct — only an identical handle throws. REJECT loud, here at the single
+      // boundary, rather than mint a silent collision.
+      if (seenHandles.has(handle)) throw new Error(`duplicate member handle "@${handle}" — two members resolve to the same name + backend ("${first}" / ${backend}). Member names must be unique per backend across the whole team; rename one.`)
+      seenHandles.add(handle)
       const tier = LIVE_BACKENDS.has(backend) ? def.tier : 'worker'
       const mount = m.mount || def.mount
       const territory = resolveTerritory(m.territory, teamTerritory)
@@ -188,6 +201,14 @@ export function validateRoster(norm) {
   const errors = []
   const warnings = []
   if (!norm.members.length) errors.push('roster has no members')
+  // #44-1: handle uniqueness as a hard ERROR (defense-in-depth — parseRoster already throws on a dup at
+  // the parse boundary; this re-asserts the invariant so any path that hands validateRoster a norm with
+  // colliding handles still fails loud, and a preview surfaces it).
+  const seenHandles = new Set()
+  for (const m of norm.members) {
+    if (seenHandles.has(m.handle)) errors.push(`duplicate member handle @${m.handle} — two members resolve to the same name + backend (collision); rename one`)
+    else seenHandles.add(m.handle)
+  }
   for (const m of norm.members) {
     // Surface any backend override parseMember had to make (agent-coerce or media-derive) — never silent.
     if (m.backendNote) warnings.push(`member @${m.handle}: ${m.backendNote}`)

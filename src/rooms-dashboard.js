@@ -15,6 +15,7 @@ import { roomsRoot, roomDir, listRooms, readCatchups, updateCatchup, readTranscr
 import { findFreePort } from './ports.js'
 import { parseRoster, validateRoster, editPersona } from './teams/roster.js'
 import { ROLES } from './teams/personas.js'
+import { NAME_STYLES, NAME_STYLE_NAMES } from './teams/names.js'
 import { isMediaRole } from './teams/media.js'
 
 const metaPath = () => join(homedir(), '.local', 'share', 'mrc', 'room-daemon.json')
@@ -253,6 +254,10 @@ async function handle(req, res) {
       return sendJSON(res, 200, { ok: true, builtin, custom, repo })
     }
     // #42 chunk C: Settings — surface the env/localStorage-only knobs, each tagged scope + mutability.
+    // #44: the name-style pools for the builder's member-naming — single source (no client-side dup).
+    if (req.method === 'GET' && url.pathname === '/api/names') {
+      return sendJSON(res, 200, { ok: true, styles: NAME_STYLE_NAMES, pools: NAME_STYLES })
+    }
     if (req.method === 'GET' && url.pathname === '/api/settings') {
       const gp = await ctrl(daemonMeta()?.controlPort, 'getprefs')
       const np = (gp?.prefs || {}).notify || {}

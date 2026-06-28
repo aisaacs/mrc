@@ -1,9 +1,9 @@
 // Host-side unit tests for the team foundation (names, personas, roster). Run: node --test test/
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { pickFirstName, makeHandle, parseMention, extractMentions, stripMentions, backendFamily, FRENCH_NAMES } from '../src/teams/names.js'
+import { pickFirstName, makeHandle, parseMention, extractMentions, stripMentions, backendFamily, FRENCH_NAMES, NAME_STYLES, NAME_STYLE_NAMES } from '../src/teams/names.js'
 import { buildPersona, roleDef, ROLES } from '../src/teams/personas.js'
-import { parseRoster, validateRoster, editPersona, teamRoomId, leadsRoomId } from '../src/teams/roster.js'
+import { parseRoster, validateRoster, editPersona, assertSafeName, teamRoomId, leadsRoomId } from '../src/teams/roster.js'
 import { classifyTerminal } from '../src/commands/team.js'
 
 // Deterministic RNG for reproducible name draws.
@@ -24,6 +24,27 @@ test('names: pickFirstName avoids taken names and is unique across a draw', () =
   const picks = []
   for (let i = 0; i < 20; i++) { const n = pickFirstName(taken, rng); taken.add(n.toLowerCase()); picks.push(n) }
   assert.equal(new Set(picks.map((p) => p.toLowerCase())).size, 20, 'all picks unique')
+})
+
+test('names: pickFirstName draws from the requested style; unknown/custom falls back to french (#44)', () => {
+  assert.ok(NAME_STYLES.spaceballs.includes(pickFirstName(new Set(), seededRng(1), 'spaceballs')))
+  assert.ok(NAME_STYLES['far-west'].includes(pickFirstName(new Set(), seededRng(2), 'far-west')))
+  assert.ok(NAME_STYLES.italian.includes(pickFirstName(new Set(), seededRng(5), 'italian')))
+  // unknown OR custom style → the french pool (default + fallback)
+  assert.ok(FRENCH_NAMES.includes(pickFirstName(new Set(), seededRng(3), 'nonsense')))
+  assert.ok(FRENCH_NAMES.includes(pickFirstName(new Set(), seededRng(3), 'custom')))
+  assert.ok(FRENCH_NAMES.includes(pickFirstName(new Set(), seededRng(4))))   // no style arg → french (roster.js back-compat)
+  // collision-avoidance within a style; exhausted pool → numbered fallback, never throws
+  const taken = new Set(NAME_STYLES.hitchhikers.map((n) => n.toLowerCase()))
+  const out = pickFirstName(taken, seededRng(9), 'hitchhikers')
+  assert.match(out, /\d$/); assert.ok(!taken.has(out.toLowerCase()))
+})
+
+test('names: every style-pool name is a valid handle (#36 assertSafeName), and custom+french are listed (#44)', () => {
+  // call the REAL #36 guard (not a regex copy) so this tracks assertSafeName if it ever tightens
+  for (const [style, pool] of Object.entries(NAME_STYLES)) for (const n of pool) assert.doesNotThrow(() => assertSafeName(n), `${style}/${n} must be a valid handle`)
+  assert.ok(NAME_STYLE_NAMES.includes('custom') && NAME_STYLE_NAMES.includes('french'))
+  assert.ok(!Object.prototype.hasOwnProperty.call(NAME_STYLES, 'custom'), 'custom has no pool (free-type)')
 })
 
 test('names: pool exhaustion falls back to numbered names without throwing', () => {
@@ -386,6 +407,25 @@ test('roster: "qa" role aliases to the tester role', () => {
 test('roster: territory escaping the repo is rejected', () => {
   const json = { org: 'x', teams: [ { name: 't', territory: '../evil', members: [ { role: 'engineer' } ] } ] }
   assert.throws(() => parseRoster(json, { repo: '/tmp/x', rng: seededRng(2) }), /escapes the repo/)
+})
+
+test('roster: rejects a duplicate member handle ORG-WIDE across teams; distinct backend is allowed (#44-1)', () => {
+  // two pinned same-name + same-backend members in DIFFERENT teams → identical handle → throw (org-wide,
+  // not per-team — the dtach socket / docker label / launch registry key on org+handle, team-independent)
+  const dup = { org: 'x', teams: [
+    { name: 'a', members: [{ role: 'architect', backend: 'claude', name: 'Roland', lead: true }] },
+    { name: 'b', members: [{ role: 'engineer', backend: 'claude', name: 'Roland' }] },
+  ] }
+  assert.throws(() => parseRoster(dup, { repo: '/tmp/x' }), /duplicate member handle "@roland\/claude"/)
+  // same name but DIFFERENT backend → distinct handle → allowed
+  const norm = parseRoster({ org: 'x', teams: [{ name: 't', members: [
+    { role: 'architect', backend: 'claude', name: 'Roland', lead: true }, { role: 'critic', backend: 'codex', name: 'Roland' },
+  ] }] }, { repo: '/tmp/x' })
+  assert.deepEqual(norm.members.map((m) => m.handle), ['roland/claude', 'roland/codex'])
+  // validateRoster ERRORs on a (hand-constructed) colliding norm too — defense-in-depth at both boundaries
+  const v = validateRoster({ members: [{ handle: 'roland/claude', role: 'architect', mount: 'ro', backend: 'claude' }, { handle: 'roland/claude', role: 'critic', mount: 'ro', backend: 'claude' }] })
+  assert.equal(v.ok, false)
+  assert.ok(v.errors.some((e) => /duplicate member handle @roland\/claude/.test(e)))
 })
 
 test('roster: rejects crafted/unsafe pinned member names at parse (#36 defense-in-depth)', () => {
