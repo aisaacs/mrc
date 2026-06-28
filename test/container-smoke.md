@@ -121,6 +121,43 @@ mrc rooms dashboard               # relaunch
 
 ---
 
+### 8. #33 pre-flight — terminal wheel-scroll feasibility probe  🖐️ ⏱️ ~2 min  *(diagnostic, not pass/fail)*
+The embedded console's mouse-wheel scrolls the prompt, not the transcript (works in Terminal.app → it's
+an xterm.js/ttyd-layer issue). @user picked **Option 2** (same-origin proxy + inject a wheel→PgUp/PgDn
+handler, keeping browser-native selection). That depends on being able to influence ttyd's terminal from
+an injected script — which we can't verify host-side without ttyd. **Run this probe BEFORE building the
+WS-proxy**; its result picks the Option-2 sub-path (or sends us back to Option 1 / PgUp-PgDn).
+
+After `mrc team up`, open the **ttyd URL directly** (the `◎ Browser terminal:` URL, not the dashboard
+iframe) and open devtools → Console:
+
+1. 🖐️ **Terminal exposure** — is the xterm `Terminal` instance reachable from a script?
+   ```js
+   window.term || window.terminal || window.__TTYD__ ||
+     [...Object.keys(window)].filter(k => /term|ttyd|xterm/i.test(k))
+   ```
+   - ✅ **Reachable** (a `Terminal` object, or a global that holds one) → cheapest Option 2: inject
+     `term.attachCustomWheelEventHandler(e => { /* send PgUp/PgDn */ return false })`.
+   - ❌ **Not reachable** (empty / no Terminal) → ttyd encapsulates it (expected on ttyd 1.7+); go to step 2.
+
+2. 🖐️ **Synthetic-key fallback** — with a scrolled-back conversation, does a synthetic PageUp reach Claude?
+   ```js
+   const ta = document.querySelector('.xterm-helper-textarea')
+   ta.dispatchEvent(new KeyboardEvent('keydown', { key:'PageUp', code:'PageUp', keyCode:33, which:33, bubbles:true }))
+   ```
+   - ✅ **Transcript scrolls up** → Option 2 via a capture-phase `wheel` listener that `preventDefault()`s
+     and dispatches synthetic PageUp/PageDown to `.xterm-helper-textarea` (no Terminal instance needed).
+   - ❌ **Nothing** (xterm ignores untrusted/synthetic keys) → neither inject path works; Option 2 would
+     need **WS-level injection** (proxy the socket, send `\x1b[5~`/`\x1b[6~` on wheel) — heavier — OR fall
+     back to **Option 1** (tmux `mouse on` + `WheelUpPane→PageUp` on a dedicated `-L mrc` socket, with the
+     copy-mode-selection trade-off) or just the **PgUp/PgDn** keyboard workaround.
+
+**Record which branch held** — that's the input to the #33 build decision. (This whole probe is the
+"verify the unverified dependency FIRST" step; the actual fix + a "wheel scrolls the transcript AND
+copy/selection stays browser-native" confirmation come after, once the sub-path is chosen.)
+
+---
+
 **Reporting:** note PASS/FAIL per numbered check. Any ❌ is a real container-path regression worth filing
 (the host suite wouldn't have caught it). The manual 🖐️ steps (Channels accept, Telegram Confirm) are the
 intended human-in-the-loop controls, not failures.
