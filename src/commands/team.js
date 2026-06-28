@@ -161,10 +161,10 @@ function memberArgv(repoPath, member, rosterPath) {
 
 // Is a recorded process still alive? (signal 0 = existence check; EPERM still means it exists.)
 function pidAlive(pid) { if (!pid) return false; try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
-// A member session is alive only if its dtach master pid is alive AND its socket still exists — the
-// pid alone is unsafe across a daemon restart (the OS can recycle it onto an unrelated process); the
-// socket is the session artifact, so requiring both avoids reporting a dead member as up (Roland #2).
-const sessionAlive = (info) => !!(info && pidAlive(info.dtachPid) && info.sock && existsSync(info.sock))
+// A member session is servable only if its socket file exists AND a live dtach MASTER holds it — both
+// derived from the deterministic sock path, NEVER the stored dtachPid (#41 Gate-1: a recycled stale pid
+// would otherwise read "alive" and mis-classify a dead member as up, the same hazard de-pid'd in teardown).
+const sessionAlive = (info) => !!(info && info.sock && existsSync(info.sock) && masterAliveForSock(info.sock))
 // pgrep -f for processes whose cmdline holds `<flag> <exact sock>` as a whole token. The sock path is
 // regex-ESCAPED and bounded by a trailing space-or-end so a sibling whose slug is a prefix (handle `a` vs
 // `ab`) can't substring-collide, and the flag (`-n` master vs `-a` viewer) keeps the two roles distinct.
@@ -203,6 +203,39 @@ function dockerKillMember(repo, handle) {
     const ids = execFileSync('docker', ['ps', '-q', '--filter', `label=mrc.member=${handle}`, '--filter', `label=mrc.repo=${repo}`], { encoding: 'utf8' }).split('\n').map((s) => s.trim()).filter(Boolean)
     for (const id of ids) { try { execFileSync('docker', ['kill', id], { stdio: 'ignore' }) } catch {} }
   } catch {}
+}
+// #41 detection: the set of member handles whose mrc.member CONTAINER is live — the durable, master-state-
+// independent "member up" signal (a container can outlive its master). One `docker ps` per org per poll.
+// Requires the repo label so two projects sharing a handle don't cross-count (same fail-safe as the kill).
+function dockerMemberHandles(repo) {
+  if (!repo) return new Set()
+  try {
+    const out = execFileSync('docker', ['ps', '--filter', 'label=mrc.member', '--filter', `label=mrc.repo=${repo}`, '--format', '{{index .Labels "mrc.member"}}'], { encoding: 'utf8' })
+    return new Set(out.split('\n').map((s) => s.trim()).filter(Boolean))
+  } catch { return new Set() }
+}
+// Is a live ttyd VIEWER (`dtach -a <sock>`) serving this member's terminal? (distinct from the master).
+// Residual (Roland): this checks the viewer PROCESS exists, not that its port is accepting — a ttyd that's
+// alive-but-wedged would read 'serve' → blank embed with no Relaunch. ttyd is a tiny robust C server so a
+// long-lived wedge is unlikely; if a blank terminal ever insists it's "serving", add a port-listen probe.
+const ttydAlive = (info) => !!(info && info.sock && pidsForSock('-a', info.sock).length > 0)
+// #41 per-member terminal STATE for the dashboard. FAIL-TOWARD-STARTING: "orphaned" must EARN its way on
+// positive establishment evidence; anything inconclusive reads "starting" (a false-starting just shows the
+// wait copy a beat longer + self-heals; a false-orphaned would dangle a Relaunch that bounces a slow member
+// and kills a starting session). containerAlive/online/withinGrace are LIVE facts from the reconcile.
+//   serve    = container alive + servable (master + socket + ttyd viewer all live)
+//   orphaned = container alive + NOT servable + ESTABLISHED (online now [restart-durable] / (b)-fingerprint:
+//              master-alive+socket-gone / past the build grace) → "Relaunch to restore"
+//   starting = container alive + NOT servable + NOT established (within grace) → "appears in a moment"
+//   dead     = no live container
+export function classifyTerminal(info, { containerAlive, online, withinGrace } = {}) {
+  if (!containerAlive) return 'dead'
+  if (sessionAlive(info) && ttydAlive(info)) return 'serve'
+  // (b)-fingerprint read from the COMMITTED record: a live master whose socket FILE vanished. A member
+  // mid-spawn (no committed `sock` yet) is NOT a fingerprint → falls through to grace → starting.
+  const bFingerprint = !!(info && info.sock && !existsSync(info.sock) && masterAliveForSock(info.sock))
+  const established = !!online || bFingerprint || !withinGrace
+  return established ? 'orphaned' : 'starting'
 }
 
 // Single-quote a value for a `sh -c` string, escaping embedded quotes (close-quote, escaped-quote,
@@ -289,12 +322,18 @@ export function launchedMemberHandles(org) {
   for (const [h, info] of Object.entries(mems)) if (sessionAlive(info)) s.add(h)
   return s
 }
-// Per-member terminal view for the dashboard: handle -> { ttydPort, ttydUrl, alive }. `alive` = the
-// dtach session (master), not the ttyd viewer (which comes and goes as you open/close the console).
-export function memberTtyds(org) {
+// Per-member terminal view for the dashboard: handle -> { ttydPort, ttydUrl, state }. `state` is the #41
+// 4-state classification (serve/starting/orphaned/dead) — container-anchored + fail-toward-starting. The
+// reconcile passes live facts: repo (for the container probe), the set of ONLINE handles, and whether the
+// launch is within the build grace. One `docker ps` per call (the container probe).
+export function memberTtyds(org, { repo, onlineHandles, withinGrace } = {}) {
   const mems = (loadLaunches()[org] || {}).members || {}
+  const liveContainers = dockerMemberHandles(repo)
   const out = {}
-  for (const [h, info] of Object.entries(mems)) out[h] = { ttydPort: info.ttydPort, ttydUrl: info.ttydPort ? `http://127.0.0.1:${info.ttydPort}/` : null, alive: sessionAlive(info) }
+  for (const [h, info] of Object.entries(mems)) {
+    const state = classifyTerminal(info, { containerAlive: liveContainers.has(h), online: onlineHandles?.has(h), withinGrace })
+    out[h] = { ttydPort: info.ttydPort, ttydUrl: info.ttydPort ? `http://127.0.0.1:${info.ttydPort}/` : null, state }
+  }
   return out
 }
 // Stop a team. Order: reap the host plumbing (ttyd viewer + dtach master) → `docker kill` the member

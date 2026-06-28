@@ -605,25 +605,28 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
         if (f.action === 'killsession' && f.id) { daemonLog(`kill session ${f.id}`); reply({ ok: killContainer(f.id) }); continue }
         if (f.action === 'team') {
           const st = engine.status()
-          // #34: a member is "launched" while its OWN ttyd is alive (was: a tmux window exists), vs.
-          // "online" = its channel registered (ready). launched-but-not-online = still loading / awaiting
-          // login+accept. Keyed by handle now.
-          const launchedByOrg = {}
+          // #34/#41: "launched" = the member's dtach session is alive (argv-match); "online" = its channel
+          // registered (ready). Both feed the dashboard. online is restart-durable (TCP re-register) so it's
+          // the #41 establishment signal — a member online with no servable terminal is orphaned, not slow.
+          const launchedByOrg = {}, onlineByOrg = {}
           if (teamMod) for (const m of st.members) {
             if (!(m.org in launchedByOrg)) { try { launchedByOrg[m.org] = teamMod.launchedMemberHandles(m.org) } catch { launchedByOrg[m.org] = new Set() } }
+            if (!(m.org in onlineByOrg)) onlineByOrg[m.org] = new Set()
+            if (m.online) onlineByOrg[m.org].add(m.handle)
           }
           for (const m of st.members) m.launched = !!(launchedByOrg[m.org] && launchedByOrg[m.org].has(m.handle))
           const launches = loadLaunches()
           const telegram = {}; for (const [org, s] of tgStates) telegram[org] = tgView(s)   // per-org pairing/link state for the dashboard
-          // Reconcile each recorded launch against reality. "running" only if ≥1 member ttyd is alive OR
-          // it's recent enough to still be building its image. A CRASHED team (or a legacy pre-#34 record
-          // with no `members`) leaves no live ttyd → reported not-running, so the ▶ Resume / 🚀 Launch
-          // button shows and the team can be restarted. Each launch carries the per-member ttyd map (B).
+          // #41: per-member terminal STATE (serve/starting/orphaned/dead) is container-anchored. A launch is
+          // "running" iff ANY member's container is live (state !== dead) OR it's within the build grace —
+          // so an all-orphaned team STILL shows (its terminals can be Relaunched) instead of vanishing as
+          // not-running. (Legacy/crashed teams: no live container → not-running → ▶ Resume shows.)
           const BUILD_GRACE_MS = 5 * 60_000
           reply({ ok: true, ...st, telegram, launch: Object.entries(launches).map(([org, v]) => {
-            const liveCount = teamMod ? teamMod.launchedMemberHandles(org).size : 0
             const fresh = Date.now() - (v.at || 0) < BUILD_GRACE_MS
-            return { org, repo: v.repo || null, members: teamMod ? teamMod.memberTtyds(org) : {}, running: liveCount > 0 || fresh }
+            const members = teamMod ? teamMod.memberTtyds(org, { repo: v.repo, onlineHandles: onlineByOrg[org], withinGrace: fresh }) : {}
+            const running = fresh || Object.values(members).some((m) => m.state && m.state !== 'dead')
+            return { org, repo: v.repo || null, members, running }
           }) })
           continue
         }

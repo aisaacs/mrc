@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 import { pickFirstName, makeHandle, parseMention, extractMentions, stripMentions, backendFamily, FRENCH_NAMES } from '../src/teams/names.js'
 import { buildPersona, roleDef, ROLES } from '../src/teams/personas.js'
 import { parseRoster, validateRoster, teamRoomId, leadsRoomId } from '../src/teams/roster.js'
+import { classifyTerminal } from '../src/commands/team.js'
 
 // Deterministic RNG for reproducible name draws.
 function seededRng(seed = 1) {
@@ -265,4 +266,23 @@ test('roster: accepts accented/hyphenated names; empty or absent name auto-assig
   // empty-string or absent name means "auto-assign", NOT a rejection
   const norm = parseRoster({ org: 'x', teams: [{ name: 't', members: [{ role: 'engineer', name: '' }, { role: 'critic' }] }] }, { repo: '/tmp/x', rng: seededRng(1) })
   assert.equal(norm.members.length, 2)
+})
+
+test('terminal state machine (#41): fail-toward-starting, evidence-gated orphaned', () => {
+  // A sock that does not exist + no live master/ttyd → not servable, no (b)-fingerprint. So these cases
+  // exercise the decision tree's establishment logic (the host-fact-independent half; serve / live-master
+  // (b)-fingerprint need a real dtach and are container-path-verified).
+  const info = { sock: '/tmp/__mrc_nonexistent_test.dtach', ttydPort: 7681 }
+  // dead: no container, regardless of evidence
+  assert.equal(classifyTerminal(info, { containerAlive: false, online: true, withinGrace: true }), 'dead')
+  // FAIL-TOWARD-STARTING: container up, not servable, not online, within grace → starting (never orphaned)
+  assert.equal(classifyTerminal(info, { containerAlive: true, online: false, withinGrace: true }), 'starting')
+  // online is restart-durable establishment evidence → orphaned even within grace
+  assert.equal(classifyTerminal(info, { containerAlive: true, online: true, withinGrace: true }), 'orphaned')
+  // past the build grace → established → orphaned
+  assert.equal(classifyTerminal(info, { containerAlive: true, online: false, withinGrace: false }), 'orphaned')
+  // a member mid-spawn (no committed sock) within grace is STARTING, not a false (b)-fingerprint
+  assert.equal(classifyTerminal({ ttydPort: 7681 }, { containerAlive: true, online: false, withinGrace: true }), 'starting')
+  // inconclusive default → starting, never orphaned
+  assert.equal(classifyTerminal({}, { containerAlive: true, withinGrace: true }), 'starting')
 })
