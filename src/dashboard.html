@@ -51,6 +51,7 @@
   body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif; height:100vh; overflow:hidden }
   code,pre,.mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace }
   a { color:var(--link); text-decoration:none }
+  .tgunpair:hover { text-decoration:underline }   /* subtle at rest (dim, no underline), discoverable on hover for a state-changing action */
   /* layout */
   .app { display:grid; grid-template-rows:50px 1fr; height:100vh }
   header { display:flex; align-items:center; gap:12px; padding:0 16px; border-bottom:1px solid var(--line); background:var(--panel) }
@@ -451,14 +452,35 @@ function renderMain() {
     // and actionably here instead of letting it 409-storm Telegram silently.
     html += `<div class="resume" style="border-color:#7a2630"><h3 style="color:#ffd9dc">📱 Telegram not running for ${esc(S.org)}</h3><div class="step">⚠ ${esc(tg.warning)}</div></div>`
   } else if (tg && tg.configured) {
+    // Human-readable identity for a Telegram chat (#chunk3): a @username if we have one, else the
+    // person's name, else label the bare chat id as a chat — NEVER a bare "@<numeric-id>" (cryptic).
+    // Shared by the Confirm gate AND the linked line so both states read the same.
+    // NOTE: every field here is attacker-controllable (an unauthorized /start lands a crafted name in
+    // the pending panel), so each is esc()'d. esc() does NOT escape "'" — these only ever land in text
+    // or double-quoted attrs, never a single-quoted JS context; keep it that way (the onclicks below use
+    // numeric fromId only). If you ever put a name in `onclick="f('${...}')"`, add '→&#39; to esc first.
+    const tgName = (x) => x.username ? `@${esc(x.username)}`
+      : ([x.firstName, x.lastName].filter(Boolean).join(' ') ? esc([x.firstName, x.lastName].filter(Boolean).join(' '))
+      : `chat ${esc(x.chatId || x.fromId)}`)
     if (tg.pending && tg.pending.length) {
       // Name the owning project everywhere (#14 A): a misrouted /start then visibly says the WRONG
       // project, so the user cross-checks instead of blind-confirming.
       html += `<div class="resume" style="border-color:#33507e"><h3>📱 Telegram — confirm to link to ${esc(S.org)}</h3>`
-        + tg.pending.map(p=>`<div class="row" style="justify-content:space-between;margin:5px 0"><span>@${esc(p.username||p.fromId)} <span class="muted">(${esc([p.firstName,p.lastName].filter(Boolean).join(' ')||'—')}, id ${esc(p.fromId)})</span> → link to <b>${esc(S.org)}</b></span><span class="row"><button class="btn tiny primary" onclick="tgConfirm('${esc(p.fromId)}')">Confirm</button> <button class="btn tiny" onclick="tgReject('${esc(p.fromId)}')">Reject</button></span></div>`).join('')
+        + tg.pending.map(p=>{
+            // Lead with the human-readable identity; the parenthetical carries the numeric id (the
+            // trust cross-check) + the real name when we led with an @username — omitted entirely when
+            // the headline already IS the chat id (no "chat <id> (id <id>)" duplication).
+            const realName = [p.firstName, p.lastName].filter(Boolean).join(' ')
+            const detail = (p.username || realName) ? ` <span class="muted">(${[p.username && realName, `id ${esc(p.fromId)}`].filter(Boolean).join(', ')})</span>` : ''
+            // Stack the identity on its OWN full-width line above the Confirm/Reject buttons: in the
+            // narrow sidebar a side-by-side layout wrapped mid-name — bad exactly at the trust gate.
+            return `<div style="margin:6px 0"><div style="margin-bottom:5px"><b>${tgName(p)}</b>${detail} <span class="muted">→ link to</span> <b>${esc(S.org)}</b></div><div class="row" style="gap:6px"><button class="btn tiny primary" onclick="tgConfirm('${esc(p.fromId)}')">Confirm</button> <button class="btn tiny" onclick="tgReject('${esc(p.fromId)}')">Reject</button></div></div>`
+          }).join('')
         + `<div class="step">Confirm only YOUR account — an unexpected entry is someone else who messaged the bot; Reject it.</div></div>`
     } else if (tg.pinned) {
-      html += `<div class="muted" style="padding:3px 6px;font-size:11.5px">📱 Telegram linked to @${esc(tg.pinned.username||tg.pinned.fromId)}${tg.pinned.prePinned?' (.env)':''} · <a href="#" onclick="tgUnpair();return false">unpair</a></div>`
+      const p = tg.pinned
+      const envChip = p.prePinned ? ` <span title="pinned via this repo's .env (MRC_TELEGRAM_CHAT_ID)" style="opacity:.7;font-size:10px;border:1px solid var(--line);border-radius:4px;padding:1px 4px">.env</span>` : ''
+      html += `<div style="display:flex;align-items:center;gap:6px;padding:4px 6px;font-size:11.5px;color:var(--dim)"><span aria-hidden="true">📱</span><span>Telegram linked to</span><b style="color:var(--fg);font-weight:600">${tgName(p)}</b>${envChip}<a href="#" class="tgunpair" style="margin-left:auto;color:var(--dim)" onclick="tgUnpair();return false">unpair</a></div>`
       if (tg.lastPushError) html += `<div class="bad" style="padding:2px 6px;font-size:11px">⚠ last Telegram push failed: ${esc(tg.lastPushError)} — re-link if the chat is stale.</div>`
     } else {
       html += `<div class="muted" style="padding:3px 6px;font-size:11.5px">📱 Telegram: DM the bot <code>/start</code>, then confirm here.</div>`
