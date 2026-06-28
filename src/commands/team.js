@@ -218,12 +218,24 @@ function dockerKillMember(repo, handle) {
 // #41 detection: the set of member handles whose mrc.member CONTAINER is live — the durable, master-state-
 // independent "member up" signal (a container can outlive its master). One `docker ps` per org per poll.
 // Requires the repo label so two projects sharing a handle don't cross-count (same fail-safe as the kill).
+let _dockerProbeWarned = false
 function dockerMemberHandles(repo) {
   if (!repo) return new Set()
   try {
-    const out = execFileSync('docker', ['ps', '--filter', 'label=mrc.member', '--filter', `label=mrc.repo=${repo}`, '--format', '{{index .Labels "mrc.member"}}'], { encoding: 'utf8' })
+    // `docker ps --format` exposes a label via the `.Label "k"` METHOD; `.Labels` here is a comma-joined
+    // STRING (NOT the map it is under `docker inspect`), so `index .Labels "k"` throws "cannot index
+    // slice/array with type string" → non-zero exit → (pre-fix) a silently-empty Set → every container
+    // reads absent → all terminals blank. Use the ps-correct `.Label` (matches room-daemon.js's scan).
+    const out = execFileSync('docker', ['ps', '--filter', 'label=mrc.member', '--filter', `label=mrc.repo=${repo}`, '--format', '{{.Label "mrc.member"}}'], { encoding: 'utf8' })
     return new Set(out.split('\n').map((s) => s.trim()).filter(Boolean))
-  } catch { return new Set() }
+  } catch (e) {
+    // No-silent-failure: a broken probe (bad template, docker unreachable) must NOT masquerade as "zero
+    // containers" — that's exactly what blanked every terminal for hours. Surface it LOUDLY, once. The
+    // serve classification no longer DEPENDS on this (it falls back to live host plumbing), but a failing
+    // probe still degrades orphaned-vs-starting accuracy, so it must be visible, not swallowed.
+    if (!_dockerProbeWarned) { _dockerProbeWarned = true; try { console.error(`[#41] docker member-probe failed (terminals fall back to host-plumbing liveness): ${(e?.stderr || e?.message || e).toString().trim().split('\n')[0]}`) } catch {} }
+    return new Set()
+  }
 }
 // Is a live ttyd VIEWER (`dtach -a <sock>`) serving this member's terminal? (distinct from the master).
 // LOAD-BEARING INVARIANT: this MUST match the ttyd PROCESS's own cmdline (durable from spawn — ttyd runs
@@ -248,8 +260,13 @@ const ttydAlive = (info) => !!(info && info.sock && pidsForSock('-a', info.sock)
 //   starting = CONTAINER up but NOT servable + NOT established (within grace) → agent onlining, "a moment"
 //   dead     = no live container, PAST grace → the genuine "not launched, Build + Launch" state
 export function classifyTerminal(info, { containerAlive, online, withinGrace } = {}) {
-  if (!containerAlive) return withinGrace ? 'building' : 'dead'
+  // VIEWABILITY FIRST. A terminal is serveable iff its host plumbing — the dtach master, its socket, and a
+  // live ttyd viewer — is up; that is the literal precondition for the embedded iframe and is INDEPENDENT
+  // of the docker probe. Checking it before the container gate means a failed/empty `docker ps` can never
+  // blank a terminal that is in fact being served (the #41 hazard: a flaky probe stranded every live member
+  // behind "isn't launched"). The container fact remains the anchor for the NON-serving cases below.
   if (sessionAlive(info) && ttydAlive(info)) return 'serve'
+  if (!containerAlive) return withinGrace ? 'building' : 'dead'
   // (b)-fingerprint read from the COMMITTED record: a live master whose socket FILE vanished. A member
   // mid-spawn (no committed `sock` yet) is NOT a fingerprint → falls through to grace → starting.
   const bFingerprint = !!(info && info.sock && !existsSync(info.sock) && masterAliveForSock(info.sock))
