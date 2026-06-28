@@ -243,7 +243,7 @@ const ROLES = ['architect','engineer','critic','adversary','ultracritical','user
 const BACKENDS = ['claude','codex','qwen','gemini']
 
 const S = {
-  building: false, org: null, selRoom: null, selInbox: null, selMember: null, workerLog: '', tab: 'thread', addingTo: null, showDismissed: false, flash: null,
+  building: false, org: null, selRoom: null, selInbox: null, selMember: null, workerLog: '', tab: 'thread', addingTo: null, showDismissed: false, showOther: false, flash: null,
   teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null, sessions: [], _tick: 0,
   builder: { org:'shop', repo:'', teams:[ { name:'client', territory:'client', members:[
     {role:'architect',backend:'claude',lead:true,territory:''},{role:'engineer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
@@ -468,7 +468,10 @@ function renderMain() {
   if (teams.length) html += `<h2>Teams</h2>` + teams.map(teamCard).join('')
   const rs = mergedRooms(); const mine = rs.filter(inOrg); const others = rs.filter(r=>!inOrg(r))
   if (mine.length) html += `<h2>Rooms</h2>` + mine.map(roomRow).join('')
-  if (others.length) html += `<h2>Other — consults &amp; history</h2><div style="opacity:.55">${others.map(roomRow).join('')}</div>`
+  // Legacy consults + history (rooms not in the current org): off the main rail (so it leads with
+  // @you / Teams / Rooms), collapsed into a "Consults & history" disclosure but still one click away.
+  if (others.length) html += `<div class="muted focusable" role="button" tabindex="0" aria-expanded="${!!S.showOther}" style="margin-top:14px;padding:3px 6px;cursor:pointer;font-size:12px;user-select:none;border-radius:5px" onclick="toggleOther()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleOther()}else if(event.key==='Escape'&&S.showOther){toggleOther()}">${S.showOther?'▾':'▸'} Consults &amp; history <span style="opacity:.7">(${others.length})</span></div>`
+    + (S.showOther ? `<div style="opacity:.55;margin-top:4px">${others.map(roomRow).join('')}</div>` : '')
   html += `<div style="margin:14px 0 8px;display:flex;gap:8px">${teams.length?`<button class="btn" style="flex:1" onclick="openBuilder()">✎ Edit teams</button>`:''}<button class="btn ${teams.length?'':'primary'}" style="flex:1" onclick="newProject()">＋ New project</button></div>`
   // Delete (#13): a DELIBERATE control distinct from the tab ✕ (which only suspends). Forgets the
   // project from the daemon + stops its sessions; deletes nothing on disk — re-addable via `mrc team up`.
@@ -750,6 +753,7 @@ window.tgUnpair = async ()=>{ if(!confirm('Unpair Telegram? The linked chat stop
 // Delete project (#13): forget it from the daemon + stop sessions; nothing on disk is deleted.
 window.deleteProject = async ()=>{ const org=S.org; if(!org||!confirm(`Delete "${org}" from Mister Claude? Its sessions stop and the tab is removed. Nothing on disk is deleted — your transcripts and team.json stay, so you can re-add it any time with \`mrc team up\`.`))return; const r=await actJSON('/api/team-delete',{org}); if(!r.ok)return flashFail(r); S.flash=null; S.org=null; S.selRoom=S.selInbox=S.selMember=null; S.building=false; tick() }
 window.toggleDismissed = ()=>{ S.showDismissed=!S.showDismissed; paint() }
+window.toggleOther = ()=>{ S.showOther=!S.showOther; paint() }
 window.stopTeam = async ()=>{ if(!confirm('Stop the team? This closes all member terminals.'))return; const r=await actJSON('/api/team-stop',{org:S.org}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
 window.removeMember = async (h, first)=>{ if(!confirm('Remove @'+first+' from the team? (updates team.json)'))return; const r=await actJSON('/api/team-remove-member',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; S.selMember=null; tick() }
 window.killSession = async (id, name)=>{ if(!confirm('Kill container '+name+'? (force-removes it)'))return; const r=await actJSON('/api/kill-session',{id}); if(!r.ok)return flashFail(r); S.flash=null; S._tick=0; tick() }
