@@ -9,7 +9,7 @@ import { join } from 'node:path'
 import { parseRoster } from '../src/teams/roster.js'
 import {
   memberSessionId, memberWorkspaceVolumes, memberEnv, personaForMember, writePersonaFile, orgDef, memberLaunch, cleanWorkerOutput,
-  rosterFromDef, addMemberToRoster, removeMemberFromRoster,
+  rosterFromDef, addMemberToRoster, removeMemberFromRoster, writeTeamFile,
 } from '../src/commands/team.js'
 
 test('removeMemberFromRoster drops the member and any team left empty', () => {
@@ -21,6 +21,26 @@ test('removeMemberFromRoster drops the member and any team left empty', () => {
   assert.equal(r1.teams.find((t) => t.name === 'client').members.length, 1, 'Vespa removed')
   const r2 = removeMemberFromRoster(r1, 'solo/claude')
   assert.ok(!r2.teams.find((t) => t.name === 'solo'), 'empty team dropped')
+})
+
+test('writeTeamFile PRESERVES the personas block across a daemon roster-sync (#51)', () => {
+  const dir = fs.mkdtempSync(join(os.tmpdir(), 'mrc-51-'))
+  const file = join(dir, 'team.json')
+  const tj = { project: 'x', personas: { 'ux-expert': { label: 'UX Expert', mandate: 'design', mount: 'ro' } },
+    teams: [{ name: 't', members: [{ name: 'Zoe', role: 'ux-expert', backend: 'claude', lead: true }] }] }
+  fs.writeFileSync(file, JSON.stringify(tj, null, 2))
+  // simulate the daemon's defineOrg sync: build a def (which does NOT carry personas) → writeTeamFile(rosterFromDef(def))
+  const norm = parseRoster(tj, { repo: dir })
+  const def = { org: norm.org, repo: dir, members: norm.members, rooms: norm.rooms }
+  assert.equal(writeTeamFile(dir, rosterFromDef(def)), true)
+  const after = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.deepEqual(after.personas, tj.personas, 'personas survive the roster-sync (were silently erased before #51)')
+  assert.deepEqual(Object.keys(after).sort(), ['personas', 'project', 'teams'])
+  // a roster that explicitly carries personas (the team-save path) writes them; and the result still parses
+  assert.equal(writeTeamFile(dir, { org: 'x', personas: { adv: { label: 'Ad', mandate: 'ads' } }, teams: [{ name: 't', members: [{ role: 'engineer', backend: 'claude' }] }] }), true)
+  const after2 = JSON.parse(fs.readFileSync(file, 'utf8'))
+  assert.deepEqual(Object.keys(after2.personas), ['adv'], 'explicit personas replace the on-disk ones')
+  assert.doesNotThrow(() => parseRoster(after2, { repo: dir }))
 })
 
 test('rosterFromDef round-trips a multi-team project (no team or member is lost)', () => {

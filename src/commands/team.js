@@ -13,6 +13,7 @@
 import net from 'node:net'
 import { spawn, execFileSync, spawnSync } from 'node:child_process'
 import { memberSessionId } from '../teams/session-id.js'
+import { atomicWriteFileSync } from '../rooms.js'
 import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve, basename, dirname } from 'node:path'
@@ -444,9 +445,23 @@ export function removeMemberFromRoster(roster, handle) {
   return r
 }
 
-// Keep the repo's team.json in sync with the live project (written as { project, teams }).
+// Keep the repo's team.json in sync with the live project (written as { project, personas?, teams }).
+// #51: PRESERVE the custom `personas` block. The daemon's roster-sync rebuilds {project,teams} from the
+// live def (rosterFromDef), which doesn't carry personas — so without this, any define/add/remove/launch
+// would silently ERASE the personas the editor wrote here (the data-loss that made @user's persona vanish).
+// Prefer the roster's own personas; else keep whatever is already on disk. Atomic, like the other two
+// team.json writers (temp→fsync→rename) so a kill mid-sync can't tear the authoritative file.
 export function writeTeamFile(repo, roster) {
-  try { writeFileSync(join(repo, 'team.json'), JSON.stringify({ project: roster.org, teams: roster.teams }, null, 2) + '\n'); return true } catch { return false }
+  try {
+    const file = join(repo, 'team.json')
+    let personas = roster.personas
+    if (personas == null) {
+      try { const cur = JSON.parse(readFileSync(file, 'utf8')); if (cur && cur.personas && typeof cur.personas === 'object' && !Array.isArray(cur.personas)) personas = cur.personas } catch {}
+    }
+    const out = { project: roster.org, ...(personas && Object.keys(personas).length ? { personas } : {}), teams: roster.teams }
+    atomicWriteFileSync(file, JSON.stringify(out, null, 2) + '\n')
+    return true
+  } catch { return false }
 }
 
 // #41: stop one member's session — reap the host plumbing by deterministic sock PATH (master + ttyd +
