@@ -1,6 +1,6 @@
 # Agent Teams
 
-**Status:** Host-side core built and unit-tested end-to-end (132 tests); the container-launch and
+**Status:** Host-side core built and unit-tested end-to-end (150 tests); the container-launch and
 worker-exec paths are wired and need a Docker rebuild to validate (this environment has no Docker).
 Builds directly on **negotiation rooms** (`docs/negotiation-rooms.md`) — same host daemon, same
 host-mediated transport, same trust model — generalized from a 2-party pairing to N-party teams.
@@ -127,17 +127,95 @@ The daemon-hosted dashboard is a **unified, teams-first** single-page app (`src/
 - **Teams** (home): the org roster (members by team, online dots, lead/role/backend/tier) + each
   team's rooms; click a room → its transcript + steer.
 - **Rooms**: every room (team + leads + legacy 2-party consult + history) with live state.
-- **Inbox** (first-class): the **@user** queue — a member's `@user` question lands here; you answer
-  and it routes back as `[Human reply]` — plus catch-ups awaiting review.
+- **Inbox** (first-class): the **@user** queue. A member reaching you creates a **question** (from
+  `ask_user`) or a **notification/FYI** (a plain `@user`); **both are replyable** (your reply routes
+  back as `[Human reply]`), but only **questions badge** — an FYI is "reply optional", so it's visible
+  everywhere and nags nowhere. Items are **dismissable** (recoverable via the show-dismissed toggle →
+  re-open) and **persist across daemon restarts**. Each carries a stable **`#N`** id; your reply is
+  stamped `(re #N)` and the dashboard turns it into a **jump to the original question** (anchored from
+  a daemon-assigned id, so a member can't forge or hijack it). Plus catch-ups awaiting review.
 - **Build**: the in-app team-builder (compose → live preview → Save team.json / Define rooms).
 
 Per-room detail has Transcript / Summary / Catch-up tabs and **steer any member or everyone** +
 pause/resume/close. You can also drop into any live member's terminal with `mrc team console
 <handle>` (members run in a tmux session).
 
+**Project tabs — suspend vs delete (both non-destructive).** Each org is a tab (per-project context,
+an ❓ needs-you badge, an off-screen `‹N/N›` hint when a needy tab scrolls out of the strip).
+**Closing a tab = suspend**: the member containers stop, but the team, transcripts, and history stay,
+and **▶ Resume** relaunches them. **🗑 Delete project** is different but *still non-destructive on
+disk*: it forgets the org from Mister Claude (stops its sessions, drops the tab) yet **deletes nothing
+on disk** — your repo, `team.json`, and transcripts remain, so `mrc team up` re-adds it any time.
+
 ---
 
-## 7. Components
+## 7. Telegram — link your phone to the @user inbox
+
+Optional: answer your team from your phone. Each **project** uses its **own** bot (so one project's
+chat never sees another's), and linking is **human-gated** — nothing auto-binds.
+
+**First-time setup (end to end):**
+
+1. **Create a bot.** DM [@BotFather](https://t.me/BotFather) on Telegram → `/newbot` → follow the
+   prompts → it hands you a **bot token** (looks like `123456:ABC-…`).
+2. **Give the token to the project.** Put it in *that repo's own* `.env` (read **strictly per-repo** —
+   no global fallback, so it can never bleed to another project):
+   ```
+   MRC_TELEGRAM_BOT_TOKEN=123456:ABC-your-token
+   ```
+3. **Bring the project up on the daemon** — `mrc team up` (or Define/Launch it in the dashboard).
+   Once the org is defined and the daemon is running, it starts the Telegram bridge for any defined
+   project that has a token (and re-starts it on daemon boot for saved projects).
+4. **DM your bot `/start`** from the phone/account you want to link.
+5. **Confirm in the dashboard.** The chat appears as a **pending** link on that project's tab → click
+   **Confirm**. This is the trust gate: only you, on localhost, can approve it — an *unexpected*
+   pending entry is just someone else who messaged the bot, so **Reject** it. Now you're **linked**.
+
+   *Shortcut:* if you already know your chat id, add `MRC_TELEGRAM_CHAT_ID=…` to the same `.env` to
+   pre-pin it and skip the Confirm step.
+
+**Once linked:**
+- `@user` **questions** push as `❓ … #N … ↩️ Reply to this message to answer`; **FYIs** push as
+  `🔔 … #N … 💬 FYI — reply optional` — the same `#N` the dashboard/CLI show.
+- **Reply** to a pushed message on Telegram → it routes a `[Human reply]` back to the member. (An FYI is
+  replyable too — "optional" is the framing, not a restriction.)
+- **Resolve syncs both ways (H4):** answer/dismiss in the dashboard → the Telegram message edits in place
+  to show it's resolved; reply on Telegram → the dashboard's open reply box closes with
+  "✓ Answered via Telegram".
+- **Unpair** on the tab unlinks it any time.
+
+One bot serves **one** project: give two projects the *same* token and the second bridge is **refused
+with a surfaced warning** (not a silent Telegram 409 conflict-loop). Inbound Telegram text is
+**untrusted** and runs through the trust-marker defang (see §8).
+
+---
+
+## 8. Trust & security
+
+Layered, and it **fails loud**:
+
+- **Container + firewall** — the primary boundary (whitelisted egress only), unchanged from base `mrc`.
+- **Untrusted peer data** — every teammate message, *even the architect's*, is untrusted; only
+  `[Human directive]` / `[Human reply]` (from @user, a steer, or a confirmed Telegram reply) is
+  authoritative. Forged look-alike markers in untrusted peer/worker/Telegram text are **defanged**
+  (`src/teams/trust.js`) at the delivery, worker-prompt, and reply-quote sites — a member can't fake the
+  human's authority.
+- **Spoof-proof references** — the dashboard renders the transcript from a structured per-message store
+  (`transcript.jsonl`) carrying a daemon-assigned `qid`/`reqid`; the `[#N]` chip and `(re #N)` jump
+  anchor from that trusted field, never by scanning line text — so a member can't hijack a question's
+  anchor or forge a jump by putting `[#N]` (or a newline-injected fake line) in its own message.
+- **Dashboard CSRF** — state-changing `/api/*` require a per-daemon token (persisted `0600`, so it
+  survives a restart without weakening — a cross-origin page still can't read it) plus Origin + Host
+  checks; the SPA **confirms a 2xx before closing** a panel and surfaces a 403/error instead of
+  optimistic-closing.
+- **Telegram inbound** is allowlisted to the confirmed `from.id`+`chat.id`, private chats only.
+- **Restart honesty** — `mrc rooms restart` **verifies the new daemon's version stamp** (and
+  SIGKILL-escalates a wedged old process) so it never silently keeps serving stale code. Host-side
+  `src/` changes ride the daemon reload; container-side changes still need `docker rmi mister-claude`.
+
+---
+
+## 9. Components
 
 **New (`src/teams/`):**
 - `names.js` — French/Spaceballs name pool, unique `first/backend` handles, @mention parsing.
@@ -145,27 +223,37 @@ pause/resume/close. You can also drop into any live member's terminal with `mrc 
 - `roster.js` — parse/normalize `team.json` → members (unique handles, territory/mount/tier, one
   lead/team) + derived rooms; deterministic naming; overlap/escape validation.
 - `room-engine.js` — the generalized relay: member-set rooms, directed @routing, multi-room
-  membership, room-tagged delivery, @user inbox, brake/resume/turn-cap/steer for N, worker queue,
-  org redefine-with-prune.
+  membership, room-tagged delivery, the @user inbox (questions/notifications, dismiss/reopen, `#N` +
+  structured transcript, `answeredVia`), brake/resume/turn-cap/steer for N, worker queue, redefine-with-prune.
 - `worker-runner.js` — drains the worker queue, invokes task-workers, posts replies back.
+- `session-id.js` — `memberSessionId` (sha1 `org\0handle`) for cross-org binding.
+- `trust.js` — `defangTrustMarkers` + `snippetForTrustedLine` (the trust-boundary hygiene of §8).
+- `telegram.js` — Telegram Bot API client + `createTelegramBridge` (long-poll, dedup, 409 backoff).
+- `telegram-auth.js` — per-org pairing/auth state (Confirm pairing, allowlist, pre-pin, unpair, `tgView`).
 
 **Modified:**
-- `src/proxies/room-daemon.js` — engine + worker runner alongside legacy pairings; `register`
-  binds a member; relay frames `say`/`whoami`; control `defineOrg`/`team`/`answer` + brake/resume/
-  steer/end generalized to engine rooms; org persistence.
+- `src/proxies/room-daemon.js` — engine + worker runner + **per-org Telegram bridges** alongside legacy
+  pairings; `register` binds a member; control `defineOrg`/`team`/`answer`/`dismiss`/`reopen`/`removeorg`/
+  `tg*` + brake/resume/steer/end; the dual `thread.log`/`transcript.jsonl` append; org + inbox + Telegram
+  persistence; tmux-reconciled launch records.
 - `src/commands/team.js` — the `mrc team` CLI (`up`/`status`/`console`/`down`/`define`/`exec`),
   member launch wiring, persona files, territorial volumes, worker exec.
+- `src/commands/pair.js` — version-stamp-verified daemon restart (`probeVersion`/`waitUpVersion`) +
+  SIGKILL escalation in `stopDaemon`.
 - `container/mrc-channel-server.js` — team mode: registers as a member; `send_message`/`list_team`/
   `ask_user` tools + team instructions.
 - `src/rooms-dashboard.js` + `src/dashboard.html` — the unified teams-first web app + its endpoints
-  (`/api/teams`, `/api/team-preview|save|define`, the `answer` action).
-- `mrc.js` / `src/config.js` — `team` subcommand, `--member`/`--roster`, member-mode launch.
+  (`/api/teams`/`state`/`room`/`tg`/`team-*`/`action`), the CSRF token gate, project tabs, the inbox
+  model, Telegram pairing UI, and the semantic-token design system.
+- `mrc.js` / `src/config.js` — `team` subcommand, `--member`/`--roster`, member-mode launch; `config.js`
+  adds `repoEnvKeyStrict` (per-repo `.env` only, no `process.env` fallback — the Telegram token reader).
 - `entrypoint.sh` — `--append-system-prompt` for members; one-shot worker exec branch.
-- `src/docker.js` — `runWorkerExec`. `src/rooms.js` — `saveOrgs`/`loadOrgs`.
+- `src/docker.js` — `runWorkerExec`. `src/rooms.js` — `saveOrgs`/`loadOrgs`, `saveInbox`/`loadInbox`,
+  `saveTgStates`/`loadTgStates`, `appendTranscript`/`readTranscript`, launch records.
 
 ---
 
-## 8. CLI
+## 10. CLI
 
 ```
 mrc team up      [path] [--roster f]   push the roster to the daemon + launch live members (tmux)
@@ -178,13 +266,17 @@ mrc team define  [path] [--roster f]   push the roster WITHOUT launching
 
 ---
 
-## 9. What's tested vs. what needs Docker
+## 11. What's tested vs. what needs Docker
 
-**Unit/integration tested host-side (132 tests, `node --test test/`):** naming, roster, personas,
-the full room engine (directed routing, multi-room isolation, floor control, @user inbox,
-brake/resume, prune), a socket-level daemon round-trip (define org → register → directed delivery →
-@user → brake/resume), the launcher's pure pieces (session ids, territorial mounts, persona files),
-and the worker-runner core (batch/invoke/post-back, graceful failure).
+**Unit/integration tested host-side (150 tests, `node --test test/*.test.mjs`):** naming, roster,
+personas, the full room engine (directed routing, multi-room isolation, floor control, the @user inbox
+incl. questions/notifications + dismiss/reopen + `#N`/structured-transcript spoof-proofing, brake/resume,
+prune), socket-level daemon round-trips (define org → register → directed delivery → @user → brake/resume;
+inbox + Telegram persistence; org isolation; tmux-reconciled launch records), the **Telegram** transport
++ auth (pairing, allowlist, push framing, H4, one-bot-per-org), the **trust-marker defang**, the
+**dashboard CSRF + token-persist** gate, **restart version-stamp** verification, the launcher's pure
+pieces (session ids, territorial mounts, persona files), and the worker-runner core (batch/invoke/
+post-back, graceful failure).
 
 **Needs the rebuild recipe to validate (no Docker here):** the live container launch
 (`--append-system-prompt` persona, territorial bind mounts, the one-time Channels accept per member)
@@ -195,15 +287,15 @@ memory volume).
 docker rmi mister-claude                 # container files changed (entrypoint, channel server)
 cat > team.json <<'EOF'  …  EOF          # see §1
 mrc team up                              # launches live members in tmux; accept the Channels prompt in each
-mrc rooms dashboard                      # then open the "🎩 Team orchestrator →" link (/teams)
+mrc rooms dashboard                      # opens the teams-first dashboard (http://localhost:8787)
 #  in a member:  @critic please review client/src/auth.js
-#  a member asks you:  @user toasts or inline?   → answer it in the /teams inbox
+#  a member asks you:  @user toasts or inline?   → answer it in the dashboard Inbox
 mrc team exec @thierry "summarize the api contract"   # a task-worker turn
 ```
 
 ---
 
-## 10. Open items / future
+## 12. Open items / future
 
 - Container-path validation (above). Confirm `claude --append-system-prompt` in the pinned build.
 - Headless launch: the Channels accept prompt is interactive + non-persisted, so `mrc team up` still
