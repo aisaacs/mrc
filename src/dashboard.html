@@ -335,8 +335,8 @@ function orgNeed(org) {
   return qs + cu
 }
 // A project is "running" if it has a launch record or any live member up (online/launched).
-// A launch record only counts as "running" if the daemon reconciled it as live (tmux up or still
-// building) — a stale record from a crash reports running:false, so ▶ Resume/🚀 Launch comes back.
+// A launch record only counts as "running" if the daemon reconciled it as live (≥1 member session up,
+// or still building) — a stale record from a crash reports running:false, so ▶ Resume/🚀 Launch comes back.
 const orgRunning = (org) => (S.teams.launch||[]).some(l=>l.org===org && l.running) || (S.teams.members||[]).some(m=>m.org===org && m.tier==='live' && (m.online||m.launched))
 function switchOrg(org) { if (org===S.org) return; S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; setOrgUrl(org); paint() }
 window.switchOrg = switchOrg
@@ -794,8 +794,10 @@ window.openRoom = (id)=>{ selRoom(id) }
 window.selInbox = (i)=>{ S.selInbox=i; S.selRoom=null; S.selMember=null; S.building=false; paint() }
 window.selMember = (h)=>{ S.selRoom=null; S.selInbox=null; S.building=false; S.selMember=h
   const m = memberByHandle(h)
+  // #34/B: each member has its OWN ttyd, so selecting one just swaps the embedded iframe (via detailKey);
+  // no server round-trip (the old /api/team-select → tmux select-window is gone).
   if (m && m.tier==='worker') { S.workerLog=null; tick() }
-  else { if (m) postJSON('/api/team-select',{org:S.org,window:m.first}); paint() } }
+  else paint() }
 window.setTab = (t)=>{ S.tab=t; paintedKey=null; paint() }
 window.roomAct = async (a)=>{ if(a==='end'&&!confirm('Close this room?'))return; const r=await act(a,{roomId:S.selRoom}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
 window.doSteer = async ()=>{ const tx=$('#steerTx'); const t=$('#steerT'); if(!tx||!tx.value.trim())return; const r=await act('steer',{roomId:S.selRoom,target:t.value,text:tx.value.trim()}); if(!r.ok)return flashFail(r); tx.value=''; S.flash=null; tick() }

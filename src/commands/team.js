@@ -12,7 +12,7 @@
 import net from 'node:net'
 import { spawn, execFileSync, spawnSync } from 'node:child_process'
 import { memberSessionId } from '../teams/session-id.js'
-import { mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -163,8 +163,26 @@ function hasTmux() {
   try { execFileSync('tmux', ['-V'], { stdio: 'ignore' }); return true } catch { return false }
 }
 
-// Is a recorded ttyd process still alive? (signal 0 = existence check; EPERM still means it exists.)
+// Is a recorded process still alive? (signal 0 = existence check; EPERM still means it exists.)
 function pidAlive(pid) { if (!pid) return false; try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
+// A member session is alive only if its dtach master pid is alive AND its socket still exists — the
+// pid alone is unsafe across a daemon restart (the OS can recycle it onto an unrelated process); the
+// socket is the session artifact, so requiring both avoids reporting a dead member as up (Roland #2).
+const sessionAlive = (info) => !!(info && pidAlive(info.dtachPid) && info.sock && existsSync(info.sock))
+// Stop the actual member: kill its container by the mrc.member (+repo) label. Killing the dtach master
+// tears down the terminal/sh but the detached `docker run` container can keep running — so this is the
+// LOAD-BEARING member stop, not a backstop (Roland #1).
+function dockerKillMember(repo, handle) {
+  // Require BOTH labels. Handles are deterministic (first/backend), so two projects can share one (each
+  // with an @apolline/claude); matching mrc.member=<handle> alone — if repo were unknown — would kill the
+  // OTHER project's same-handled container. Fail SAFE: skip + log rather than a repo-wide kill-by-handle
+  // (Roland R-dtach-1). repo is normally set by setMemberLaunch, so this only guards a degraded record.
+  if (!repo) { try { console.error(`[#34] dockerKillMember: no repo for @${handle} — skipping (won't risk a cross-project kill-by-handle)`) } catch {}; return }
+  try {
+    const ids = execFileSync('docker', ['ps', '-q', '--filter', `label=mrc.member=${handle}`, '--filter', `label=mrc.repo=${repo}`], { encoding: 'utf8' }).split('\n').map((s) => s.trim()).filter(Boolean)
+    for (const id of ids) { try { execFileSync('docker', ['kill', id], { stdio: 'ignore' }) } catch {} }
+  } catch {}
+}
 
 // Single-quote a value for a `sh -c` string, escaping embedded quotes (close-quote, escaped-quote,
 // reopen: ' -> '\''). A member `name` in team.json is user-authored and only lowercased, so without this
@@ -176,15 +194,32 @@ const shq = (a) => `'${String(a).replace(/'/g, `'\\''`)}'`
 const memberShellCmd = (repoPath, m, rosterPath) =>
   `node ${memberArgv(repoPath, m, rosterPath).map(shq).join(' ')}; echo; echo ${shq(`[@${m.first} exited — press enter]`)}; read`
 
-// Spawn ONE detached ttyd that holds a member's PTY directly (TERM=xterm-256color). Returns the child.
-function spawnMemberTtyd(port, shellCmd) {
-  return spawn('ttyd', ['-W', '-i', '127.0.0.1', '-p', String(port), 'sh', '-c', shellCmd],
-    { detached: true, stdio: 'ignore', env: { ...process.env, TERM: 'xterm-256color' } })
+// dtach sockets (one per member, stable across reconnects) live under the daemon dir.
+const socketDir = () => join(homedir(), '.local', 'share', 'mrc', 'sockets')
+const sockSlug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
+const memberSock = (org, handle) => join(socketDir(), `${sockSlug(org)}-${sockSlug(handle)}.dtach`)
+
+// #34: a member runs inside a persistent `dtach -n` MASTER (holds the session detached so it survives the
+// browser disconnecting / a console switch / the dashboard closing — what tmux used to do), with a thin
+// ttyd VIEWER (`dtach -a`) that attaches on connect and RE-ATTACHES the same session on reconnect (no
+// restart). dtach is a transparent byte relay, so ttyd's real xterm-256color + the native mouse-wheel
+// scroll pass straight through. Returns the registry entry.
+function spawnMemberSession(org, handle, port, shellCmd) {
+  const sock = memberSock(org, handle)
+  mkdirSync(dirname(sock), { recursive: true })
+  try { unlinkSync(sock) } catch {}   // clear any stale socket from a dead prior session
+  const env = { ...process.env, TERM: 'xterm-256color' }
+  // persistent master: holds the member detached, eager-started (runs even before a browser attaches).
+  const master = spawn('dtach', ['-n', sock, '-E', '-r', 'winch', 'sh', '-c', shellCmd], { detached: true, stdio: 'ignore', env })
+  master.unref()
+  // viewer: ttyd attaches to the dtach session; a reconnect re-attaches the SAME session.
+  const ttyd = spawn('ttyd', ['-W', '-i', '127.0.0.1', '-p', String(port), 'dtach', '-a', sock, '-E', '-r', 'winch'], { detached: true, stdio: 'ignore', env })
+  ttyd.unref()
+  return { sock, dtachPid: master.pid, ttydPort: port, ttydPid: ttyd.pid, containerId: null }
 }
 
-// #34: launch each live member in its OWN detached ttyd (no tmux). ttyd holds the PTY directly, so Claude
-// sees a real xterm-256color terminal and the mouse wheel scrolls the transcript natively. Reuses a
-// member's existing ttyd if still alive (idempotent relaunch). Returns the per-member ttyd registry map.
+// #34: launch each live member as its own persistent dtach session + ttyd viewer. Reuses a member's
+// existing session if its dtach master is still alive (idempotent relaunch). Returns the registry map.
 async function launchMembers(norm, repoPath, rosterPath, live) {
   const existing = (loadLaunches()[norm.org] || {}).members || {}
   const members = {}
@@ -192,43 +227,53 @@ async function launchMembers(norm, repoPath, rosterPath, live) {
   let already = true
   for (const m of live) {
     const prev = existing[m.handle]
-    if (prev && pidAlive(prev.ttydPid)) { members[m.handle] = prev; continue }   // already up — keep it
+    if (sessionAlive(prev)) { members[m.handle] = prev; continue }   // session still up — keep it
     already = false
     const port = await findFreePort(nextPort); nextPort = port + 1
-    const child = spawnMemberTtyd(port, memberShellCmd(repoPath, m, rosterPath))
-    child.unref()
-    members[m.handle] = { ttydPort: port, ttydPid: child.pid, containerId: null }   // containerId filled by reconcile
+    members[m.handle] = spawnMemberSession(norm.org, m.handle, port, memberShellCmd(repoPath, m, rosterPath))
   }
   return { members, already }
 }
 
 // --- launch lifecycle (shared by `mrc team up` and the daemon's GUI launch) ----------------------
 export function hasTtyd() { try { execFileSync('ttyd', ['--version'], { stdio: 'ignore' }); return true } catch { return false } }
+// dtach has NO version flag: any invocation that isn't a real session prints usage and exits non-zero.
+// So presence ≠ exit-zero — we only treat ENOENT (binary not on PATH) as missing; a non-zero exit means
+// dtach IS installed (it just rejected our probe args).
+export function hasDtach() { try { execFileSync('dtach', ['-V'], { stdio: 'ignore' }); return true } catch (err) { return err?.code !== 'ENOENT' } }
 // (legacy tmux helpers kept only for the `mrc team console` attach path until chunk C replaces it.)
 export function tmuxSessionExists(session) { return spawnSync('tmux', ['has-session', '-t', session], { stdio: 'ignore' }).status === 0 }
-export function tmuxSelectWindow(org, name) { try { execFileSync('tmux', ['select-window', '-t', `${tmuxSession(org)}:${name}`], { stdio: 'ignore' }); return true } catch { return false } }
 
-// #34: the set of a team's members whose ttyd is alive (replaces tmuxWindows for the daemon's
-// launched-vs-online reconcile). Keyed by HANDLE. A member is "launched" while its ttyd lives.
+// #34: the set of a team's members whose SESSION is alive (the dtach master — NOT the ephemeral ttyd
+// viewer). Keyed by HANDLE; drives the daemon's launched-vs-online reconcile. A member is "launched"
+// while its dtach master lives, regardless of whether any browser is attached.
 export function launchedMemberHandles(org) {
   const mems = (loadLaunches()[org] || {}).members || {}
   const s = new Set()
-  for (const [h, info] of Object.entries(mems)) if (pidAlive(info?.ttydPid)) s.add(h)
+  for (const [h, info] of Object.entries(mems)) if (sessionAlive(info)) s.add(h)
   return s
 }
-// Per-member ttyd view for the dashboard: handle -> { ttydPort, ttydUrl, alive }.
+// Per-member terminal view for the dashboard: handle -> { ttydPort, ttydUrl, alive }. `alive` = the
+// dtach session (master), not the ttyd viewer (which comes and goes as you open/close the console).
 export function memberTtyds(org) {
   const mems = (loadLaunches()[org] || {}).members || {}
   const out = {}
-  for (const [h, info] of Object.entries(mems)) out[h] = { ttydPort: info.ttydPort, ttydUrl: info.ttydPort ? `http://127.0.0.1:${info.ttydPort}/` : null, alive: pidAlive(info?.ttydPid) }
+  for (const [h, info] of Object.entries(mems)) out[h] = { ttydPort: info.ttydPort, ttydUrl: info.ttydPort ? `http://127.0.0.1:${info.ttydPort}/` : null, alive: sessionAlive(info) }
   return out
 }
-// Stop a team: kill every member's ttyd (SIGTERM → ttyd closes its PTY → `mrc.js --member` gets SIGHUP
-// → its container stops). Chunk C adds a `docker kill` by `mrc.member` label as belt-and-suspenders.
+// Stop a team. Order matters (Roland #5): kill the ttyd VIEWER → kill the dtach MASTER → `docker kill`
+// the member CONTAINER (the load-bearing stop — the detached container can outlive the master, #1) →
+// unlink the socket last (unlinking before the master dies risks an orphaned master/phantom session).
 export function killTeamSession(org) {
-  const mems = (loadLaunches()[org] || {}).members || {}
+  const rec = loadLaunches()[org] || {}
+  const mems = rec.members || {}
   let any = false
-  for (const info of Object.values(mems)) { try { if (info?.ttydPid) { process.kill(info.ttydPid, 'SIGTERM'); any = true } } catch {} }
+  for (const [handle, info] of Object.entries(mems)) {
+    if (info?.ttydPid) { try { process.kill(info.ttydPid, 'SIGTERM') } catch {} }
+    if (info?.dtachPid) { try { process.kill(info.dtachPid, 'SIGTERM'); any = true } catch {} }
+    dockerKillMember(rec.repo, handle)
+    if (info?.sock) { try { unlinkSync(info.sock) } catch {} }
+  }
   return any
 }
 
@@ -238,6 +283,7 @@ export async function startTeamSession(norm, repoPath, { rosterPath } = {}) {
   const live = norm.members.filter((m) => m.tier === 'live')
   if (!live.length) return { ok: false, error: 'no live members to launch' }
   if (!hasTtyd()) return { ok: false, error: 'ttyd not found — it now hosts each member terminal (brew install ttyd / apt install ttyd)' }
+  if (!hasDtach()) return { ok: false, error: 'dtach not found — it keeps each member session alive across console switches (brew install dtach / apt install dtach)' }
   try {
     const { ensureDocker } = await import('../colima.js')
     const { buildImage } = await import('../docker.js')
@@ -278,10 +324,15 @@ export function writeTeamFile(repo, roster) {
   try { writeFileSync(join(repo, 'team.json'), JSON.stringify({ project: roster.org, teams: roster.teams }, null, 2) + '\n'); return true } catch { return false }
 }
 
-// #34: kill one member's ttyd + drop it from the registry (when removed from a running team).
+// #34: stop one member's session (same order as killTeamSession): ttyd viewer → dtach master →
+// `docker kill` the container → unlink socket → drop from the registry. (Removed from a running team.)
 export function killMember(org, handle) {
-  const info = ((loadLaunches()[org] || {}).members || {})[handle]
+  const rec = loadLaunches()[org] || {}
+  const info = (rec.members || {})[handle]
   if (info?.ttydPid) { try { process.kill(info.ttydPid, 'SIGTERM') } catch {} }
+  if (info?.dtachPid) { try { process.kill(info.dtachPid, 'SIGTERM') } catch {} }
+  dockerKillMember(rec.repo, handle)
+  if (info?.sock) { try { unlinkSync(info.sock) } catch {} }
   removeMemberLaunch(org, handle)
   return true
 }
@@ -301,18 +352,16 @@ export function addMemberToRoster(roster, teamName, member) {
   return r
 }
 
-// #34: launch ONE member into an already-running org as its own ttyd (image already built, so no
-// buildImage — safe from the daemon). No-op if the team isn't launched or the member's ttyd is alive.
+// #34: launch ONE member into an already-running org as its own dtach session + ttyd viewer (image
+// already built — safe from the daemon). No-op if the team isn't launched or the member's session is up.
 export async function launchMember(org, repoPath, rosterPath, member) {
   const rec = loadLaunches()[org]
   if (!rec) return { ok: false, error: 'team not launched' }
   const prev = (rec.members || {})[member.handle]
-  if (prev && pidAlive(prev.ttydPid)) return { ok: true, already: true }
+  if (sessionAlive(prev)) return { ok: true, already: true }
   try {
     const port = await findFreePort(Number(process.env.MRC_TTYD_PORT) || 7681)
-    const child = spawnMemberTtyd(port, memberShellCmd(repoPath, member, rosterPath))
-    child.unref()
-    setMemberLaunch(org, member.handle, { ttydPort: port, ttydPid: child.pid, containerId: null })
+    setMemberLaunch(org, member.handle, spawnMemberSession(org, member.handle, port, memberShellCmd(repoPath, member, rosterPath)))
     return { ok: true }
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
@@ -391,9 +440,10 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
       if (workers.length) console.log(`  • ${workers.length} worker member(s) (${workers.map((m) => '@' + m.handle).join(', ')}) — invoked on demand, not launched.`)
       if (sub === 'define') { console.log('  ◎ Defined (not launched). Run `mrc team up` to launch.'); return }
       if (!live.length) { console.log('  (no live members to launch)'); return }
-      if (!hasTtyd()) {
-        console.log('  ttyd not found — it now hosts each member terminal. Install it (brew install ttyd / apt install ttyd)')
-        console.log('  and relaunch, or run a member directly:')
+      if (!hasTtyd() || !hasDtach()) {
+        const missing = [!hasTtyd() && 'ttyd', !hasDtach() && 'dtach'].filter(Boolean).join(' + ')
+        console.log(`  ${missing} not found — ttyd hosts each member terminal and dtach keeps its session alive across`)
+        console.log('  console switches. Install (brew install ttyd dtach / apt install ttyd dtach) and relaunch, or run a member directly:')
         for (const m of live) console.log(`      node ${memberArgv(repoPath, m, path).join(' ')}`)
         return
       }

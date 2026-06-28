@@ -160,9 +160,10 @@ async function handle(req, res) {
       })
       return
     }
-    // GUI launch lifecycle: start the live members (tmux + embeddable ttyd), stop them, or switch the
-    // embedded terminal to a given member's window. All proxy to the daemon.
-    if (req.method === 'POST' && (url.pathname === '/api/team-launch' || url.pathname === '/api/team-stop' || url.pathname === '/api/team-delete' || url.pathname === '/api/team-select' || url.pathname === '/api/team-add-member' || url.pathname === '/api/team-remove-member' || url.pathname === '/api/kill-session')) {
+    // GUI launch lifecycle: start the live members (each in its own ttyd), stop them, add/remove a
+    // member. All proxy to the daemon. (Member terminal switching is client-side now — each member has
+    // its own ttyd, so the dashboard just swaps the iframe; the old /api/team-select is gone.)
+    if (req.method === 'POST' && (url.pathname === '/api/team-launch' || url.pathname === '/api/team-stop' || url.pathname === '/api/team-delete' || url.pathname === '/api/team-add-member' || url.pathname === '/api/team-remove-member' || url.pathname === '/api/kill-session')) {
       let body = ''
       req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
       req.on('end', async () => {
@@ -174,7 +175,7 @@ async function handle(req, res) {
         if (url.pathname === '/api/team-add-member') return sendJSON(res, 200, await ctrl(cp, 'addmember', { org: j.org, team: j.team, role: j.role, backend: j.backend, territory: j.territory }))
         if (url.pathname === '/api/team-remove-member') return sendJSON(res, 200, await ctrl(cp, 'removemember', { org: j.org, handle: j.handle }))
         if (url.pathname === '/api/kill-session') return sendJSON(res, 200, await ctrl(cp, 'killsession', { id: j.id }))
-        return sendJSON(res, 200, await ctrl(cp, 'selectwin', { org: j.org, window: j.window }))
+        return sendJSON(res, 404, { ok: false, error: 'unknown team action' })
       })
       return
     }

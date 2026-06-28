@@ -162,43 +162,43 @@ copy/selection stays browser-native" confirmation come after, once the sub-path 
 
 ---
 
-### 9. #34 tmux-removal — per-member ttyd  🖐️ ⏱️ ~5 min  *(chunk A — the wheel-scroll fix)*
-Each live member now runs in its own detached ttyd (no tmux); ttyd holds the PTY directly so Claude sees
-real `xterm-256color`. **No image rebuild** (the change is host-side `docker run` flags + launch wiring),
-but the **daemon must reload** and the team must be **relaunched** on the new code path.
+### 9. #34 tmux-removal — per-member dtach + ttyd  🖐️ ⏱️ ~6 min  *(chunk A — wheel-scroll + persistence)*
+Each live member now runs inside its own **`dtach` master** (holds the session detached, like tmux did)
+with a thin **ttyd viewer** attached. ttyd gives Claude a real `xterm-256color` PTY (→ native wheel-scroll);
+`dtach` keeps the session alive across console switches and dashboard-close. **No image rebuild** (host-side
+launch wiring + `docker run` flags), but the **daemon must reload** and the team must be **relaunched**.
 
+🖐️ **Prereq:** install **dtach** (new dep) alongside ttyd — `brew install ttyd dtach` / `apt install ttyd dtach`.
 ```bash
-mrc rooms restart                 # daemon picks up the new room-daemon.js (reconcile/launch wiring)
-mrc team down <repo>              # stop any tmux-era launch (legacy record → it'll show ▶ Resume anyway)
-mrc team up <repo>                # relaunch: each live member spawns its OWN ttyd  (prints per-member URLs)
+mrc rooms restart                 # daemon picks up the new launch/reconcile wiring
+mrc team down <repo>              # stop any tmux-era launch (legacy record → shows ▶ Resume anyway)
+mrc team up <repo>                # relaunch: each member = a dtach master + ttyd viewer (prints per-member URLs)
 ```
 🖐️ Accept the Channels prompt in each member's terminal (dashboard Console, or the printed ttyd URL).
 
-- ✅ **Each live member launches in its own ttyd** — `mrc team up` prints one `http://127.0.0.1:<port>/`
-  per member; opening a member's URL shows that member's Claude session (not a shared tmux session).
-- ✅ **Online, not stuck "starting"** — after accepting Channels, the dashboard shows green/ready (this is
-  the D1-adjacent "stuck" check: a member that registered should not read offline-while-connected).
-- ✅ **THE MOMENT OF TRUTH — the mouse wheel scrolls the transcript** (up AND down) in the embedded
-  terminal, natively, without touching the keyboard. *(This is the whole point of #34 / the #33 fix.)*
-- ✅ **Copy/selection is browser-native** — click-drag selects text in the terminal as normal (no tmux
-  copy-mode hijack — that was the trade-off we avoided by going architectural instead of `tmux mouse on`).
-- ✅ **Persists on dashboard-close** — close the dashboard tab, reopen `mrc rooms dashboard`: the members
-  are still up (their ttyds are detached host processes, independent of the dashboard).
+- ✅ **Each live member launches in its own terminal** — `mrc team up` prints one `http://127.0.0.1:<port>/`
+  per member; opening it shows that member's Claude session.
+- ✅ **Online, not stuck "starting"** — after accepting Channels, the dashboard shows green/ready.
+- ✅ **THE MOMENT OF TRUTH — the mouse wheel scrolls the transcript** (up AND down), natively, no keyboard.
+- ✅ **Copy/selection is browser-native** — click-drag selects text normally (no tmux copy-mode hijack).
+- ✅ **Switching consoles does NOT restart the member** (the bug this fix closes) — open @A's console, then
+  @B's, then back to @A: @A's session is the SAME (its conversation/scrollback intact), NOT a fresh `mrc`
+  re-login. Expect a brief reconnect flash on switch (ttyd re-attaches the dtach master) — content persists.
+- ✅ **Persists on dashboard-close** — close the dashboard, reopen `mrc rooms dashboard`: members are still
+  up (the dtach masters are detached host processes; the ttyd viewers come/go but the SESSION stays).
 - ✅ **`TERM` is right** — in a member's terminal, `echo $TERM` → `xterm-256color`.
-- ✅ **Stop = no orphans** — `mrc team down <repo>` (or dashboard ■ Stop): every member ttyd is gone
-  (`pgrep ttyd` shows none for this org) AND every member container is gone (`docker ps --filter
-  label=mrc.member` is empty). ❌ A leftover ttyd or container = the stop-cascade didn't fully fire
-  (ttyd SIGTERM → PTY close → SIGHUP → `docker run -it --rm` stop); note it — chunk C adds a
-  `docker kill`-by-label backstop.
-- ✅ **Add/remove a member while running** stays consistent — add via the dashboard → it spawns its own
-  ttyd and appears; remove → its ttyd is killed and it disappears.
-- ✅ **Dashboard embed works** — selecting a member in the dashboard Console shows ITS own ttyd. Note:
-  switching members **reloads the iframe** (each member is a separate ttyd), so expect a brief reconnect
-  flash on switch — ttyd reconnects to the same server-side PTY so the terminal CONTENT persists; the
-  flash is expected, not a bug. (You can also still open each member's printed ttyd URL directly.)
+- ✅ **Stop = no orphans (container included)** — `mrc team down <repo>` (or dashboard ■ Stop): no member
+  ttyd OR dtach left (`pgrep -f 'dtach|ttyd'` shows none for this org) AND **every member container is gone**
+  (`docker ps --filter label=mrc.member` empty). ❗ The container teardown is load-bearing — `docker kill`
+  by `mrc.member` label is now part of Stop (the detached container can outlive the dtach master), so a
+  leftover container = the docker-label kill didn't fire; note it.
+- ✅ **Add/remove a member while running** — add via the dashboard → its own dtach+ttyd spawns and it
+  appears; remove → its session is killed (dtach + ttyd + container) and it disappears.
+- ✅ **Dashboard embed works** — selecting a member shows its own ttyd; switching reloads the iframe but
+  re-attaches the same dtach session (the persistence check above covers this).
 
-> Still on tmux until later chunks: `mrc team console <handle>` (tmux attach — rewired in chunk C) and the
-> dashboard's member-select still pings the old `/api/team-select` (a no-op now; removed in chunk B).
+> Still on tmux until later chunks: `mrc team console <handle>` (rewired in chunk C) and the dashboard's
+> member-select still pings the now-no-op `/api/team-select` (removed in chunk B).
 
 ---
 

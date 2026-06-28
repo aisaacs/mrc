@@ -673,7 +673,6 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
           daemonLog(`removeorg ${org}`)
           reply({ ok: true }); continue
         }
-        if (f.action === 'selectwin' && f.org) { reply({ ok: !!(teamMod && teamMod.tmuxSelectWindow(f.org, f.window)) }); continue }
         if (f.action === 'removemember' && f.org && f.handle) {
           if (!teamMod) { reply({ ok: false, error: 'launch helpers still loading — retry' }); continue }
           const def = orgDefs.get(f.org)
