@@ -20,9 +20,12 @@ import { readFileSync, existsSync } from 'node:fs'
 import { basename, isAbsolute, join, normalize } from 'node:path'
 import { pickFirstName, makeHandle, backendFamily } from './names.js'
 import { roleDef, ROLE_ALIASES } from './personas.js'
+import { isMediaRole, mediaBackendForRole } from './media.js'
 
-// Backends we can actually launch. claude = live channel member; others = task-workers.
-export const KNOWN_BACKENDS = new Set(['claude', 'codex', 'qwen', 'gemini', 'elevenlabs'])
+// Backends we can actually launch. claude = live channel member; codex = task-worker agent.
+// gemini/elevenlabs are MEDIA backends, never picked directly — they're DERIVED from a media role.
+export const KNOWN_BACKENDS = new Set(['claude', 'codex', 'gemini', 'elevenlabs'])
+export const AGENT_BACKENDS = new Set(['claude', 'codex'])   // the only backends a non-media (agent) role may use
 const LIVE_BACKENDS = new Set(['claude'])   // only Claude has the async inbound-injection channel
 
 const slug = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'x'
@@ -75,7 +78,20 @@ export function parseRoster(input, { repo, rng } = {}) {
     const normMembers = memsIn.map((m) => {
       const role = ROLE_ALIASES[m.role] || m.role || 'engineer'   // "writer" -> "engineer" (back-compat)
       const def = roleDef(role)
-      const backend = backendFamily(m.backend || 'claude')
+      // One axis: agent OR media-maker. A media role DERIVES its backend (gemini/elevenlabs) and ignores
+      // any declared one; an agent role keeps its declared backend but should be claude/codex. Either case
+      // carries a `backendNote` when something's off so it's never silent (validateRoster surfaces it).
+      // We WARN rather than coerce a hand-written bad agent backend — coercing would be its own silent
+      // rewrite (wrong ethos); the builder already constrains *creation* to claude/codex.
+      const declared = backendFamily(m.backend || 'claude')
+      let backend = declared
+      let backendNote = null
+      if (isMediaRole(role)) {
+        backend = mediaBackendForRole(role)
+        if (m.backend != null && declared !== backend) backendNote = `declared backend "${declared}" ignored — media role "${role}" uses "${backend}"`
+      } else if (!AGENT_BACKENDS.has(declared)) {
+        backendNote = `backend "${declared}" is not a supported agent backend for role "${role}" (agents should be claude or codex)`
+      }
       const first = m.name ? String(m.name) : pickFirstName(taken, rng)
       taken.add(first.toLowerCase())
       const handle = makeHandle(first, backend)
@@ -88,6 +104,7 @@ export function parseRoster(input, { repo, rng } = {}) {
         first, backend, handle,
         role, roleLabel: def.label,
         team: teamName, lead, tier, territory, mount,
+        ...(backendNote ? { backendNote } : {}),
       }
     })
     // Exactly one lead per team: honor an explicit lead, else the first architect, else the first member.
@@ -116,7 +133,8 @@ export function validateRoster(norm) {
   const warnings = []
   if (!norm.members.length) errors.push('roster has no members')
   for (const m of norm.members) {
-    if (!KNOWN_BACKENDS.has(m.backend)) warnings.push(`member @${m.handle}: unknown backend "${m.backend}"`)
+    // Surface any backend override parseMember had to make (agent-coerce or media-derive) — never silent.
+    if (m.backendNote) warnings.push(`member @${m.handle}: ${m.backendNote}`)
     if (!ROLES_OK(m.role)) warnings.push(`member @${m.handle}: unknown role "${m.role}" (treated generically)`)
     if (m.mount === 'rw' && m.backend !== 'claude' && m.tier !== 'worker') {
       warnings.push(`member @${m.handle}: rw worker — edits apply per directed invocation`)

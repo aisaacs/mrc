@@ -44,7 +44,7 @@ function killContainer(id) { ensureDockerHost(); try { execFileSync('docker', ['
 
 // Worker invoker. Media members (designer/sound-designer/composer) generate an asset file via an API
 // call IN-PROCESS (the daemon loads .env, so it has GEMINI/ELEVEN keys, and gets the raw items).
-// CLI members (codex/qwen) run in a sandboxed container via `mrc team _worker-exec`.
+// CLI members (codex) run in a sandboxed container via `mrc team _worker-exec`.
 async function defaultWorkerInvoke(member, ctx) {
   const { isMediaRole, generateMedia } = await import('../teams/media.js')
   if (isMediaRole(member.role)) return generateMedia(member, ctx)

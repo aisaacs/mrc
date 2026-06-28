@@ -1,6 +1,6 @@
 // Team-member naming. Every member has a two-part handle `first/backend` — a random French first
-// name and a last name that is the model/backend family (claude, codex, qwen, gemini, …):
-//   @ludivine/claude   @thierry/codex   @guy/qwen
+// name and a last name that is the model/backend family (claude, codex, gemini, elevenlabs, …):
+//   @ludivine/claude   @thierry/codex   @côme/gemini
 // First names are drawn unique per org so a handle never collides. The pool is ordinary French
 // names sprinkled with Spaceballs easter eggs — may the Schwartz be with whoever spots them all.
 
@@ -40,7 +40,7 @@ export function pickFirstName(taken = new Set(), rng = defaultRng) {
   }
 }
 
-// Normalize a backend into a clean "last name" (claude / codex / qwen / gemini / …).
+// Normalize a backend into a clean "last name" (claude / codex / gemini / elevenlabs / …).
 export function backendFamily(backend) {
   return String(backend || 'claude').trim().toLowerCase().replace(/[^a-z0-9]+/g, '') || 'claude'
 }

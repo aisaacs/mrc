@@ -146,6 +146,8 @@
   .empty .flavor { margin-top:12px; font-style:italic; opacity:.5; font-size:12px }   /* Spaceballs flavor — never load-bearing */
   .memrow { display:grid; grid-template-columns:1.3fr 1fr auto 1.1fr auto; gap:8px; align-items:center; padding:5px 0; border-top:1px solid var(--line) }
   .memrow .lead { display:flex; align-items:center; gap:5px; font-size:12px; color:var(--dim); white-space:nowrap } .memrow input[type=checkbox]{ width:auto }
+  /* locked, role-derived backend for media makers (no generic select) */
+  .bklock { font-size:12px; padding:5px 7px; border:1px dashed var(--line); border-radius:6px; color:var(--dim); background:var(--inset); white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
   .roomtag { display:inline-block; font-size:11px; border:1px solid var(--line); border-radius:6px; padding:1px 7px; margin:2px 4px 2px 0; color:var(--dim) }
   .amf { background:var(--inset); border:1px solid var(--info-border); border-radius:8px; padding:8px; margin-top:6px }
   .amf select, .amf input { font-size:12px; padding:5px 7px }
@@ -258,7 +260,10 @@ window.dismissFlash = () => { S.flash=null; renderFlash() }
 const setOrgUrl = (org) => { try { history.replaceState(null, '', '/'+encodeURIComponent(org||'')) } catch {} }   // /anigame
 
 const ROLES = ['architect','engineer','critic','adversary','ultracritical','user-defender','researcher','tester','designer','sound-designer','composer']
-const BACKENDS = ['claude','codex','qwen','gemini']
+const BACKENDS = ['claude','codex']   // agent backends only — media roles DERIVE their backend (below)
+// A media role's backend is fixed by the role (mirrors roster.js/media.js), not a free pick.
+const MEDIA_ROLE_BACKEND = { designer:'gemini', 'sound-designer':'elevenlabs', composer:'elevenlabs' }
+const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
 
 const S = {
   building: false, org: null, selRoom: null, selInbox: null, selMember: null, workerLog: '', tab: 'thread', addingTo: null, showDismissed: false, showOther: false, flash: null,
@@ -530,11 +535,23 @@ function renderMain() {
   html += `<div style="height:18px"></div>`
   mid.innerHTML = html
 }
+// The add-member backend control: a generic claude/codex select for agent roles, or a locked,
+// role-derived backend for media roles (kept in a hidden #amBackend so submitAddMember reads it the same).
+function amBackendControl(role) {
+  const mb = mediaBackend(role)
+  if (mb) return `<span class="bklock" style="flex:1" aria-label="backend ${esc(mb)} — set by the media role, not editable" title="media role — backend is set by the role (not editable)">${esc(mb)}</span><input type="hidden" id="amBackend" value="${esc(mb)}">`
+  // Preserve a prior agent pick across role changes (mirror bSet): read the current control's value
+  // BEFORE it's replaced; only reset to claude when it isn't a valid agent backend (e.g. coming from a media role).
+  const prev = $('#amBackend') && $('#amBackend').value
+  const cur = BACKENDS.includes(prev) ? prev : 'claude'
+  return `<select id="amBackend" style="width:100%">${BACKENDS.map(b=>`<option ${b===cur?'selected':''}>${b}</option>`).join('')}</select>`
+}
+window.amSyncBackend = ()=>{ const w=$('#amBackendWrap'); if(w) w.innerHTML = amBackendControl($('#amRole').value) }
 function amForm(t) {
   return `<div class="amf">
     <div class="muted" style="margin-bottom:5px">Add a member to <b>${esc(t)}</b>:</div>
-    <div class="row"><select id="amRole" style="flex:1.2">${ROLES.map(r=>`<option ${r==='engineer'?'selected':''}>${r}</option>`).join('')}</select>
-      <select id="amBackend" style="flex:1">${BACKENDS.map(b=>`<option>${b}</option>`).join('')}</select></div>
+    <div class="row"><select id="amRole" style="flex:1.2" onchange="amSyncBackend()">${ROLES.map(r=>`<option ${r==='engineer'?'selected':''}>${r}</option>`).join('')}</select>
+      <span id="amBackendWrap" style="flex:1;display:flex">${amBackendControl('engineer')}</span></div>
     <input id="amTerr" placeholder="territory (e.g. server) — optional" style="margin-top:6px">
     <div class="row" style="margin-top:6px"><button class="btn tiny primary" onclick="submitAddMember('${esc(t)}')">Add</button><button class="btn tiny" onclick="cancelAddMember()">Cancel</button> <span id="amMsg" class="muted"></span></div>
   </div>`
@@ -714,13 +731,19 @@ function bRenderTeams() {
       <button class="btn tiny" onclick="bDelTeam(${ti})">✕</button></div>
     ${t.members.map((m,mi)=>`<div class="memrow">
       <select onchange="bSet(${ti},${mi},'role',this.value)">${ROLES.map(o=>`<option ${o===m.role?'selected':''}>${o}</option>`).join('')}</select>
-      <select onchange="bSet(${ti},${mi},'backend',this.value)">${BACKENDS.map(o=>`<option ${o===m.backend?'selected':''}>${o}</option>`).join('')}</select>
+      ${mediaBackend(m.role)
+        ? `<span class="bklock" aria-label="backend ${esc(mediaBackend(m.role))} — set by the media role, not editable" title="media role — backend is set by the role (not editable)">${esc(mediaBackend(m.role))}</span>`
+        : `<select onchange="bSet(${ti},${mi},'backend',this.value)">${BACKENDS.map(o=>`<option ${o===m.backend?'selected':''}>${o}</option>`).join('')}</select>`}
       <label class="lead"><input type="checkbox" ${m.lead?'checked':''} onchange="bSet(${ti},${mi},'lead',this.checked)"> lead</label>
       <input value="${esc(m.territory)}" placeholder="territory" oninput="bSet(${ti},${mi},'territory',this.value)">
       <button class="btn tiny" onclick="bDelMem(${ti},${mi})">✕</button></div>`).join('')}
     <div style="margin-top:8px"><button class="btn tiny" onclick="bAddMem(${ti})">＋ member</button></div></div>`).join('')
 }
-window.bSet=(ti,mi,k,v)=>{const B=S.builder; if(mi==null)B.teams[ti][k]=v; else if(k==='lead'&&v)B.teams[ti].members.forEach((mm,j)=>mm.lead=(j===mi)); else B.teams[ti].members[mi][k]=v; if(k==='lead'){bRenderTeams()} bPreview()}
+window.bSet=(ti,mi,k,v)=>{const B=S.builder; if(mi==null)B.teams[ti][k]=v; else if(k==='lead'&&v)B.teams[ti].members.forEach((mm,j)=>mm.lead=(j===mi)); else B.teams[ti].members[mi][k]=v;
+  // Role drives the backend: a media role pins it (gemini/elevenlabs); switching back to an agent role
+  // restores a valid agent backend (claude/codex) if it was a media one. Re-render so the control swaps.
+  if(mi!=null && k==='role'){const m=B.teams[ti].members[mi]; const mb=mediaBackend(v); m.backend = mb || (BACKENDS.includes(m.backend)?m.backend:'claude')}
+  if(k==='lead'||k==='role'){bRenderTeams()} bPreview()}
 window.bAddTeam=()=>{S.builder.teams.push({name:'team'+(S.builder.teams.length+1),territory:'.',members:[{role:'architect',backend:'claude',lead:true,territory:''}]});bRenderTeams();bPreview()}
 window.bDelTeam=(ti)=>{S.builder.teams.splice(ti,1);bRenderTeams();bPreview()}
 window.bAddMem=(ti)=>{S.builder.teams[ti].members.push({role:'engineer',backend:'claude',lead:false,territory:''});bRenderTeams();bPreview()}

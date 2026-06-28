@@ -96,7 +96,7 @@ Set up per the docs (`docs/agent-teams.md` §7):
 
 ### 6. Worker-exec (non-Claude member) — the INTEGRATED room path  ⏱️ ~1 min  *(conditional — needs a `codex` worker)*
 If the roster has **no** `codex` member, mark this **SKIPPED** (don't pass it). The `web`/`backend`
-presets include one; otherwise add a `{ "role": "...", "backend": "codex" }` member. **Use `codex` specifically:** only `api.openai.com` is firewall-whitelisted, so a `qwen`/`gemini` worker fails *at the firewall* unless you launch with `--web` — testing with `codex` keeps a failure attributable to the worker path, not egress.
+presets include one; otherwise add a `{ "role": "...", "backend": "codex" }` member. **Use `codex` specifically:** only `api.openai.com` is firewall-whitelisted, so a `gemini` media worker fails *at the firewall* unless you launch with `--web` — testing with `codex` keeps a failure attributable to the worker path, not egress.
 
 **Primary proof — use an @mention, NOT `mrc team exec`.** From another member's console (or a steer), @mention the worker:
 ```

@@ -110,7 +110,7 @@ test('roster: parses a two-team org and assigns unique handles', () => {
       ]},
       { name: 'api', territory: 'api', members: [
         { role: 'architect', backend: 'claude', lead: true },
-        { role: 'engineer', backend: 'qwen' },
+        { role: 'engineer', backend: 'codex' },
       ]},
     ],
   }
@@ -120,11 +120,10 @@ test('roster: parses a two-team org and assigns unique handles', () => {
   const handles = norm.members.map((m) => m.handle)
   assert.equal(new Set(handles).size, 5, 'handles unique across org')
 
-  // tiers: claude => live, others forced to worker
-  const codexCritic = norm.members.find((m) => m.backend === 'codex')
-  assert.equal(codexCritic.tier, 'worker')
-  const qwenEngineer = norm.members.find((m) => m.backend === 'qwen')
-  assert.equal(qwenEngineer.tier, 'worker')
+  // tiers: claude => live, non-claude agent backends (codex) forced to worker
+  const codexMembers = norm.members.filter((m) => m.backend === 'codex')
+  assert.equal(codexMembers.length, 2)
+  for (const m of codexMembers) assert.equal(m.tier, 'worker')
   assert.equal(norm.members.find((m) => m.role === 'architect').tier, 'live')
 
   // mounts: engineer rw, others ro
@@ -170,6 +169,47 @@ test('roster: validate flags overlapping write territories', () => {
   const norm = parseRoster(json, { repo: '/tmp/x', rng: seededRng(2) })
   const v = validateRoster(norm)
   assert.ok(v.warnings.some((w) => /write territory/.test(w)), 'overlap warned')
+})
+
+test('roster: media roles DERIVE their backend from the role, ignoring the declared field (#32)', () => {
+  const json = { org: 'm', teams: [ { name: 't', territory: '.', members: [
+    { role: 'architect', name: 'lead', lead: true },
+    { role: 'designer', name: 'dee', backend: 'claude' },        // declared claude — must be overridden
+    { role: 'sound-designer', name: 'ess' },
+    { role: 'composer', name: 'cee', backend: 'codex' },         // declared codex — must be overridden
+  ] } ] }
+  const norm = parseRoster(json, { repo: '/tmp/m', rng: seededRng(4) })
+  const by = (r) => norm.members.find((m) => m.role === r)
+  assert.equal(by('designer').backend, 'gemini')
+  assert.equal(by('sound-designer').backend, 'elevenlabs')
+  assert.equal(by('composer').backend, 'elevenlabs')
+  // and the handle reflects the derived backend (first/backend)
+  assert.match(by('designer').handle, /\/gemini$/)
+  // the override of a wrongly-declared media backend is surfaced, not silent (Roland's note)
+  const w = validateRoster(norm).warnings
+  assert.ok(w.some((x) => /declared backend "claude" ignored.*media role "designer" uses "gemini"/.test(x)))
+  assert.ok(w.some((x) => /declared backend "codex" ignored.*media role "composer" uses "elevenlabs"/.test(x)))
+  assert.equal(by('sound-designer').backendNote, undefined, 'no note when nothing was declared')
+})
+
+test('roster: an agent role with a non-claude/codex backend is WARNED (kept, not coerced) (#32)', () => {
+  const json = { org: 'a', teams: [ { name: 't', territory: '.', members: [
+    { role: 'architect', name: 'lead', lead: true },
+    { role: 'engineer', name: 'qq', backend: 'qwen' },     // qwen dropped — not an agent backend
+    { role: 'critic', name: 'gg', backend: 'gemini' },     // gemini is media-only — invalid for an agent role
+    { role: 'researcher', name: 'cc', backend: 'codex' },  // valid
+  ] } ] }
+  const norm = parseRoster(json, { repo: '/tmp/a', rng: seededRng(5) })
+  const by = (r) => norm.members.find((m) => m.role === r)
+  // warn-only: the declared backend is kept (coercing would be its own silent rewrite); the builder
+  // constrains creation, validation flags a hand-written one.
+  assert.equal(by('engineer').backend, 'qwen')
+  assert.equal(by('critic').backend, 'gemini')
+  assert.equal(by('researcher').backend, 'codex', 'a valid agent backend is kept, no note')
+  const v = validateRoster(norm)
+  assert.ok(v.warnings.some((w) => /@qq\/qwen: backend "qwen" is not a supported agent backend for role "engineer"/.test(w)))
+  assert.ok(v.warnings.some((w) => /@gg\/gemini: backend "gemini" is not a supported agent backend for role "critic"/.test(w)))
+  assert.equal(by('researcher').backendNote, undefined, 'codex agent gets no note')
 })
 
 test('roster: names are deterministic across runs (no rng passed) so members rebind', () => {

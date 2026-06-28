@@ -13,6 +13,10 @@ import { HAIKU_MODEL } from '../constants.js'
 // role -> media kind. The ROLE decides what gets made; the backend just names the provider.
 export const MEDIA_ROLES = { designer: 'image', 'sound-designer': 'sfx', composer: 'music' }
 export const isMediaRole = (role) => Object.prototype.hasOwnProperty.call(MEDIA_ROLES, role)
+// media kind -> provider backend. A media maker's backend is DERIVED from its role (not a free pick):
+// designer -> gemini (image), sound-designer/composer -> elevenlabs (sfx/music).
+const KIND_BACKEND = { image: 'gemini', sfx: 'elevenlabs', music: 'elevenlabs' }
+export const mediaBackendForRole = (role) => (isMediaRole(role) ? KIND_BACKEND[MEDIA_ROLES[role]] : null)
 
 const env = (k) => process.env[k] || ''
 const slug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'asset'
