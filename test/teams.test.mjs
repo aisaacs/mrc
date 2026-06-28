@@ -273,8 +273,9 @@ test('terminal state machine (#41): fail-toward-starting, evidence-gated orphane
   // exercise the decision tree's establishment logic (the host-fact-independent half; serve / live-master
   // (b)-fingerprint need a real dtach and are container-path-verified).
   const info = { sock: '/tmp/__mrc_nonexistent_test.dtach', ttydPort: 7681 }
-  // dead: no container, regardless of evidence
-  assert.equal(classifyTerminal(info, { containerAlive: false, online: true, withinGrace: true }), 'dead')
+  // no container: within grace → building (image build / first run, fail-toward-starting); past grace → dead
+  assert.equal(classifyTerminal(info, { containerAlive: false, online: true, withinGrace: true }), 'building')
+  assert.equal(classifyTerminal(info, { containerAlive: false, online: true, withinGrace: false }), 'dead')
   // FAIL-TOWARD-STARTING: container up, not servable, not online, within grace → starting (never orphaned)
   assert.equal(classifyTerminal(info, { containerAlive: true, online: false, withinGrace: true }), 'starting')
   // online is restart-durable establishment evidence → orphaned even within grace

@@ -700,6 +700,27 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
           } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
           continue
         }
+        if (f.action === 'relaunchmember' && f.org && f.handle) {
+          // #41 orphan recovery: kill-FIRST (reap the orphaned master + container by sock/label — Gate-2,
+          // idempotent against an orphaned-live container) → then a fresh spawn (the unlink-guard now passes,
+          // no live master). The member --continues its conversation. Destructive, so this route is
+          // CSRF-guarded like every state-changing /api/* (rooms-dashboard.js).
+          if (!teamMod) { reply({ ok: false, error: 'launch helpers still loading — retry' }); continue }
+          const def = orgDefs.get(f.org)
+          if (!def) { reply({ ok: false, error: 'unknown org' }); continue }
+          try {
+            const { norm, rosterPath } = teamMod.materializeRoster(teamMod.rosterFromDef(def), def.repo)
+            const member = norm.members.find((mm) => mm.handle === f.handle)
+            if (!member || member.tier !== 'live') { reply({ ok: false, error: 'not a live member' }); continue }
+            teamMod.killMember(f.org, f.handle)   // reap master(sock) + container(label) + unlink, synchronously
+            // respawn AFTER the master is gone (killHostPlumbingForSock escalates to SIGKILL at 600ms) so the
+            // unlink-guard sees no live master; the old container was already docker-killed synchronously → no dup.
+            setTimeout(() => { teamMod.launchMember(f.org, def.repo, rosterPath, member).catch((e) => daemonLog(`relaunchmember ${f.org}/@${f.handle} spawn: ${e?.message || e}`)) }, 800)
+            daemonLog(`relaunchmember ${f.org}: @${f.handle}`)
+            reply({ ok: true })
+          } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
+          continue
+        }
         if (f.action === 'getroster' && f.org) {
           // The CURRENT roster (with every member added since), so the builder edits live state instead
           // of resetting to the original. orgRoster tracks it; fall back to reconstructing from the def.

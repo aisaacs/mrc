@@ -24,7 +24,7 @@ import { PRESETS, listPresets, buildPreset } from '../teams/presets.js'
 import { runWorkerExec, volumeName } from '../docker.js'
 import { loadEnv, repoEnvKey } from '../config.js'
 import { findFreePort } from '../ports.js'
-import { loadLaunches, saveLaunch, setMemberLaunch, removeMemberLaunch } from '../rooms.js'
+import { loadLaunches, saveLaunch, setMemberLaunch, removeMemberLaunch, removeLaunch } from '../rooms.js'
 
 const MRC_JS = fileURLToPath(new URL('../../mrc.js', import.meta.url))
 const daemonMetaPath = () => join(homedir(), '.local', 'share', 'mrc', 'room-daemon.json')
@@ -170,10 +170,21 @@ const sessionAlive = (info) => !!(info && info.sock && existsSync(info.sock) && 
 // `ab`) can't substring-collide, and the flag (`-n` master vs `-a` viewer) keeps the two roles distinct.
 // Anchoring on the deterministic sock PATH (not a persisted pid) is drift-proof AND pid-reuse-safe — we
 // never signal a recycled pid that now belongs to an unrelated host process.
+let _pgrepMissingWarned = false
 function pidsForSock(flag, sock) {
   const esc = String(sock).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
   try { return execFileSync('pgrep', ['-f', `dtach ${flag} ${esc}( |$)`], { encoding: 'utf8' }).split('\n').map((s) => s.trim()).filter(Boolean) }
-  catch { return [] }   // pgrep exits non-zero when nothing matches
+  catch (e) {
+    // pgrep exit 1 = ran, NO match → legit empty. ENOENT = pgrep MISSING → liveness AND teardown silently
+    // no-op forever (every terminal reads orphaned; Relaunch reaps nothing → unbreakable loop). Do NOT
+    // conflate the two (#41 / no-silent-failure): surface the missing binary LOUDLY, once. The launch-time
+    // hasPgrep() guards `team up`; this guards the continuous DAEMON detection/Relaunch path (Roland).
+    if (e?.code === 'ENOENT' && !_pgrepMissingWarned) {
+      _pgrepMissingWarned = true
+      try { console.error('[#41] FATAL: `pgrep` not found — member-terminal liveness/teardown cannot work (every terminal reads orphaned; Relaunch no-ops). Install procps (apt install procps; standard on macOS + Linux).') } catch {}
+    }
+    return []
+  }
 }
 // Is a LIVE dtach MASTER (`dtach -n <sock>`) holding this socket? True even when the launch record drifted
 // (b′). The ttyd viewer is `dtach -a`, so it never matches. Gates the spawn unlink + the orphaned read.
@@ -215,9 +226,13 @@ function dockerMemberHandles(repo) {
   } catch { return new Set() }
 }
 // Is a live ttyd VIEWER (`dtach -a <sock>`) serving this member's terminal? (distinct from the master).
-// Residual (Roland): this checks the viewer PROCESS exists, not that its port is accepting — a ttyd that's
-// alive-but-wedged would read 'serve' → blank embed with no Relaunch. ttyd is a tiny robust C server so a
-// long-lived wedge is unlikely; if a blank terminal ever insists it's "serving", add a port-listen probe.
+// LOAD-BEARING INVARIANT: this MUST match the ttyd PROCESS's own cmdline (durable from spawn — ttyd runs
+// `dtach -a <sock>` eagerly, before any browser attaches), NEVER gate on a live browser connection. If a
+// future edit makes this connection-gated, every online-but-unviewed member reads orphaned → mass
+// false-orphaned, and the in-suite tests (no real ttyd) would NOT catch it. (§9 + the spawn test guard it.)
+// Residual (Roland): checks the process EXISTS, not that its port is accepting — a wedged-but-alive ttyd
+// would read 'serve' → blank embed; ttyd is a tiny robust C server so a long-lived wedge is unlikely (add a
+// port-listen probe only if a "serving" terminal is ever reported blank).
 const ttydAlive = (info) => !!(info && info.sock && pidsForSock('-a', info.sock).length > 0)
 // #41 per-member terminal STATE for the dashboard. FAIL-TOWARD-STARTING: "orphaned" must EARN its way on
 // positive establishment evidence; anything inconclusive reads "starting" (a false-starting just shows the
@@ -226,10 +241,14 @@ const ttydAlive = (info) => !!(info && info.sock && pidsForSock('-a', info.sock)
 //   serve    = container alive + servable (master + socket + ttyd viewer all live)
 //   orphaned = container alive + NOT servable + ESTABLISHED (online now [restart-durable] / (b)-fingerprint:
 //              master-alive+socket-gone / past the build grace) → "Relaunch to restore"
-//   starting = container alive + NOT servable + NOT established (within grace) → "appears in a moment"
-//   dead     = no live container
+//   building = NO container yet + within the build grace → image build / first run (minutes) → distinct
+//              honest copy ("first run takes a few minutes"), so a 4-min build isn't mis-read as broken and
+//              re-Launched (fail-toward-starting at the right granularity). Container-presence is the pure
+//              detection boundary between a cold build (minutes) and a warm start (seconds).
+//   starting = CONTAINER up but NOT servable + NOT established (within grace) → agent onlining, "a moment"
+//   dead     = no live container, PAST grace → the genuine "not launched, Build + Launch" state
 export function classifyTerminal(info, { containerAlive, online, withinGrace } = {}) {
-  if (!containerAlive) return 'dead'
+  if (!containerAlive) return withinGrace ? 'building' : 'dead'
   if (sessionAlive(info) && ttydAlive(info)) return 'serve'
   // (b)-fingerprint read from the COMMITTED record: a live master whose socket FILE vanished. A member
   // mid-spawn (no committed `sock` yet) is NOT a fingerprint → falls through to grace → starting.
@@ -312,6 +331,12 @@ export function hasTtyd() { try { execFileSync('ttyd', ['--version'], { stdio: '
 // So presence ≠ exit-zero — we only treat ENOENT (binary not on PATH) as missing; a non-zero exit means
 // dtach IS installed (it just rejected our probe args).
 export function hasDtach() { try { execFileSync('dtach', ['-V'], { stdio: 'ignore' }); return true } catch (err) { return err?.code !== 'ENOENT' } }
+// #41: `pgrep` is now load-bearing — terminal liveness/teardown match the dtach master/viewer by their
+// argv (drift-proof, pid-reuse-safe) via pgrep, not a stored pid. Without it, masterAliveForSock always
+// reads false → NO member ever serves → every terminal silently shows orphaned/building (mimics the very
+// bug #41 fixed). So fail LOUD at launch. (Probe pattern matches nothing → exit 1 = pgrep EXISTS; ENOENT
+// = missing.) Standard on macOS + Linux (procps).
+export function hasPgrep() { try { execFileSync('pgrep', ['-f', '__mrc_pgrep_presence_probe__'], { stdio: 'ignore' }); return true } catch (err) { return err?.code !== 'ENOENT' } }
 
 // #34: the set of a team's members whose SESSION is alive (the dtach master — NOT the ephemeral ttyd
 // viewer). Keyed by HANDLE; drives the daemon's launched-vs-online reconcile. A member is "launched"
@@ -351,6 +376,10 @@ export function killTeamSession(org) {
     dockerKillMember(rec.repo, handle)
     try { unlinkSync(sock) } catch {}
   }
+  // #41: clear the launch record on an INTENTIONAL stop (matches the dashboard "Stop team" path), so a
+  // deliberately-`down`ed team reads launchable immediately instead of a stale `building`/`starting` for
+  // up to the grace window. A CRASH never calls this, so it keeps its record → the safe orphaned/transient.
+  removeLaunch(org)
   return any
 }
 
@@ -362,6 +391,7 @@ export async function startTeamSession(norm, repoPath, { rosterPath } = {}) {
   if (!live.length) return { ok: false, error: 'no live members to launch' }
   if (!hasTtyd()) return { ok: false, error: 'ttyd not found — it now hosts each member terminal (brew install ttyd / apt install ttyd)' }
   if (!hasDtach()) return { ok: false, error: 'dtach not found — it keeps each member session alive across console switches (brew install dtach / apt install dtach)' }
+  if (!hasPgrep()) return { ok: false, error: 'pgrep not found — required for terminal liveness detection; without it NO member terminal can serve (install procps: apt install procps — standard on macOS + Linux)' }
   try {
     const { ensureDocker } = await import('../colima.js')
     const { buildImage } = await import('../docker.js')
@@ -524,10 +554,11 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
       if (workers.length) console.log(`  • ${workers.length} worker member(s) (${workers.map((m) => '@' + m.handle).join(', ')}) — invoked on demand, not launched.`)
       if (sub === 'define') { console.log('  ◎ Defined (not launched). Run `mrc team up` to launch.'); return }
       if (!live.length) { console.log('  (no live members to launch)'); return }
-      if (!hasTtyd() || !hasDtach()) {
-        const missing = [!hasTtyd() && 'ttyd', !hasDtach() && 'dtach'].filter(Boolean).join(' + ')
-        console.log(`  ${missing} not found — ttyd hosts each member terminal and dtach keeps its session alive across`)
-        console.log('  console switches. Install (brew install ttyd dtach / apt install ttyd dtach) and relaunch, or run a member directly:')
+      if (!hasTtyd() || !hasDtach() || !hasPgrep()) {
+        const missing = [!hasTtyd() && 'ttyd', !hasDtach() && 'dtach', !hasPgrep() && 'pgrep'].filter(Boolean).join(' + ')
+        console.log(`  ${missing} not found — ttyd hosts each member terminal, dtach keeps its session alive across`)
+        console.log('  console switches, and pgrep drives terminal-liveness detection (without it NO terminal can serve).')
+        console.log('  Install (brew install ttyd dtach / apt install ttyd dtach procps) and relaunch, or run a member directly:')
         for (const m of live) console.log(`      node ${memberArgv(repoPath, m, path).join(' ')}`)
         return
       }

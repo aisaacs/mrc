@@ -421,7 +421,7 @@ const inboxItem = (id) => (S.teams.userInbox||[]).find(x=>x.id===id)
 // (instead of patchDetail leaving a now-stale textarea sitting there). 'gone' if it vanished.
 const inboxSig = (id) => { const q=inboxItem(id); return q ? (q.answered?'a':q.dismissed?'d':'o') : 'gone' }
 const detailKey = () => S.building ? 'build'
-  : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+S.selMember+':'+(launchFor()?.members?.[S.selMember]?.ttydUrl||'none'))
+  : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+S.selMember+':'+(launchFor()?.members?.[S.selMember]?.state||'none'))
   : S.selInbox!=null ? 'inbox:'+S.selInbox+':'+inboxSig(S.selInbox)
   : S.selRoom ? 'room:'+S.selRoom+':'+S.tab
   : 'empty'
@@ -589,13 +589,26 @@ function renderMember(d) {
 // only render the #detail fallback when there's no live ttyd yet; when there IS one, #detail is emptied
 // and syncTermHost shows the keep-alive iframe over it.
 function renderTerminal(d, m) {
+  // #41: render the daemon's per-member terminal `state` as a PURE pass-through (no client recompute — the
+  // daemon's classifyTerminal is the one source of truth). serve → the keep-alive overlay shows it (here we
+  // just clear #detail); the other 4 states get honest copy. orphaned is reassurance-FIRST + a per-member
+  // Relaunch.
   const L = launchFor()
-  const url = L && L.members && L.members[m.handle] && L.members[m.handle].ttydUrl
-  if (url) { d.innerHTML = ''; return }   // the persistent overlay shows the terminal; #detail is hidden by syncTermHost
-  d.innerHTML = `<div class="row" style="justify-content:flex-end;margin-bottom:8px"><button class="btn tiny" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove @${esc(m.first)}</button></div>
-    <div class="empty">${L
-    ? `@${esc(m.first)} is starting in its own ttyd — its terminal appears here in a moment (or open the <code>http://127.0.0.1:&lt;port&gt;/</code> URL <code>mrc team up</code> printed).`
-    : `@${esc(m.first)} isn't launched yet. Build + <b>🚀 Launch</b> the team (or <code>mrc team up</code>).`}</div>`
+  const state = L && L.members && L.members[m.handle] && L.members[m.handle].state
+  if (state === 'serve') { d.innerHTML = ''; return }   // the persistent overlay shows the live terminal
+  const removeBtn = `<div class="row" style="justify-content:flex-end;margin-bottom:8px"><button class="btn tiny" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove @${esc(m.first)}</button></div>`
+  let body
+  if (state === 'orphaned') {
+    body = `<div class="empty"><b>@${esc(m.first)} is still running</b> — its agent is alive and working in the room; only the terminal <i>view</i> was lost (its host-side plumbing died). Relaunch to restore the terminal — the conversation resumes where it left off (an in-flight turn may restart).
+      <div style="margin-top:12px"><button class="btn primary" onclick="relaunchMember('${esc(m.handle)}','${esc(m.first)}')">↻ Relaunch terminal</button></div></div>`
+  } else if (state === 'building') {
+    body = `<div class="empty">Building @${esc(m.first)}'s image — first run takes a few minutes. The terminal appears here once it's up.</div>`
+  } else if (state === 'starting') {
+    body = `<div class="empty">@${esc(m.first)} is starting — its terminal appears here in a moment.</div>`
+  } else {   // dead / no live launch
+    body = `<div class="empty">@${esc(m.first)} isn't launched. Build + <b>🚀 Launch</b> the team (or <code>mrc team up</code>).</div>`
+  }
+  d.innerHTML = removeBtn + body
 }
 // #40 keep-alive terminal overlay. Called every paint: shows the selected live member's iframe (lazily
 // created once, src never changed), hides all others + on any non-terminal view, and tears down iframes
@@ -613,12 +626,15 @@ function syncTermHost() {
   let target = null
   if (!S.building && S.selMember) {
     const m = memberByHandle(S.selMember), L = launchFor()
-    const url = m && m.tier!=='worker' && L && L.members && L.members[m.handle] && L.members[m.handle].ttydUrl
-    if (url) target = { key: S.org+'|'+m.handle, url, m }
+    const info = m && m.tier!=='worker' && L && L.members && L.members[m.handle]
+    // #41: only embed the iframe when the daemon says state==='serve' — never for orphaned (its ttydPort is
+    // stale → a blank iframe = silent-broken). #detail shows the orphaned/Relaunch copy instead.
+    if (info && info.state === 'serve' && info.ttydUrl) target = { key: S.org+'|'+m.handle, url: info.ttydUrl, m }
   }
-  // teardown: any block whose org|handle is no longer a launched live member (stopped/removed/suspended/org gone)
+  // teardown: any block whose member is no longer SERVING (stopped/removed/suspended/org gone, OR it just
+  // transitioned serve→orphaned) — removes the iframe → closes its ws, no stale blank embed.
   const liveKeys = new Set()
-  for (const l of (S.teams.launch||[])) if (l.running && l.members) for (const h of Object.keys(l.members)) if (l.members[h] && l.members[h].ttydUrl) liveKeys.add(l.org+'|'+h)
+  for (const l of (S.teams.launch||[])) if (l.running && l.members) for (const h of Object.keys(l.members)) if (l.members[h] && l.members[h].state === 'serve') liveKeys.add(l.org+'|'+h)
   for (const b of [...host.children]) if (!liveKeys.has(b.dataset.key)) b.remove()   // removes the iframe → closes its ws
   if (!target) { host.style.display='none'; detail.style.display=''; return }
   let block = [...host.children].find(b => b.dataset.key===target.key)
@@ -628,6 +644,10 @@ function syncTermHost() {
     host.appendChild(block)   // lazily created once; src is never changed after this
   }
   block.querySelector('.termhdr').innerHTML = termHeaderHTML(target.m, target.url)   // header patch is cheap; iframe sibling untouched
+  // Reload the iframe ONLY when the member's ttyd URL actually changed (its viewer respawned on a new
+  // port) — a member-switch keeps the same URL, so this is a no-op then (keep-alive preserved).
+  const frame = block.querySelector('.termframe')
+  if (frame && frame.getAttribute('src') !== target.url) frame.setAttribute('src', target.url)
   for (const b of host.children) b.style.display = (b===block) ? 'flex' : 'none'
   host.style.display='flex'; detail.style.display='none'
 }
@@ -935,6 +955,10 @@ window.toggleNotify = async ()=>{
 }
 window.stopTeam = async ()=>{ if(!confirm('Stop the team? This closes all member terminals.'))return; const r=await actJSON('/api/team-stop',{org:S.org}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
 window.removeMember = async (h, first)=>{ if(!confirm('Remove @'+first+' from the team? (updates team.json)'))return; const r=await actJSON('/api/team-remove-member',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; S.selMember=null; tick() }
+// #41: recover an orphaned terminal — stops the lost session (master+container) FIRST, then a fresh spawn.
+// The agent's conversation resumes (--continue). Goes through actJSON → CSRF-guarded + confirms a 2xx
+// before clearing (no optimistic success; a 403/error surfaces via flashFail).
+window.relaunchMember = async (h, first)=>{ if(!confirm(`Relaunch @${first}'s terminal? Its agent keeps running — this restores the terminal view (the conversation resumes; an in-flight turn may restart).`))return; const r=await actJSON('/api/team-relaunch-member',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
 window.killSession = async (id, name)=>{ if(!confirm('Kill container '+name+'? (force-removes it)'))return; const r=await actJSON('/api/kill-session',{id}); if(!r.ok)return flashFail(r); S.flash=null; S._tick=0; tick() }
 window.bLaunch = async ()=>{ const msg=$('#bMsg'); if(!msg)return; msg.innerHTML='<span class="muted">launching… first run builds the image (~minutes)</span>'
   const r=await postJSON('/api/team-launch',{roster:bRoster()})

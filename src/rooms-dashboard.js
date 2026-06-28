@@ -163,7 +163,7 @@ async function handle(req, res) {
     // GUI launch lifecycle: start the live members (each in its own ttyd), stop them, add/remove a
     // member. All proxy to the daemon. (Member terminal switching is client-side now — each member has
     // its own ttyd, so the dashboard just swaps the iframe; the old /api/team-select is gone.)
-    if (req.method === 'POST' && (url.pathname === '/api/team-launch' || url.pathname === '/api/team-stop' || url.pathname === '/api/team-delete' || url.pathname === '/api/team-add-member' || url.pathname === '/api/team-remove-member' || url.pathname === '/api/kill-session')) {
+    if (req.method === 'POST' && (url.pathname === '/api/team-launch' || url.pathname === '/api/team-stop' || url.pathname === '/api/team-delete' || url.pathname === '/api/team-add-member' || url.pathname === '/api/team-remove-member' || url.pathname === '/api/team-relaunch-member' || url.pathname === '/api/kill-session')) {
       let body = ''
       req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
       req.on('end', async () => {
@@ -174,6 +174,7 @@ async function handle(req, res) {
         if (url.pathname === '/api/team-delete') return sendJSON(res, 200, await ctrl(cp, 'removeorg', { org: j.org }))   // #13: forget the project (no disk deletion)
         if (url.pathname === '/api/team-add-member') return sendJSON(res, 200, await ctrl(cp, 'addmember', { org: j.org, team: j.team, role: j.role, backend: j.backend, territory: j.territory }))
         if (url.pathname === '/api/team-remove-member') return sendJSON(res, 200, await ctrl(cp, 'removemember', { org: j.org, handle: j.handle }))
+        if (url.pathname === '/api/team-relaunch-member') return sendJSON(res, 200, await ctrl(cp, 'relaunchmember', { org: j.org, handle: j.handle }))   // #41: orphan recovery (kill-first → respawn)
         if (url.pathname === '/api/kill-session') return sendJSON(res, 200, await ctrl(cp, 'killsession', { id: j.id }))
         return sendJSON(res, 404, { ok: false, error: 'unknown team action' })
       })
