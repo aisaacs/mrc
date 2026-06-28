@@ -23,6 +23,7 @@ import { PRESETS, listPresets, buildPreset } from '../teams/presets.js'
 import { runWorkerExec, volumeName } from '../docker.js'
 import { loadEnv, repoEnvKey } from '../config.js'
 import { findFreePort } from '../ports.js'
+import { loadLaunches, saveLaunch, setMemberLaunch, removeMemberLaunch } from '../rooms.js'
 
 const MRC_JS = fileURLToPath(new URL('../../mrc.js', import.meta.url))
 const daemonMetaPath = () => join(homedir(), '.local', 'share', 'mrc', 'room-daemon.json')
@@ -162,44 +163,81 @@ function hasTmux() {
   try { execFileSync('tmux', ['-V'], { stdio: 'ignore' }); return true } catch { return false }
 }
 
-// Launch each live member in its own tmux window so the human can attach to any of them (the answer
-// to "interact directly in the console with each team member"). Returns the tmux session name.
-function launchTmux(norm, repoPath, rosterPath, live) {
-  const session = tmuxSession(norm.org)
-  const exists = spawnSync('tmux', ['has-session', '-t', session], { stdio: 'ignore' }).status === 0
-  if (exists) return { session, already: true }
-  const cmd = (m) => `node ${memberArgv(repoPath, m, rosterPath).map((a) => `'${a}'`).join(' ')}; echo; echo '[@${m.first} exited — press enter]'; read`
-  execFileSync('tmux', ['new-session', '-d', '-s', session, '-n', live[0].first, cmd(live[0])])
-  for (const m of live.slice(1)) execFileSync('tmux', ['new-window', '-t', session, '-n', m.first, cmd(m)])
-  return { session, already: false }
+// Is a recorded ttyd process still alive? (signal 0 = existence check; EPERM still means it exists.)
+function pidAlive(pid) { if (!pid) return false; try { process.kill(pid, 0); return true } catch (e) { return e.code === 'EPERM' } }
+
+// Single-quote a value for a `sh -c` string, escaping embedded quotes (close-quote, escaped-quote,
+// reopen: ' -> '\''). A member `name` in team.json is user-authored and only lowercased, so without this
+// a crafted name (e.g. `'; rm -rf … #`) would break out of the quotes and run on the HOST at `mrc team up`
+// — before any container isolation. (A cloned repo's malicious team.json is the real vector.)
+const shq = (a) => `'${String(a).replace(/'/g, `'\\''`)}'`
+// The shell command ttyd runs for a member: the member session, then a persisted exit line so the browser
+// terminal shows "[@x exited — press enter]" instead of ttyd dropping the session the instant Claude exits.
+const memberShellCmd = (repoPath, m, rosterPath) =>
+  `node ${memberArgv(repoPath, m, rosterPath).map(shq).join(' ')}; echo; echo ${shq(`[@${m.first} exited — press enter]`)}; read`
+
+// Spawn ONE detached ttyd that holds a member's PTY directly (TERM=xterm-256color). Returns the child.
+function spawnMemberTtyd(port, shellCmd) {
+  return spawn('ttyd', ['-W', '-i', '127.0.0.1', '-p', String(port), 'sh', '-c', shellCmd],
+    { detached: true, stdio: 'ignore', env: { ...process.env, TERM: 'xterm-256color' } })
+}
+
+// #34: launch each live member in its OWN detached ttyd (no tmux). ttyd holds the PTY directly, so Claude
+// sees a real xterm-256color terminal and the mouse wheel scrolls the transcript natively. Reuses a
+// member's existing ttyd if still alive (idempotent relaunch). Returns the per-member ttyd registry map.
+async function launchMembers(norm, repoPath, rosterPath, live) {
+  const existing = (loadLaunches()[norm.org] || {}).members || {}
+  const members = {}
+  let nextPort = Number(process.env.MRC_TTYD_PORT) || 7681
+  let already = true
+  for (const m of live) {
+    const prev = existing[m.handle]
+    if (prev && pidAlive(prev.ttydPid)) { members[m.handle] = prev; continue }   // already up — keep it
+    already = false
+    const port = await findFreePort(nextPort); nextPort = port + 1
+    const child = spawnMemberTtyd(port, memberShellCmd(repoPath, m, rosterPath))
+    child.unref()
+    members[m.handle] = { ttydPort: port, ttydPid: child.pid, containerId: null }   // containerId filled by reconcile
+  }
+  return { members, already }
 }
 
 // --- launch lifecycle (shared by `mrc team up` and the daemon's GUI launch) ----------------------
 export function hasTtyd() { try { execFileSync('ttyd', ['--version'], { stdio: 'ignore' }); return true } catch { return false } }
+// (legacy tmux helpers kept only for the `mrc team console` attach path until chunk C replaces it.)
 export function tmuxSessionExists(session) { return spawnSync('tmux', ['has-session', '-t', session], { stdio: 'ignore' }).status === 0 }
-// Window names of a launched org's tmux session (= the live members' first names). Used to tell
-// "launched but not connected yet" (still loading / awaiting login) from "not launched at all".
-export function tmuxWindows(org) {
-  try { return execFileSync('tmux', ['list-windows', '-t', tmuxSession(org), '-F', '#{window_name}'], { encoding: 'utf8' }).split('\n').map((s) => s.trim()).filter(Boolean) } catch { return [] }
-}
 export function tmuxSelectWindow(org, name) { try { execFileSync('tmux', ['select-window', '-t', `${tmuxSession(org)}:${name}`], { stdio: 'ignore' }); return true } catch { return false } }
-export function killTeamSession(org) { try { execFileSync('tmux', ['kill-session', '-t', tmuxSession(org)], { stdio: 'ignore' }); return true } catch { return false } }
 
-// One writable, localhost-only ttyd serving the org's tmux session, so the members' live terminals
-// embed in the dashboard (log in + accept the Channels prompt + chat, all in the browser).
-export async function startTtyd(session) {
-  const port = await findFreePort(Number(process.env.MRC_TTYD_PORT) || 7681)
-  const child = spawn('ttyd', ['-W', '-i', '127.0.0.1', '-p', String(port), 'tmux', 'attach', '-t', session], { detached: true, stdio: 'ignore' })
-  child.unref()
-  return { port, url: `http://127.0.0.1:${port}/`, pid: child.pid }
+// #34: the set of a team's members whose ttyd is alive (replaces tmuxWindows for the daemon's
+// launched-vs-online reconcile). Keyed by HANDLE. A member is "launched" while its ttyd lives.
+export function launchedMemberHandles(org) {
+  const mems = (loadLaunches()[org] || {}).members || {}
+  const s = new Set()
+  for (const [h, info] of Object.entries(mems)) if (pidAlive(info?.ttydPid)) s.add(h)
+  return s
+}
+// Per-member ttyd view for the dashboard: handle -> { ttydPort, ttydUrl, alive }.
+export function memberTtyds(org) {
+  const mems = (loadLaunches()[org] || {}).members || {}
+  const out = {}
+  for (const [h, info] of Object.entries(mems)) out[h] = { ttydPort: info.ttydPort, ttydUrl: info.ttydPort ? `http://127.0.0.1:${info.ttydPort}/` : null, alive: pidAlive(info?.ttydPid) }
+  return out
+}
+// Stop a team: kill every member's ttyd (SIGTERM → ttyd closes its PTY → `mrc.js --member` gets SIGHUP
+// → its container stops). Chunk C adds a `docker kill` by `mrc.member` label as belt-and-suspenders.
+export function killTeamSession(org) {
+  const mems = (loadLaunches()[org] || {}).members || {}
+  let any = false
+  for (const info of Object.values(mems)) { try { if (info?.ttydPid) { process.kill(info.ttydPid, 'SIGTERM'); any = true } } catch {} }
+  return any
 }
 
-// Build the image once, launch the live members in tmux, and (if ttyd is present) start an embeddable
-// terminal. Returns { ok, session, ttyd, live }. Used by both the CLI and the daemon.
-export async function startTeamSession(norm, repoPath, { rosterPath, withTtyd = true } = {}) {
+// Build the image once, then launch each live member in its OWN ttyd; persist the per-member registry.
+// ttyd is REQUIRED — it's the PTY holder now (no tmux fallback). Returns { ok, members, already, live }.
+export async function startTeamSession(norm, repoPath, { rosterPath } = {}) {
   const live = norm.members.filter((m) => m.tier === 'live')
   if (!live.length) return { ok: false, error: 'no live members to launch' }
-  if (!hasTmux()) return { ok: false, error: 'tmux not found (brew install tmux / apt install tmux)' }
+  if (!hasTtyd()) return { ok: false, error: 'ttyd not found — it now hosts each member terminal (brew install ttyd / apt install ttyd)' }
   try {
     const { ensureDocker } = await import('../colima.js')
     const { buildImage } = await import('../docker.js')
@@ -207,14 +245,9 @@ export async function startTeamSession(norm, repoPath, { rosterPath, withTtyd = 
     await ensureDocker(false, {})
     buildImage(resolveContextDir(dirname(MRC_JS)), { rebuild: false, verbose: false, uid: process.getuid?.() ?? 1000, gid: process.getgid?.() ?? 1000 })
   } catch (e) { /* members will each build on their own */ }
-  const { session, already } = launchTmux(norm, repoPath, rosterPath, live)
-  let ttyd = null
-  if (withTtyd && hasTtyd()) { try { ttyd = await startTtyd(session) } catch {} }
-  try {
-    const { saveLaunch } = await import('../rooms.js')
-    saveLaunch(norm.org, { session, repo: repoPath, ttydUrl: ttyd?.url || null, ttydPort: ttyd?.port || null, ttydPid: ttyd?.pid || null })
-  } catch {}
-  return { ok: true, session, already, ttyd, live: live.map((m) => ({ handle: m.handle, first: m.first, role: m.role })) }
+  const { members, already } = await launchMembers(norm, repoPath, rosterPath, live)
+  saveLaunch(norm.org, { repo: repoPath, members })
+  return { ok: true, members, already, live: live.map((m) => ({ handle: m.handle, first: m.first, role: m.role })) }
 }
 
 // Reconstruct a PINNED team.json from a normalized org def — every member keeps its assigned name —
@@ -245,9 +278,12 @@ export function writeTeamFile(repo, roster) {
   try { writeFileSync(join(repo, 'team.json'), JSON.stringify({ project: roster.org, teams: roster.teams }, null, 2) + '\n'); return true } catch { return false }
 }
 
-// Kill one member's tmux window (when it's removed from a running team).
-export function killMemberWindow(org, first) {
-  try { execFileSync('tmux', ['kill-window', '-t', `${tmuxSession(org)}:${first}`], { stdio: 'ignore' }); return true } catch { return false }
+// #34: kill one member's ttyd + drop it from the registry (when removed from a running team).
+export function killMember(org, handle) {
+  const info = ((loadLaunches()[org] || {}).members || {})[handle]
+  if (info?.ttydPid) { try { process.kill(info.ttydPid, 'SIGTERM') } catch {} }
+  removeMemberLaunch(org, handle)
+  return true
 }
 
 // Append a member to a roster (returns a copy). The new member is UNPINNED, so it draws a fresh
@@ -265,14 +301,20 @@ export function addMemberToRoster(roster, teamName, member) {
   return r
 }
 
-// Launch ONE member into an already-running org's tmux session (image already built, so no
-// buildImage — safe from the daemon). No-op if the team isn't launched or the window exists.
-export function launchMemberWindow(org, repoPath, rosterPath, member) {
-  const session = tmuxSession(org)
-  if (!tmuxSessionExists(session)) return { ok: false, error: 'team not launched' }
-  if (tmuxWindows(org).includes(member.first)) return { ok: true, already: true }
-  const cmd = `node ${[MRC_JS, repoPath, '--member', member.handle, '--roster', rosterPath].map((a) => `'${a}'`).join(' ')}; echo; echo '[@${member.first} exited — press enter]'; read`
-  try { execFileSync('tmux', ['new-window', '-t', session, '-n', member.first, cmd]); return { ok: true } } catch (e) { return { ok: false, error: String(e?.message || e) } }
+// #34: launch ONE member into an already-running org as its own ttyd (image already built, so no
+// buildImage — safe from the daemon). No-op if the team isn't launched or the member's ttyd is alive.
+export async function launchMember(org, repoPath, rosterPath, member) {
+  const rec = loadLaunches()[org]
+  if (!rec) return { ok: false, error: 'team not launched' }
+  const prev = (rec.members || {})[member.handle]
+  if (prev && pidAlive(prev.ttydPid)) return { ok: true, already: true }
+  try {
+    const port = await findFreePort(Number(process.env.MRC_TTYD_PORT) || 7681)
+    const child = spawnMemberTtyd(port, memberShellCmd(repoPath, member, rosterPath))
+    child.unref()
+    setMemberLaunch(org, member.handle, { ttydPort: port, ttydPid: child.pid, containerId: null })
+    return { ok: true }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
 
 // Parse a roster (object or JSON string), write it to <repo>/.mrc/team.runtime.json so launched
@@ -349,21 +391,23 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
       if (workers.length) console.log(`  • ${workers.length} worker member(s) (${workers.map((m) => '@' + m.handle).join(', ')}) — invoked on demand, not launched.`)
       if (sub === 'define') { console.log('  ◎ Defined (not launched). Run `mrc team up` to launch.'); return }
       if (!live.length) { console.log('  (no live members to launch)'); return }
-      if (!hasTmux()) {
-        console.log('  tmux not found — launch each member in its own terminal:')
+      if (!hasTtyd()) {
+        console.log('  ttyd not found — it now hosts each member terminal. Install it (brew install ttyd / apt install ttyd)')
+        console.log('  and relaunch, or run a member directly:')
         for (const m of live) console.log(`      node ${memberArgv(repoPath, m, path).join(' ')}`)
         return
       }
       const r = await startTeamSession(norm, repoPath, { rosterPath: path })
       if (!r.ok) { console.error(`  ✗ ${r.error}`); process.exit(1) }
-      if (r.already) console.log(`  ◎ tmux session "${r.session}" already running — attach: tmux attach -t ${r.session}`)
-      else {
-        console.log(`  ◎ Launched ${live.length} member(s) in tmux session "${r.session}":`)
-        for (const m of live) console.log(`      @${m.first}/${m.backend}  (${m.roleLabel}${m.lead ? ', lead' : ''}, ${m.team})`)
-        console.log(`\n  Attach:  tmux attach -t ${r.session}    (switch members: Ctrl-b n / Ctrl-b w)`)
+      console.log(r.already
+        ? '  ◎ team already running — its member terminals are up:'
+        : `  ◎ Launched ${live.length} member(s), each in its own ttyd terminal:`)
+      for (const m of live) {
+        const port = r.members?.[m.handle]?.ttydPort
+        const url = port ? `http://127.0.0.1:${port}/` : '(no terminal)'
+        console.log(`      @${m.first}/${m.backend}  (${m.roleLabel}${m.lead ? ', lead' : ''}, ${m.team})  →  ${url}`)
       }
-      if (r.ttyd) console.log(`  ◎ Browser terminal: ${r.ttyd.url}  (also embedded in the dashboard's Console tab)`)
-      else console.log('  (install ttyd to embed member terminals in the dashboard: brew install ttyd)')
+      console.log('\n  Each member terminal is embedded in the dashboard Console (mrc rooms dashboard).')
       console.log('  Each member accepts the one-time Channels prompt on first launch.')
       return
     }

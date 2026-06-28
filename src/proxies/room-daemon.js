@@ -597,25 +597,25 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
         if (f.action === 'killsession' && f.id) { daemonLog(`kill session ${f.id}`); reply({ ok: killContainer(f.id) }); continue }
         if (f.action === 'team') {
           const st = engine.status()
-          // Mark members whose tmux window exists but whose channel hasn't registered yet (launched,
-          // still loading / awaiting login+accept) vs. truly online (channel registered = ready).
-          const winByOrg = {}
+          // #34: a member is "launched" while its OWN ttyd is alive (was: a tmux window exists), vs.
+          // "online" = its channel registered (ready). launched-but-not-online = still loading / awaiting
+          // login+accept. Keyed by handle now.
+          const launchedByOrg = {}
           if (teamMod) for (const m of st.members) {
-            if (!(m.org in winByOrg)) { try { winByOrg[m.org] = new Set(teamMod.tmuxWindows(m.org)) } catch { winByOrg[m.org] = new Set() } }
+            if (!(m.org in launchedByOrg)) { try { launchedByOrg[m.org] = teamMod.launchedMemberHandles(m.org) } catch { launchedByOrg[m.org] = new Set() } }
           }
-          for (const m of st.members) m.launched = !!(winByOrg[m.org] && winByOrg[m.org].has(m.first))
+          for (const m of st.members) m.launched = !!(launchedByOrg[m.org] && launchedByOrg[m.org].has(m.handle))
           const launches = loadLaunches()
           const telegram = {}; for (const [org, s] of tgStates) telegram[org] = tgView(s)   // per-org pairing/link state for the dashboard
-          // Reconcile each recorded launch against reality. A launch is "running" only if its tmux
-          // session is actually up (≥1 member window) OR it's recent enough to still be building its
-          // image. A CRASHED team leaves a stale record with no windows — reporting that as running
-          // (the old hardcoded `true`) made orgRunning() true forever, which hid the ▶ Resume/🚀 Launch
-          // button so the team could never be restarted from the GUI.
+          // Reconcile each recorded launch against reality. "running" only if ≥1 member ttyd is alive OR
+          // it's recent enough to still be building its image. A CRASHED team (or a legacy pre-#34 record
+          // with no `members`) leaves no live ttyd → reported not-running, so the ▶ Resume / 🚀 Launch
+          // button shows and the team can be restarted. Each launch carries the per-member ttyd map (B).
           const BUILD_GRACE_MS = 5 * 60_000
           reply({ ok: true, ...st, telegram, launch: Object.entries(launches).map(([org, v]) => {
-            const liveWindows = winByOrg[org]?.size || 0
+            const liveCount = teamMod ? teamMod.launchedMemberHandles(org).size : 0
             const fresh = Date.now() - (v.at || 0) < BUILD_GRACE_MS
-            return { org, session: v.session, ttydUrl: v.ttydUrl || null, running: liveWindows > 0 || fresh }
+            return { org, repo: v.repo || null, members: teamMod ? teamMod.memberTtyds(org) : {}, running: liveCount > 0 || fresh }
           }) })
           continue
         }
@@ -654,8 +654,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
           continue
         }
         if (f.action === 'stopteam' && f.org) {
-          if (teamMod) teamMod.killTeamSession(f.org)
-          const l = loadLaunches()[f.org]; if (l?.ttydPid) { try { process.kill(l.ttydPid) } catch {} }
+          if (teamMod) teamMod.killTeamSession(f.org)   // #34: kills every member's ttyd (→ container stops)
           removeLaunch(f.org); reply({ ok: true }); continue
         }
         // Delete a project (#13): forget it from the live daemon entirely — stop sessions + the TG
@@ -663,8 +662,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
         // disk (team.json + transcripts/history untouched) — fully re-addable via `mrc team up`. Idempotent.
         if (f.action === 'removeorg' && f.org) {
           const org = f.org
-          if (teamMod) { try { teamMod.killTeamSession(org) } catch {} }
-          const l = loadLaunches()[org]; if (l?.ttydPid) { try { process.kill(l.ttydPid) } catch {} }
+          if (teamMod) { try { teamMod.killTeamSession(org) } catch {} }   // #34: kills every member's ttyd
           removeLaunch(org)
           stopTgForOrg(org)                                   // stop the poller BEFORE dropping its state (Roland's ordering)
           tgStates.delete(org)
@@ -686,7 +684,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
             const { norm } = teamMod.materializeRoster(updated, def.repo)
             orgRoster.set(norm.org, updated)
             defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })   // prunes the member + syncs team.json
-            if (m && m.tier === 'live') teamMod.killMemberWindow(f.org, m.first)
+            if (m && m.tier === 'live') teamMod.killMember(f.org, m.handle)   // #34: kill the member's ttyd
             daemonLog(`removemember ${f.org}: @${f.handle}`)
             reply({ ok: true })
           } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
@@ -722,7 +720,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
             defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
             const added = norm.members.find((m) => !prev.has(m.handle))
             let launched = false
-            if (added && added.tier === 'live' && loadLaunches()[f.org]) { launched = !!teamMod.launchMemberWindow(f.org, norm.repo, rosterPath, added).ok }
+            // #34: launchMember is async (port alloc); the control handler is sync, so fire-and-forget and
+            // report optimistically — the next reconcile tick reports the member's real ttyd liveness.
+            if (added && added.tier === 'live' && loadLaunches()[f.org]) {
+              launched = true
+              teamMod.launchMember(f.org, norm.repo, rosterPath, added).catch((e) => daemonLog(`launchMember ${f.org}/@${added.handle}: ${e?.message || e}`))
+            }
             // Tell the EXISTING team members a new member joined, so the architect actually brings them
             // in (otherwise nobody knows the roster changed).
             if (added) {

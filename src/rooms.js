@@ -248,3 +248,21 @@ export function removeLaunch(org) {
   const all = loadLaunches(); delete all[org]
   try { atomicWriteFileSync(launchesFile(), JSON.stringify(all, null, 2)) } catch {}
 }
+// #34: per-member ttyd registry. A launch record is now
+//   { repo, members: { <handle>: { ttydPort, ttydPid, containerId } }, at }
+// (legacy records carrying a top-level `session`/`ttydPort` and no `members` read as "not launched" →
+// the team shows ▶ Resume and a relaunch writes the new shape; that's the soft migration.)
+export function setMemberLaunch(org, handle, info) {
+  const all = loadLaunches()
+  const rec = all[org] || { members: {} }
+  rec.members = rec.members || {}
+  rec.members[handle] = { ...rec.members[handle], ...info }
+  rec.at = Date.now()
+  all[org] = rec
+  try { atomicWriteFileSync(launchesFile(), JSON.stringify(all, null, 2)) } catch {}
+}
+export function removeMemberLaunch(org, handle) {
+  const all = loadLaunches()
+  if (all[org] && all[org].members) { delete all[org].members[handle]; all[org].at = Date.now() }
+  try { atomicWriteFileSync(launchesFile(), JSON.stringify(all, null, 2)) } catch {}
+}

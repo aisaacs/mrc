@@ -548,6 +548,7 @@ const exitCode = await runContainer({
   allowWeb: config.allowWeb,
   json: config.json,
   labels: roomLabels,
+  member: memberCtx?.member?.handle || null,   // #34: TERM=xterm-256color + mrc.member label for ttyd-hosted members
 })
 
 // --- Post-session processing (Claude only) ---

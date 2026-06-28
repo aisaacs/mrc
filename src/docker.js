@@ -73,7 +73,11 @@ export function volumeName(repoPath, instanceId) {
 /** Run the Docker container. Returns a promise that resolves to the exit code.
  *  Uses spawn (not execFileSync) so the event loop stays free for the
  *  clipboard and notification proxy servers running in the same process. */
-export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb, json, labels = [] }) {
+export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb, json, labels = [], member = null }) {
+  // A team member (#34) runs as its own ttyd-hosted PTY (no tmux). Force TERM=xterm-256color so Claude
+  // sees a real xterm — that's what makes the mouse wheel scroll the transcript natively — and label the
+  // container with the member handle so the daemon can reconcile/console/stop it by `docker ps` label.
+  const memberFlags = member ? ['-e', 'TERM=xterm-256color', '--label', `mrc.member=${member}`] : []
   const args = [
     'run', '--rm', ...(json ? [] : ['-it']), '--init',
     '--cap-add=NET_ADMIN',
@@ -83,6 +87,7 @@ export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb
     '--label', `mrc.repo=${repoPath}`,
     '--label', `mrc.repo.name=${basename(repoPath)}`,
     '--label', `mrc.web=${!!allowWeb}`,
+    ...memberFlags,
     ...labels,
     ...envFlags,
     ...volumes,

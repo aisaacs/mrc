@@ -412,7 +412,7 @@ const inboxItem = (id) => (S.teams.userInbox||[]).find(x=>x.id===id)
 // (instead of patchDetail leaving a now-stale textarea sitting there). 'gone' if it vanished.
 const inboxSig = (id) => { const q=inboxItem(id); return q ? (q.answered?'a':q.dismissed?'d':'o') : 'gone' }
 const detailKey = () => S.building ? 'build'
-  : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+(launchFor()?.ttydUrl||'none'))
+  : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+S.selMember+':'+(launchFor()?.members?.[S.selMember]?.ttydUrl||'none'))
   : S.selInbox!=null ? 'inbox:'+S.selInbox+':'+inboxSig(S.selInbox)
   : S.selRoom ? 'room:'+S.selRoom+':'+S.tab
   : 'empty'
@@ -571,23 +571,24 @@ function renderMember(d) {
   if (!m) { d.innerHTML = `<div class="empty">Member gone.</div>`; return }
   return m.tier==='worker' ? renderWorkerLog(d, m) : renderTerminal(d, m)
 }
-// Live member -> the embedded terminal (one ttyd serves the whole session; clicking a member just
-// switches the tmux window, so the iframe is NOT reloaded).
+// Live member -> its OWN embedded ttyd (#34: one ttyd per member; selecting a member swaps the iframe
+// to that member's URL, so detailKey carries the handle + url).
 function renderTerminal(d, m) {
   const L = launchFor()
-  if (!L || !L.ttydUrl) {
+  const url = L && L.members && L.members[m.handle] && L.members[m.handle].ttydUrl
+  if (!url) {
     d.innerHTML = `<div class="row" style="justify-content:flex-end;margin-bottom:8px"><button class="btn tiny" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove @${esc(m.first)}</button></div>
       <div class="empty">${L
-      ? `@${esc(m.first)} is running in tmux, but there's no embedded terminal — install <code>ttyd</code> and relaunch, or <code>tmux attach -t ${esc(L.session)}</code>.`
+      ? `@${esc(m.first)} is starting in its own ttyd — its terminal appears here in a moment (or open the <code>http://127.0.0.1:&lt;port&gt;/</code> URL <code>mrc team up</code> printed).`
       : `@${esc(m.first)} isn't launched yet. Build + <b>🚀 Launch</b> the team (or <code>mrc team up</code>).`}</div>`
     return
   }
   const live = orgMembers().filter(x=>x.tier==='live'); const ready = live.filter(x=>x.online).length; const starting = live.filter(x=>!x.online && x.launched).length
   d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:8px">
       <b>@${esc(m.first)} <span class="muted">· terminal</span></b>
-      <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(L.ttydUrl)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny" style="margin-left:8px" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove</button> <button class="btn tiny danger" onclick="stopTeam()">■ Stop team</button></span></div>
-    <iframe src="${esc(L.ttydUrl)}" style="width:100%;flex:1 1 0;min-height:0;border:1px solid var(--line);border-radius:8px;background:#000"></iframe>
-    <div class="muted" style="margin-top:6px">First launch: log in + accept the Channels prompt here. Click a member on the left to switch the terminal to them (or Ctrl-b n).</div>`
+      <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(url)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny" style="margin-left:8px" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove</button> <button class="btn tiny danger" onclick="stopTeam()">■ Stop team</button></span></div>
+    <iframe src="${esc(url)}" style="width:100%;flex:1 1 0;min-height:0;border:1px solid var(--line);border-radius:8px;background:#000"></iframe>
+    <div class="muted" style="margin-top:6px">First launch: log in + accept the Channels prompt here. Click a member on the left to switch to its terminal.</div>`
 }
 // On-demand worker -> no terminal; show its recent activity from the team transcript.
 function renderWorkerLog(d, m) {
