@@ -81,7 +81,7 @@ send()-to-destroyed-socket (105-107); deliverTo null-sessionId (245); held-queue
 - **Synthetic-org cleanup:** consult `end` must call `engine.removeOrg(consultOrg)`, not just `endRoom` (514-520 only drops the room) — else members + bySession entries leak slowly. (Itself an instance of R4.)
 
 ### Recommended cutover order (each independently shippable, no big-bang; gate steps 2 & 5 hardest)
-1. **Fix the version stamp first** — otherwise none of the rest reloads cleanly. (Shipping now as #21b.)
+1. **Fix the version stamp first** — otherwise none of the rest reloads cleanly. (Shipped in #28 (4444e0d) as #21b.)
 2. Move stall + catch-up onto the engine (delivers #26 for both room kinds while legacy still exists — pure, reversible addition).
 3. Add `ensureConsult`; repoint onAsk/onMsg/onNote/onAgentPause.
 4. Unify the control dispatch.
@@ -89,15 +89,15 @@ send()-to-destroyed-socket (105-107); deliverTo null-sessionId (245); held-queue
 
 Plus two cross-cutting fixes not tied to the collapse (can land independently):
 - **R1 identity/trust secret** — per-launch token (closes D1 + D11) + the unforgeable rendered trust envelope.
-- **R2 atomic-write helper** — temp→fsync→rename + quarantine-on-load (closes D2/D3/D7). *Shipping now as F2.*
+- **R2 atomic-write helper** — temp→fsync→rename + quarantine-on-load (closes D2/D3/D7). *Shipped in #28 (4444e0d) as F2.*
 
 ---
 
 ## 4. Correctness lane (Roland) + cross-lane convergence
 
-- **F1 (HIGH)** version-stamp scope — confirmed by all lanes; = the headline. Fix: hash all `src/**/*.js` (a static import walk would MISS dynamic imports — room-daemon.js `import('../commands/team.js')`, engine `import('./media.js')`/`import('./png.js')` — so glob, don't walk). Must include config.js (repoEnvKeyStrict) + constants.js. *Shipping now as #21b.*
-- **F2 (HIGH)** torn-write (= D2) + compounding: #21's SIGKILL can torn-write mid-`saveInbox` → silent inbox loss → a **net regression** on inbox durability, so atomicity must ship WITH the SIGKILL hardening. *Shipping now.*
-- **F3 (MED)** no `uncaughtException`/`unhandledRejection`; daemon detached `stdio:'ignore'` → silent death, no respawn. *Shipping now.*
+- **F1 (HIGH)** version-stamp scope — confirmed by all lanes; = the headline. Fix: hash all `src/**/*.js` (a static import walk would MISS dynamic imports — room-daemon.js `import('../commands/team.js')`, engine `import('./media.js')`/`import('./png.js')` — so glob, don't walk). Must include config.js (repoEnvKeyStrict) + constants.js. *Shipped in #28 (4444e0d) as #21b.*
+- **F2 (HIGH)** torn-write (= D2) + compounding: #21's SIGKILL can torn-write mid-`saveInbox` → silent inbox loss → a **net regression** on inbox durability, so atomicity must ship WITH the SIGKILL hardening. *Shipped in #28 (4444e0d).*
+- **F3 (MED)** no `uncaughtException`/`unhandledRejection`; daemon detached `stdio:'ignore'` → silent death, no respawn. *Shipped in #28 (4444e0d).*
 - **F4 (LOW, NEW)** `route()` increments `room.turn` before checking delivery → a zero-target message inflates toward turnCap → spurious pause. Fix: count on delivery.
 - **CLEARED as correct (not bugs):** inbox answered/dismissed mutual-exclusion (guarded by code, not convention); turnCap=0 = intentional disable; doResume turn-window regrant; held FIFO. `doSteer` dropping held is a documented design choice (but is silent message loss — worth surfacing "N held dropped").
 
