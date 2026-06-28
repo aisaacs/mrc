@@ -39,6 +39,8 @@
     <a href="#install">Installation</a>
     <a href="#config">Configuration</a>
     <a href="#usage">Usage</a>
+    <h4>Agent teams</h4>
+    <a href="#teams">Agent teams</a>
     <h4>Reference</h4>
     <a href="#cli">CLI reference</a>
     <a href="#sessions">Sessions</a>
@@ -172,6 +174,96 @@
 <span class="t-prompt">$</span> <span class="t-cmd">mrc <span class="t-flag">--web</span> ~/projects/my-app</span></div>
       </div>
       <p>When you quit, the container disappears — your files are safe on the host, only the container is ephemeral. Reopening the same repo auto-resumes via <code>--continue</code>.</p>
+    </section>
+
+    <!-- AGENT TEAMS -->
+    <section id="teams">
+      <h2>Agent teams</h2>
+      <p>Mister Claude can run a whole <strong>team</strong> of agents on one problem — an architect, engineers, a critic, an adversary — each in its own sandboxed container behind the same firewall, addressing each other by <code>@mention</code>. You steer from a web dashboard or your phone: <strong>they propose; you steer; you commit.</strong></p>
+
+      <h3>Define a roster</h3>
+      <p>A team is a <code>team.json</code> file of <strong>members</strong>, each with a <strong>role</strong> and a <strong>backend</strong>. Write the file, start from a preset, or build one in the dashboard:</p>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">team.json</span></div>
+<div class="terminal-body">{
+  "org": "shop",
+  "teams": [
+    { "name": "client", "territory": "client", "members": [
+      { "role": "architect", "backend": "claude", "lead": true },
+      { "role": "engineer",  "backend": "claude", "territory": "client/src" },
+      { "role": "critic",    "backend": "claude" } ] },
+    { "name": "api", "territory": "api", "members": [
+      { "role": "architect", "backend": "claude", "lead": true },
+      { "role": "engineer",  "backend": "claude", "territory": "api/src" },
+      { "role": "adversary", "backend": "codex" } ] }
+  ]
+}</div>
+      </div>
+      <p>Or start from a ready-made preset — <code>game</code>, <code>web</code>, <code>mobile</code>, <code>backend</code> (<code>mrc team presets</code> lists them):</p>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">shell</span></div>
+<div class="terminal-body"><span class="t-com"># write a team.json from a preset</span>
+mrc team new --preset web</div>
+      </div>
+      <ul class="bullets">
+        <li><strong>Roles</strong> — architect, engineer, critic, adversary, ultracritical, user-defender, researcher, tester (plus media makers). One <strong>lead</strong> per team bridges to the shared leads room.</li>
+        <li><strong>Write territory</strong> — each member's <code>territory</code> is mounted read-write and everything else read-only, so two engineers never clobber each other's files and a critic is read-only by capability.</li>
+        <li><strong>Live vs worker</strong> — <code>claude</code> members are live participants; <code>codex</code> / <code>qwen</code> members are <strong>task-workers</strong> (a directed @mention runs their CLI for one turn).</li>
+      </ul>
+
+      <h3>Launch &amp; attach</h3>
+      <div class="terminal">
+        <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">shell</span></div>
+<div class="terminal-body"><span class="t-com"># push the roster + launch the live members (in tmux)</span>
+mrc team up
+
+<span class="t-com"># org, rooms, and your @you inbox</span>
+mrc team status
+
+<span class="t-com"># drop into a member's terminal</span>
+mrc team console roland
+
+<span class="t-com"># close the org's rooms</span>
+mrc team down</div>
+      </div>
+      <div class="callout note">
+        <span class="callout-title">One accept per member</span>
+        <p>Each live member boots in its own terminal — you accept its one-time Channels prompt to bring it online. A team isn't hands-free, by design: that per-member accept, plus <strong>you commit every change</strong>, is the control, not a caveat.</p>
+      </div>
+
+      <h3>Steer from the dashboard</h3>
+      <p><code>mrc rooms dashboard</code> opens a local web app for the whole org — every team room, live transcripts, and your inbox. Each project is a <strong>tab</strong>:</p>
+      <ul class="bullets">
+        <li><strong>Close = suspend</strong> — stops the members but keeps the team, transcripts, and history; <strong>Resume</strong> relaunches it and each member picks up its own conversation.</li>
+        <li><strong>Delete project</strong> — forgets the org from Mister Claude (stops sessions, drops the tab) but <strong>deletes nothing on disk</strong>: your repo, <code>team.json</code>, and transcripts stay, so you can re-add it with <code>mrc team up</code>.</li>
+      </ul>
+
+      <h3>The @you inbox</h3>
+      <p>When a member needs you, it lands in your inbox as one of two kinds:</p>
+      <ul class="bullets">
+        <li><strong>Question</strong> (from <code>ask_user</code>) — badged; framed "reply to answer".</li>
+        <li><strong>Notification / FYI</strong> (a plain <code>@user</code>) — <strong>reply optional</strong>; visible everywhere, nags nowhere.</li>
+      </ul>
+      <p>Both are replyable (your reply routes back to the member as a directive). Dismiss what you don't need — it's recoverable. Each item carries a stable <code>#N</code> id, and the inbox persists across daemon restarts.</p>
+
+      <h3>Answer from your phone (Telegram)</h3>
+      <p>Optional: link a Telegram bot and the team's questions and FYIs push to your phone — reply there and it routes back to the right agent. Each project uses its <strong>own</strong> bot, and linking is <strong>human-gated</strong> (nothing auto-binds):</p>
+      <div class="steps">
+        <div class="step"><div class="step-num">1</div><div class="step-body"><h3>Create a bot</h3><p>DM <a href="https://t.me/BotFather">@BotFather</a> → <code>/newbot</code> → copy the token.</p></div></div>
+        <div class="step"><div class="step-num">2</div><div class="step-body"><h3>Add the token to the project</h3><p>Put it in <em>that repo's own</em> <code>.env</code> (read strictly per-project — no global fallback): <code>MRC_TELEGRAM_BOT_TOKEN=123456:ABC-…</code></p></div></div>
+        <div class="step"><div class="step-num">3</div><div class="step-body"><h3>Bring the project up</h3><p><code>mrc team up</code> — the daemon starts the bridge for any project that has a token.</p></div></div>
+        <div class="step"><div class="step-num">4</div><div class="step-body"><h3>DM the bot <code>/start</code></h3><p>from the phone or account you want to link.</p></div></div>
+        <div class="step"><div class="step-num">5</div><div class="step-body"><h3>Confirm in the dashboard</h3><p>the chat appears as <strong>pending</strong> on that project's tab → click <strong>Confirm</strong> (Reject an unexpected one). Linked.</p></div></div>
+      </div>
+      <p>Questions push as ❓ "reply to answer", FYIs as 🔔 "reply optional", both with the same <code>#N</code>. Reply on either surface and it syncs to the other; <strong>Unpair</strong> on the tab anytime.</p>
+
+      <h3>Trust &amp; control</h3>
+      <p>A teammate's message — even the architect's — is <strong>untrusted peer data</strong>; only your own directives (a steer, or an inbox/Telegram reply) carry authority, and forged "human" markers in agent text are neutralized. Members can't reach each other's files or the open internet, a critic reviews risky work when called, and <strong>you commit every change</strong>. See the <a href="#security">Security model</a> for the layered boundary.</p>
+
+      <div class="callout tip">
+        <span class="callout-title">Go deeper</span>
+        <p>The full architecture — topology, the trust model, and what's tested — lives in <code>docs/agent-teams.md</code> in <a href="https://github.com/aisaacs/mrc">the repo</a>.</p>
+      </div>
     </section>
 
     <!-- CLI -->
