@@ -200,7 +200,11 @@
 </div>
 <script>
 const $ = (s, r=document) => r.querySelector(s)
-const esc = (s) => String(s==null?'':s).replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]))
+// Escapes & < > " AND ' (→ &#39;). Including the apostrophe closes the latent class where a future
+// edit puts an attacker-controllable string into a single-quoted JS context (onclick="f('${esc(x)}')"):
+// &#39; HTML-decodes correctly in text, double- AND single-quoted attributes, so esc() is safe in every
+// context the dashboard uses — no caller has to remember which quote style it's in.
+const esc = (s) => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
 const MRC_TOKEN = (document.querySelector('meta[name=mrc-token]')||{}).content || ''
 // Attach the CSRF token to every non-GET request (POST state-changers). A cross-origin page can't read
 // MRC_TOKEN (same-origin policy), so it can't forge these. The token is now persisted across daemon
@@ -456,9 +460,8 @@ function renderMain() {
     // person's name, else label the bare chat id as a chat — NEVER a bare "@<numeric-id>" (cryptic).
     // Shared by the Confirm gate AND the linked line so both states read the same.
     // NOTE: every field here is attacker-controllable (an unauthorized /start lands a crafted name in
-    // the pending panel), so each is esc()'d. esc() does NOT escape "'" — these only ever land in text
-    // or double-quoted attrs, never a single-quoted JS context; keep it that way (the onclicks below use
-    // numeric fromId only). If you ever put a name in `onclick="f('${...}')"`, add '→&#39; to esc first.
+    // the pending panel), so each is esc()'d — which now escapes ' as well, so a crafted name is inert
+    // in text, double-quoted attrs, AND single-quoted JS contexts alike.
     const tgName = (x) => x.username ? `@${esc(x.username)}`
       : ([x.firstName, x.lastName].filter(Boolean).join(' ') ? esc([x.firstName, x.lastName].filter(Boolean).join(' '))
       : `chat ${esc(x.chatId || x.fromId)}`)
