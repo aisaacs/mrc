@@ -2,7 +2,7 @@
 //
 //   mrc team up      [path] [--roster f]   load roster, push it to the daemon, launch live members
 //   mrc team status  [path]                show the org, rooms, and @user inbox
-//   mrc team console <handle> [path]       attach to a running member's terminal (tmux)
+//   mrc team console <handle> [path]       attach to a running member's terminal (dtach)
 //   mrc team down    [path]                close the org's rooms (containers are left to exit)
 //   mrc team define  [path]                push the roster to the daemon WITHOUT launching
 //
@@ -241,7 +241,7 @@ export function hasTtyd() { try { execFileSync('ttyd', ['--version'], { stdio: '
 // So presence ≠ exit-zero — we only treat ENOENT (binary not on PATH) as missing; a non-zero exit means
 // dtach IS installed (it just rejected our probe args).
 export function hasDtach() { try { execFileSync('dtach', ['-V'], { stdio: 'ignore' }); return true } catch (err) { return err?.code !== 'ENOENT' } }
-// (legacy tmux helpers kept only for the `mrc team console` attach path until chunk C replaces it.)
+// (dead tmux helpers — nothing calls these after the dtach console rewire (chunk C); chunk D removes them.)
 export function tmuxSessionExists(session) { return spawnSync('tmux', ['has-session', '-t', session], { stdio: 'ignore' }).status === 0 }
 
 // #34: the set of a team's members whose SESSION is alive (the dtach master — NOT the ephemeral ttyd
@@ -484,13 +484,19 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
       if (!handle) { console.error('Usage: mrc team console <handle|first-name> [path]'); process.exit(1) }
       const { norm } = loadRoster(repoPath, rosterFlag)
       const m = norm.members.find((x) => x.handle === handle.toLowerCase() || x.first.toLowerCase() === handle.toLowerCase())
-      if (!m) { console.error(`No member "${handle}" in the roster.`); process.exit(1) }
-      const session = tmuxSession(norm.org)
-      if (spawnSync('tmux', ['has-session', '-t', session], { stdio: 'ignore' }).status !== 0) {
-        console.error(`  No running team session for "${norm.org}". Run \`mrc team up\` first.`); process.exit(1)
+      if (!m) { console.error(`No member "${handle}" in the roster — run \`mrc team status\` to list members.`); process.exit(1) }
+      // #34 chunk C: attach to the member's LIVE dtach master (read-write, mouse-wheel intact), keyed by
+      // org+handle from the launch registry so two projects sharing a handle never collide. `dtach -a`
+      // re-attaches the SAME session (does NOT spawn a second master). No -E here (unlike the ttyd viewer):
+      // a CLI attach WANTS the Ctrl-\ detach key so you can leave the member running; -E only gates that
+      // one key, so the wheel/mouse still pass through either way.
+      if (!hasDtach()) { console.error('  dtach not found — it holds each member session alive across console attaches (brew install dtach / apt install dtach).'); process.exit(1) }
+      const info = ((loadLaunches()[norm.org] || {}).members || {})[m.handle]
+      if (!sessionAlive(info)) {
+        console.error(`  @${m.first} has no running session for "${norm.org}" — run \`mrc team up\` first, or open it in the dashboard Console.`); process.exit(1)
       }
-      spawnSync('tmux', ['select-window', '-t', `${session}:${m.first}`], { stdio: 'ignore' })
-      const r = spawnSync('tmux', ['attach', '-t', session], { stdio: 'inherit' })
+      console.log(`  Attaching to @${m.first} (${norm.org}) — detach with Ctrl-\\ (the member keeps running).`)
+      const r = spawnSync('dtach', ['-a', info.sock, '-r', 'winch'], { stdio: 'inherit' })
       process.exit(r.status || 0)
     }
 
