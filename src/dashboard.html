@@ -73,6 +73,14 @@
   .main { display:grid; grid-template-columns:340px 1fr; min-height:0 }
   .list { border-right:1px solid var(--line); overflow:auto; padding:10px }
   .detail { display:flex; flex-direction:column; overflow:auto; padding:16px 20px; min-width:0; min-height:0 }
+  /* #40: persistent terminal host — overlays the detail cell (col 2) so member iframes survive a
+     re-render / member-switch (no remount = no blank/reconnect). One keep-alive iframe per org+handle. */
+  #termhost { grid-column:2; grid-row:1; display:none; flex-direction:column; overflow:hidden; padding:16px 20px; min-width:0; min-height:0; background:var(--bg) }
+  #detail { grid-column:2; grid-row:1 }
+  .termblock { display:none; flex-direction:column; flex:1 1 0; min-height:0 }
+  .termhdr { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px }
+  .termframe { width:100%; flex:1 1 0; min-height:0; border:1px solid var(--line); border-radius:8px; background:#000 }
+  .termfoot { margin-top:6px }
   .detail > * { flex-shrink:0 }   /* flowing views keep natural height + the pane scrolls; fill children (#tabbody / the iframe) override below */
   #tabbody { flex:1 1 0; min-height:0; display:flex; flex-direction:column; overflow:auto }   /* transcript/summary fill the remaining height; catch-up cards scroll */
   /* pills / badges */
@@ -211,6 +219,7 @@
   <div class="main">
     <div class="list" id="mid"></div>
     <div class="detail" id="detail"></div>
+    <div id="termhost"></div>
   </div>
 </div>
 <script>
@@ -427,6 +436,7 @@ function paint() {
   if (!S.addingTo) renderMain()   // freeze the list while the add-member form is open (don't clobber inputs)
   const key = detailKey()
   if (key!==paintedKey) { renderDetail(); paintedKey=key } else patchDetail()
+  syncTermHost()   // #40: keep-alive terminal overlay (shows the selected member's persistent iframe)
   renderFlash()   // keep a surfaced failure (#20) visible across re-renders until reload/dismiss
 }
 
@@ -574,24 +584,52 @@ function renderMember(d) {
   if (!m) { d.innerHTML = `<div class="empty">Member gone.</div>`; return }
   return m.tier==='worker' ? renderWorkerLog(d, m) : renderTerminal(d, m)
 }
-// Live member -> its OWN embedded ttyd (#34: one ttyd per member; selecting a member swaps the iframe
-// to that member's URL, so detailKey carries the handle + url).
+// Live member -> its OWN embedded ttyd. #40: the live terminal lives in the PERSISTENT #termhost overlay
+// (managed by syncTermHost) so switching members never remounts the iframe (no blank/reconnect). Here we
+// only render the #detail fallback when there's no live ttyd yet; when there IS one, #detail is emptied
+// and syncTermHost shows the keep-alive iframe over it.
 function renderTerminal(d, m) {
   const L = launchFor()
   const url = L && L.members && L.members[m.handle] && L.members[m.handle].ttydUrl
-  if (!url) {
-    d.innerHTML = `<div class="row" style="justify-content:flex-end;margin-bottom:8px"><button class="btn tiny" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove @${esc(m.first)}</button></div>
-      <div class="empty">${L
-      ? `@${esc(m.first)} is starting in its own ttyd — its terminal appears here in a moment (or open the <code>http://127.0.0.1:&lt;port&gt;/</code> URL <code>mrc team up</code> printed).`
-      : `@${esc(m.first)} isn't launched yet. Build + <b>🚀 Launch</b> the team (or <code>mrc team up</code>).`}</div>`
-    return
+  if (url) { d.innerHTML = ''; return }   // the persistent overlay shows the terminal; #detail is hidden by syncTermHost
+  d.innerHTML = `<div class="row" style="justify-content:flex-end;margin-bottom:8px"><button class="btn tiny" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove @${esc(m.first)}</button></div>
+    <div class="empty">${L
+    ? `@${esc(m.first)} is starting in its own ttyd — its terminal appears here in a moment (or open the <code>http://127.0.0.1:&lt;port&gt;/</code> URL <code>mrc team up</code> printed).`
+    : `@${esc(m.first)} isn't launched yet. Build + <b>🚀 Launch</b> the team (or <code>mrc team up</code>).`}</div>`
+}
+// #40 keep-alive terminal overlay. Called every paint: shows the selected live member's iframe (lazily
+// created once, src never changed), hides all others + on any non-terminal view, and tears down iframes
+// for members no longer launched (stop/remove/suspend/cross-org). Keyed by org|handle so org-A's
+// terminal never shows under org-B.
+function termHeaderHTML(m, url) {
+  const live = orgMembers().filter(x=>x.tier==='live'); const ready=live.filter(x=>x.online).length; const starting=live.filter(x=>!x.online && x.launched).length
+  return `<b>@${esc(m.first)} <span class="muted">· terminal</span></b>
+    <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(url)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny" style="margin-left:8px" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove</button> <button class="btn tiny danger" onclick="stopTeam()">■ Stop team</button>`
+}
+function syncTermHost() {
+  const host = $('#termhost'), detail = $('#detail')
+  if (!host || !detail) return
+  // the active terminal target: a selected LIVE member with a live ttyd in the CURRENT org
+  let target = null
+  if (!S.building && S.selMember) {
+    const m = memberByHandle(S.selMember), L = launchFor()
+    const url = m && m.tier!=='worker' && L && L.members && L.members[m.handle] && L.members[m.handle].ttydUrl
+    if (url) target = { key: S.org+'|'+m.handle, url, m }
   }
-  const live = orgMembers().filter(x=>x.tier==='live'); const ready = live.filter(x=>x.online).length; const starting = live.filter(x=>!x.online && x.launched).length
-  d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:8px">
-      <b>@${esc(m.first)} <span class="muted">· terminal</span></b>
-      <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(url)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny" style="margin-left:8px" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove</button> <button class="btn tiny danger" onclick="stopTeam()">■ Stop team</button></span></div>
-    <iframe src="${esc(url)}" style="width:100%;flex:1 1 0;min-height:0;border:1px solid var(--line);border-radius:8px;background:#000"></iframe>
-    <div class="muted" style="margin-top:6px">First launch: log in + accept the Channels prompt here. Click a member on the left to switch to its terminal.</div>`
+  // teardown: any block whose org|handle is no longer a launched live member (stopped/removed/suspended/org gone)
+  const liveKeys = new Set()
+  for (const l of (S.teams.launch||[])) if (l.running && l.members) for (const h of Object.keys(l.members)) if (l.members[h] && l.members[h].ttydUrl) liveKeys.add(l.org+'|'+h)
+  for (const b of [...host.children]) if (!liveKeys.has(b.dataset.key)) b.remove()   // removes the iframe → closes its ws
+  if (!target) { host.style.display='none'; detail.style.display=''; return }
+  let block = [...host.children].find(b => b.dataset.key===target.key)
+  if (!block) {
+    block = document.createElement('div'); block.className='termblock'; block.dataset.key=target.key
+    block.innerHTML = `<div class="termhdr"></div><iframe class="termframe" title="@${esc(target.m.first)} terminal" src="${esc(target.url)}"></iframe><div class="termfoot muted">First launch: log in + accept the Channels prompt in this terminal.</div>`
+    host.appendChild(block)   // lazily created once; src is never changed after this
+  }
+  block.querySelector('.termhdr').innerHTML = termHeaderHTML(target.m, target.url)   // header patch is cheap; iframe sibling untouched
+  for (const b of host.children) b.style.display = (b===block) ? 'flex' : 'none'
+  host.style.display='flex'; detail.style.display='none'
 }
 // On-demand worker -> no terminal; show its recent activity from the team transcript.
 function renderWorkerLog(d, m) {
