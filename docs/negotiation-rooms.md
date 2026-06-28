@@ -253,7 +253,7 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 - **`src/rooms.js`** — room-dir manager (`ensureRoom`, `appendThread`, `writeConsensus`,
   `readCatchups`/`appendCatchup`/`updateCatchup`, …) at `~/.local/share/mrc/rooms/<roomId>/`
   (`thread.log`, `consensus.md`, `catchups.json`).
-- **`src/rooms-dashboard.js`** + **`src/rooms-dashboard.html`** — the `mrc rooms dashboard` web UI
+- **`src/rooms-dashboard.js`** + **`src/dashboard.html`** — the `mrc rooms dashboard` web UI
   (Decision 13): a localhost HTTP server (no deps), **started inside the daemon process**, serving
   room state from the daemon control socket + the rooms dir, plus a single-page app that renders the
   full thread + summary, the **paginated catch-up panes** (Decision 14) with explicit mark-reviewed
