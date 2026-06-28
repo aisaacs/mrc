@@ -73,7 +73,7 @@ function openingAddressees(text) {
   return out
 }
 
-export function createRoomEngine({ send, append, notify, onInbox, now = () => Date.now(), turnCap = 100 } = {}) {
+export function createRoomEngine({ send, append, notify, onInbox, now = () => Date.now(), turnCap = 200 } = {}) {
   const members = new Map()   // orgId -> Map<handleLC, member def>   (sessionId bound when live)
   const rooms = new Map()     // roomId -> room state (org-tagged)
   const bySession = new Map() // sessionId -> { org, handle }  (reverse index for live members)
@@ -357,6 +357,16 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     if (room.turnCap > 0 && room.turn >= room.turnCap) {
       room.state = 'Paused'; room.pauseReason = 'turnCap'
       _notify(`Room ${room.team || room.roomId}: turn-cap check-in at ${room.turn}`)
+      // #35: raise an @you inbox item too, so the pause isn't silent — it badges + pushes to Telegram
+      // ("resume to continue"). ONE per pause episode (guarded by pauseInboxId; once Paused, further
+      // messages are held above and never re-reach here, but the guard is belt-and-suspenders). It's
+      // resolved when the room resumes (resolvePauseItem) — never a stale "paused" item.
+      if (!room.pauseInboxId) {
+        const pi = { id: ++inboxSeq, org: room.org, roomId: room.roomId, room: room.team || room.roomId, from: '@room', fromName: room.team || room.roomId, role: 'system', team: room.team || null, text: `Room "${room.team || room.roomId}" hit its turn-cap check-in at turn ${room.turn}. Resume it to grant another window.`, type: 'question', at: now(), answered: false, dismissed: false, pauseRoom: room.roomId }
+        userInbox.push(pi); room.pauseInboxId = pi.id
+        _append(room.roomId, `${ts()} [turn-cap check-in at ${room.turn} — @you #${pi.id}]`, { qid: pi.id })
+        _inbox('new', pi)
+      }
     }
     return { ok: true, delivered: results, toUser, unresolved, state: room.state }
   }
@@ -366,8 +376,20 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     room.state = 'Paused'; room.pauseReason = reason; _append(room.roomId, `${ts()} [paused: ${reason}]`)
     return room.held.length ? room.held.map((x) => x.text).join(' / ') : null
   }
+  // #35: resolve the turn-cap @you item (mark answered + fire 'resolved' so the daemon clears the badge
+  // and edits the Telegram push). Idempotent; shared by resume and a reply-to-resume. Never leaves a
+  // stale "room paused" item after the user has already resumed.
+  function resolvePauseItem(room) {
+    if (!room.pauseInboxId) return
+    const pi = userInbox.find((x) => x.id === room.pauseInboxId)
+    room.pauseInboxId = null
+    // Keep a reply's already-recorded answer/via (the reply-resume path sets them BEFORE doResume); only
+    // default them for a bare control-resume. Fires 'resolved' exactly once.
+    if (pi && !pi.answered && !pi.dismissed) { pi.answered = true; if (!pi.answer) pi.answer = '(resumed)'; if (!pi.answeredVia) pi.answeredVia = 'resume'; _inbox('resolved', pi) }
+  }
   function doResume(room) {
     if (room.pauseReason === 'turnCap' && turnCap > 0) room.turnCap = room.turn + turnCap
+    resolvePauseItem(room)   // #35: clear the @you turn-cap item before re-running
     const queued = room.held; room.held = []
     for (const x of queued) deliverTo(room, x.toHandle, x.fromHandle, x.text)
     room.state = 'Running'; room.pauseReason = null; room.lastActivityAt = now()
@@ -430,6 +452,18 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     if (item.answered || item.dismissed) return { ok: false, error: item.answered ? 'already answered' : 'already dismissed', stale: true }
     const room = rooms.get(item.roomId)
     if (!room) return { ok: false, error: 'room gone' }
+    // #35: a turn-cap check-in item is not a member question — replying to it (dashboard OR Telegram)
+    // RESUMES the room. If the reply carries TEXT ("resume but focus on the API"), it isn't dropped —
+    // it's steered into the room as a [Human directive] in the same action (resume + nudge). No member
+    // routing. The item records the actual reply text (not a bare "(resumed)"), so the ack is truthful.
+    if (item.pauseRoom) {
+      const nudge = String(text ?? '').trim()
+      if (nudge) { item.answer = nudge; item.answeredVia = via || 'resume' }   // record BEFORE resume so resolvePauseItem keeps it
+      if (room.state === 'Paused' && room.pauseReason === 'turnCap') doResume(room)   // → resolvePauseItem resolves it (once)
+      if (nudge) doSteer(room, 'all', nudge, { via })   // resume AND steer the reply, in one action
+      if (!item.answered && !item.dismissed) { item.answered = true; item.answer = nudge || '(resumed)'; item.answeredVia = via || 'resume'; _inbox('resolved', item) }   // fallback if it wasn't paused
+      return { ok: true, resumed: true, steered: !!nudge }
+    }
     // Reply traceability (#17): quote the ORIGINAL question inline so the member knows WHICH of their
     // @user messages this answers. The snippet is member-authored (untrusted) embedded in a TRUSTED
     // directive line, so it MUST go through snippetForTrustedLine (defang + break-out strip) — this is

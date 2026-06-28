@@ -170,6 +170,44 @@ test('engine: turn-cap check-in pauses the room at the cap', () => {
   assert.equal(room.pauseReason, 'turnCap')
 })
 
+test('engine: turn-cap pause raises a resolvable @you item — dedup + resolve-on-resume + reply-resumes (#35)', () => {
+  const json = { org: 'shop', teams: [{ name: 'client', members: [
+    { role: 'architect', backend: 'claude', name: 'a', lead: true }, { role: 'engineer', backend: 'claude', name: 'b' }, { role: 'critic', backend: 'claude', name: 'c' },
+  ] }] }
+  const ev = []; const sent = []
+  const engine = createRoomEngine({ send: (s, f) => sent.push({ s, f }), append: () => {}, notify: () => {}, onInbox: (e) => ev.push(e), turnCap: 2 })
+  const norm = parseRoster(json, { repo: '/tmp', rng: seededRng(1) })
+  engine.defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
+  for (const m of norm.members) engine.bindSession('shop', m.handle, 's-' + m.handle)
+  const room = engine.getRoom(teamRoomId('shop', 'client'))
+  const inbox = () => engine.status().userInbox
+  engine.route({ fromHandle: 'a/claude', roomId: room.roomId, text: '@b one' })
+  engine.route({ fromHandle: 'b/claude', roomId: room.roomId, text: '@c two' })   // hits cap=2 → pause
+  assert.equal(room.state, 'Paused')
+  const item = inbox().find((x) => x.pauseRoom === room.roomId)
+  assert.ok(item, 'a turn-cap @you item was raised')
+  assert.equal(item.type, 'question', 'badges (resume is an action)')
+  assert.equal(ev.filter((e) => e.kind === 'new').length, 1, 'exactly one new inbox event (→ telegram)')
+  // dedup: held messages while paused must NOT re-create the item
+  engine.route({ fromHandle: 'c/claude', roomId: room.roomId, text: '@a more' })
+  assert.equal(inbox().filter((x) => x.pauseRoom).length, 1, 'still ONE item while paused')
+  // resolve-on-resume (H4): resuming clears the item + fires a resolved event
+  engine.doResume(room)
+  assert.equal(room.state, 'Running')
+  assert.equal(inbox().find((x) => x.id === item.id).answered, true, 'resolved on resume — no stale paused item')
+  assert.equal(ev.filter((e) => e.kind === 'resolved').length, 1, 'one resolved event (→ telegram edit)')
+  // new pause episode raises a FRESH item; replying to it resumes the room
+  engine.route({ fromHandle: 'a/claude', roomId: room.roomId, text: '@b again' })
+  engine.route({ fromHandle: 'b/claude', roomId: room.roomId, text: '@c again' })
+  const item2 = inbox().find((x) => x.pauseRoom && !x.answered)
+  assert.ok(item2 && item2.id !== item.id, 'fresh item for the new episode')
+  const ar = engine.answerUser(item2.id, 'focus on the API next')
+  assert.ok(ar.ok && room.state === 'Running', 'reply resumed the room')
+  assert.ok(ar.resumed && ar.steered, 'reply flagged resumed + steered (not a dropped answer)')
+  assert.equal(inbox().find((x) => x.id === item2.id).answer, 'focus on the API next', 'the reply TEXT is recorded, not dropped')
+  assert.ok(sent.some((x) => /Human directive/.test(x.f?.text || '') && /focus on the API next/.test(x.f?.text || '')), 'the reply was steered into the room as a directive (#35 option a)')
+})
+
 test('engine: worker (non-Claude) member is queued, not delivered live', () => {
   const json = { org: 'shop', teams: [{ name: 'client', members: [
     { role: 'architect', backend: 'claude', name: 'roland', lead: true },

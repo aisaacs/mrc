@@ -431,7 +431,10 @@ function paint() {
 }
 
 const label2 = (r) => r.a&&r.b ? `${r.a} ⇄ ${r.b}` : r.roomId
-const roomRow = (r) => `<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')" title="${r.turn!=null?`${r.turn} messages exchanged${r.turnCap?` — checks in with you at ${r.turnCap}`:''}`:''}"><span class="nm">${esc(r.team||label2(r))}</span><span class="state ${r.state}">${esc(r.state)}</span><span class="meta">${esc(r.kind||'')}${r.turn?` · ${r.turn} msgs`:''}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`
+// Friendly label for a room's pauseReason, so a Paused badge says WHY (turn-cap check-in vs a deliberate
+// brake vs a stall) — a routine check-in reads very differently from a real hold.
+const pauseLabel = (x) => ({ turnCap:'turn-cap', brake:'brake', stall:'stall' }[x] || x)
+const roomRow = (r) => `<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')" title="${r.turn!=null?`${r.turn} messages exchanged${r.turnCap?` — checks in with you at ${r.turnCap}`:''}`:''}"><span class="nm">${esc(r.team||label2(r))}</span><span class="state ${r.state}">${esc(r.state)}${r.state==='Paused'&&r.pauseReason?` · ${esc(pauseLabel(r.pauseReason))}`:''}</span><span class="meta">${esc(r.kind||'')}${r.turn?` · ${r.turn} msgs`:''}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`
 const teamRunning = (ms) => { const live=ms.filter(m=>m.tier==='live'); return !live.length || live.some(m=>m.online||m.launched) }
 
 // One scrolling overview: @you (your messages) on top, then Teams, then Rooms.
@@ -630,8 +633,11 @@ function renderRoom(d) {
   const cu = (S.room&&S.room.catchups)||[]; const unrev = cu.filter(c=>c.status==='ready'&&!c.reviewedAt).length
   d.innerHTML = `
     <div class="row wrap" style="justify-content:space-between;align-items:flex-start">
-      <div><b>${esc(r.team||label2(r))}</b> <span class="muted">[${esc(r.kind||'room')}]</span> <span class="state ${r.state}">${esc(r.state)}${r.pauseReason?(' · '+esc(r.pauseReason)):''}</span></div>
-      <div class="row"><button class="btn" onclick="roomAct('brake')">⏸ Pause</button><button class="btn" onclick="roomAct('resume')">▶ Resume</button><button class="btn danger" onclick="roomAct('end')">✕ Close</button></div>
+      <div><b>${esc(r.team||label2(r))}</b> <span class="muted">[${esc(r.kind||'room')}]</span> <span class="state ${r.state}">${esc(r.state)}${r.state==='Paused'&&r.pauseReason?(' · '+esc(pauseLabel(r.pauseReason))):''}</span></div>
+      <div class="row">${r.state==='Paused'
+        ? `<button class="btn primary" onclick="roomAct('resume')" title="${esc(r.pauseReason==='turnCap'?'turn-cap check-in — resume to grant another window':r.pauseReason==='stall'?'looked idle — resume to continue':'you paused this — resume to continue')}">▶ Resume</button>`
+        : r.state==='Running' ? `<button class="btn" onclick="roomAct('brake')">⏸ Pause</button>` : ''
+      }<button class="btn danger" onclick="roomAct('end')">✕ Close</button></div>
     </div>
     <h2>Steer — trusted [Human directive]</h2>
     <div class="row"><select id="steerT" style="max-width:220px">${steerOpts}</select><textarea id="steerTx" placeholder="Direct the team or a member…"></textarea><button class="btn primary" onclick="doSteer()">Send</button></div>
@@ -690,7 +696,11 @@ function renderInboxItem(d) {
   // #24: when an item was resolved on ANOTHER surface (answered via Telegram), say so — the reply box
   // here just closed under the user, and a silent vanish would read as a bug. Show how it resolved.
   const viaTg = q.answeredVia === 'telegram'
-  const done = q.answered ? `<div class="good" style="font-size:12px">✓ Answered${viaTg?' via Telegram':''}</div><div class="muted">↳ ${esc(q.answer||'')}</div>`
+  // #35: a turn-cap item RESUMED (not "answered"); show its real resolution + any steered note.
+  const steered = q.pauseRoom && q.answer && q.answer !== '(resumed)'
+  const done = q.answered ? (q.pauseRoom
+      ? `<div class="good" style="font-size:12px">✓ Resumed${viaTg?' via Telegram':''}</div>${steered?`<div class="muted">↳ steered: ${esc(q.answer)}</div>`:''}`
+      : `<div class="good" style="font-size:12px">✓ Answered${viaTg?' via Telegram':''}</div><div class="muted">↳ ${esc(q.answer||'')}</div>`)
     : q.dismissed ? `<div class="muted">↳ dismissed — re-open to act on it</div>` : ''
   // EVERY open item is replyable (#15) — a reply routes a [Human reply] via answerUser (open-revalidation
   // stale-guards a double-answer). A notification differs only in framing ("reply optional", it never

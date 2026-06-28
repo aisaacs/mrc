@@ -74,7 +74,7 @@ const catchupPrompt = (reason) =>
   `to the peer; (2) where things stand now; (3) exactly what you need from your human to get ` +
   `unblocked. Be concrete and skip preamble.`
 
-export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS, workerInvoke = defaultWorkerInvoke, workerPollMs = 2_000, tgFetch = globalThis.fetch, tgToken }) {
+export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS, workerInvoke = defaultWorkerInvoke, workerPollMs = 2_000, tgFetch = globalThis.fetch, tgToken }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
   // Restore pairings a graceful restart dumped, so an in-flight room survives `mrc rooms restart`
@@ -299,7 +299,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 100, 
       for (const [k, ref] of tgPushed) { if (k.startsWith(org + '\x00') && ref.messageId === d.replyToMessageId) { itemId = Number(k.slice(org.length + 1)); break } }
       if (itemId != null) {
         const r = engine.answerUser(itemId, d.text, { via: 'telegram' })
-        await tgSend({ token: s.token, chatId: msg.chatId, fetchFn: tgFetch, text: r.ok ? '✅ Answer recorded.' : (r.stale ? 'That question was already resolved (here or in the dashboard).' : `Couldn't record: ${r.error || 'error'}`) })
+        // #35: a turn-cap item resumes (and maybe steers) — ack the TRUTH, not "Answer recorded".
+        const okMsg = r.resumed ? (r.steered ? '✅ Resumed — and steered your note into the room.' : '✅ Resumed.') : '✅ Answer recorded.'
+        await tgSend({ token: s.token, chatId: msg.chatId, fetchFn: tgFetch, text: r.ok ? okMsg : (r.stale ? 'That question was already resolved (here or in the dashboard).' : `Couldn't record: ${r.error || 'error'}`) })
         return
       }
     }
