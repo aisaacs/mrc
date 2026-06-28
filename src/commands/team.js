@@ -165,6 +165,31 @@ function pidAlive(pid) { if (!pid) return false; try { process.kill(pid, 0); ret
 // pid alone is unsafe across a daemon restart (the OS can recycle it onto an unrelated process); the
 // socket is the session artifact, so requiring both avoids reporting a dead member as up (Roland #2).
 const sessionAlive = (info) => !!(info && pidAlive(info.dtachPid) && info.sock && existsSync(info.sock))
+// pgrep -f for processes whose cmdline holds `<flag> <exact sock>` as a whole token. The sock path is
+// regex-ESCAPED and bounded by a trailing space-or-end so a sibling whose slug is a prefix (handle `a` vs
+// `ab`) can't substring-collide, and the flag (`-n` master vs `-a` viewer) keeps the two roles distinct.
+// Anchoring on the deterministic sock PATH (not a persisted pid) is drift-proof AND pid-reuse-safe — we
+// never signal a recycled pid that now belongs to an unrelated host process.
+function pidsForSock(flag, sock) {
+  const esc = String(sock).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  try { return execFileSync('pgrep', ['-f', `dtach ${flag} ${esc}( |$)`], { encoding: 'utf8' }).split('\n').map((s) => s.trim()).filter(Boolean) }
+  catch { return [] }   // pgrep exits non-zero when nothing matches
+}
+// Is a LIVE dtach MASTER (`dtach -n <sock>`) holding this socket? True even when the launch record drifted
+// (b′). The ttyd viewer is `dtach -a`, so it never matches. Gates the spawn unlink + the orphaned read.
+function masterAliveForSock(sock) { return pidsForSock('-n', sock).length > 0 }
+// Reap a member's host plumbing by the deterministic sock path: the dtach MASTER (`-n`) and its ttyd
+// VIEWER (`-a`), matched exactly (never a stored pid → drift-proof + pid-reuse-safe + no sibling/viewer
+// over-kill). Does NOT touch the socket file or the container — the caller handles those.
+function killHostPlumbingForSock(sock) {
+  const pids = [...pidsForSock('-n', sock), ...pidsForSock('-a', sock)].map(Number)
+  for (const pid of pids) { try { process.kill(pid, 'SIGTERM') } catch {} }
+  // Escalate like the daemon-restart kill: a master parked at `; read` should die on SIGTERM, but SIGKILL
+  // any survivor a beat later so a wedged process can't outlive teardown (else the leaked-master residue
+  // we're eliminating persists). unref so a short-lived CLI (`mrc team down`) isn't held open by it.
+  if (pids.length) { const t = setTimeout(() => { for (const pid of pids) { try { process.kill(pid, 0); process.kill(pid, 'SIGKILL') } catch {} } }, 600); t.unref?.() }
+  return pids.length > 0
+}
 // Stop the actual member: kill its container by the mrc.member (+repo) label. Killing the dtach master
 // tears down the terminal/sh but the detached `docker run` container can keep running — so this is the
 // LOAD-BEARING member stop, not a backstop (Roland #1).
@@ -203,7 +228,12 @@ const memberSock = (org, handle) => join(socketDir(), `${sockSlug(org)}-${sockSl
 function spawnMemberSession(org, handle, port, shellCmd) {
   const sock = memberSock(org, handle)
   mkdirSync(dirname(sock), { recursive: true })
-  try { unlinkSync(sock) } catch {}   // clear any stale socket from a dead prior session
+  // #41 unlink-guard (defense-in-depth, AT THE SOURCE — covers every caller incl. addMember): NEVER unlink
+  // a socket whose dtach master is still alive. The old unconditional unlink, hit on a relaunch re-entry,
+  // orphaned the live master — its container keeps running + reads "ready" but the terminal becomes forever
+  // unreachable (dtach won't recreate the socket). A live master must be torn down via killMember FIRST.
+  if (masterAliveForSock(sock)) throw new Error(`refusing to (re)spawn @${handle}: a live dtach master still owns ${basename(sock)} — stop it first (killMember) to avoid orphaning it`)
+  try { unlinkSync(sock) } catch {}   // safe now: no live master holds this sock
   const env = { ...process.env, TERM: 'xterm-256color' }
   // persistent master: holds the member detached, eager-started (runs even before a browser attaches).
   const master = spawn('dtach', ['-n', sock, '-E', '-r', 'winch', 'sh', '-c', shellCmd], { detached: true, stdio: 'ignore', env })
@@ -223,10 +253,22 @@ async function launchMembers(norm, repoPath, rosterPath, live) {
   let already = true
   for (const m of live) {
     const prev = existing[m.handle]
-    if (sessionAlive(prev)) { members[m.handle] = prev; continue }   // session still up — keep it
+    if (sessionAlive(prev)) { members[m.handle] = prev; continue }   // servable — keep it
+    // #41: a live master with no servable socket = ORPHANED. Do NOT spawn (that's the re-entry that
+    // orphans it — and spawnMemberSession now throws to enforce that). Keep the record + flag it; the
+    // dashboard surfaces "Relaunch to restore" (which goes through killMember-first, then a fresh spawn).
+    if (masterAliveForSock(memberSock(norm.org, m.handle))) { members[m.handle] = { ...(prev || {}), sock: memberSock(norm.org, m.handle), orphaned: true }; continue }
     already = false
     const port = await findFreePort(nextPort); nextPort = port + 1
-    members[m.handle] = spawnMemberSession(norm.org, m.handle, port, memberShellCmd(repoPath, m, rosterPath))
+    try {
+      members[m.handle] = spawnMemberSession(norm.org, m.handle, port, memberShellCmd(repoPath, m, rosterPath))
+    } catch (e) {
+      // The unlink-guard throw (or any spawn failure) must fail LOUD-but-CONTAINED: log + flag this one
+      // member, never abort the whole team launch or crash the daemon's launch subprocess (#28 backstop
+      // is last-resort; this is the explicit boundary catch).
+      console.error(`  ⚠ @${m.handle} not launched: ${e?.message || e}`)
+      members[m.handle] = { ...(prev || {}), sock: memberSock(norm.org, m.handle), orphaned: true }
+    }
   }
   return { members, already }
 }
@@ -255,18 +297,20 @@ export function memberTtyds(org) {
   for (const [h, info] of Object.entries(mems)) out[h] = { ttydPort: info.ttydPort, ttydUrl: info.ttydPort ? `http://127.0.0.1:${info.ttydPort}/` : null, alive: sessionAlive(info) }
   return out
 }
-// Stop a team. Order matters (Roland #5): kill the ttyd VIEWER → kill the dtach MASTER → `docker kill`
-// the member CONTAINER (the load-bearing stop — the detached container can outlive the master, #1) →
-// unlink the socket last (unlinking before the master dies risks an orphaned master/phantom session).
+// Stop a team. Order: reap the host plumbing (ttyd viewer + dtach master) → `docker kill` the member
+// CONTAINER by label (load-bearing — the detached container can outlive the master, #1) → unlink the
+// socket last. #41: reap by the deterministic sock PATH (+ container by label), NOT the persisted
+// dtachPid/ttydPid — a recycled stale pid would mis-kill an unrelated host process (and miss the real
+// one on record drift). Use the deterministic memberSock(org,handle), not the stored info.sock.
 export function killTeamSession(org) {
   const rec = loadLaunches()[org] || {}
   const mems = rec.members || {}
   let any = false
-  for (const [handle, info] of Object.entries(mems)) {
-    if (info?.ttydPid) { try { process.kill(info.ttydPid, 'SIGTERM') } catch {} }
-    if (info?.dtachPid) { try { process.kill(info.dtachPid, 'SIGTERM'); any = true } catch {} }
+  for (const handle of Object.keys(mems)) {
+    const sock = memberSock(org, handle)
+    if (killHostPlumbingForSock(sock)) any = true
     dockerKillMember(rec.repo, handle)
-    if (info?.sock) { try { unlinkSync(info.sock) } catch {} }
+    try { unlinkSync(sock) } catch {}
   }
   return any
 }
@@ -319,15 +363,16 @@ export function writeTeamFile(repo, roster) {
   try { writeFileSync(join(repo, 'team.json'), JSON.stringify({ project: roster.org, teams: roster.teams }, null, 2) + '\n'); return true } catch { return false }
 }
 
-// #34: stop one member's session (same order as killTeamSession): ttyd viewer → dtach master →
-// `docker kill` the container → unlink socket → drop from the registry. (Removed from a running team.)
+// #41: stop one member's session — reap the host plumbing by deterministic sock PATH (master + ttyd +
+// viewers; NOT the persisted pids, which can be stale/recycled → mis-kill), `docker kill` the container by
+// label, unlink the socket, drop from the registry. The kill-first half of the Relaunch recovery, so it
+// must be drift-proof + idempotent against an orphaned-live container.
 export function killMember(org, handle) {
   const rec = loadLaunches()[org] || {}
-  const info = (rec.members || {})[handle]
-  if (info?.ttydPid) { try { process.kill(info.ttydPid, 'SIGTERM') } catch {} }
-  if (info?.dtachPid) { try { process.kill(info.dtachPid, 'SIGTERM') } catch {} }
+  const sock = memberSock(org, handle)
+  killHostPlumbingForSock(sock)
   dockerKillMember(rec.repo, handle)
-  if (info?.sock) { try { unlinkSync(info.sock) } catch {} }
+  try { unlinkSync(sock) } catch {}
   removeMemberLaunch(org, handle)
   return true
 }
@@ -354,6 +399,9 @@ export async function launchMember(org, repoPath, rosterPath, member) {
   if (!rec) return { ok: false, error: 'team not launched' }
   const prev = (rec.members || {})[member.handle]
   if (sessionAlive(prev)) return { ok: true, already: true }
+  // #41: never spawn over a live master (orphans it). If one's alive but unservable, it's orphaned —
+  // recovery is a Relaunch that kills it first (relaunchMember), not a bare re-spawn here.
+  if (masterAliveForSock(memberSock(org, member.handle))) return { ok: false, error: 'session orphaned — use Relaunch (stops the live master first) to restore the terminal', orphaned: true }
   try {
     const port = await findFreePort(Number(process.env.MRC_TTYD_PORT) || 7681)
     setMemberLaunch(org, member.handle, spawnMemberSession(org, member.handle, port, memberShellCmd(repoPath, member, rosterPath)))
