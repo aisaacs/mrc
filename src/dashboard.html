@@ -82,13 +82,19 @@
   /* cards */
   .team { background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:12px 12px 10px; margin-bottom:12px }
   .team .tn { font-weight:650; font-size:13px; margin-bottom:8px; padding:0 2px; display:flex; gap:8px; align-items:center }
-  .mem { display:flex; align-items:center; gap:8px; padding:6px 8px; font-size:13px; cursor:pointer; border:1px solid transparent; border-radius:7px }
-  .mem + .mem { margin-top:2px }
-  .mem:hover { background:var(--panel2) } .mem.sel { background:var(--panel2); border-color:var(--accent) }
-  .mem .who { flex:1; min-width:0; overflow:hidden; white-space:nowrap; text-overflow:ellipsis }
-  .mem .bk { font-size:11px } .mem.lead .h{ color:var(--lead) }
-  .mem .mstate { flex:0 0 80px; text-align:right; margin-left:0 }
-  .mem .role { flex:0 0 90px; text-align:right; color:var(--dim); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  /* member cards (Côme's mockup): dot · name (bold, line 1, no truncation) / role (dim, line 2) · status,
+     with a reserved slim slot on the right for the future per-member bar (not populated yet). */
+  .mem { display:flex; align-items:center; gap:11px; padding:9px 11px; cursor:pointer; border:1px solid var(--line); border-radius:9px; background:var(--panel) }
+  .mem + .mem { margin-top:6px }
+  .mem:hover { background:var(--panel2); border-color:#3a4150 } .mem.sel { background:var(--panel2); border-color:var(--accent) }
+  .mem .dot { width:10px; height:10px }
+  .mem .who { flex:1; min-width:0; display:flex; flex-direction:column; gap:1px }
+  .mem .who .nm { font-size:14px; font-weight:650; text-transform:capitalize; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.25 }   /* full name (nowrap); ellipsis only catches a pathological long CUSTOM name, never the curated pool */
+  .mem .who .role { font-size:11.5px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.25 }
+  .mem .who .role .bk { opacity:.8 }
+  .mem.lead .who .nm { color:var(--lead) } .mem .leadstar { color:var(--lead); font-size:11px }
+  .mem .mstate { flex:0 0 auto; font-size:10.5px; text-align:right; margin-left:0 }
+  .mem .membar { flex:0 0 3px; align-self:stretch; border-radius:2px; background:transparent }   /* reserved: future per-member bar (empty for now) */
   .rm { display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--line); border-radius:8px; margin:6px 0; cursor:pointer; background:var(--panel) }
   .rm:hover { border-color:#37506e } .rm.sel { border-color:var(--accent); background:var(--panel2) }
   .rm .nm { font-weight:600; font-size:13px } .rm .meta { color:var(--dim); font-size:11px; margin-left:auto }
@@ -408,7 +414,7 @@ function renderMain() {
   const ib = inbox()
   const byTeam = {}; for (const m of orgMembers()) (byTeam[m.team] ||= []).push(m)
   const teams = Object.keys(byTeam)
-  const memberRow = (m) => { const s=memberState(m); return `<div class="mem ${m.lead?'lead':''} ${m.handle===S.selMember?'sel':''}" onclick="selMember('${esc(m.handle)}')" title="${m.tier==='worker'?'on-demand — click for activity':'click for terminal'}"><span class="dot ${s.cls}"></span><span class="who"><span class="h">@${esc(m.first)}</span> <span class="bk muted">/${esc(m.backend)}</span></span><span class="mstate ${s.cls}">${esc(s.label)}</span><span class="role">${esc(m.role)}${m.lead?' ★':''}</span></div>` }
+  const memberRow = (m) => { const s=memberState(m); return `<div class="mem ${m.lead?'lead':''} ${m.handle===S.selMember?'sel':''}" onclick="selMember('${esc(m.handle)}')" title="${m.tier==='worker'?'on-demand — click for activity':'click for terminal'}"><span class="dot ${s.cls}"></span><div class="who"><div class="nm">${esc(m.first)}${m.lead?' <span class="leadstar" title="lead">★</span>':''}</div><div class="role">${esc(m.role)} <span class="bk">· ${esc(m.backend)}</span></div></div><span class="mstate ${s.cls}">${esc(s.label)}</span><span class="membar" aria-hidden="true"></span></div>` }
   const teamCard = (t) => { const ms=byTeam[t]; const running=teamRunning(ms)
     return `<div class="team"><div class="tn">${esc(t)}${running?'':' <span class="state Paused" style="font-size:10px;padding:1px 6px">not running</span>'}</div>${ms.map(memberRow).join('')}
       ${S.addingTo===t ? amForm(t) : `<div class="row" style="margin-top:8px;gap:6px"><button class="btn tiny" onclick="startAddMember('${esc(t)}')">＋ add member</button></div>`}</div>` }
