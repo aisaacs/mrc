@@ -241,3 +241,28 @@ test('roster: territory escaping the repo is rejected', () => {
   const json = { org: 'x', teams: [ { name: 't', territory: '../evil', members: [ { role: 'engineer' } ] } ] }
   assert.throws(() => parseRoster(json, { repo: '/tmp/x', rng: seededRng(2) }), /escapes the repo/)
 })
+
+test('roster: rejects crafted/unsafe pinned member names at parse (#36 defense-in-depth)', () => {
+  // Roland's 4 confirmed shq payloads + shell/path metachar classes — ALL must REJECT at the parse
+  // boundary, before the name reaches the sh -c launch, the dtach socket path, or a docker label.
+  // REJECT (not strip) so two crafted names can't collapse to one handle (a registry/sock collision).
+  const bad = [
+    "'; touch /tmp/x", '$(touch /tmp/x)', '`touch /tmp/x`', '; touch /tmp/x',   // the shq payloads
+    'a/b', '../etc', '.hidden',                                                  // path metachars
+    'has space', "d'arcy", 'a"b', 'a;b', 'a|b', 'a$b', 'a&b', 'a`b', 'a>b',      // shell metachars / spaces / quotes
+    '-lead', 'x-',                                                               // leading/trailing hyphen
+  ]
+  for (const name of bad) {
+    const json = { org: 'x', teams: [{ name: 't', members: [{ role: 'engineer', name }] }] }
+    assert.throws(() => parseRoster(json, { repo: '/tmp/x' }), /is invalid/, `should reject ${JSON.stringify(name)}`)
+  }
+})
+
+test('roster: accepts accented/hyphenated names; empty or absent name auto-assigns (#36)', () => {
+  for (const name of ['côme', 'jean-luc', 'René', 'agent2', 'Ludivine', 'a']) {
+    assert.doesNotThrow(() => parseRoster({ org: 'x', teams: [{ name: 't', members: [{ role: 'engineer', name }] }] }, { repo: '/tmp/x' }), `should accept ${name}`)
+  }
+  // empty-string or absent name means "auto-assign", NOT a rejection
+  const norm = parseRoster({ org: 'x', teams: [{ name: 't', members: [{ role: 'engineer', name: '' }, { role: 'critic' }] }] }, { repo: '/tmp/x', rng: seededRng(1) })
+  assert.equal(norm.members.length, 2)
+})

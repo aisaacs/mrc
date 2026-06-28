@@ -40,6 +40,21 @@ function resolveTerritory(raw, fallback) {
   return t
 }
 
+// A pinned member `name` (team.json) flows into the handle, the dtach socket PATH, a docker LABEL, and is
+// interpolated into the launch `sh -c`. `shq` escapes the sh -c site (and STAYS — this is a second layer,
+// not a replacement: a future call-site that forgets shq must still be safe), but reject crafted names at
+// the parse boundary too. REJECT, not strip: stripping could collapse two distinct crafted names to ONE
+// handle → a registry/socket collision class (the R-dtach-1 family). Allow Unicode letters/digits +
+// internal hyphens, so accented names ("côme") and hyphenated ones ("jean-luc") pass; reject spaces,
+// quotes, slashes, dots, and every shell metacharacter (' " ` $ ; | & < > ( ) \ newline …).
+const SAFE_NAME = /^[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?$/u
+function assertSafeName(name, role) {
+  const s = String(name)
+  if (!SAFE_NAME.test(s)) {
+    throw new Error(`member name ${JSON.stringify(s)}${role ? ` (role "${role}")` : ''} is invalid — names may contain only letters, digits, and internal hyphens (no spaces, quotes, slashes, dots, or shell metacharacters). Fix it in team.json.`)
+  }
+}
+
 export function teamRoomId(org, team) { return `${slug(org)}--${slug(team)}--team` }
 export function leadsRoomId(org) { return `${slug(org)}--leads` }
 
@@ -64,7 +79,7 @@ export function parseRoster(input, { repo, rng } = {}) {
   const taken = new Set()
   // Honor any explicitly-pinned first names first, so auto-assignment works around them.
   for (const t of teamsIn) for (const m of t.members || []) {
-    if (m.name) taken.add(String(m.name).toLowerCase())
+    if (m.name) { assertSafeName(m.name, m.role); taken.add(String(m.name).toLowerCase()) }   // #36: reject crafted names at the parse boundary (empty/absent → auto-assigned)
   }
 
   const members = []

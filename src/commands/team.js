@@ -418,12 +418,14 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
     case 'up': case 'define': {
       const presetFlag = flag('--preset')
       let norm, path
-      if (presetFlag) {
-        let roster; try { roster = buildPreset(presetFlag, { org: basename(repoPath) }) } catch (e) { console.error(`  ✗ ${e.message}`); process.exit(1) }
-        ;({ norm, rosterPath: path } = materializeRoster(roster, repoPath))
-      } else {
-        ({ norm, path } = loadRoster(repoPath, rosterFlag))
-      }
+      try {
+        if (presetFlag) {
+          const roster = buildPreset(presetFlag, { org: basename(repoPath) })
+          ;({ norm, rosterPath: path } = materializeRoster(roster, repoPath))
+        } else {
+          ({ norm, path } = loadRoster(repoPath, rosterFlag))
+        }
+      } catch (e) { console.error(`  ✗ ${e.message}`); process.exit(1) }   // #36: clean error for a rejected name (etc.), not a stack
       const v = validateRoster(norm)
       for (const w of v.warnings) console.log(`  ⚠ ${w}`)
       if (!v.ok) { for (const e of v.errors) console.error(`  ✗ ${e}`); process.exit(1) }
