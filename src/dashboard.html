@@ -491,12 +491,18 @@ function renderMain() {
   }
 
   if (teams.length) html += `<h2>Teams</h2>` + teams.map(teamCard).join('')
-  const rs = mergedRooms(); const mine = rs.filter(inOrg); const others = rs.filter(r=>!inOrg(r))
+  // `others` = genuinely org-LESS rooms (legacy 2-party consults / history) — and only when a project
+  // is active. NOT `!inOrg` (= every room of a DIFFERENT org), which would mislabel another active
+  // project's live team rooms as "Consults & history" on this tab; those belong on their OWN tab via
+  // `inOrg`. The `&& S.org` guard preserves the zero-org case (consult-only user, S.org null): such
+  // rooms are in `mine` (inOrg is true when S.org is null), so excluding them from `others` avoids a
+  // double-render and doesn't hide a consult-only user's only content under a collapsed disclosure.
+  const rs = mergedRooms(); const mine = rs.filter(inOrg); const others = rs.filter(r=>!r.org && S.org)
   if (mine.length) html += `<h2>Rooms</h2>` + mine.map(roomRow).join('')
   // Legacy consults + history (rooms not in the current org): off the main rail (so it leads with
   // @you / Teams / Rooms), collapsed into a "Consults & history" disclosure but still one click away.
   if (others.length) html += `<div class="muted focusable" role="button" tabindex="0" aria-expanded="${!!S.showOther}" style="margin-top:14px;padding:3px 6px;cursor:pointer;font-size:12px;user-select:none;border-radius:5px" onclick="toggleOther()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleOther()}else if(event.key==='Escape'&&S.showOther){toggleOther()}">${S.showOther?'▾':'▸'} Consults &amp; history <span style="opacity:.7">(${others.length})</span></div>`
-    + (S.showOther ? `<div style="opacity:.55;margin-top:4px">${others.map(roomRow).join('')}</div>` : '')
+    + (S.showOther ? `<div style="margin-top:4px">${others.map(roomRow).join('')}</div>` : '')
   html += `<div style="margin:14px 0 8px;display:flex;gap:8px">${teams.length?`<button class="btn" style="flex:1" onclick="openBuilder()">✎ Edit teams</button>`:''}<button class="btn ${teams.length?'':'primary'}" style="flex:1" onclick="newProject()">＋ New project</button></div>`
   // Delete (#13): a DELIBERATE control distinct from the tab ✕ (which only suspends). Forgets the
   // project from the daemon + stops its sessions; deletes nothing on disk — re-addable via `mrc team up`.
