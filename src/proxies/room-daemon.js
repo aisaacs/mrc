@@ -815,7 +815,20 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const { findFreePort } = await import('../ports.js')
   // Load .env so media members (designer/sound/composer) have their generation keys in-process.
   try { const { loadEnv } = await import('../config.js'); loadEnv(fileURLToPath(new URL('../../', import.meta.url))) } catch {}
-  const version = createHash('sha1').update(readFileSync(process.argv[1])).digest('hex').slice(0, 12)
+  // #21b: stamp = hash of the whole src/ tree (same fn the launcher uses), so the daemon's reported
+  // version changes when ANY reachable module is edited — not just room-daemon.js. Must match
+  // pair.js's daemonVersion() exactly or `waitUpVersion` never matches after a restart.
+  const { daemonVersion } = await import('../daemon-version.js')
+  const version = daemonVersion()
+  // F3: a detached daemon (stdio:'ignore') that throws would otherwise die SILENTLY — every org's relay
+  // + the dashboard + all Telegram bridges gone with no trace and no respawn. Log any uncaught error /
+  // rejection to the daemon log and STAY ALIVE (one bad frame must not take the daemon down); the log
+  // turns a mystery outage into a diagnosable event.
+  // INTERIM: log-and-survive, because there's no supervisor today. TARGET (architecture review): a
+  // supervised daemon — exit clean on uncaughtException → supervisor respawns a fresh process — so an
+  // uncaught error can't leave the daemon limping in an undefined state.
+  process.on('uncaughtException', (e) => { try { daemonLog(`[FATAL] uncaughtException: ${e?.stack || e?.message || e}`) } catch {} })
+  process.on('unhandledRejection', (e) => { try { daemonLog(`[FATAL] unhandledRejection: ${e?.stack || e?.message || e}`) } catch {} })
   const port = Number(process.argv[2])
   const controlPort = Number(process.argv[3])
   const notifyPort = Number(process.argv[4]) || 0

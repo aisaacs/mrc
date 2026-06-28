@@ -4,24 +4,21 @@
 import net from 'node:net'
 import { spawn } from 'node:child_process'
 import { readFileSync, unlinkSync } from 'node:fs'
-import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { findFreePort } from '../ports.js'
+import { daemonVersion } from '../daemon-version.js'
 
 const daemonMetaPath = () => join(homedir(), '.local', 'share', 'mrc', 'room-daemon.json')
 const daemonScript = () => fileURLToPath(new URL('../proxies/room-daemon.js', import.meta.url))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const readMeta = () => { try { return JSON.parse(readFileSync(daemonMetaPath(), 'utf8')) } catch { return null } }
 
-// The daemon is a long-lived host singleton that survives image rebuilds and code edits. Stamp it
-// with a content hash of room-daemon.js so a reused daemon running OLD code is detected and
-// refreshed — otherwise it answers `register` but not newer frames (e.g. `list`), and every
-// session silently sees zero peers.
-const daemonVersion = () => {
-  try { return createHash('sha1').update(readFileSync(daemonScript())).digest('hex').slice(0, 12) } catch { return '?' }
-}
+// The daemon is a long-lived host singleton that survives image rebuilds and code edits. Stamp it with
+// a content hash of the WHOLE src/ tree (#21b — see daemon-version.js) so a reused daemon running ANY
+// stale module (engine/trust/telegram/config/…) is detected and refreshed — not just room-daemon.js.
+// Otherwise it answers `register` but runs old logic, and the version check can't even see the drift.
 
 function probeControl(port) {
   return new Promise((res) => {
