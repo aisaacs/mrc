@@ -43,6 +43,27 @@ test('writeTeamFile PRESERVES the personas block across a daemon roster-sync (#5
   assert.doesNotThrow(() => parseRoster(after2, { repo: dir }))
 })
 
+test('rosterFromDef carries team.json personas so a rebuild keeps custom-role charters; a live add gets the charter (#43)', () => {
+  const dir = fs.mkdtempSync(join(os.tmpdir(), 'mrc-43-'))
+  const tj = { project: 'x', personas: { 'ux-expert': { label: 'UX Expert', mandate: 'You own UX design.', mount: 'ro' } },
+    teams: [{ name: 't', members: [{ name: 'Zoe', role: 'architect', backend: 'claude', lead: true }, { name: 'Slarti', role: 'ux-expert', backend: 'claude' }] }] }
+  fs.writeFileSync(join(dir, 'team.json'), JSON.stringify(tj, null, 2))
+  const n0 = parseRoster(tj, { repo: dir })
+  const def = { org: n0.org, repo: dir, members: n0.members, rooms: n0.rooms }
+  const roster = rosterFromDef(def)
+  assert.deepEqual(roster.personas, tj.personas, 'rosterFromDef carries personas from team.json (def has none)')
+  // existing custom-role member survives a rebuild with label+mandate intact
+  const slarti = parseRoster(roster, { repo: dir }).members.find((m) => m.handle === 'slarti/claude')
+  assert.equal(slarti.roleLabel, 'UX Expert')
+  assert.equal(slarti.personaDef.mandate, 'You own UX design.')
+  // a custom-role member added LIVE (the addmember rebuild path) resolves live WITH its charter
+  const updated = addMemberToRoster(roster, 't', { role: 'ux-expert', backend: 'claude' })
+  const added = parseRoster(updated, { repo: dir }).members.find((m) => m.role === 'ux-expert' && m.handle !== 'slarti/claude')
+  assert.equal(added.tier, 'live')
+  assert.equal(added.roleLabel, 'UX Expert')
+  assert.equal(added.personaDef.mandate, 'You own UX design.')
+})
+
 test('rosterFromDef round-trips a multi-team project (no team or member is lost)', () => {
   const n0 = parseRoster({ org: 'shop', teams: [
     { name: 'client', territory: 'client', members: [{ role: 'architect', backend: 'claude', lead: true }, { role: 'engineer', backend: 'claude' }] },

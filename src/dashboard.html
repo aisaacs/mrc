@@ -312,7 +312,7 @@ const MEDIA_ROLE_BACKEND = { designer:'gemini', 'sound-designer':'elevenlabs', c
 const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
 
 const S = {
-  building: false, org: null, selRoom: null, selInbox: null, selMember: null, selSettings: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, showDismissed: false, showOther: false, flash: null,
+  building: false, org: null, selRoom: null, selInbox: null, selMember: null, selSettings: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, showOther: false, flash: null,
   notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
   notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
   teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null, sessions: [], _tick: 0,
@@ -606,7 +606,7 @@ window.amSyncBackend = ()=>{ const w=$('#amBackendWrap'); if(w) w.innerHTML = am
 function amForm(t) {
   return `<div class="amf">
     <div class="muted" style="margin-bottom:5px">Add a member to <b>${esc(t)}</b>:</div>
-    <div class="row"><select id="amRole" style="flex:1.2" onchange="amSyncBackend()">${ROLES.map(r=>`<option ${r==='engineer'?'selected':''}>${r}</option>`).join('')}</select>
+    <div class="row"><select id="amRole" style="flex:1.2" onchange="amSyncBackend()">${ROLES.concat((S.addCustomRoles||[]).filter(k=>!ROLES.includes(k))).map(r=>`<option ${r==='engineer'?'selected':''}>${esc(r)}</option>`).join('')}</select>
       <span id="amBackendWrap" style="flex:1;display:flex">${amBackendControl('engineer')}</span></div>
     <input id="amTerr" placeholder="territory (e.g. server) — optional" style="margin-top:6px">
     <div class="row" style="margin-top:6px"><button class="btn tiny primary" onclick="submitAddMember('${esc(t)}')">Add</button><button class="btn tiny" onclick="cancelAddMember()">Cancel</button> <span id="amMsg" class="muted"></span></div>
@@ -1022,8 +1022,13 @@ window.enableNotifyPerm = async ()=>{ if(!('Notification' in window))return; let
   if(p==='granted'){ S.notifyEnabled=true; try{ localStorage.setItem('mrc-notify','1') }catch{}; updateNotifyBtn() }
   if(S.selSettings)renderDetail() }
 window.launchTeam = async ()=>{ const r=await postJSON('/api/team-launch',{org:S.org}); if(!(r&&r.ok)) alert('Launch failed: '+((r&&r.error)||'unknown')); tick() }
-window.startAddMember = (t)=>{ S.addingTo=t; renderMain() }
-window.cancelAddMember = ()=>{ S.addingTo=null; renderMain() }
+// #43: a project-defined role is addable from EVERY surface — load this org's custom personas so the
+// live add-member chooser lists built-in + custom (mirrors the builder's roleOptions). Fetched on open
+// (the persona set is per-org and small); re-renders the open form once they arrive.
+window.startAddMember = async (t)=>{ S.addingTo=t; S.addCustomRoles=[]; renderMain()
+  if (S.org) { const r = await api('/api/personas?org='+encodeURIComponent(S.org)).catch(()=>null)
+    if (r && r.ok && r.custom && S.addingTo===t) { S.addCustomRoles = Object.keys(r.custom); renderMain() } } }
+window.cancelAddMember = ()=>{ S.addingTo=null; S.addCustomRoles=[]; renderMain() }
 window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('#amBackend').value, territory=$('#amTerr').value.trim()
   const msg=$('#amMsg'); if(msg)msg.textContent='adding…'
   const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role,backend,territory})

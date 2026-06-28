@@ -433,7 +433,18 @@ export function rosterFromDef(def) {
     if (m.territory && m.territory !== '.') mm.territory = m.territory
     teams[m.team].members.push(mm)
   }
-  return { org: def?.org, repo: def?.repo, teams: Object.values(teams) }
+  const roster = { org: def?.org, repo: def?.repo, teams: Object.values(teams) }
+  // #43: carry the custom `personas` block so a REBUILT roster keeps custom-role charters. The in-memory
+  // def doesn't store personas; team.json on disk is their authoritative home (kept intact by #51). Without
+  // this, every addmember / removemember / launch-reconstruction re-parses a roster with no personas, so a
+  // custom-role member (added live OR relaunched) resolves the generic fallback — no label, no mandate.
+  try {
+    if (def?.repo) {
+      const tj = JSON.parse(readFileSync(join(def.repo, 'team.json'), 'utf8'))
+      if (tj && tj.personas && typeof tj.personas === 'object' && !Array.isArray(tj.personas) && Object.keys(tj.personas).length) roster.personas = tj.personas
+    }
+  } catch {}
+  return roster
 }
 
 // Remove a member from a roster by handle; drop any team left empty. Returns a copy.
