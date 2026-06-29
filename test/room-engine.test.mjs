@@ -549,7 +549,7 @@ test('#63-B1: a human reply records from=@user / role=human (the human is the tr
   assert.match(reply.meta.text, /inline please/)
 })
 
-test('engine: setStatus — strict-numeric, identity-from-session, lead-only rail (#64)', () => {
+test('engine: setStatus — strict-numeric, identity-from-session, lead-preferred-fallback rail (#64/#68)', () => {
   const h = harness(TEAM)
   const arch = h.handle('architect'), engineer = h.handle('engineer')
   const mstatus = (hh) => h.engine.status().members.find((m) => m.handle === hh)?.status
@@ -568,12 +568,25 @@ test('engine: setStatus — strict-numeric, identity-from-session, lead-only rai
   assert.equal(mstatus(arch).name, '', 'non-string name → empty')
   assert.deepEqual({ fiveHour: rail().fiveHour, sevenDay: rail().sevenDay }, { fiveHour: 100, sevenDay: 0 }, 'clamp 0–100')
 
-  // a NON-lead sets its OWN context bar but CANNOT move the shared org rail
-  const before = { fiveHour: rail().fiveHour, sevenDay: rail().sevenDay }
+  // #68 lead-PREFERRED: with a FRESH lead value standing, a non-lead does NOT clobber the rail (no flap)
+  const before = { fiveHour: rail().fiveHour, sevenDay: rail().sevenDay }   // {100, 0} from the lead above
   const r2 = h.engine.setStatus(h.sid(engineer), { context: 55, fiveHour: 88, sevenDay: 88 })
   assert.equal(r2.lead, false)
   assert.equal(mstatus(engineer).context, 55, 'non-lead still gets its own context bar')
-  assert.deepEqual({ fiveHour: rail().fiveHour, sevenDay: rail().sevenDay }, before, 'non-lead cannot spoof the org rail')
+  assert.deepEqual({ fiveHour: rail().fiveHour, sevenDay: rail().sevenDay }, before, 'a FRESH lead value is authoritative — a non-lead does not clobber it (no flap)')
+
+  // #68 FALLBACK: when the lead goes stale/silent (> RATE_STALE_MS), a non-lead fills the rail (account-wide accurate)
+  h.tick(31_000)
+  h.engine.setStatus(h.sid(engineer), { context: 55, fiveHour: 70, sevenDay: 60 })
+  assert.deepEqual({ fiveHour: rail().fiveHour, sevenDay: rail().sevenDay }, { fiveHour: 70, sevenDay: 60 }, 'a stale lead → a non-lead fills the rail (the false-empty fix)')
+
+  // #68 strict-numeric SURVIVES on the non-lead path: a STRING is dropped, not coerced
+  h.engine.setStatus(h.sid(engineer), { fiveHour: '50', sevenDay: 40 })
+  assert.deepEqual({ fiveHour: rail().fiveHour, sevenDay: rail().sevenDay }, { fiveHour: null, sevenDay: 40 }, 'non-lead value still clamped (string "50" dropped, not coerced)')
+
+  // #68 a report with NO rate_limits (both null) never clobbers a good rail value
+  h.engine.setStatus(h.sid(engineer), { context: 60 })
+  assert.deepEqual({ fiveHour: rail().fiveHour, sevenDay: rail().sevenDay }, { fiveHour: null, sevenDay: 40 }, 'a null-only rate-limit report does not clobber the rail')
 
   // identity is RESOLVED from the bound session — an unknown session is dropped (no member faked)
   assert.equal(h.engine.setStatus('sess:nobody', { context: 1 }), null)

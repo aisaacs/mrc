@@ -591,19 +591,33 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
   // #64: a member's statusline ints (context %, rate-limit %, session name), forwarded by its channel server
   // (transport B'). Identity is RESOLVED from the bound session — a member can NOT report another's status, and
   // the frame carries no identity field. Strict-numeric: each value must be a finite NUMBER (no string coercion,
-  // so "99" is dropped, not parsed) → clamp 0–100, else null ("—" on display). The per-member CONTEXT bar updates
-  // from any member; the shared org RATE-LIMIT rail updates ONLY from the LEAD's session — a non-lead's 5h/7d is
-  // dropped so it can't spoof the org rail. The name is length-capped here and escaped at DISPLAY (it's untrusted
-  // text). Display-only — nothing in the engine branches on these values.
+  // so "99" is dropped, not parsed) → clamp 0–100, else null ("—" on display). The name is length-capped here and
+  // escaped at DISPLAY (it's untrusted text). Display-only — nothing in the engine branches on these values.
+  //
+  // #68: the shared org RATE-LIMIT rail is BEST-EFFORT-DISPLAY, lead-PREFERRED with any-member fallback. Rate
+  // limits are ACCOUNT-WIDE (all members share the Max/OAuth account), so any member's 5h/7d is accurate — the
+  // original lead-ONLY gate left the rail empty whenever the lead specifically wasn't reporting (the actual bug).
+  // Now: the lead's report is authoritative when present (stable, no flap if a non-lead ticks a slightly different
+  // value); a non-lead fills the rail only when there's no value, the current value isn't from the lead, or the
+  // lead's last report has gone stale. A report with no rate_limits (both null) never clobbers a good value. This
+  // is a gauge a member FEEDS — a compromised member could show a wrong number (cosmetic; the human cross-checks
+  // the real Claude statusline the rail mirrors), so it's best-effort, NOT a trustworthy guarantee.
   const clampPct = (v) => (typeof v === 'number' && Number.isFinite(v)) ? Math.max(0, Math.min(100, Math.floor(v))) : null
+  const RATE_STALE_MS = 30_000
   function setStatus(sessionId, f) {
     const s = senderOf(sessionId); if (!s) return null
     const m = mem(s.org, s.handle); if (!m) return null
     const name = typeof f?.name === 'string' ? f.name.slice(0, 80) : ''
     m.status = { context: clampPct(f?.context), name, at: now() }
-    if (m.lead) {
+    const fiveHour = clampPct(f?.fiveHour), sevenDay = clampPct(f?.sevenDay)
+    if (fiveHour != null || sevenDay != null) {
       const org = orgs.get(String(s.org))
-      if (org) org.rateLimit = { fiveHour: clampPct(f?.fiveHour), sevenDay: clampPct(f?.sevenDay), at: now() }
+      const cur = org?.rateLimit
+      // lead-preferred, fall back to any-member: the lead always (re)writes; a non-lead writes only when there's
+      // no value yet, the current value wasn't the lead's, or the lead's last value has gone stale.
+      if (org && (m.lead || !cur || !cur.fromLead || (now() - (cur.at || 0)) > RATE_STALE_MS)) {
+        org.rateLimit = { fiveHour, sevenDay, at: now(), fromLead: !!m.lead }
+      }
     }
     return { org: s.org, handle: s.handle, lead: !!m.lead }
   }
