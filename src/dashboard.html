@@ -847,7 +847,7 @@ function syncTermHost() {
 // throttle/couldn't-generate/read-as-feedback that was an indistinct line in the old <pre> blob).
 const relTime = (at)=>{ try{ const s=Math.round((Date.now()-new Date(at).getTime())/1000); if(s<5)return 'just now'; if(s<60)return s+'s ago'; const mn=Math.round(s/60); if(mn<60)return mn+'m ago'; const h=Math.round(mn/60); if(h<24)return h+'h ago'; return Math.round(h/24)+'d ago' }catch{ return '' } }
 const WFAIL_RE = /^\[@.*(couldn't|could not|throttled|read as feedback)/
-const workerLogSig = (wl)=> (wl.records.length)+':'+((wl.records[wl.records.length-1]||{}).at||'')+':'+(wl.legacy?wl.legacy.length:0)
+const workerLogSig = (wl)=> (wl.records.length)+':'+((wl.records[wl.records.length-1]||{}).at||'')+':'+(wl.legacy?wl.legacy.length:0)+':'+(wl.total||0)   /* #53: total in the sig so a new call (even at a full window) re-renders */
 const ASSET_GLYPH = (k)=> k==='sfx'?'🔊':k==='music'?'🎵':'🖼'
 function workerCardHTML(rec, k) {
   // #48 LOW-1: trust the backend's authoritative `ok` when present; the regex is only a legacy fallback
@@ -878,17 +878,21 @@ function workerCardHTML(rec, k) {
 }
 function workerHistoryHTML(wl) {
   let html = ''
+  const n = wl.records.length, total = (wl.total!=null) ? wl.total : n, dropped = Math.max(0, total - n)
   if (wl.legacy) html += `<div class="wlegacy"><div class="muted" style="font-size:11px;margin-bottom:3px">— earlier activity (legacy log) —</div><pre style="margin:0;white-space:pre-wrap;font-size:11.5px;opacity:.65">${esc(wl.legacy)}</pre></div>`
-  html += wl.records.map((rec,i)=>workerCardHTML(rec,i+1)).join('')
+  // #53: when the window dropped older calls, SAY so — the list is the recent slice, not the full history (no
+  // silent truncation reading as a total). Cards are numbered by their TRUE call index, not 1-based-in-window.
+  if (dropped>0) html += `<div class="muted" style="font-size:11px;margin-bottom:6px;padding:4px 0;border-bottom:1px dashed var(--line)">↑ ${dropped} earlier call${dropped===1?'':'s'} not shown — recent ${n} of ${total}</div>`
+  html += wl.records.map((rec,i)=>workerCardHTML(rec,dropped+i+1)).join('')
   return html || `<div class="muted" style="padding:14px">(no activity yet)</div>`
 }
 function renderWorkerLog(d, m) {
   const wl = S.workerLog || { records:[], legacy:'' }
-  const n = wl.records.length, last = n ? wl.records[n-1] : null
+  const n = wl.records.length, total = (wl.total!=null) ? wl.total : n, last = n ? wl.records[n-1] : null
   d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:4px">
       <b>@${esc(m.first)} <span class="muted">/${esc(m.backend)} · ${esc(m.role)}</span></b>
       <span><span class="mstate worker">on-demand</span> <button class="btn tiny" style="margin-left:8px" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="removeMember(this.dataset.h,this.dataset.f)">✕ remove</button></span></div>
-    <div class="muted" style="margin-bottom:8px;font-size:12px">${n?`On-demand worker — runs only when @mentioned. <b>${n}</b> call${n===1?'':'s'}${last?` · last run ${relTime(last.at)}`:''}.`:`@${esc(m.first)} hasn't run yet — @mention @${esc(m.first)} in a room to put them to work.`}</div>
+    <div class="muted" style="margin-bottom:8px;font-size:12px">${n?`On-demand worker — runs only when @mentioned. ${total>n?`<b>${n}</b> of <b>${total}</b> calls <span style="opacity:.8">(showing recent ${n})</span>`:`<b>${n}</b> call${n===1?'':'s'}`}${last?` · last run ${relTime(last.at)}`:''}.`:`@${esc(m.first)} hasn't run yet — @mention @${esc(m.first)} in a room to put them to work.`}</div>
     <div class="wlog" id="wlog" tabindex="0">${workerHistoryHTML(wl)}</div>`
   const w=$('#wlog'); if(w){ w.dataset.sig = workerLogSig(wl); w.scrollTop = w.scrollHeight }
 }

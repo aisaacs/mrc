@@ -827,11 +827,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
           // Pass org so a handle shared across two orgs reads the RIGHT member's repo (their logs live
           // in different repos). Without org, memberByHandle returns whichever org is first in the map.
           const m = engine.memberByHandle(f.handle, f.org)
-          let raw = ''
-          // Read the last ~500 LINES (not chars — avoid truncating a JSONL record mid-line). #48.
-          if (m?.repo) { try { raw = readFileSync(workerLogPath(m.repo, f.handle), 'utf8').split('\n').slice(-500).join('\n') } catch {} }
+          let raw = '', total = null
+          // Read the last ~500 LINES (not chars — avoid truncating a JSONL record mid-line). #48. #53: also
+          // count the TOTAL call records in the whole file (the same read), so the dashboard can show "recent N
+          // of M" instead of letting the windowed count silently read as a total.
+          if (m?.repo) { try { const all = readFileSync(workerLogPath(m.repo, f.handle), 'utf8').split('\n'); total = all.reduce((acc, l) => acc + (l.trim()[0] === '{' ? 1 : 0), 0); raw = all.slice(-500).join('\n') } catch {} }
           const { records, legacy } = parseWorkerLog(raw)
-          reply({ ok: true, records, legacy }); continue
+          reply({ ok: true, records, legacy, total }); continue
         }
         // #56: a member sends an image from its territory to the org's confirmed Telegram chat. The control
         // handler is sync, so fire-and-forget the async send and reply when it resolves (like launchMember).
