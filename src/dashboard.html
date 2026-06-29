@@ -216,6 +216,14 @@
   .md-code { background:var(--inset); border:1px solid var(--line); border-radius:4px; padding:0 4px; font-size:12.5px }
   .md-link { color:var(--link) }
   .md-list { margin:3px 0 3px 20px } .md-list li { margin:1px 0 }
+  /* #63-B Slack-style message rows (shared by the room transcript + the @you channel) */
+  .msg { margin:1px 0 }
+  .msg-author { display:flex; align-items:baseline; gap:6px; margin:8px 0 1px; font-size:12.5px }
+  .msg-author b { color:var(--fg) }
+  .msg-author .qicon { font-size:12px }
+  .msg-role { font-size:10px; text-transform:uppercase; letter-spacing:.04em; opacity:.65 }
+  .msg-time { font-size:11px; margin-left:auto }
+  .ra-arch b { color:#a78bfa } .ra-eng b { color:#5ec878 } .ra-crit b { color:#f2a65a } .ra-adv b { color:#f2607a } .ra-human b { color:#6aa0f5 } .ra-media b { color:#e29bd8 } .ra-sys b { color:var(--dim) }
   .pane { background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:10px 12px; margin-bottom:8px; flex-shrink:0 }
   .pane.unrev { border-color:var(--needs-edge) }
   .card { background:var(--inset); border:1px solid var(--line); border-radius:8px; padding:9px 11px; margin:6px 0; white-space:pre-wrap; font-size:12.5px }
@@ -879,31 +887,59 @@ function renderRoom(d) {
 // innerHTML and never scanned from the line text. So even if safeMD ever emitted unbalanced or raw-text
 // HTML, a chrome node (a separate DOM-API node) cannot be captured by the body string: chip/jump can't be
 // forged by body content (`[#7]`/`(re #7)`/`**Human directive**` in a member's text is just inert MD/text).
+// #63-B: role → a fixed color class for the author label. The author NAME itself is member-INFLUENCED
+// display text (the roster first-name), so it is ALWAYS rendered via textContent (esc) regardless of the
+// #36 name-constraint — Ghislaine's Layer-2: don't lean on the coupling.
+const ROLE_CLASS = { architect:'ra-arch', engineer:'ra-eng', critic:'ra-crit', adversary:'ra-adv', ultracritical:'ra-adv', human:'ra-human', user:'ra-human', 'sound-designer':'ra-media', composer:'ra-media', designer:'ra-media', system:'ra-sys' }
+// The shared Slack message row (#63-B), used by the room transcript AND the @you channel. Builds a DOM row:
+// an optional AUTHOR HEADER (rendered only when the author group changes — consecutive-same-author grouping),
+// then the BODY rendered as safe Markdown into its OWN <div class="body">, then the trusted CHROME
+// DOM-APPENDED as sibling nodes (hhmm, the [#N] chip / re-#N jump) from STRUCTURED daemon fields ONLY. Both
+// #63 invariants by construction: (1) author/role/chip from msg fields, NEVER parsed from the body text; (2)
+// author name via textContent + the jump handler JS-wired — never an inline onclick string interpolation.
+// msg: { from, role, at, text, qid, rid, newGroup, icon, anchorId, extra(DOM node|null) }
+function slackRow(msg) {
+  const wrap = document.createElement('div'); wrap.className = 'msg'
+  if (msg.anchorId != null) wrap.id = 'q' + msg.anchorId          // jump target for a question
+  if (msg.newGroup) {
+    const hdr = document.createElement('div'); hdr.className = 'msg-author ' + (ROLE_CLASS[msg.role] || 'ra-other')
+    if (msg.icon) { const ic = document.createElement('span'); ic.className = 'qicon'; ic.textContent = msg.icon; hdr.appendChild(ic) }
+    const who = document.createElement('b'); who.textContent = msg.from || '@?'   // textContent = esc'd display
+    hdr.appendChild(who)
+    if (msg.role) { const rl = document.createElement('span'); rl.className = 'msg-role'; rl.textContent = msg.role; hdr.appendChild(rl) }
+    if (msg.at) { const tm = document.createElement('span'); tm.className = 'msg-time muted'; tm.textContent = hhmm(msg.at); hdr.appendChild(tm) }
+    wrap.appendChild(hdr)
+  }
+  const row = document.createElement('div'); row.className = 'tline'
+  const body = document.createElement('div'); body.className = 'body'
+  body.innerHTML = safeMD(msg.text || ''); if (!body.innerHTML) body.textContent = ' '
+  row.appendChild(body)
+  if (msg.qid != null) {
+    row.appendChild(document.createTextNode(' '))
+    const chip = document.createElement('span'); chip.className = 'qnum'; chip.textContent = `[#${msg.qid}]`; row.appendChild(chip)
+  } else if (msg.rid != null) {
+    row.appendChild(document.createTextNode(' '))
+    const jump = document.createElement('a'); jump.className = 'qjump'; jump.title = `jump to question #${msg.rid}`
+    jump.textContent = `re #${msg.rid}`; const rid = msg.rid; jump.onclick = () => jumpToQ(rid)   // JS-wired
+    row.appendChild(jump)
+  }
+  wrap.appendChild(row)
+  if (msg.extra) wrap.appendChild(msg.extra)
+  return wrap
+}
 function fillTranscript(host, records) {
   host.textContent = ''
-  const frag = document.createDocumentFragment()
-  for (const rec of (records||[])) {
-    const t = String(rec.t||'')
-    const line = document.createElement('div'); line.className = 'tline'
-    const body = document.createElement('div'); body.className = 'body'
-    if (rec.q != null) {
-      line.id = 'q' + rec.q
-      // strip ONLY the daemon's own trailing ` [#q]` token (a member's earlier `[#x]` mid-text stays inert)
-      body.innerHTML = safeMD(t.replace(/\s*\[#\d+\]\s*$/, ''))
-      line.appendChild(body); line.appendChild(document.createTextNode(' '))
-      const chip = document.createElement('span'); chip.className = 'qnum'; chip.textContent = `[#${rec.q}]`
-      line.appendChild(chip)
-    } else if (rec.r != null) {
-      body.innerHTML = safeMD(t.replace(/\s*\(re #\d+\)\s*$/, ''))
-      line.appendChild(body); line.appendChild(document.createTextNode(' '))
-      const jump = document.createElement('a'); jump.className = 'qjump'; jump.title = `jump to question #${rec.r}`
-      jump.textContent = `re #${rec.r}`; const rid = rec.r; jump.onclick = () => jumpToQ(rid)   // JS-wired, not body-string
-      line.appendChild(jump)
-    } else {
-      body.innerHTML = safeMD(t); if (!body.innerHTML) body.textContent = ' '
-      line.appendChild(body)
-    }
-    frag.appendChild(line)
+  const frag = document.createDocumentFragment(); let lastGroup = null
+  for (let i = 0; i < (records||[]).length; i++) {
+    const rec = records[i]
+    // #63-B: a B1-enriched record carries trusted from/role/at + the clean `text` → Slack row with an author
+    // header (grouped by author). A legacy { t, q, r } record (pre-B1, no fields) → header-less, body = the
+    // whole `t` line with only the daemon's own trailing [#N]/(re #N) stripped; NEVER parse `t` for an author.
+    const enriched = rec.from != null || rec.text != null
+    const text = enriched ? String(rec.text || '') : String(rec.t || '').replace(/\s*\[#\d+\]\s*$/, '').replace(/\s*\(re #\d+\)\s*$/, '')
+    const group = enriched ? rec.from + '\x00' + (rec.role || '') : '\x00legacy:' + i   // legacy rows never group
+    const newGroup = enriched && group !== lastGroup; lastGroup = group
+    frag.appendChild(slackRow({ from: rec.from, role: rec.role, at: rec.at, text, qid: rec.q, rid: rec.r, newGroup, anchorId: rec.q }))
   }
   host.appendChild(frag)
 }
