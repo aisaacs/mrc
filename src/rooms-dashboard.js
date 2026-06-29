@@ -6,9 +6,9 @@
 import http from 'node:http'
 import net from 'node:net'
 import { randomBytes } from 'node:crypto'
-import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync, chmodSync } from 'node:fs'
+import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync, chmodSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, dirname } from 'node:path'
+import { join, dirname, extname, sep } from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { roomsRoot, roomDir, listRooms, readCatchups, updateCatchup, readTranscript, atomicWriteFileSync } from './rooms.js'
@@ -83,6 +83,29 @@ async function buildState() {
 }
 
 function sendJSON(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)) }
+
+// #48b: image content-types served by /api/asset. RASTER ONLY — no svg (it can carry script → XSS if ever
+// rendered outside an <img>); media.js only ever generates png/jpg anyway.
+export const ASSET_CONTENT_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' }
+
+// Resolve `rel` to a real file INSIDE `repo`, or null if it's unsafe / escapes. THE guard for /api/asset
+// (it serves file bytes — the highest-risk endpoint). Reject absolute / NUL / `..` BEFORE touching the fs,
+// then realpathSync the FINAL file + the repo and require containment with a trailing path.sep — a bare
+// startsWith would let a sibling-prefix dir (`<repo>-secret/x.png`) pass. realpath-on-the-final-file
+// defeats both `..` traversal and symlink-escape. (The query param is decoded exactly ONCE by
+// URLSearchParams, so `%252e` games stay literal and fail the realpath lookup.)
+export function safeAssetPath(repo, rel) {
+  if (!repo || typeof rel !== 'string' || !rel) return null
+  if (rel.startsWith('/') || rel.startsWith('\\') || rel.includes('\0') || /(^|[\\/])\.\.([\\/]|$)/.test(rel)) return null
+  let realRepo, realFile
+  try { realRepo = realpathSync(repo) } catch { return null }
+  try { realFile = realpathSync(join(repo, rel)) } catch { return null }
+  if (realFile !== realRepo && !realFile.startsWith(realRepo + sep)) return null
+  // Self-contained contract (Roland): return a safe regular-FILE path or null — never a directory — so a
+  // future caller that forgets its own isFile() check can't be bitten (the /api/asset endpoint also checks).
+  try { if (!statSync(realFile).isFile()) return null } catch { return null }
+  return realFile
+}
 
 // --- CSRF defense for the browser-only HTTP surface (2b.1) --------------------------------------
 // The HTTP `/api` surface is reachable only by a browser (the `mrc rooms/team` CLIs use the control
@@ -242,6 +265,26 @@ async function handle(req, res) {
       const meta = daemonMeta()
       const r = meta?.controlPort ? await ctrl(meta.controlPort, 'getroster', { org: url.searchParams.get('org') }) : { ok: false }
       return sendJSON(res, 200, r)
+    }
+    // #48b: serve a worker-generated IMAGE asset (call-history preview), guarded HARD against path-traversal
+    // / symlink-escape. GET (no CSRF — a read, consistent with the other GETs); the path-guard + raster-only
+    // ext allowlist IS the security. Fails CLOSED on every error with NO body detail (don't leak file existence).
+    if (req.method === 'GET' && url.pathname === '/api/asset') {
+      const rel = url.searchParams.get('path') || ''                 // URLSearchParams decodes exactly once
+      const ext = extname(rel).toLowerCase()
+      const deny = (code = 404) => { res.writeHead(code, { 'cache-control': 'no-store' }); res.end() }
+      if (!ASSET_CONTENT_TYPES[ext]) return deny(415)                // raster image extensions only (no svg/.env/source)
+      const gr = await ctrl(daemonMeta()?.controlPort, 'getroster', { org: url.searchParams.get('org') })
+      const repo = gr?.repo
+      if (!repo) return deny()                                       // unknown org → 404, no detail
+      const file = safeAssetPath(repo, rel)
+      if (!file) return deny()                                       // escaped the repo / unsafe path
+      let st; try { st = statSync(file) } catch { return deny() }
+      if (!st.isFile()) return deny()
+      if (st.size > 25 * 1024 * 1024) return deny(413)               // size cap BEFORE read
+      let buf; try { buf = readFileSync(file) } catch { return deny() }
+      res.writeHead(200, { 'content-type': ASSET_CONTENT_TYPES[ext], 'content-length': buf.length, 'cache-control': 'no-store', 'x-content-type-options': 'nosniff' })
+      return res.end(buf)
     }
     // #42: the persona palette for the editor + builder role-chooser — read-only built-in role defs +
     // this org's custom personas (read from its team.json on disk, the authoritative source).

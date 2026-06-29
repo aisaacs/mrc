@@ -6,7 +6,7 @@ import http from 'node:http'
 import os from 'node:os'
 import fs from 'node:fs'
 import { join } from 'node:path'
-import { startDashboard } from '../src/rooms-dashboard.js'
+import { startDashboard, safeAssetPath } from '../src/rooms-dashboard.js'
 
 // A throwaway HOME so listRooms/etc. never touch the real store.
 process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-dash-`)
@@ -90,4 +90,38 @@ test('dashboard CSRF (#20): token persists across a restart and is stored 0600',
   } finally {
     process.env.HOME = prev
   }
+})
+
+// #48b: /api/asset path-traversal guard (the highest-risk endpoint — serves file bytes).
+test('#48b safeAssetPath: serves an in-repo image; rejects traversal / absolute / null-byte / symlink-escape / sibling-prefix', () => {
+  const root = fs.mkdtempSync(join(os.tmpdir(), 'mrc-asset-'))
+  const repo = join(root, 'repo'); fs.mkdirSync(join(repo, 'assets'), { recursive: true })
+  fs.writeFileSync(join(repo, 'assets', 'cat.png'), 'PNGDATA')
+  fs.writeFileSync(join(repo, '.env'), 'SECRET=1')
+  // a SIBLING dir whose name shares the repo's prefix (the trailing-sep check must reject it)
+  const sibling = join(root, 'repo-secret'); fs.mkdirSync(sibling, { recursive: true }); fs.writeFileSync(join(sibling, 'leak.png'), 'LEAK')
+  const outside = join(root, 'outside.png'); fs.writeFileSync(outside, 'OUTSIDE')
+
+  // ✓ a real image inside the repo resolves (to its realpath)
+  assert.equal(safeAssetPath(repo, 'assets/cat.png'), fs.realpathSync(join(repo, 'assets', 'cat.png')))
+  // ✗ `..` traversal (even toward an existing file) — rejected at the string guard
+  assert.equal(safeAssetPath(repo, '../outside.png'), null)
+  assert.equal(safeAssetPath(repo, 'assets/../../outside.png'), null)
+  assert.equal(safeAssetPath(repo, 'assets/../../repo-secret/leak.png'), null)
+  // ✗ absolute path / null byte
+  assert.equal(safeAssetPath(repo, outside), null)
+  assert.equal(safeAssetPath(repo, '/etc/passwd'), null)
+  assert.equal(safeAssetPath(repo, 'assets/cat.png\0.png'), null)
+  // ✗ symlink that escapes the repo (realpath-on-final-file defeats it)
+  try {
+    fs.symlinkSync(outside, join(repo, 'assets', 'escape.png'))
+    assert.equal(safeAssetPath(repo, 'assets/escape.png'), null, 'a symlink pointing outside the repo is rejected')
+  } catch { /* symlink may be unavailable in the sandbox — the realpath containment still holds */ }
+  // ✗ a DIRECTORY (even an in-repo one) → null — the primitive's contract is "safe regular-FILE or null"
+  assert.equal(safeAssetPath(repo, 'assets'), null)
+  assert.equal(safeAssetPath(repo, '.'), null)
+  // ✗ missing file → null (no leak of existence); ✗ empty/garbage input
+  assert.equal(safeAssetPath(repo, 'assets/nope.png'), null)
+  assert.equal(safeAssetPath(repo, ''), null)
+  assert.equal(safeAssetPath('', 'assets/cat.png'), null)
 })

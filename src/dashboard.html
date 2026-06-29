@@ -175,6 +175,7 @@
   .wmono { margin:0; white-space:pre-wrap; word-break:break-word; font-size:12px; background:var(--inset); border-radius:6px; padding:7px 9px }
   .wfail { white-space:pre-wrap; word-break:break-word; font-size:12px; color:#f4b9c4; background:#2a1a1f; border:1px solid var(--danger); border-radius:6px; padding:7px 9px }
   .wasset .wchip { display:inline-flex; align-items:center; gap:5px; font-size:12px; border:1px solid var(--line); border-radius:6px; padding:3px 8px; background:var(--inset) }
+  .wthumb { display:block; max-width:180px; max-height:140px; border-radius:6px; border:1px solid var(--line); cursor:pointer; margin-bottom:6px; background:var(--inset) }
   .wlegacy { margin-bottom:10px; padding-bottom:8px; border-bottom:1px dashed var(--line) }
   /* controls */
   textarea,input,select { background:var(--field); color:var(--fg); border:1px solid var(--line); border-radius:var(--radius-sm); padding:7px 9px; font:13px/1.4 inherit; width:100% }
@@ -691,7 +692,13 @@ function workerCardHTML(rec, k) {
   let result
   if (fail) result = `<div class="wfail">${esc(rec.result||'(failed)')}</div>`
   else if (rec.asset) { const a=rec.asset; const fn=String(a.path||'').split('/').pop(); const kb=a.bytes?` · ${(a.bytes/1024).toFixed(0)} KB`:''
-    result = `<div class="wasset"><span class="wchip">${ASSET_GLYPH(rec.kind)} ${esc(fn)}${kb}</span>${a.prompt?`<div class="muted" style="font-size:11px;margin-top:3px">from "${esc(a.prompt)}"</div>`:''}</div>` }
+    // #48b: image kinds get a lazy thumbnail from the path-guarded /api/asset, wrapped in a real <a> so it's
+    // keyboard-focusable + Enter-opens full-size (noopener; served nosniff → renders as an image). alt = the
+    // generation prompt (descriptive for a screen reader) else the filename. onerror removes the anchor →
+    // fail closed to the filename chip, no empty focusable left behind.
+    const isImg = ['png','jpg','jpeg','gif','webp'].includes(String(a.ext||'').toLowerCase())
+    const src = isImg ? '/api/asset?org='+encodeURIComponent(S.org||'')+'&path='+encodeURIComponent(a.path||'') : ''
+    result = `<div class="wasset">${src?`<a href="${esc(src)}" target="_blank" rel="noopener" title="open full size"><img class="wthumb" loading="lazy" src="${esc(src)}" alt="${esc(a.prompt||fn)}" onerror="this.closest('a')?.remove()"></a>`:''}<span class="wchip">${ASSET_GLYPH(rec.kind)} ${esc(fn)}${kb}</span>${a.prompt?`<div class="muted" style="font-size:11px;margin-top:3px">from "${esc(a.prompt)}"</div>`:''}</div>` }
   else result = `<pre class="wmono">${esc(rec.result||'')}</pre>`
   return `<div class="wcard ${fail?'fail':'ok'}"><div class="wcard-h"><b>⚡ Call #${k}</b> <span class="muted">· ${relTime(rec.at)}</span> <span class="wstat ${fail?'fail':'ok'}" title="${esc(rec.at||'')}">${fail?'✕ failed':'✓ ok'}</span></div><div class="wreq">${req}</div>${result}</div>`
 }
