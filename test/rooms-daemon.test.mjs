@@ -637,6 +637,20 @@ async function main() {
   check('31d cluster A: closing the newer room promotes SA1<->SA2 to Running (seed expanded to the cluster)', (roomBy(await status(c31), 'SA1', 'SA2') || {}).state === 'Running')
   d31.stop(); [SA1, SA2, SAz, SB1, SB2].forEach((c) => { try { c.close() } catch {} })
 
+  // 32 — #53: a restored pairing names its OFFLINE members from the persisted memberNames, not "?".
+  // Simulate a graceful-shutdown dump (savePairings writes memberNames, ≤2min fresh) then boot a daemon
+  // that restores it WITHOUT the members reconnecting — the case that showed "?" live after a restart.
+  console.log('\n[32] #53 restored pairing names offline members (no "?")')
+  const p32 = await findFreePort(port + 700), c32 = await findFreePort(p32 + 1)
+  savePairings([{ roomId: 'restored-room', members: ['mA', 'mB'], memberNames: { mA: 'alice-session', mB: 'bob-session' }, seq: 1, turn: 0, state: 'Running' }])
+  const d32 = startRoomDaemon({ port: p32, controlPort: c32, notifyPort: 0, version: 't32', idleMs: 9e8, tickMs: 9e8, roomTtlMs: 9e8 })
+  await sleep(120)
+  const rp32 = ((await status(c32)).pairings || []).find((p) => p.roomId === 'restored-room')
+  check('32a restored pairing present', !!rp32, 'no restored pairing')
+  check('32b offline members render by NAME, not "?" (#53 seeded knownNames)', !!rp32 && rp32.members.includes('alice-session') && rp32.members.includes('bob-session') && !rp32.members.includes('?'), JSON.stringify(rp32 && rp32.members))
+  check('32c #50 awaiting marker names them too (not "?")', !!rp32 && (rp32.awaiting || []).includes('alice-session') && !(rp32.awaiting || []).includes('?'), JSON.stringify(rp32 && rp32.awaiting))
+  d32.stop()
+
   console.log(`\n${'='.repeat(40)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(40)}`)
   d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3, I1, I2, I3, I4, I5, L1, L2, L3, L4, m1, m2, m3, s1, s2, advX, W1, W2, wadv, Y1, Y2, yadv, ynorm, yunk, IMP0, VIC, ATT, VW, VIC2, NM, Adv49, Sum49, Str49, AW1, AW2].forEach((c) => { try { c.close() } catch {} })
   if (advRoom) try { removeRoomDir(advRoom) } catch {}   // private summons use a Date.now()-based id → clean it so runs don't accumulate

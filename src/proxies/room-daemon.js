@@ -103,7 +103,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   const summoningPrivate = new Set()  // issuer ids with a private summon in flight — block a 2nd until it registers or times out
   // Restore pairings a graceful restart dumped, so an in-flight room survives `mrc rooms restart`
   // (turn count / autoCatchup preserved). Sockets re-attach as the sessions reconnect + re-register.
-  for (const sp of loadPairings()) pairings.set(sp.roomId, { ...sp, members: sp.members || [sp.a, sp.b].filter(Boolean), seq: sp.seq || (++roomSeq), held: [] })
+  for (const sp of loadPairings()) pairings.set(sp.roomId, { ...sp, members: sp.members || [sp.a, sp.b].filter(Boolean), seq: sp.seq || (++roomSeq), held: [], lastActivityAt: sp.lastActivityAt || Date.now() })   // #35: a restored pairing gets a fresh activity clock so the dead-room GC gives its members the full roomTtlMs to reconnect (a no-lastActivityAt restore reads as ancient → would insta-prune on the first tick)
   for (const p of pairings.values()) if ((p.seq || 0) > roomSeq) roomSeq = p.seq   // keep the counter above any restored seq
   for (const p of pairings.values()) if (p.incomingAdversary) armInviteTimeout(p)   // re-arm the release timer for a consent reservation that survived a restart
   // B/#39: seed adversary classification from the durable host-only records for restored members, so the
@@ -144,6 +144,10 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   const hasOtherConnected = (room, self) => room.members.some((o) => o !== self && online(o))
   const repoOf = (id) => sessions.get(id)?.repo || '?'                       // basename — for clean room ids
   const knownNames = new Map()   // id -> last-seen display name, so a member who disconnects still renders by name, not "?"
+  // #53: seed from the restart dump so a RESTORED pairing's offline-and-not-yet-reconnected member
+  // renders by name (and #50's "awaiting reconnect" marker names it), not "?". A live reconnect re-reads
+  // the SSOT record via nameOf and overwrites this fallback, so it's only stale while offline.
+  for (const p of pairings.values()) if (p.memberNames) for (const [id, nm] of Object.entries(p.memberNames)) if (nm && nm !== '?') knownNames.set(id, nm)
   // nameOf reads the session's display name from its SOURCE OF TRUTH at use-time — the on-disk record
   // (<repo>/.mrc/session-meta/<uuid>.json .name, written by the host namer or the in-session /rename), the
   // SAME file the container writes (shared via the bind mount). No cached label to push/sync, so a rename is
@@ -916,7 +920,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
         if (f.action === 'shutdown') {   // graceful stop (used by `mrc rooms restart` / version refresh)
           reply({ ok: true })
           // Dump live pairings so the next daemon can restore them — an in-flight room survives the restart.
-          savePairings([...pairings.values()].map((p) => ({ roomId: p.roomId, members: p.members, seq: p.seq, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, state: p.state, pauseReason: p.pauseReason, requireConsent: p.requireConsent, incomingAdversary: p.incomingAdversary, pendingInvite: p.pendingInvite })))   // #31: persist a PRE-consent pending adversary invite too (restored via ...sp below) so a restart doesn't silently drop a consent prompt; consent is still required (accept/decline) so this loosens nothing
+          savePairings([...pairings.values()].map((p) => ({ roomId: p.roomId, members: p.members, memberNames: Object.fromEntries(p.members.map((m) => [m, nameOf(m)])), seq: p.seq, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, state: p.state, pauseReason: p.pauseReason, requireConsent: p.requireConsent, incomingAdversary: p.incomingAdversary, pendingInvite: p.pendingInvite })))   // #31: persist a PRE-consent pending adversary invite too (restored via ...sp below) so a restart doesn't silently drop a consent prompt; consent is still required (accept/decline) so this loosens nothing · #53: persist member display-names so a restored pairing's offline-and-not-yet-reconnected member renders by name (and #50's marker names it), not "?"
           setTimeout(() => { try { server.close(); control.close() } catch {} ; process.exit(0) }, 50)
           continue
         }
