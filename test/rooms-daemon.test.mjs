@@ -613,6 +613,30 @@ async function main() {
   check('30e a live room (both online) is NOT GC\'d', !!roomBy(await status(c30), 'GC2', 'GD2'))
   d30.stop(); [GA, GB, GS, GP, GC2, GD2].forEach((c) => { try { c.close() } catch {} })
 
+  // 31 — #36: scoped sidechannel recompute across INDEPENDENT clusters. A disconnect in cluster B must
+  // not disturb cluster A's brakes, AND cluster A's own promote-on-close must still fire (the seed
+  // expands to A's whole member cluster, incl. the lower room to un-brake). Behaviorally identical to the
+  // old global recompute — this guards the seed/closure: a too-narrow scope would MISS 31d's promote.
+  console.log('\n[31] #36 scoped sidechannel recompute (independent clusters)')
+  const p31 = await findFreePort(port + 600), c31 = await findFreePort(p31 + 1)
+  const d31 = startRoomDaemon({ port: p31, controlPort: c31, notifyPort: 0, version: 't31', idleMs: 9e8, tickMs: 9e8, stallMs: 9e8, roomTtlMs: 9e8 })
+  await sleep(120)
+  // cluster A: SA1 in two rooms (SA1<->SA2, then the newer SA1<->SAz) → SA1<->SA2 sidechannel-braked
+  const SA1 = mkClient(p31, 'SA1'), SA2 = mkClient(p31, 'SA2'), SAz = mkClient(p31, 'SAz')
+  SA1.register(); SA2.register(); SAz.register(); await sleep(120)
+  SA1.send({ type: 'ask', question: 'q', peer: 'SA2' }); await sleep(120)
+  SA1.send({ type: 'ask', question: 'q', peer: 'SAz' }); await sleep(150)
+  check('31a cluster A: SA1<->SA2 sidechannel-braked by the newer SA1<->SAz', (roomBy(await status(c31), 'SA1', 'SA2') || {}).pauseReason === 'sidechannel')
+  // cluster B: independent SB1<->SB2
+  const SB1 = mkClient(p31, 'SB1'), SB2 = mkClient(p31, 'SB2'); SB1.register(); SB2.register(); await sleep(100)
+  SB1.send({ type: 'ask', question: 'q', peer: 'SB2' }); await sleep(150)
+  check('31b cluster B: SB1<->SB2 running', (roomBy(await status(c31), 'SB1', 'SB2') || {}).state === 'Running')
+  SB2.close(); await sleep(200)   // a disconnect in cluster B
+  check('31c cluster A brake untouched by a cluster-B disconnect', (roomBy(await status(c31), 'SA1', 'SA2') || {}).state === 'Paused')
+  SAz.close(); await sleep(200)   // close the newer cluster-A room → SA1<->SA2 must promote
+  check('31d cluster A: closing the newer room promotes SA1<->SA2 to Running (seed expanded to the cluster)', (roomBy(await status(c31), 'SA1', 'SA2') || {}).state === 'Running')
+  d31.stop(); [SA1, SA2, SAz, SB1, SB2].forEach((c) => { try { c.close() } catch {} })
+
   console.log(`\n${'='.repeat(40)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(40)}`)
   d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3, I1, I2, I3, I4, I5, L1, L2, L3, L4, m1, m2, m3, s1, s2, advX, W1, W2, wadv, Y1, Y2, yadv, ynorm, yunk, IMP0, VIC, ATT, VW, VIC2, NM, Adv49, Sum49, Str49, AW1, AW2].forEach((c) => { try { c.close() } catch {} })
   if (advRoom) try { removeRoomDir(advRoom) } catch {}   // private summons use a Date.now()-based id → clean it so runs don't accumulate

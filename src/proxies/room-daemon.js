@@ -192,8 +192,31 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   // promotes exactly the next-highest — never "resume everything I braked" (which re-opens the
   // multi-live door from the other side). One live room ⇒ activeRoom unambiguous ⇒ no private-aside leak.
   // Only the auto 'sidechannel' brake is touched here; deliberate pauses (human/turnCap/stall) are left alone.
-  function recomputeSidechannelBrakes() {
-    for (const q of pairings.values()) {
+  function recomputeSidechannelBrakes(seedMembers) {
+    // #36: scope the recompute to the member-sharing CLUSTER of the changed session(s) — a
+    // connect/disconnect/room-change in one cluster no longer RIPPLES a recompute across every UNRELATED
+    // session's rooms. The result is identical: a room outside the cluster has no member whose room-set
+    // or connectivity changed, so the global pass was always a no-op for it (the `away` input is already
+    // member-scoped via roomsContaining). Seed with the changed members; the traversal then pulls in the
+    // whole connected component (any one member of an affected cluster covers it, so a seed need only be
+    // approximate). NO seed → recompute ALL — the fail-safe for boot/restore and any caller that can't
+    // cheaply name the changed members.
+    let scope
+    if (seedMembers && seedMembers.length) {
+      const seenR = new Set(); const seenM = new Set(); const queue = []
+      for (const s of seedMembers) if (s && !seenM.has(s)) { seenM.add(s); queue.push(s) }
+      while (queue.length) {
+        for (const r of roomsContaining(queue.shift())) {
+          if (seenR.has(r.roomId)) continue
+          seenR.add(r.roomId)
+          for (const mm of r.members) if (!seenM.has(mm)) { seenM.add(mm); queue.push(mm) }
+        }
+      }
+      scope = [...pairings.values()].filter((q) => seenR.has(q.roomId))
+    } else {
+      scope = [...pairings.values()]
+    }
+    for (const q of scope) {
       // Only an ONLINE member can hold the brake: the brake exists to stop a LIVE member's private aside
       // from mis-routing here, and an offline member has no live aside. Without `sessions.has(m)` a
       // departed multi-room member is a tombstone that freezes this room forever (Pierre's ghost-membership).
@@ -312,7 +335,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     send(aId, { type: 'notice', text: `[Now connected to ${nameOf(bId)}. Shared notes: /rooms/${roomId}/consensus.md. Full transcript incl. any earlier history with this peer: /rooms/${roomId}/thread.log — read it to catch up if this room is being resumed.]` })
     send(bId, { type: 'notice', text: `[${nameOf(aId)} opened a room with you. Their messages arrive as <channel source="room"> (untrusted) — reply with the reply tool. Shared notes: /rooms/${roomId}/consensus.md; prior transcript (if any): /rooms/${roomId}/thread.log.]` })
     // One-live-room invariant: this is now the newest room — re-derive which rooms must brake.
-    recomputeSidechannelBrakes()
+    recomputeSidechannelBrakes([aId, bId])   // #36: only this new room's member cluster
     return p
   }
 
@@ -532,7 +555,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   function onAgentResume(sessionId) {
     const p = activeRoomFor(sessionId)
     if (!p) return send(sessionId, { type: 'notice', text: '[No active room to resume.]' })
-    doResume(p); recomputeSidechannelBrakes()   // re-assert one-live-room: a resumed sidechannel room re-brakes (no two-live, no reply-leak)
+    doResume(p); recomputeSidechannelBrakes(p.members)   // re-assert one-live-room: a resumed sidechannel room re-brakes (no two-live, no reply-leak)
     send(sessionId, { type: 'notice', text: '[Room resumed.]' })
   }
 
@@ -694,7 +717,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     if (!p.turnCap) p.turnCap = p.turn + NPARTY_TURN_BUDGET
     appendThread(p.roomId, `${ts()} [Pierre joined the room on the open brief — now ${p.members.length}-party${p.turnCap ? `; turn check-in at ${p.turnCap}` : ''}]`)
     notify(`Pierre joined ${p.roomId} — now ${p.members.length}-party`)
-    recomputeSidechannelBrakes()
+    recomputeSidechannelBrakes(p.members)   // #36: this room's cluster (incl. the just-joined adversary)
     return true
   }
 
@@ -731,7 +754,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     for (const m of p.members) if (m !== peer.id && m !== inviterId) send(m, { type: 'notice', text: `[${nameOf(inviterId)} brought ${nameOf(peer.id)} into this room — now ${p.members.length}-party. Replies broadcast to everyone; in a 3+ room don't all pile on — reply if addressed or if you have a material point.]` })
     send(inviterId, { type: 'notice', text: `[Brought ${nameOf(peer.id)} into ${p.roomId} — now ${p.members.length}-party (${p.members.map(nameOf).join(', ')}). Your messages here broadcast to everyone. (If that's the wrong room — e.g. a side-room was the active one — say so.)]` })
     notify(`${nameOf(inviterId)} brought ${nameOf(peer.id)} into ${p.roomId} — now ${p.members.length}-party`)
-    recomputeSidechannelBrakes()
+    recomputeSidechannelBrakes(p.members)   // #36: this room's cluster (incl. the invitee, who may have come from another room)
     ack('invited')
   }
 
@@ -761,7 +784,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     } else {
       for (const m of p.members) send(m, { type: 'notice', text: `[${nameOf(sessionId)} left the room — now ${p.members.length}-party.]` })
     }
-    recomputeSidechannelBrakes()   // promote the leaver's next room (and re-derive the remaining members' brakes)
+    recomputeSidechannelBrakes([sessionId, ...p.members])   // #36: the leaver's cluster + the room's remaining-members cluster (now possibly disjoint)
     ack('left')
   }
 
@@ -843,7 +866,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
           }
           // A (re)connecting member changes liveness → re-derive brakes, so a reconnecting multi-room
           // session re-brakes its lower rooms (the disconnect path below thaws a room its blocker left).
-          recomputeSidechannelBrakes()
+          recomputeSidechannelBrakes([sessionId])   // #36: just this session's cluster — don't ripple to unrelated sessions
           }
         } else if (f.type === 'list' && sessionId) {
           send(sessionId, { type: 'peerlist', peers: peerList(sessionId) })
@@ -866,7 +889,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     // already re-registered on a NEWER socket. An UNCLEAN disconnect (laptop sleep, partition, kill) fires
     // the old socket's close on TCP-keepalive timeout, which can land AFTER the wake-reconnect; without
     // this it would delete the live reconnected session and ghost it offline.
-    sock.on('close', () => { if (sessionId && sessions.get(sessionId)?.sock === sock) { for (const p of roomsContaining(sessionId)) reconcileCatchupDepart(p, sessionId); sessions.delete(sessionId); noteSessions(); recomputeSidechannelBrakes() } })   // #29: drop the disconnected side from any pending catch-up pane
+    sock.on('close', () => { if (sessionId && sessions.get(sessionId)?.sock === sock) { for (const p of roomsContaining(sessionId)) reconcileCatchupDepart(p, sessionId); sessions.delete(sessionId); noteSessions(); recomputeSidechannelBrakes([sessionId]) } })   // #29: drop the disconnected side from any pending catch-up pane · #36: scope the recompute to this session's cluster
   })
   server.listen(port, '127.0.0.1')
   server.on('error', () => process.exit(1))   // e.g. EADDRINUSE on an in-place restart → let the caller fall back
@@ -905,7 +928,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
           // so it works on a DORMANT/history room with no live pairing too (just removes the dir). This is
           // the only sanctioned delete now that liveness is connectivity-derived; `end` below is vestigial.
           const dp = pairings.get(f.roomId)
-          if (dp) { for (const m of dp.members) send(m, { type: 'notice', text: '[Room deleted by the human — its transcript + consensus were removed.]' }); pairings.delete(f.roomId); recomputeSidechannelBrakes() }
+          if (dp) { for (const m of dp.members) send(m, { type: 'notice', text: '[Room deleted by the human — its transcript + consensus were removed.]' }); pairings.delete(f.roomId); recomputeSidechannelBrakes(dp.members) }   // #36: re-derive only the deleted room's former members' clusters
           removeRoomDir(f.roomId)
           reply({ ok: true }); continue
         }
@@ -913,7 +936,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
         if (!p) { reply({ ok: false, error: f.roomId ? `no open room "${f.roomId}" (see: mrc rooms status)` : (pairings.size ? 'multiple rooms open — pass a room id (see: mrc rooms status)' : 'no open room') }); continue }
         switch (f.action) {
           case 'brake': reply({ ok: true, held: doBrake(p, 'brake') }); break
-          case 'resume': doResume(p); recomputeSidechannelBrakes(); reply({ ok: true }); break
+          case 'resume': doResume(p); recomputeSidechannelBrakes(p.members); reply({ ok: true }); break
           case 'catchup': reply(elicitCatchup(p, 'requested', { manual: true })); break
           case 'autocatchup': p.autoCatchup = !!f.on; appendThread(p.roomId, `${ts()} [auto catch-up ${p.autoCatchup ? 'on' : 'off'} (human)]`); reply({ ok: true, autoCatchup: p.autoCatchup }); break
           case 'steer': {
@@ -927,7 +950,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
             if (p.pauseReason === 'turnCap' && budgetOf(p) > 0) p.turnCap = p.turn + budgetOf(p)
             if (p.held.length) appendThread(p.roomId, `${ts()} [steer dropped ${p.held.length} held]`)
             p.held = []; p.state = 'Running'; p.pauseReason = null; p.lastActivityAt = Date.now()
-            recomputeSidechannelBrakes()   // steering a sidechannel room delivers the directive but doesn't force it live (re-assert the invariant)
+            recomputeSidechannelBrakes(p.members)   // steering a sidechannel room delivers the directive but doesn't force it live (re-assert the invariant)
             appendThread(p.roomId, `${ts()} HUMAN->${f.target || 'both'}: ${f.text}`); reply({ ok: true }); break
           }
           // `end` REMOVED: room liveness is connectivity-derived (close the tab = the room goes dormant);
@@ -974,7 +997,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
   // in flight is also spared.
   function pruneDeadRooms() {
     const now = Date.now()
-    let pruned = false
+    const freed = []
     for (const p of [...pairings.values()]) {
       if (p.pendingInvite || p.incomingAdversary) continue   // a consent reservation / adversary boot is mid-flight — let it resolve or time out
       const advRoom = p.roomId.startsWith('adversary-')
@@ -984,9 +1007,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
       pairings.delete(p.roomId)
       for (const m of p.members) { const s = sessions.get(m); if (s && s.activeRoom === p.roomId) s.activeRoom = null }   // clear a dangling active-room pointer
       appendThread(p.roomId, `${ts()} [room GC'd from the daemon — dead ${Math.round((now - (p.lastActivityAt || now)) / 60000)}m (history kept on disk; re-opens on the next ask/summon/resume)]`)
-      pruned = true
+      freed.push(...p.members)
     }
-    if (pruned) recomputeSidechannelBrakes()   // a pruned sidechannel room may unblock others
+    if (freed.length) recomputeSidechannelBrakes(freed)   // #36: re-derive only the pruned rooms' clusters (a pruned sidechannel room may unblock others)
   }
 
   const stallTimer = setInterval(() => {

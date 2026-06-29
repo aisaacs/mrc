@@ -336,7 +336,7 @@ Daemon-applied framing: peer messages `Peer (<name>) says: …`; human steers `[
 
 ## 9. Pairing & control
 
-Per-pairing state in the daemon: `Running | Paused` + `pauseReason ∈ {brake,turnCap,stall}`,
+Per-pairing state in the daemon: `Running | Paused` + `pauseReason ∈ {brake,turnCap,stall,sidechannel}`,
 `turn`/`turnCap` (off by default; `MRC_ROOM_TURN_CAP=N` enables), `lastActivityAt`, and a FIFO
 `held` queue.
 
@@ -345,6 +345,13 @@ Per-pairing state in the daemon: `Running | Paused` + `pauseReason ∈ {brake,tu
   so a long-running channel isn't a per-turn wall (off by default; `MRC_ROOM_TURN_CAP=N` enables).
 - **stall** → idle > 10 min → Paused + notify, but **self-healing**: the next real message
   auto-resumes it (a slow peer composing a long reply is never swallowed).
+- **sidechannel** → the **one-live-room invariant**: a session is unpaused in at most ONE room — the
+  highest-`seq` room it's in — so a private aside in a newer room can't leak into an older one. Brakes
+  are recomputed purely from `seq` on every room create/close/(dis)connect (no `brakedBy` chain to
+  corrupt on out-of-order closes); closing the live room auto-promotes the next-highest. The recompute
+  is **scoped to the changed session's member-sharing cluster** (#36) — a connect/disconnect in one
+  cluster never ripples a recompute across unrelated sessions' rooms (identical result: a room outside
+  the cluster has no member whose `seq`-landscape changed, so the global pass was always a no-op for it).
 - **catch-up** → on a turnCap/stall pause (or the dashboard's **Catch-up now**) the daemon elicits
   a handoff from each live side (`catchup_request`→`submit_handoff`) into a per-pause pane in
   `catchups.json`; a side that files late (after the pane timed out) still lands on it. The
