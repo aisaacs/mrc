@@ -76,6 +76,17 @@ sanctioned host port, `MRC_ROOM_PORT`). The daemon pushes peer messages *back ov
 socket*. Identical trust surface to the clipboard/notify proxies — no new egress. (Verified live:
 the channel connects to `host.docker.internal:<port>` over the firewall and registers.)
 
+**Heartbeat (#51).** TCP-open is *not* trusted as "connected": if the daemon's port moved (see #50), a
+reused port could be a clipboard/notify proxy that accepts the socket but never speaks the room protocol
+(the notify proxy never even closes it → a silent false-healthy wedge). So the channel server sends a
+`ping` on connect + every few seconds; the daemon replies `{type:'pong',version}`; it goes **`connected`
+only after a pong** (the wrong-listener guard), and a **stale pong** (a post-sleep half-open socket, or a
+daemon that vanished without a FIN) tears the socket down so it reconnects. The `version` rides each pong
+so the channel server can also spot an old daemon. Both halves ship in one tree — the daemon's pong
+deploys on `mrc rooms restart`/the version-refresh, the channel server's ping-requirement at the next
+image rebuild; the version-stamp auto-refresh (which runs *before* the container starts) makes the
+new-image/old-daemon transition safe, and an old channel server simply ignores an unknown `pong` frame.
+
 **One daemon, many sessions — self-managing.** A single detached host process, recorded in
 `~/.local/share/mrc/room-daemon.json` (`{port, controlPort, notifyPort, dashboardPort, pid, version}`):
 - **Singleton + reuse.** The first room-enabled session boots it; every later session reuses it

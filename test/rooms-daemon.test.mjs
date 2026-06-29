@@ -651,8 +651,18 @@ async function main() {
   check('32c #50 awaiting marker names them too (not "?")', !!rp32 && (rp32.awaiting || []).includes('alice-session') && !(rp32.awaiting || []).includes('?'), JSON.stringify(rp32 && rp32.awaiting))
   d32.stop()
 
+  // 33 — #51: the daemon replies {type:'pong',version} to a ping, on ANY socket (pre-register too) — the
+  // liveness/wrong-listener contract the channel-server heartbeat depends on. (The channel-server half —
+  // ping-on-connect, connected-only-after-pong, stale-pong teardown — is container code, verified at the
+  // rebuild; this proves the daemon side it talks to.)
+  console.log('\n[33] #51 daemon pong liveness')
+  const HB = mkClient(port, 'HB'); HB.send({ type: 'ping' }); await sleep(150)
+  check('33a ping → pong{version}', HB.frames.some((f) => f.type === 'pong' && f.version === 'test'), JSON.stringify(HB.frames))
+  check('33b pong came pre-register (HB never registered → not a session, yet got a pong)', !(await status(controlPort)).sessions.some((s) => s.id === 'HB') && HB.frames.some((f) => f.type === 'pong'))
+  HB.close()
+
   console.log(`\n${'='.repeat(40)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(40)}`)
-  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3, I1, I2, I3, I4, I5, L1, L2, L3, L4, m1, m2, m3, s1, s2, advX, W1, W2, wadv, Y1, Y2, yadv, ynorm, yunk, IMP0, VIC, ATT, VW, VIC2, NM, Adv49, Sum49, Str49, AW1, AW2].forEach((c) => { try { c.close() } catch {} })
+  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3, I1, I2, I3, I4, I5, L1, L2, L3, L4, m1, m2, m3, s1, s2, advX, W1, W2, wadv, Y1, Y2, yadv, ynorm, yunk, IMP0, VIC, ATT, VW, VIC2, NM, Adv49, Sum49, Str49, AW1, AW2, HB].forEach((c) => { try { c.close() } catch {} })
   if (advRoom) try { removeRoomDir(advRoom) } catch {}   // private summons use a Date.now()-based id → clean it so runs don't accumulate
   try { rmSync(ageRepo, { recursive: true, force: true }) } catch {}
   // NB: the throwaway HOME (mkdtemp, holding the seeded records + rooms dirs) is intentionally NOT removed

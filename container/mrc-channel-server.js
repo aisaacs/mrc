@@ -194,6 +194,16 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
 // --- persistent daemon socket -----------------------------------------------
 let sock = null, connected = false, buf = ''
 const outQ = []
+// #51: heartbeat. NEVER trust a bare TCP connect — if the daemon's port moved, a reused port could be a
+// clipboard/notify proxy that ACCEPTS the socket but never speaks the room protocol (the notify proxy
+// never even closes it → silent false-healthy wedge). So we send a ping on connect + every PING_MS, the
+// daemon replies {type:'pong',version}, and connected=true ONLY after a pong (the wrong-listener guard).
+// A stale pong (a post-sleep half-open socket, or a daemon that vanished without a FIN) tears the socket
+// down so the close handler reconnects. VERIFY is the generous connect-time gate (err loose = a benign
+// flap against the real daemon, never the wedge); STALE ≈ 3 missed pings.
+const PING_MS = 5000, VERIFY_MS = 4000, STALE_MS = 16000
+let lastPong = 0, heartbeat = null, verifyTimer = null
+function clearHeartbeat() { if (heartbeat) clearInterval(heartbeat); if (verifyTimer) clearTimeout(verifyTimer); heartbeat = verifyTimer = null }
 function send(frame) {
   const line = JSON.stringify(frame) + '\n'
   if (connected && sock) sock.write(line); else outQ.push(line)
@@ -248,6 +258,16 @@ function sendAwaitAck(frame) {
   })
 }
 function onFrame(f) {
+  if (f.type === 'pong') {                             // #51: daemon liveness — proves the listener IS the daemon, and keeps the socket proven-live
+    lastPong = Date.now()
+    if (!connected) {
+      connected = true
+      if (verifyTimer) { clearTimeout(verifyTimer); verifyTimer = null }
+      log(`daemon verified (pong${f.version ? ` v${f.version}` : ''}) — connected`)
+      while (outQ.length && sock) sock.write(outQ.shift())
+    }
+    return
+  }
   if (f.type === 'peerlist') {                         // response to list_peers (tool result)
     if (pendingList) { pendingList(f.peers || []); pendingList = null }
     return
@@ -260,17 +280,28 @@ function connect() {
   if (!PORT) { log('MRC_ROOM_PORT unset — dormant (no daemon)'); return }
   sock = net.connect(PORT, HOST)
   sock.on('connect', () => {
-    connected = true
-    log(`connected to daemon ${HOST}:${PORT}`)
-    sock.write(JSON.stringify({ type: 'register', sessionId: SESSION_ID, repo: REPO, label: LABEL, room: ROOM || undefined, summonedBy: SUMMONED_BY || undefined, repoPath: REPO_PATH || undefined, web: process.env.ALLOW_WEB ? true : undefined, adversary: process.env.MRC_ADVERSARY ? true : undefined, secret: process.env.MRC_ROOM_SECRET || undefined, notifyPort: NOTIFY || undefined }) + '\n')   // `secret` (G/#44): the per-session register secret the host injected (MRC_ROOM_SECRET) — lets the daemon bind this id to its owner and reject a register from an impostor; absent on pre-rebuild builds (daemon falls back to socket-binding)   // `adversary` = IDENTITY bit (MRC_ADVERSARY), distinct from the cage env: forwarded on every adversary launch incl. --open-adversary-unsafe, so the daemon (room-daemon.js:680 `summonedBy || adversary`) re-classifies a resumed adversary the firewall already caged — closes the #32 split-brain.
-    while (outQ.length) sock.write(outQ.shift())
+    // #51: TCP is open, but DON'T go connected=true yet — wait for a pong to prove this listener is the
+    // daemon (a reused port could be a clip/notify proxy that accepts but never pongs). register + the
+    // first ping go out now (direct writes, bypassing the connected gate); user frames stay queued in
+    // outQ until the pong arrives, so a stray frame can't leak to a wrong listener.
+    log(`tcp open ${HOST}:${PORT} — verifying daemon (awaiting pong)`)
+    lastPong = 0
+    try {
+      sock.write(JSON.stringify({ type: 'register', sessionId: SESSION_ID, repo: REPO, label: LABEL, room: ROOM || undefined, summonedBy: SUMMONED_BY || undefined, repoPath: REPO_PATH || undefined, web: process.env.ALLOW_WEB ? true : undefined, adversary: process.env.MRC_ADVERSARY ? true : undefined, secret: process.env.MRC_ROOM_SECRET || undefined, notifyPort: NOTIFY || undefined }) + '\n')   // `secret` (G/#44): the per-session register secret the host injected (MRC_ROOM_SECRET) — lets the daemon bind this id to its owner and reject a register from an impostor; absent on pre-rebuild builds (daemon falls back to socket-binding)   // `adversary` = IDENTITY bit (MRC_ADVERSARY), distinct from the cage env: forwarded on every adversary launch incl. --open-adversary-unsafe, so the daemon (room-daemon.js `summonedBy || adversary`) re-classifies a resumed adversary the firewall already caged — closes the #32 split-brain.
+      sock.write(JSON.stringify({ type: 'ping' }) + '\n')
+    } catch {}
+    verifyTimer = setTimeout(() => { log(`no pong in ${VERIFY_MS}ms — wrong listener (not the daemon), tearing down to retry`); try { sock.destroy() } catch {} }, VERIFY_MS)
+    heartbeat = setInterval(() => {
+      try { sock.write(JSON.stringify({ type: 'ping' }) + '\n') } catch {}
+      if (lastPong && Date.now() - lastPong > STALE_MS) { log('pong stale — daemon gone / half-open socket, tearing down to reconnect'); try { sock.destroy() } catch {} }
+    }, PING_MS)
   })
   sock.on('data', (d) => {
     buf += d.toString(); let i
     while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (l.trim()) { try { onFrame(JSON.parse(l)) } catch {} } }
   })
   sock.on('error', (e) => log(`daemon socket error: ${e.message}`))
-  sock.on('close', () => { connected = false; sock = null; setTimeout(connect, 1500) })
+  sock.on('close', () => { connected = false; sock = null; clearHeartbeat(); setTimeout(connect, 1500) })
 }
 
 await mcp.connect(new StdioServerTransport())

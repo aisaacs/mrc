@@ -800,6 +800,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue
         let f; try { f = JSON.parse(line) } catch { continue }
+        if (f.type === 'ping') { try { sock.write(JSON.stringify({ type: 'pong', version }) + '\n') } catch {} ; continue }   // #51: liveness — reply on ANY socket (pre-register too) so the channel server can verify it reached the DAEMON (not a reused clip/notify port that accepts but never speaks the protocol) and detect a half-open socket after sleep. version rides along so the channel server can also spot an old daemon.
         if (sessionId) { const _s = sessions.get(sessionId); if (_s) _s.lastFrameAt = Date.now() }   // per-session last-frame stamp (liveness/debug; list_peers shows session age now, not idle)
         if (f.type === 'register' && f.sessionId) {
           // G/#44: authenticate the register secret against the TAMPER-PROOF host-only RECORD, NOT the previous
