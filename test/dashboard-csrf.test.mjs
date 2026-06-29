@@ -6,7 +6,7 @@ import http from 'node:http'
 import os from 'node:os'
 import fs from 'node:fs'
 import { join } from 'node:path'
-import { startDashboard } from '../src/rooms-dashboard.js'
+import { startDashboard, rejectScriptTokens } from '../src/rooms-dashboard.js'
 import { safeAssetPath, ASSET_CONTENT_TYPES, resolveTerritoryImage } from '../src/safe-path.js'   // #56: canonical shared impl (re-exported by rooms-dashboard.js too)
 
 // A throwaway HOME so listRooms/etc. never touch the real store.
@@ -176,4 +176,19 @@ test('#56 resolveTerritoryImage: image inside the member territory resolves; sib
   assert.ok(resolveTerritoryImage(repo, '.', 'client').error, 'a directory is not a file')
   // ✗ an image that exists but is OUTSIDE the narrower territory (in repo, in a different subtree)
   assert.ok(resolveTerritoryImage(repo, 'client', 'assets/cat.png').error, 'repo-valid but outside client territory')
+})
+
+// #63-A: the inject-time guard that keeps the injected <script> block parser-proof. ASSERT (fail-loud),
+// not a transform — throws on any </script / <script / <!-- (case-insensitive); the real module passes.
+test('#63-A rejectScriptTokens: throws on script-tag/comment-open tokens; the real safe-md.js passes clean', () => {
+  // clean inputs pass (returns the source, chainable) — tags safeMD actually emits
+  assert.equal(rejectScriptTokens('const a = "<strong>ok</strong> <pre><code>x</code></pre>"'), 'const a = "<strong>ok</strong> <pre><code>x</code></pre>"')
+  // each dangerous token throws (case-insensitive). `</scripture` THROWS too: the dead-simple substring
+  // over-matches a benign token, which only fail-louds (forces a deliberate encode) — never corrupts.
+  for (const bad of ['</script>', '</SCRIPT >', '</script/', '<script>', '<SCRIPT src=x>', 'x<!-- y', 'a</script', '<script', '</scripture>']) {
+    assert.throws(() => rejectScriptTokens(`/* ${bad} */`), /must not contain/, `should throw on: ${bad}`)
+  }
+  // THE no-op-today property: the real shipped module contains none of the three tokens → passes.
+  const realMod = fs.readFileSync(new URL('../src/safe-md.js', import.meta.url), 'utf8')
+  assert.doesNotThrow(() => rejectScriptTokens(realMod), 'the shipped safe-md.js must inject cleanly')
 })

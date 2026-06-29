@@ -206,10 +206,16 @@
   .tabs button.on { background:var(--panel2); color:var(--fg); border-color:var(--line) }
   .thread { background:var(--inset); border:1px solid var(--line); border-radius:var(--radius); padding:14px; white-space:pre-wrap; word-break:break-word; font-size:12.5px; flex:1 1 0; min-height:0; overflow:auto; margin:0 }
   .thread:focus-visible, .focusable:focus-visible { outline:2px solid var(--accent); outline-offset:-2px }   /* keyboard-scroll a11y (#2a E) */
-  .tline { white-space:pre-wrap; word-break:break-word }
+  .tline { word-break:break-word; margin:1px 0 }
+  .tline .body { display:inline-block; vertical-align:top; max-width:100%; white-space:pre-wrap }   /* #63-A: member text rendered as safe MD; chrome is a sibling, not inside */
   .qnum { color:var(--ref); font-weight:600 }   /* the question's [#N] anchor target — reference, not a link */
   .qjump { color:var(--link); cursor:pointer; text-decoration:underline dotted }   /* the re #N jump — clickable */
   .tline.qhi { background:#2a2440; border-radius:5px; transition:background .3s }   /* jump highlight */
+  /* #63-A safe-markdown body subset */
+  .md-pre { background:var(--inset); border:1px solid var(--line); border-radius:6px; padding:7px 9px; margin:3px 0; overflow:auto; white-space:pre; font-size:12px }
+  .md-code { background:var(--inset); border:1px solid var(--line); border-radius:4px; padding:0 4px; font-size:12.5px }
+  .md-link { color:var(--link) }
+  .md-list { margin:3px 0 3px 20px } .md-list li { margin:1px 0 }
   .pane { background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:10px 12px; margin-bottom:8px; flex-shrink:0 }
   .pane.unrev { border-color:var(--needs-edge) }
   .card { background:var(--inset); border:1px solid var(--line); border-radius:8px; padding:9px 11px; margin:6px 0; white-space:pre-wrap; font-size:12.5px }
@@ -299,7 +305,8 @@ const $ = (s, r=document) => r.querySelector(s)
 // edit puts an attacker-controllable string into a single-quoted JS context (onclick="f('${esc(x)}')"):
 // &#39; HTML-decodes correctly in text, double- AND single-quoted attributes, so esc() is safe in every
 // context the dashboard uses — no caller has to remember which quote style it's in.
-const esc = (s) => String(s==null?'':s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]))
+// #63-A: esc + safeMD are the ONE audited renderer in src/safe-md.js, injected as a <head> <script> by
+// rooms-dashboard.js (so the browser runs the same module the node tests import). No inline copy here.
 const MRC_TOKEN = (document.querySelector('meta[name=mrc-token]')||{}).content || ''
 // Attach the CSRF token to every non-GET request (POST state-changers). A cross-origin page can't read
 // MRC_TOKEN (same-origin policy), so it can't forge these. The token is now persisted across daemon
@@ -821,7 +828,7 @@ function patchDetail() {
     return
   }
   if (S.selRoom && S.room) {
-    const t = $('#thread'); if (t && S.tab==='thread' && t.dataset.raw!==(S.room.thread||'')) followScroll(t, () => { const raw=S.room.thread||''; t.dataset.raw=raw; t.innerHTML = threadBodyHTML(S.room) })
+    const t = $('#thread'); if (t && S.tab==='thread' && t.dataset.raw!==(S.room.thread||'')) followScroll(t, () => { const raw=S.room.thread||''; t.dataset.raw=raw; fillThread(t, S.room) })
     const sm = $('#summary'); if (sm && S.tab==='summary') sm.textContent = S.room.consensus||''
   }
 }
@@ -862,38 +869,63 @@ function renderRoom(d) {
     <div id="tabbody"></div>`
   renderTab()
 }
-// Render the STRUCTURED transcript (#18). Each record is one logical message {t: line text, q: question
-// id|null, r: reply-to id|null}. The jump anchor (id="q<N>"), the `[#N]` chip, and the `re #N` jump link
-// derive ONLY from the daemon-authored q/r fields — never from scanning the line text. So a member's
-// `[#7]`/`(re #7)` in their own message (even a `\n`-injected fake line) is just esc()'d display text:
-// it cannot create an anchor, forge a jump link, or hijack a real question's #N. Spoof-proof by construction.
-function transcriptHTML(records) {
-  return (records||[]).map(rec => {
+// Render the STRUCTURED transcript (#18) by DOM construction (#63-A). Each record is one logical message
+// {t: line text, q: question id|null, r: reply-to id|null}. The body renders as safe Markdown into its OWN
+// `<div class="body">` (innerHTML = safeMD(t) — member text, escaped-first + allowlisted), and the trusted
+// CHROME (the id="q<N>" jump anchor, the `[#N]` chip, the `re #N` jump link) is **DOM-APPENDED as sibling
+// nodes**, derived ONLY from the daemon-authored q/r fields — NEVER string-concatenated into the body's
+// innerHTML and never scanned from the line text. So even if safeMD ever emitted unbalanced or raw-text
+// HTML, a chrome node (a separate DOM-API node) cannot be captured by the body string: chip/jump can't be
+// forged by body content (`[#7]`/`(re #7)`/`**Human directive**` in a member's text is just inert MD/text).
+function fillTranscript(host, records) {
+  host.textContent = ''
+  const frag = document.createDocumentFragment()
+  for (const rec of (records||[])) {
     const t = String(rec.t||'')
+    const line = document.createElement('div'); line.className = 'tline'
+    const body = document.createElement('div'); body.className = 'body'
     if (rec.q != null) {
-      // The daemon's own ` [#q]` suffix is re-rendered as a styled chip from the trusted field; strip
-      // only that exact trailing token (a member's earlier `[#x]` mid-text stays as inert escaped text).
-      const body = esc(t.replace(/\s*\[#\d+\]\s*$/, ''))
-      return `<div class="tline" id="q${rec.q}">${body} <span class="qnum">[#${rec.q}]</span></div>`
+      line.id = 'q' + rec.q
+      // strip ONLY the daemon's own trailing ` [#q]` token (a member's earlier `[#x]` mid-text stays inert)
+      body.innerHTML = safeMD(t.replace(/\s*\[#\d+\]\s*$/, ''))
+      line.appendChild(body); line.appendChild(document.createTextNode(' '))
+      const chip = document.createElement('span'); chip.className = 'qnum'; chip.textContent = `[#${rec.q}]`
+      line.appendChild(chip)
+    } else if (rec.r != null) {
+      body.innerHTML = safeMD(t.replace(/\s*\(re #\d+\)\s*$/, ''))
+      line.appendChild(body); line.appendChild(document.createTextNode(' '))
+      const jump = document.createElement('a'); jump.className = 'qjump'; jump.title = `jump to question #${rec.r}`
+      jump.textContent = `re #${rec.r}`; const rid = rec.r; jump.onclick = () => jumpToQ(rid)   // JS-wired, not body-string
+      line.appendChild(jump)
+    } else {
+      body.innerHTML = safeMD(t); if (!body.innerHTML) body.textContent = ' '
+      line.appendChild(body)
     }
-    if (rec.r != null) {
-      const body = esc(t.replace(/\s*\(re #\d+\)\s*$/, ''))
-      return `<div class="tline">${body} <a class="qjump" onclick="jumpToQ(${rec.r})" title="jump to question #${rec.r}">re #${rec.r}</a></div>`
-    }
-    return `<div class="tline">${esc(t)||' '}</div>`
-  }).join('')
+    frag.appendChild(line)
+  }
+  host.appendChild(frag)
 }
-// Old room with only thread.log (no structured records yet) → render lines inert (no anchors). Safe:
-// we never re-derive trust from text. Used only as a fallback when the transcript is empty.
-const inertThreadHTML = (raw) => String(raw||'').split('\n').map(l => `<div class="tline">${esc(l)||' '}</div>`).join('')
-const threadBodyHTML = (room) => { const tx=(room&&room.transcript)||[]; const raw=(room&&room.thread)||''; return tx.length ? transcriptHTML(tx) : (raw ? inertThreadHTML(raw) : '(no messages yet)') }
+// Fill a #thread host: the structured transcript (DOM-append) when present, else inert thread.log lines
+// (textContent → auto-escaped, no anchors — we never re-derive trust from raw text), else the empty notice.
+function fillThread(host, room) {
+  const tx = (room&&room.transcript)||[]; const raw = (room&&room.thread)||''
+  if (tx.length) return fillTranscript(host, tx)
+  host.textContent = ''
+  if (raw) {
+    for (const l of raw.split('\n')) {
+      const line = document.createElement('div'); line.className = 'tline'
+      const body = document.createElement('div'); body.className = 'body'; body.textContent = l || ' '
+      line.appendChild(body); host.appendChild(line)
+    }
+  } else { const e = document.createElement('div'); e.className = 'muted'; e.textContent = '(no messages yet)'; host.appendChild(e) }
+}
 window.jumpToQ = (id)=>{ const el=$('#q'+id); if(!el)return false; el.scrollIntoView({block:'center',behavior:'smooth'}); el.classList.add('qhi'); setTimeout(()=>el.classList.remove('qhi'),1400); return true }
 // #47 jump-to-original: open the room, then scroll its transcript to the question's #q<N> anchor. The
 // room thread renders async (selRoom→tick→fetch→paint), so retry jumpToQ until the anchor exists (or give up).
 window.openRoomAt = (roomId, n)=>{ openRoom(roomId); let tries=0; const t=setInterval(()=>{ if(jumpToQ(n)||++tries>25) clearInterval(t) }, 120) }
 function renderTab() {
   const b = $('#tabbody'); if (!b) return
-  if (S.tab==='thread') { const raw=(S.room&&S.room.thread)||''; b.innerHTML = `<div class="thread" id="thread" tabindex="0">${threadBodyHTML(S.room)}</div>`; const t=$('#thread'); if(t){ t.dataset.raw=raw; t.scrollTop=t.scrollHeight } }
+  if (S.tab==='thread') { const raw=(S.room&&S.room.thread)||''; b.innerHTML = `<div class="thread" id="thread" tabindex="0"></div>`; const t=$('#thread'); if(t){ fillThread(t, S.room); t.dataset.raw=raw; t.scrollTop=t.scrollHeight } }
   else if (S.tab==='summary') b.innerHTML = `<pre class="thread" id="summary" tabindex="0">${esc((S.room&&S.room.consensus)||'(no summary)')}</pre>`   // #2a E: focusable → arrow-scroll
   else {
     const cu = (S.room&&S.room.catchups)||[]

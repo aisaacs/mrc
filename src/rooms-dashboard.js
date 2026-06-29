@@ -23,6 +23,34 @@ const metaPath = () => join(homedir(), '.local', 'share', 'mrc', 'room-daemon.js
 const daemonMeta = () => { try { return JSON.parse(readFileSync(metaPath(), 'utf8')) } catch { return null } }
 const readIf = (f) => { try { return readFileSync(f, 'utf8') } catch { return '' } }
 const HTML_FILE = fileURLToPath(new URL('./dashboard.html', import.meta.url))   // unified, teams-first app
+const SAFE_MD_FILE = fileURLToPath(new URL('./safe-md.js', import.meta.url))     // #63-A: the ONE audited esc/safeMD, injected into the page so the browser runs the same module the tests import
+
+// #63-A: inline the safe-md module into the served doc so every client sink uses the SINGLE audited path
+// (no duplicate, no drift). Strip the ES `export` keywords → the fns become page globals. Make the injected
+// <script> PARSER-PROOF by ASSERT, not transform (Apolline's call): a blanket `</script`→`<\/script` replace
+// is safe in a string/comment but SILENTLY corrupts a regex/code context (`/<script>/` → `/<\script>/` turns
+// the literal into the `\s` whitespace class) — a silent break on the security primitive. So instead FAIL
+// LOUD if the module ever contains a script-tag or comment-open token (`</script` / `<script` / `<!--`, which
+// would otherwise close or double-escape the injected block). It emits none today (only <pre>/<code>/<strong>/
+// <a>/<ul>/<li>/<br>), so this is a no-op now; a future edit introducing one must encode it deliberately
+// (String.fromCharCode / split) rather than get a silently-broken regex. Fail-loud, consistent with the
+// daemon's version-stamp / surfaced-import-failure discipline. (No attacker data is ever templated here — the
+// block is the static module only; member text is escaped by safeMD at runtime, never entering the source.)
+// Inject-time ASSERT, fail-loud (team-converged: an ASSERT, never a backslash-transform — a transform can
+// silently corrupt a future regex, e.g. /<script>/ → /<\script>/ flips `<script` to `<`+`\s`). Dead-simple
+// conservative substring: throw on ANY `</script`/`<script`/`<!--` (case-insensitive). Over-matching a benign
+// `</scripture` only fail-louds (forces a deliberate fromCharCode/split encode) — never corrupts. No-op today
+// (the module emits only <pre>/<code>/<strong>/<em>/<a>/<ul>/<li>/<br>; "script"/"<!--" absent). Exported for
+// the gate test. Returns the source (chainable) so callers can assert-then-transform.
+export function rejectScriptTokens(src) {
+  if (/<\/?script|<!--/i.test(String(src))) {
+    throw new Error('safe-md.js must not contain a literal "</script", "<script", or "<!--" (it would break the injected <script> block) — encode such text via String.fromCharCode/split instead')
+  }
+  return src
+}
+function safeMdInline() {
+  return rejectScriptTokens(readFileSync(SAFE_MD_FILE, 'utf8')).replace(/^export\s+/gm, '')
+}
 // Normalize a roster object/JSON into { norm, validation } or { error }. Pure — no disk/daemon.
 function previewRoster(input) {
   try {
@@ -348,7 +376,9 @@ async function handle(req, res) {
     if (req.method === 'GET' && !url.pathname.startsWith('/api/')) {
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
       // Embed the per-daemon CSRF token; the SPA reads it and sends it as X-MRC-Token on every POST.
-      const html = readFileSync(HTML_FILE, 'utf8').replace('</head>', `<meta name="mrc-token" content="${DASH_TOKEN}">\n</head>`)
+      // #63-A: inject the audited safe-md module in <head> (before the body script defines/uses esc/safeMD).
+      const html = readFileSync(HTML_FILE, 'utf8').replace('</head>',
+        `<meta name="mrc-token" content="${DASH_TOKEN}">\n<script>\n${safeMdInline()}\n</script>\n</head>`)
       return res.end(html)
     }
     res.writeHead(404, { 'content-type': 'text/plain' }); res.end('not found')
