@@ -456,6 +456,23 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     appendThread(p.roomId, `${ts()} [handoff] ${nameOf(fromId)} -> human\n${String(text || '')}`)
     ack('recorded')
   }
+  // #29: a member that leaves / disconnects before filing its handoff will never file it — drop it from
+  // the pending pane's `expected` so the pane finalizes as soon as the REMAINING live members have filed,
+  // instead of hanging at e.g. 1/2 until catchupTimeoutMs (120s). A reconnecting member's late handoff
+  // still lands: onHandoff attaches to any UN-REVIEWED pane missing that side, even one already 'ready'.
+  function reconcileCatchupDepart(p, leftId) {
+    if (!p || !p.pendingCatchup) return
+    const e = readCatchups(p.roomId).find((x) => x.seq === p.pendingCatchup)
+    if (!e || e.status !== 'pending' || (e.handoffs && e.handoffs[leftId])) return   // no pending pane, or this side already filed
+    const filed = Object.keys(e.handoffs || {}).length
+    const expected = Math.max(filed, (e.expected || 1) - 1)   // the departed side is no longer expected
+    const ready = filed >= expected
+    updateCatchup(p.roomId, e.seq, { expected, status: ready ? 'ready' : 'pending' })
+    if (ready && p.pendingCatchup === e.seq) {
+      p.pendingCatchup = null
+      appendThread(p.roomId, `${ts()} [catch-up finalized — ${nameOf(leftId)} departed before filing; ${filed}/${expected} handoff(s) in]`)
+    }
+  }
   // Auto-elicit on a pause UNLESS the human turned it off for this room (they're watching live and
   // don't want the agents interrupted). Manual `catchup` ignores this — it's an explicit request.
   function maybeCatchup(p, reason) {
@@ -728,11 +745,15 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     if (!p || !inRoom(p, sessionId)) { send(sessionId, { type: 'notice', text: '[No room to leave.]' }); return ack('leave-none') }
     p.members = p.members.filter((m) => m !== sessionId)
     if (!turnCap && p.members.length < 3) p.turnCap = 0   // the N≥3 auto-armed cap is only valid while N-party — clear it on a 3→2 drop to restore 2-party self-pacing (else the stale cap re-wedges per commit 4176f86: budgetOf goes 0 and resume can't extend). leave_room is the FIRST path that shrinks members; disconnect never did.
+    reconcileCatchupDepart(p, sessionId)   // #29: a pending pane stops waiting on the leaver's handoff
     p.held = p.held.filter((h) => h.toId !== sessionId)   // drop any queued messages addressed TO the departed member (don't deliver an old-room message to them on a later resume)
     setActive(sessionId, null)
     appendThread(p.roomId, `${ts()} [${nameOf(sessionId)} left the room]`)
     send(sessionId, { type: 'notice', text: `[You left ${p.roomId} — its history is preserved on disk, and only this room left (not your session); your other rooms, if any, resume.]` })
     if (p.members.length < 2) {
+      // #29: room going dormant → finalize any still-pending pane (the lone remaining side's handoff for
+      // a dead room is moot; a late one still lands on the un-reviewed pane) so it isn't stuck pending.
+      if (p.pendingCatchup) { const e = readCatchups(p.roomId).find((x) => x.seq === p.pendingCatchup); if (e && e.status === 'pending') updateCatchup(p.roomId, e.seq, { status: 'ready' }); p.pendingCatchup = null }
       for (const m of p.members) send(m, { type: 'notice', text: `[${nameOf(sessionId)} left — this room is now dormant history (thread.log + consensus.md preserved). Re-open it by asking the peer again.]` })
       appendThread(p.roomId, `${ts()} [dropped below 2 members — pairing closed to history (files preserved)]`)
       pairings.delete(p.roomId)
@@ -844,7 +865,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     // already re-registered on a NEWER socket. An UNCLEAN disconnect (laptop sleep, partition, kill) fires
     // the old socket's close on TCP-keepalive timeout, which can land AFTER the wake-reconnect; without
     // this it would delete the live reconnected session and ghost it offline.
-    sock.on('close', () => { if (sessionId && sessions.get(sessionId)?.sock === sock) { sessions.delete(sessionId); noteSessions(); recomputeSidechannelBrakes() } })
+    sock.on('close', () => { if (sessionId && sessions.get(sessionId)?.sock === sock) { for (const p of roomsContaining(sessionId)) reconcileCatchupDepart(p, sessionId); sessions.delete(sessionId); noteSessions(); recomputeSidechannelBrakes() } })   // #29: drop the disconnected side from any pending catch-up pane
   })
   server.listen(port, '127.0.0.1')
   server.on('error', () => process.exit(1))   // e.g. EADDRINUSE on an in-place restart → let the caller fall back

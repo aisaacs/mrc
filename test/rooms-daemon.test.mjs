@@ -16,7 +16,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 process.env.HOME = mkdtempSync(join(tmpdir(), 'mrc-roomtest-'))
 const { startRoomDaemon } = await import(join(here, '../src/proxies/room-daemon.js'))
 const { findFreePort } = await import(join(here, '../src/ports.js'))
-const { savePairings, removeRoomDir, ensureRoom } = await import(join(here, '../src/rooms.js'))
+const { savePairings, removeRoomDir, ensureRoom, readCatchups } = await import(join(here, '../src/rooms.js'))
 const { saveSessionRecord } = await import(join(here, '../src/session-record.js'))
 
 process.env.MRC_SUMMON_OPEN_CMD = 'true'   // no-op opener; we simulate the adversary booting by connecting a client
@@ -556,6 +556,35 @@ async function main() {
   const awRoom = roomBy(awSt, 'AW1', 'AW2') || {}
   check('28b disconnected member shows in awaiting (online one does not)', (awRoom.awaiting || []).includes('AW2') && !(awRoom.awaiting || []).includes('AW1'), JSON.stringify(awRoom.awaiting))
   check('28c partially-connected (0 < awaiting < members) → CLI flags it stranded, not dormant', (awRoom.awaiting || []).length > 0 && (awRoom.awaiting || []).length < (awRoom.members || []).length)
+
+  // 29 — #29: a pending catch-up pane reconciles `expected` when a member departs before filing, so it
+  // finalizes IMMEDIATELY instead of hanging until the timeout. Dedicated daemon with catchupTimeoutMs
+  // huge → the pane can ONLY reach 'ready' via the reconcile, never the backstop (proves the fix).
+  console.log('\n[29] #29 catch-up expected reconciles on depart (no timeout masking)')
+  const p29 = await findFreePort(port + 400), c29 = await findFreePort(p29 + 1)
+  const d29 = startRoomDaemon({ port: p29, controlPort: c29, notifyPort: 0, version: 't29', idleMs: 9e8, tickMs: 9e8, catchupTimeoutMs: 9e8 })
+  await sleep(120)
+  // disconnect path: CA files, CB DISCONNECTS before filing → CB dropped from expected → pane ready
+  const CA = mkClient(p29, 'CA'), CB = mkClient(p29, 'CB'); CA.register(); CB.register(); await sleep(100)
+  CA.send({ type: 'ask', question: 'q', peer: 'CB' }); await sleep(120)
+  let s29 = await status(c29); const r29 = roomBy(s29, 'CA', 'CB').roomId
+  await control(c29, 'catchup', { roomId: r29 }); await sleep(120)
+  CA.send({ type: 'handoff', text: 'CA handoff', id: 1 }); await sleep(120)
+  let pane = readCatchups(r29).slice(-1)[0]
+  check('29a pane pending at 1/2 before depart', pane.status === 'pending' && pane.expected === 2 && Object.keys(pane.handoffs).length === 1, JSON.stringify(pane))
+  CB.close(); await sleep(200)
+  pane = readCatchups(r29).slice(-1)[0]
+  check('29b disconnect reconciles expected→1 → pane ready (not stuck till timeout)', pane.status === 'ready' && pane.expected === 1, JSON.stringify(pane))
+  // leave path: CC files, CD LEAVES before filing → room drops <2 → pending pane finalized
+  const CC = mkClient(p29, 'CC'), CD = mkClient(p29, 'CD'); CC.register(); CD.register(); await sleep(100)
+  CC.send({ type: 'ask', question: 'q', peer: 'CD' }); await sleep(120)
+  s29 = await status(c29); const r29b = roomBy(s29, 'CC', 'CD').roomId
+  await control(c29, 'catchup', { roomId: r29b }); await sleep(120)
+  CC.send({ type: 'handoff', text: 'CC handoff', id: 2 }); await sleep(120)
+  CD.send({ type: 'leave', id: 3 }); await sleep(150)
+  pane = readCatchups(r29b).slice(-1)[0]
+  check('29c leave finalizes the pending pane (not stuck pending)', pane.status === 'ready', JSON.stringify(pane))
+  d29.stop(); [CA, CB, CC, CD].forEach((c) => { try { c.close() } catch {} })
 
   console.log(`\n${'='.repeat(40)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(40)}`)
   d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3, I1, I2, I3, I4, I5, L1, L2, L3, L4, m1, m2, m3, s1, s2, advX, W1, W2, wadv, Y1, Y2, yadv, ynorm, yunk, IMP0, VIC, ATT, VW, VIC2, NM, Adv49, Sum49, Str49, AW1, AW2].forEach((c) => { try { c.close() } catch {} })

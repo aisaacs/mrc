@@ -216,7 +216,11 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
     (🔔/🔕 in the dashboard, control `autocatchup`) governs the *pause-triggered* elicitation.
     It is **off by default** — a pause doesn't interrupt the agents for a handoff; turn it on
     (🔔) to auto-capture one when you're away. The room still pauses either way (skips are logged
-    to `thread.log`, and **Catch-up now** still works on demand).
+    to `thread.log`, and **Catch-up now** still works on demand). A pane finalizes (`ready`) once every
+    still-present side has filed; if a side **leaves or disconnects before filing** it's dropped from the
+    pane's `expected` count so the pane finalizes on the remaining handoffs rather than hanging at e.g.
+    1/2 (a ~2 min timeout is the final backstop, and a reconnecting side's late handoff still attaches to
+    the un-reviewed pane). #29
 
 ## 6. Transport — why channels (condensed findings)
 
