@@ -6,7 +6,7 @@ import http from 'node:http'
 import os from 'node:os'
 import fs from 'node:fs'
 import { join } from 'node:path'
-import { startDashboard, safeAssetPath } from '../src/rooms-dashboard.js'
+import { startDashboard, safeAssetPath, ASSET_CONTENT_TYPES } from '../src/rooms-dashboard.js'
 
 // A throwaway HOME so listRooms/etc. never touch the real store.
 process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-dash-`)
@@ -124,4 +124,21 @@ test('#48b safeAssetPath: serves an in-repo image; rejects traversal / absolute 
   assert.equal(safeAssetPath(repo, 'assets/nope.png'), null)
   assert.equal(safeAssetPath(repo, ''), null)
   assert.equal(safeAssetPath('', 'assets/cat.png'), null)
+})
+
+// #48c: the /api/asset content-type allowlist is the second half of the guard (the path guard + THIS map).
+// It must mirror exactly what media.js emits (Gemini png/jpg, ElevenLabs mp3) and NEVER admit a
+// script-bearing type — svg in particular is XSS surface if ever served with its real content-type.
+test('#48c ASSET_CONTENT_TYPES: admits raster + mp3 only; never svg / html / source', () => {
+  assert.equal(ASSET_CONTENT_TYPES['.mp3'], 'audio/mpeg', 'mp3 → audio/mpeg (the audio preview type)')
+  assert.equal(ASSET_CONTENT_TYPES['.png'], 'image/png')
+  assert.equal(ASSET_CONTENT_TYPES['.jpg'], 'image/jpeg')
+  // every value is an image/* or audio/* type — nothing executable/markup
+  for (const [ext, ct] of Object.entries(ASSET_CONTENT_TYPES)) {
+    assert.ok(/^(image|audio)\//.test(ct), `${ext} maps to a non-script media type, got ${ct}`)
+  }
+  // the dangerous extensions are absent (no producer + script/markup surface)
+  for (const bad of ['.svg', '.html', '.htm', '.js', '.wav', '.ogg', '.m4a', '.env', '.json']) {
+    assert.equal(ASSET_CONTENT_TYPES[bad], undefined, `${bad} must NOT be served`)
+  }
 })

@@ -84,9 +84,10 @@ async function buildState() {
 
 function sendJSON(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)) }
 
-// #48b: image content-types served by /api/asset. RASTER ONLY — no svg (it can carry script → XSS if ever
-// rendered outside an <img>); media.js only ever generates png/jpg anyway.
-export const ASSET_CONTENT_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp' }
+// #48b/#48c: media content-types served by /api/asset. RASTER images + mp3 audio ONLY — no svg (it can
+// carry script → XSS if ever rendered outside an <img>); the list mirrors exactly what media.js emits
+// (Gemini → png/jpg, ElevenLabs sfx/music → mp3), so there's no extension here without a producer.
+export const ASSET_CONTENT_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.mp3': 'audio/mpeg' }
 
 // Resolve `rel` to a real file INSIDE `repo`, or null if it's unsafe / escapes. THE guard for /api/asset
 // (it serves file bytes — the highest-risk endpoint). Reject absolute / NUL / `..` BEFORE touching the fs,
@@ -273,7 +274,7 @@ async function handle(req, res) {
       const rel = url.searchParams.get('path') || ''                 // URLSearchParams decodes exactly once
       const ext = extname(rel).toLowerCase()
       const deny = (code = 404) => { res.writeHead(code, { 'cache-control': 'no-store' }); res.end() }
-      if (!ASSET_CONTENT_TYPES[ext]) return deny(415)                // raster image extensions only (no svg/.env/source)
+      if (!ASSET_CONTENT_TYPES[ext]) return deny(415)                // allowlisted media only — raster images + mp3 (no svg/.env/source)
       const gr = await ctrl(daemonMeta()?.controlPort, 'getroster', { org: url.searchParams.get('org') })
       const repo = gr?.repo
       if (!repo) return deny()                                       // unknown org → 404, no detail
