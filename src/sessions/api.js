@@ -26,7 +26,9 @@ async function callHaiku(apiKey, messages, maxTokens = 512) {
       '\x1b[1;31m  ✦ API key rejected (401). The key may have been rotated.\x1b[0m\n' +
       '\x1b[0;2m    Exit this session and relaunch mrc to pick up the new key.\x1b[0m\n'
     )
-    return null
+    // #52: a 401 is TERMINAL (the key won't work until relaunch) — throw a typed error so the namer's
+    // retry loop stops instead of re-logging this every backoff. Other !ok (429/5xx) returns null = retryable.
+    throw Object.assign(new Error('naming key rejected (401)'), { code: 'AUTH' })
   }
   if (!resp.ok) return null
 
@@ -62,15 +64,18 @@ export async function summarize(mrcDir, uuid) {
   }
 }
 
-/** Generate a descriptive kebab-case session name using Haiku. */
+/** Generate a descriptive kebab-case session name using Haiku.
+ *  Returns a STATUS so a caller can retry (#52): 'named' / 'exists' / 'no-key' are TERMINAL (stop);
+ *  'too-short' (transcript below the floor — try again as it grows) and 'error' (a transient Haiku /
+ *  network blip) are RETRYABLE. */
 export async function generateName(mrcDir, uuid) {
   const names = loadNames(mrcDir)
-  if (names[uuid]) return  // already named
+  if (names[uuid]) return 'exists'  // already named
 
   const apiKey = namingKey()
   if (!apiKey) {
     process.stderr.write('\x1b[1;31m  ✦ Name generation skipped: no MRC_SESSION_NAMING_ANTHROPIC_API_KEY set\x1b[0m\n')
-    return
+    return 'no-key'
   }
 
   // #48: excludeMeta strips room/channel peer messages (and other injected turns) so a session a
@@ -79,25 +84,31 @@ export async function generateName(mrcDir, uuid) {
   const transcript = extractTranscript(mrcDir, uuid, 2000, { excludeMeta: true })
   // Floor: don't ask the namer to name an empty/near-empty session — it replies "no transcript
   // provided", which fails the kebab-case check below and surfaces as a confusing "bad format" error.
-  // The watcher already gates on ~10KB of .jsonl, but this guards manual/resumed callers too.
-  if (!transcript || transcript.trim().length < 200) return
+  // The watcher already gates on ~10KB of .jsonl, but this guards manual/resumed callers too. Returns
+  // 'too-short' (not a hard stop) so the #52 retry loop keeps checking as the transcript grows.
+  if (!transcript || transcript.trim().length < 200) return 'too-short'
 
-  const text = await callHaiku(apiKey, [{
-    role: 'user',
-    content:
-      'Generate a short kebab-case name (3-5 words, lowercase, hyphens) that describes ' +
-      "what this Claude Code session is about. Examples: 'android-splash-screen-hang-fix', " +
-      "'add-user-auth-middleware', 'refactor-db-connection-pool'.\n\n" +
-      'Reply with ONLY the kebab-case name, nothing else.\n\n' +
-      `Transcript:\n${transcript}`,
-  }], 30)
+  let text
+  try {
+    text = await callHaiku(apiKey, [{
+      role: 'user',
+      content:
+        'Generate a short kebab-case name (3-5 words, lowercase, hyphens) that describes ' +
+        "what this Claude Code session is about. Examples: 'android-splash-screen-hang-fix', " +
+        "'add-user-auth-middleware', 'refactor-db-connection-pool'.\n\n" +
+        'Reply with ONLY the kebab-case name, nothing else.\n\n' +
+        `Transcript:\n${transcript}`,
+    }], 30)
+  } catch (e) {
+    return e?.code === 'AUTH' ? 'no-key' : 'error'   // 401 = terminal (relaunch needed); network/timeout = retryable
+  }
 
-  if (!text) return
+  if (!text) return 'error'   // non-401 API failure (429/5xx) — retryable
 
   const name = text.trim().toLowerCase().replace(/^["']|["']$/g, '')
   if (!name || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) {
     process.stderr.write(`\x1b[1;31m  ✦ Name generation: bad format '${name}'\x1b[0m\n`)
-    return
+    return 'error'   // a flaky response — retryable
   }
 
   // Re-read in case a manual name was set while we were generating
@@ -107,5 +118,7 @@ export async function generateName(mrcDir, uuid) {
     saveNames(mrcDir, fresh)                 // transitional projection (retired in Phase 2)
     saveMeta(mrcDir, uuid, { name })          // record = source of truth
     process.stderr.write(`\x1b[1;36m  ✦ Session named → \x1b[1;33m${name}\x1b[0m\n`)
+    return 'named'
   }
+  return 'exists'   // a concurrent writer named it while we were generating
 }

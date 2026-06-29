@@ -668,7 +668,33 @@ if (config.agent === 'claude') {
   try { beforeSessions = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')) } catch {}
 }
 
-// Background name generator
+// Background name generator. #52: name THIS session as soon as it's nameable (~10KB), then KEEP
+// retrying until a name actually lands — the old path tried ONCE inside a ~10-min-from-launch window,
+// so a transient Haiku blip OR a session that only got busy after a long idle stayed silently unnamed
+// (only the post-exit namer caught it, on close). process.exit(exitCode) at the bottom kills these on
+// session end, so the unbounded waits below can't hang the launcher.
+const sleepMs = (ms) => new Promise((r) => setTimeout(r, ms))
+// generateName returns: 'named'/'exists'/'no-key' = TERMINAL; 'too-short'/'error' = RETRYABLE. The
+// in-session watcher passes Infinity; the post-exit fallback passes a small cap (transcript is final).
+const nameUntilDone = async (uuid, maxAttempts = Infinity) => {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const r = await generateName(mrcDir, uuid).catch(() => 'error')
+    if (r === 'named' || r === 'exists' || r === 'no-key') return
+    await sleepMs(Math.min(30000, 5000 * (attempt + 1)))   // 'too-short' costs no API call; backoff caps the network retries
+  }
+}
+// Wait until there's enough transcript to name from (~10KB) with NO hard cap, then retry until it lands.
+const nameWhenReady = async (uuid) => {
+  const file = resolve(mrcDir, `${uuid}.jsonl`)
+  for (;;) {
+    let size = 0
+    try { size = statSync(file).size } catch {}   // not created yet → treat as 0 and keep polling
+    if (size >= 10240) break
+    await sleepMs(5000)
+  }
+  await nameUntilDone(uuid)
+}
+
 let nameWatcher = null
 if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && apiKey) {
   // No relabel push: the daemon reads each session's name from its on-disk record at use-time (single
@@ -677,51 +703,22 @@ if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && 
   nameWatcher = (async () => {
     // Rooms pins THIS session's conversation UUID — name its OWN .jsonl directly. The heuristics below
     // (files[last] / newFiles[0]) mis-name under concurrent same-repo sessions: a fresh session grabs a
-    // peer's .jsonl. Wait for ~10KB of content, then name + relabel. Non-rooms sessions (no pinned id)
-    // fall through to the heuristic.
-    if (roomSessionId) {
-      const file = resolve(mrcDir, `${roomSessionId}.jsonl`)
-      let big = false
-      for (let j = 0; j < 120; j++) {
-        try { if (statSync(file).size >= 10240) { big = true; break } } catch {}
-        await new Promise((r) => setTimeout(r, 5000))
-      }
-      // Only name once there's enough transcript to extract a real name from. The 10KB threshold is a
-      // GUARD, not just a wait: a session opened and left idle never crosses it, so it stays unnamed
-      // instead of firing on an empty transcript (which the namer rejects as "no transcript provided").
-      if (big) await generateName(mrcDir, roomSessionId)
-      return
-    }
-    // For resumed sessions, name immediately if unnamed
+    // peer's .jsonl. Non-rooms sessions (no pinned id) fall through to the heuristic.
+    if (roomSessionId) { await nameWhenReady(roomSessionId); return }
+    // For a resumed session, name the latest existing .jsonl if unnamed — a single attempt (it already
+    // has content; don't poll-wait here or it could block the new-session detection below).
     try {
       const files = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')).sort()
-      if (files.length > 0) {
-        const uuid = basename(files[files.length - 1], '.jsonl')
-        await generateName(mrcDir, uuid)
-      }
+      if (files.length > 0) await generateName(mrcDir, basename(files[files.length - 1], '.jsonl'))
     } catch {}
-
-    // For new sessions, wait for a new JSONL to appear
+    // For a new session, wait for its JSONL to appear (bounded — it's created on the first message),
+    // then name-when-ready (unbounded poll-to-~10KB + retry-until-named).
     for (let i = 0; i < 60; i++) {
-      await new Promise(r => setTimeout(r, 5000))
+      await sleepMs(5000)
       try {
         const after = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl'))
         const newFiles = after.filter(f => !beforeSessions.includes(f))
-        if (newFiles.length > 0) {
-          // Wait for enough conversation (~10KB) — and only name if it actually gets there, so an
-          // idle/empty new session doesn't fire naming on an empty transcript.
-          const newFile = resolve(mrcDir, newFiles[0])
-          let big = false
-          for (let j = 0; j < 60; j++) {
-            await new Promise(r => setTimeout(r, 5000))
-            try { if (statSync(newFile).size >= 10240) { big = true; break } } catch {}
-          }
-          if (big) {
-            const uuid = basename(newFiles[0], '.jsonl')
-            await generateName(mrcDir, uuid)
-          }
-          break
-        }
+        if (newFiles.length > 0) { await nameWhenReady(basename(newFiles[0], '.jsonl')); break }
       } catch {}
     }
   })()
@@ -759,9 +756,10 @@ if (config.agent === 'claude') {
       nameSession(mrcDir, config.newSessionName, newUuid)
     }
 
-    // Auto-generate name if none set
+    // Auto-generate name if none set. #52: a few tries cover a transient Haiku blip at exit (the
+    // transcript is final now, so a bounded retry — not the watcher's unbounded poll — is right here).
     if (!config.newSessionName && !config.noSummary && apiKey) {
-      await generateName(mrcDir, newUuid)
+      await nameUntilDone(newUuid, 3)
     }
 
     // Tool-miss detection
@@ -793,7 +791,7 @@ if (config.agent === 'claude') {
   if (newFiles.length === 0 && !config.noSummary && apiKey) {
     try {
       const latest = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')).sort().pop()
-      if (latest) await generateName(mrcDir, basename(latest, '.jsonl'))
+      if (latest) await nameUntilDone(basename(latest, '.jsonl'), 3)   // #52: bounded retry covers a transient blip
     } catch {}
   }
 }
