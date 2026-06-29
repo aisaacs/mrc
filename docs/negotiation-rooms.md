@@ -88,6 +88,19 @@ the channel connects to `host.docker.internal:<port>` over the firewall and regi
   `room-pairings.json`, and the next daemon restores them (a ≤2 min freshness guard ignores stale
   dumps), so a `reply` keeps landing. If a pairing is somehow missing, `reply` returns a notice to
   re-open with `ask_peer` rather than silently dropping.
+- **Stable port across restart / crash (#50).** The recorded `port` is what every live session is
+  pinned to — in its env (`MRC_ROOM_PORT`) **and** in its container firewall allowlist (the cage admits
+  host egress on *only* that port), so a session **cannot follow a moved port**: it's an L3/L4 pin, not
+  just a stale env var. So when the daemon is gone (crash / idle-shutdown / `mrc rooms stop`) and
+  something respawns it, `ensureRoomDaemon` / `restart` **re-bind the recorded port** (scanning to a new
+  one only if it was actually taken) and live sessions reconnect on their own via the channel server's
+  retry. `mrc rooms stop` leaves a **tombstone** (record kept, marked `stopped`) instead of unlinking,
+  so even a stop→restart reuses the port. If the port genuinely *had* to move, the sessions are
+  stranded by the cage and must relaunch — surfaced by `mrc rooms restart`'s "MOVED" note and an
+  **"awaiting reconnect"** marker on any partially-connected room in `mrc rooms status`. (The only true
+  fix for the must-move case is widening the cage to a port *range* — a human-gated egress decision,
+  deliberately not bundled here. A connect-time/heartbeat handshake — #51 — separately stops a session
+  from silently mistaking a reused port's clip/notify proxy for the daemon.)
 - **Idle auto-shutdown.** Exits ~10 min after the **last** session disconnects (a longer grace
   before the first session ever connects, so a slow image build can't kill it mid-launch and an
   orphaned daemon still gets reaped) — **unless a dashboard is open**, which counts as activity and
@@ -96,8 +109,8 @@ the channel connects to `host.docker.internal:<port>` over the firewall and regi
 - **Hosts the dashboard.** Serves the `mrc rooms dashboard` web UI (Decision 13) on its own
   `127.0.0.1` port (recorded in `room-daemon.json`), so the dashboard lives as long as the daemon
   and needs no foreground tab.
-- **Explicit control:** `mrc rooms restart` (refresh in place) and `mrc rooms stop` (stop + clear
-  the record).
+- **Explicit control:** `mrc rooms restart` (refresh in place, reusing the recorded port) and
+  `mrc rooms stop` (stop; leaves a tombstone record so the port is reused on the next boot — #50).
 
 ## 4. Security model
 

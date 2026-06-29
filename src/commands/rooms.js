@@ -88,7 +88,9 @@ export async function roomsCommand(args) {
     console.log(r.ok
       ? (r.coldStarted
         ? `  ◎ no room daemon was running — cold-started one on :${r.port}.`
-        : `  ↻ room daemon restarted on :${r.port} — connected sessions will reconnect.`)
+        : r.moved
+          ? `  ↻ room daemon restarted on :${r.port} — its previous port was taken, so it MOVED; relaunch any sessions that dropped off list_peers (the firewall pins them to the old port).`
+          : `  ↻ room daemon restarted on :${r.port} — connected sessions will reconnect.`)
       : `  ! ${r.error}`)
     return
   }
@@ -129,7 +131,11 @@ export async function roomsCommand(args) {
       if (!s.pairings.length) console.log('    (none)')
       for (const p of s.pairings) {
         const who = (p.members && p.members.length ? p.members : [p.a, p.b].filter(Boolean)).join(' <-> ')
-        const flags = `${p.pendingInvite ? `  ·  ⏳ adversary invite pending from ${p.pendingInvite} (accept in that session, or \`mrc rooms accept/decline ${p.roomId}\`)` : ''}${p.requireConsent ? '  ·  consent-required' : ''}`
+        // #50: flag a PARTIALLY-connected room (some members on, some off) — the stranded-peer signal
+        // (e.g. the daemon port moved out from under one side). A fully-empty room is just dormant, no nag.
+        const memberCount = (p.members && p.members.length) || [p.a, p.b].filter(Boolean).length
+        const stranded = p.awaiting && p.awaiting.length && p.awaiting.length < memberCount
+        const flags = `${p.pendingInvite ? `  ·  ⏳ adversary invite pending from ${p.pendingInvite} (accept in that session, or \`mrc rooms accept/decline ${p.roomId}\`)` : ''}${p.requireConsent ? '  ·  consent-required' : ''}${stranded ? `  ·  ⏳ awaiting reconnect: ${p.awaiting.join(', ')} (if it dropped off unexpectedly, relaunch that session)` : ''}`
         console.log(`    ${who}  ·  ${p.state}${p.pauseReason ? `(${p.pauseReason})` : ''}  ·  turn ${p.turn}  [${p.roomId}]${flags}`)
       }
       return

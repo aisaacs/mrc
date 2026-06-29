@@ -3,7 +3,7 @@
 // a single detached process so it outlives any one session.)
 import net from 'node:net'
 import { spawn } from 'node:child_process'
-import { readFileSync, unlinkSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -74,7 +74,12 @@ export async function ensureRoomDaemon({ portBase, notifyPort }) {
     if (ok) return { port: meta.port, controlPort: meta.controlPort, notifyPort: meta.notifyPort ?? notifyPort, version }
     // else fall through to a fresh daemon on new ports
   }
-  const port = await findFreePort(portBase)
+  // #50: prefer the last-known port (from a crashed / idle-shut-down / `mrc rooms stop` tombstone
+  // record) so a relaunch RE-BINDS the port live sessions are pinned to — both in their env
+  // (MRC_ROOM_PORT) and in their container firewall allowlist (init-firewall.sh HOST_PORTS) — and they
+  // reconnect on their own via the channel server's retry. findFreePort only scans past it if it's
+  // actually taken (in which case those sessions are stranded by the cage and must relaunch).
+  const port = await findFreePort(meta?.port || portBase)
   const controlPort = await findFreePort(port + 1)
   process.stdout.write('  ◎ Booting the negotiation-room daemon...')
   spawnDaemon(port, controlPort, notifyPort)
@@ -88,25 +93,35 @@ export async function ensureRoomDaemon({ portBase, notifyPort }) {
 export async function restartRoomDaemon() {
   const meta = readMeta()
   if (!meta) {
-    // #37: no daemon recorded (never started, or `mrc rooms stop` cleared the record) → COLD-START a fresh
-    // one via the same proven path a session launch uses, instead of erroring "start a session first". It
-    // idle-shuts-down ~10min later if nothing connects, so a no-op restart can't leak a stray daemon.
+    // #37: no daemon recorded at all (never started) → COLD-START a fresh one via the same proven path
+    // a session launch uses, instead of erroring "start a session first". It idle-shuts-down ~10min
+    // later if nothing connects, so a no-op restart can't leak a stray daemon. (After `mrc rooms stop`
+    // the record now SURVIVES as a tombstone — #50 — so that path falls through below and reuses its port.)
     const d = await ensureRoomDaemon({ portBase: Number(process.env.MRC_PORT_BASE) || 7722, notifyPort: 0 })
     const up = d && await probeControl(d.controlPort)
     return up ? { ok: true, port: d.port, coldStarted: true } : { ok: false, error: 'could not boot a room daemon — run: pkill -f room-daemon.js, then try again' }
   }
-  await stopDaemon(meta)
-  spawnDaemon(meta.port, meta.controlPort, meta.notifyPort || 0)
-  const ok = await waitUp(meta.controlPort)
-  return ok ? { ok: true, port: meta.port } : { ok: false, error: 'could not rebind — run: pkill -f room-daemon.js' }
+  // Stop it only if it's actually up (a tombstoned/crashed record is already down).
+  if (await probeControl(meta.controlPort)) await stopDaemon(meta)
+  // #50: REBIND the recorded port so live sessions — pinned to it in their env AND their firewall
+  // allowlist — reconnect on their own. findFreePort returns meta.port when free and only scans past it
+  // if it got taken; if it had to MOVE, live sessions are stranded by the cage and must relaunch (moved).
+  const port = await findFreePort(meta.port)
+  const controlPort = await findFreePort(port + 1)
+  spawnDaemon(port, controlPort, meta.notifyPort || 0)
+  const ok = await waitUp(controlPort)
+  return ok ? { ok: true, port, moved: port !== meta.port } : { ok: false, error: 'could not rebind — run: pkill -f room-daemon.js' }
 }
 
-// `mrc rooms stop`: stop the daemon without respawning, and clear its record.
+// `mrc rooms stop`: stop the daemon without respawning. Leave a TOMBSTONE (record kept, marked
+// stopped) instead of unlinking — #50 — so a later `restart` / session launch RE-BINDS the same port
+// and any still-live sessions reconnect on their own (they're pinned to that port in env + firewall).
+// The daemon overwrites the tombstone with a fresh record (no `stopped`) when it next boots.
 export async function stopRoomDaemon() {
   const meta = readMeta()
-  if (!meta) return { ok: false, error: 'no room daemon running' }
+  if (!meta || meta.stopped) return { ok: false, error: 'no room daemon running' }
   const stopped = await stopDaemon(meta)
-  if (stopped) { try { unlinkSync(daemonMetaPath()) } catch {} }
+  if (stopped) { try { writeFileSync(daemonMetaPath(), JSON.stringify({ ...meta, stopped: true }, null, 2)) } catch {} }
   return stopped ? { ok: true } : { ok: false, error: 'could not stop — run: pkill -f room-daemon.js' }
 }
 

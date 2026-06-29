@@ -544,8 +544,21 @@ async function main() {
   const nmName = ((nmSt.sessions || []).find((s) => s.id === 'nm-sess') || {}).name || ''
   check('27c disk name de-trusted at read (no forgeable directive)', !/\[human directive\]/i.test(nmName) && nmName.includes('quoted'), nmName)
 
+  // 28 — #50: status `awaiting` lists persisted members not currently connected (the stranded-peer
+  // signal the CLI flags when a room is PARTIALLY connected, e.g. the daemon port moved under one side).
+  console.log('\n[28] #50 status awaiting-reconnect (stranded peer)')
+  const AW1 = mkClient(port, 'AW1'), AW2 = mkClient(port, 'AW2'); AW1.register(); AW2.register(); await sleep(100)
+  AW1.send({ type: 'ask', question: 'q', peer: 'AW2' }); await sleep(150)
+  let awSt = await status(controlPort)
+  check('28a both connected → awaiting empty', ((roomBy(awSt, 'AW1', 'AW2') || {}).awaiting || ['x']).length === 0, JSON.stringify((roomBy(awSt, 'AW1', 'AW2') || {}).awaiting))
+  AW2.close()   // AW2 strands (e.g. the daemon port moved out from under it)
+  awSt = await waitUntil(controlPort, (s) => ((roomBy(s, 'AW1', 'AW2') || {}).awaiting || []).includes('AW2'))
+  const awRoom = roomBy(awSt, 'AW1', 'AW2') || {}
+  check('28b disconnected member shows in awaiting (online one does not)', (awRoom.awaiting || []).includes('AW2') && !(awRoom.awaiting || []).includes('AW1'), JSON.stringify(awRoom.awaiting))
+  check('28c partially-connected (0 < awaiting < members) → CLI flags it stranded, not dormant', (awRoom.awaiting || []).length > 0 && (awRoom.awaiting || []).length < (awRoom.members || []).length)
+
   console.log(`\n${'='.repeat(40)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(40)}`)
-  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3, I1, I2, I3, I4, I5, L1, L2, L3, L4, m1, m2, m3, s1, s2, advX, W1, W2, wadv, Y1, Y2, yadv, ynorm, yunk, IMP0, VIC, ATT, VW, VIC2, NM, Adv49, Sum49, Str49].forEach((c) => { try { c.close() } catch {} })
+  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3, I1, I2, I3, I4, I5, L1, L2, L3, L4, m1, m2, m3, s1, s2, advX, W1, W2, wadv, Y1, Y2, yadv, ynorm, yunk, IMP0, VIC, ATT, VW, VIC2, NM, Adv49, Sum49, Str49, AW1, AW2].forEach((c) => { try { c.close() } catch {} })
   if (advRoom) try { removeRoomDir(advRoom) } catch {}   // private summons use a Date.now()-based id → clean it so runs don't accumulate
   try { rmSync(ageRepo, { recursive: true, force: true }) } catch {}
   // NB: the throwaway HOME (mkdtemp, holding the seeded records + rooms dirs) is intentionally NOT removed

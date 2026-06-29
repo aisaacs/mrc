@@ -864,7 +864,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
             ok: true,
             version,
             sessions: [...sessions.entries()].map(([id, v]) => ({ id, repo: v.repo || '?', name: nameOf(id), adversary: adversaries.has(id) || undefined, unverified: unverified.has(id) || undefined })),   // #28: `|| '?'` so a missing repo matches list_peers (repoOf) — no blank cell; nameOf reads the source-of-truth record, so status reflects an in-session /rename with no push
-            pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, turnCap: p.turnCap, turnBudget: budgetOf(p), autoCatchup: p.autoCatchup, members: p.members.map(nameOf), a: nameOf(p.members[0]), b: nameOf(p.members[1]), pendingInvite: p.pendingInvite ? nameOf(p.pendingInvite.by) : null, requireConsent: !!p.requireConsent })),
+            pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, turnCap: p.turnCap, turnBudget: budgetOf(p), autoCatchup: p.autoCatchup, members: p.members.map(nameOf), awaiting: p.members.filter((m) => !online(m)).map(nameOf), a: nameOf(p.members[0]), b: nameOf(p.members[1]), pendingInvite: p.pendingInvite ? nameOf(p.pendingInvite.by) : null, requireConsent: !!p.requireConsent })),   // #50: `awaiting` = persisted members not currently connected; the CLI flags a PARTIALLY-connected room (some on, some off) as "awaiting reconnect" — the stranded-peer signal (a fully-empty room is just dormant)
           })
           continue
         }
