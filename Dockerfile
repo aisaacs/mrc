@@ -73,7 +73,12 @@ ENV NODE_PATH=/usr/local/lib/node_modules
 RUN mkdir -p /opt/mrc-channel \
     && cd /opt/mrc-channel \
     && npm init -y >/dev/null 2>&1 \
+    && npm pkg set type=module \
     && npm install --loglevel=error @modelcontextprotocol/sdk
+# `npm pkg set type=module` is LOAD-BEARING: mrc-channel-server.js is ESM (`import`), but a recent npm
+# changed `npm init -y` to write `"type": "commonjs"` by default — under which node parses the .js as
+# CommonJS and the server crashes on load ("Cannot use import statement outside a module"), so its MCP
+# server never starts and rooms silently break. Forcing type=module makes the load match the file.
 COPY container/mrc-channel-server.js /opt/mrc-channel/mrc-channel-server.js
 
 # Negotiation-room / crew channel, packaged as a plugin in a baked-in LOCAL marketplace so it loads
