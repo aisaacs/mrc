@@ -86,6 +86,17 @@
   /* pills / badges */
   .pill { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--dim) }
   .pill.on { color:var(--good); border-color:#2c4533 } .pill.off { color:var(--bad); border-color:#4a2a31 }
+  /* #46: header gear → Settings modal */
+  .pill.gear { font-size:13px; padding:1px 7px; line-height:1.3 }
+  .pill.gear:hover, .pill.gear[aria-expanded="true"] { color:var(--accent); border-color:var(--accent) }
+  #modal:empty { display:none }
+  .scrim { position:fixed; inset:0; z-index:900; background:rgba(0,0,0,.55); display:flex; align-items:flex-start; justify-content:center; padding:48px 16px; overflow:auto }
+  .modalcard { background:var(--panel); border:1px solid var(--line); border-radius:12px; max-width:520px; width:calc(100% - 32px); max-height:calc(100vh - 96px); display:flex; flex-direction:column; box-shadow:0 12px 40px rgba(0,0,0,.5) }
+  .modalcard:focus { outline:none }
+  .modalhead { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--line) }
+  .modalbody { padding:14px 16px; overflow:auto }
+  .sgrouph { font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); margin:0 0 8px }
+  .sblk.danger { border-color:var(--danger) }
   .badge { font-size:10px; background:var(--needs-bg); color:var(--needs-fg); border-radius:var(--radius-pill); padding:0 6px; margin-left:auto }
   .state { font-size:10px; padding:1px 7px; border-radius:6px; border:1px solid var(--line); color:var(--dim) }
   .state.Running { color:var(--good) } .state.Paused { color:var(--warn) } .state.History { color:var(--dim) }
@@ -229,12 +240,14 @@
     </div>
     <button class="pill notif" id="notifyBtn" onclick="toggleNotify()" aria-pressed="false" title="Browser notifications + chime for new @you messages">🔕 alerts</button>
     <span class="pill off" id="daemonPill">daemon ?</span>
+    <button class="pill gear" id="gearBtn" onclick="openSettings()" aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-expanded="false">⚙</button>
   </header>
   <div class="main">
     <div class="list" id="mid"></div>
     <div class="detail" id="detail"></div>
     <div id="termhost"></div>
   </div>
+  <div id="modal"></div>
 </div>
 <script>
 const $ = (s, r=document) => r.querySelector(s)
@@ -312,10 +325,10 @@ const MEDIA_ROLE_BACKEND = { designer:'gemini', 'sound-designer':'elevenlabs', c
 const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
 
 const S = {
-  building: false, org: null, selRoom: null, selInbox: null, selMember: null, selSettings: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, showOther: false, flash: null,
+  building: false, org: null, selRoom: null, selInbox: null, selMember: null, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, flash: null,
   notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
   notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
-  teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null, sessions: [], _tick: 0,
+  teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null,
   namePools: null,   // #44: {styles, pools} from /api/names, loaded once when the builder opens
   builder: { org:'shop', repo:'', personas:{}, _pEdit:null, nameStyle:'french', teams:[ { name:'client', territory:'client', members:[
     {role:'architect',backend:'claude',lead:true,territory:''},{role:'engineer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
@@ -331,7 +344,6 @@ async function tick() {
   S.state = st && st.rooms ? st : { rooms:[], daemon:{} }
   if (!S.org) S.org = (S.teams.orgs && S.teams.orgs[0] && S.teams.orgs[0].org) || null
   if (_scopedNav) { _scopedNav=false; const has=(S.teams.members||[]).some(m=>!_proj||m.org===_proj); S.building = !has; if (has && _proj) S.org=_proj }
-  if ((S._tick++ % 4) === 0) { const sr = await api('/api/sessions').catch(()=>null); S.sessions = (sr && sr.sessions) || [] }   // throttle docker ps
   if (S.selRoom && needRoomFetch()) S.room = await api('/api/room?id='+encodeURIComponent(S.selRoom)).catch(()=>null)
   if (S.selMember) {
     const m = memberByHandle(S.selMember)
@@ -388,7 +400,7 @@ function orgNeed(org) {
 // A launch record only counts as "running" if the daemon reconciled it as live (≥1 member session up,
 // or still building) — a stale record from a crash reports running:false, so ▶ Resume/🚀 Launch comes back.
 const orgRunning = (org) => (S.teams.launch||[]).some(l=>l.org===org && l.running) || (S.teams.members||[]).some(m=>m.org===org && m.tier==='live' && (m.online||m.launched))
-function switchOrg(org) { if (org===S.org) return; S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; S.selSettings=false; setOrgUrl(org); paint() }
+function switchOrg(org) { if (org===S.org) return; S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; setOrgUrl(org); paint() }
 window.switchOrg = switchOrg
 
 // Browser-style project tabs: one per defined org. Chrome-stable — tabs keep a FIXED position
@@ -462,7 +474,6 @@ const inboxItem = (id) => (S.teams.userInbox||[]).find(x=>x.id===id)
 // (instead of patchDetail leaving a now-stale textarea sitting there). 'gone' if it vanished.
 const inboxSig = (id) => { const q=inboxItem(id); return q ? (q.answered?'a':q.dismissed?'d':'o') : 'gone' }
 const detailKey = () => S.building ? 'build'
-  : S.selSettings ? 'settings:'+(S.settings?(S.settings._failed?'x':'1'):'0')
   : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+S.selMember+':'+(launchFor()?.members?.[S.selMember]?.state||'none'))
   : S.selInbox!=null ? 'inbox:'+S.selInbox+':'+inboxSig(S.selInbox)
   : S.selRoom ? 'room:'+S.selRoom+':'+S.tab
@@ -525,47 +536,6 @@ function renderMain() {
       + `<div style="margin-top:10px"><button class="btn launch" onclick="resumeTeam('${esc(S.org)}')">▶ Resume team</button></div></div>`
   }
 
-  // Telegram pairing (#12): a pending chat needs a Confirm HERE (the trust gate); linked shows Unpair.
-  const tg = (S.teams.telegram||{})[S.org]
-  if (tg && tg.warning) {
-    // #21/#3: this project's bot token clashes with another's — its bridge did NOT start. Say so loudly
-    // and actionably here instead of letting it 409-storm Telegram silently.
-    html += `<div class="resume" style="border-color:#7a2630"><h3 style="color:#ffd9dc">📱 Telegram not running for ${esc(S.org)}</h3><div class="step">⚠ ${esc(tg.warning)}</div></div>`
-  } else if (tg && tg.configured) {
-    // Human-readable identity for a Telegram chat (#chunk3): a @username if we have one, else the
-    // person's name, else label the bare chat id as a chat — NEVER a bare "@<numeric-id>" (cryptic).
-    // Shared by the Confirm gate AND the linked line so both states read the same.
-    // NOTE: every field here is attacker-controllable (an unauthorized /start lands a crafted name in
-    // the pending panel), so each is esc()'d — which now escapes ' as well, so a crafted name is inert
-    // in text, double-quoted attrs, AND single-quoted JS contexts alike.
-    const tgName = (x) => x.username ? `@${esc(x.username)}`
-      : ([x.firstName, x.lastName].filter(Boolean).join(' ') ? esc([x.firstName, x.lastName].filter(Boolean).join(' '))
-      : `chat ${esc(x.chatId || x.fromId)}`)
-    if (tg.pending && tg.pending.length) {
-      // Name the owning project everywhere (#14 A): a misrouted /start then visibly says the WRONG
-      // project, so the user cross-checks instead of blind-confirming.
-      html += `<div class="resume" style="border-color:#33507e"><h3>📱 Telegram — confirm to link to ${esc(S.org)}</h3>`
-        + tg.pending.map(p=>{
-            // Lead with the human-readable identity; the parenthetical carries the numeric id (the
-            // trust cross-check) + the real name when we led with an @username — omitted entirely when
-            // the headline already IS the chat id (no "chat <id> (id <id>)" duplication).
-            const realName = [p.firstName, p.lastName].filter(Boolean).join(' ')
-            const detail = (p.username || realName) ? ` <span class="muted">(${[p.username && realName, `id ${esc(p.fromId)}`].filter(Boolean).join(', ')})</span>` : ''
-            // Stack the identity on its OWN full-width line above the Confirm/Reject buttons: in the
-            // narrow sidebar a side-by-side layout wrapped mid-name — bad exactly at the trust gate.
-            return `<div style="margin:6px 0"><div style="margin-bottom:5px"><b>${tgName(p)}</b>${detail} <span class="muted">→ link to</span> <b>${esc(S.org)}</b></div><div class="row" style="gap:6px"><button class="btn tiny primary" onclick="tgConfirm('${esc(p.fromId)}')">Confirm</button> <button class="btn tiny" onclick="tgReject('${esc(p.fromId)}')">Reject</button></div></div>`
-          }).join('')
-        + `<div class="step">Confirm only YOUR account — an unexpected entry is someone else who messaged the bot; Reject it.</div></div>`
-    } else if (tg.pinned) {
-      const p = tg.pinned
-      const envChip = p.prePinned ? ` <span title="pinned via this repo's .env (MRC_TELEGRAM_CHAT_ID)" style="opacity:.7;font-size:10px;border:1px solid var(--line);border-radius:4px;padding:1px 4px">.env</span>` : ''
-      html += `<div style="display:flex;align-items:center;gap:6px;padding:4px 6px;font-size:11.5px;color:var(--dim)"><span aria-hidden="true">📱</span><span>Telegram linked to</span><b style="color:var(--fg);font-weight:600">${tgName(p)}</b>${envChip}<a href="#" class="tgunpair" style="margin-left:auto;color:var(--dim)" onclick="tgUnpair();return false">unpair</a></div>`
-      if (tg.lastPushError) html += `<div class="bad" style="padding:2px 6px;font-size:11px">⚠ last Telegram push failed: ${esc(tg.lastPushError)} — re-link if the chat is stale.</div>`
-    } else {
-      html += `<div class="muted" style="padding:3px 6px;font-size:11.5px">📱 Telegram: DM the bot <code>/start</code>, then confirm here.</div>`
-    }
-  }
-
   if (teams.length) html += `<h2>Teams</h2>` + teams.map(teamCard).join('')
   // `others` = genuinely org-LESS rooms (legacy 2-party consults / history) — and only when a project
   // is active. NOT `!inOrg` (= every room of a DIFFERENT org), which would mislabel another active
@@ -573,21 +543,12 @@ function renderMain() {
   // `inOrg`. The `&& S.org` guard preserves the zero-org case (consult-only user, S.org null): such
   // rooms are in `mine` (inOrg is true when S.org is null), so excluding them from `others` avoids a
   // double-render and doesn't hide a consult-only user's only content under a collapsed disclosure.
-  const rs = mergedRooms(); const mine = rs.filter(inOrg); const others = rs.filter(r=>!r.org && S.org)
+  const rs = mergedRooms(); const mine = rs.filter(inOrg)
   if (mine.length) html += `<h2>Rooms</h2>` + mine.map(roomRow).join('')
-  // Legacy consults + history (rooms not in the current org): off the main rail (so it leads with
-  // @you / Teams / Rooms), collapsed into a "Consults & history" disclosure but still one click away.
-  if (others.length) html += `<div class="muted focusable" role="button" tabindex="0" aria-expanded="${!!S.showOther}" style="margin-top:14px;padding:3px 6px;cursor:pointer;font-size:12px;user-select:none;border-radius:5px" onclick="toggleOther()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleOther()}else if(event.key==='Escape'&&S.showOther){toggleOther()}">${S.showOther?'▾':'▸'} Consults &amp; history <span style="opacity:.7">(${others.length})</span></div>`
-    + (S.showOther ? `<div style="margin-top:4px">${others.map(roomRow).join('')}</div>` : '')
+  // #46: the left panel leads with @you / Teams / Rooms and ends here. Consults & history, the
+  // all-containers kill-list, ⚙ Settings (now the header gear → modal), and Delete project (now the
+  // modal's Danger zone) all moved OUT of the rail.
   html += `<div style="margin:14px 0 8px;display:flex;gap:8px">${teams.length?`<button class="btn" style="flex:1" onclick="openBuilder()">✎ Edit teams</button>`:''}<button class="btn ${teams.length?'':'primary'}" style="flex:1" onclick="newProject()">＋ New project</button></div>`
-  html += `<div style="margin:2px 0 12px"><div class="muted focusable ${S.selSettings?'sel':''}" role="button" tabindex="0" aria-pressed="${!!S.selSettings}" style="padding:5px 6px;cursor:pointer;font-size:12.5px;user-select:none;border-radius:5px" onclick="openSettings()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openSettings()}">⚙ Settings</div></div>`
-  // Delete (#13): a DELIBERATE control distinct from the tab ✕ (which only suspends). Forgets the
-  // project from the daemon + stops its sessions; deletes nothing on disk — re-addable via `mrc team up`.
-  if (S.org && teams.length) html += `<div style="margin:0 0 18px"><button class="btn danger tiny" onclick="deleteProject()">🗑 Delete project</button></div>`
-  if ((S.sessions||[]).length) {
-    html += `<h2>Sessions <span class="muted" style="text-transform:none;letter-spacing:0">· all mrc containers</span></h2>`
-    html += S.sessions.map(s=>`<div class="rm" style="cursor:default"><span class="nm">${esc(s.member?('@'+s.member):s.repo)}</span><span class="meta">${esc(s.project||s.repo)} · ${esc(s.up||'')}</span><button class="btn tiny danger" style="margin-left:8px" onclick="killSession('${esc(s.id)}','${esc(s.member||s.repo)}')">kill</button></div>`).join('')
-  }
   html += `<div style="height:18px"></div>`
   mid.innerHTML = html
 }
@@ -617,7 +578,6 @@ function amForm(t) {
 function renderDetail() {
   const d = $('#detail')
   if (S.building) return renderBuilder(d)
-  if (S.selSettings) return renderSettings(d)
   if (S.selMember) return renderMember(d)
   if (S.selInbox!=null) return renderInboxItem(d)
   if (S.selRoom) return renderRoom(d)
@@ -837,7 +797,7 @@ function renderBuilder(d) {
     sel.innerHTML='<option value="">— preset —</option>'+(d.presets||[]).map(p=>`<option value="${esc(p.name)}">${esc(p.title)}</option>`).join('')
     sel.onchange=()=>{ const p=(d.presets||[]).find(x=>x.name===sel.value); if(!p)return; S.builder.teams=JSON.parse(JSON.stringify(p.roster.teams)); autofillNames(); renderBuilder($('#detail')) } }).catch(()=>{})
   // #44: load the name-style pools once, then auto-name members (idempotent — keeps any already-set names).
-  if(!S.namePools){ fetch('/api/names').then(r=>r.json()).then(d=>{ if(d&&d.ok){ S.namePools={styles:d.styles,pools:d.pools}; autofillNames(); if(S.building&&!S.selSettings)renderBuilder($('#detail')) } }).catch(()=>{}) }
+  if(!S.namePools){ fetch('/api/names').then(r=>r.json()).then(d=>{ if(d&&d.ok){ S.namePools={styles:d.styles,pools:d.pools}; autofillNames(); if(S.building)renderBuilder($('#detail')) } }).catch(()=>{}) }
   else autofillNames()
   bRenderTeams(); bRenderPersonas(); bPreview()
 }
@@ -956,7 +916,7 @@ const freshBuilder = () => ({ org:'', repo:'', personas:{}, _pEdit:null, nameSty
   {role:'critic',backend:'claude',lead:false,territory:''} ] }] })
 window.newProject = ()=>openBuilder(true)
 // fresh=true -> a blank new project; otherwise load the CURRENT project's roster so editing EXTENDS it.
-window.openBuilder = async (fresh)=>{ S.building=true; S.selMember=null; S.selRoom=null; S.selInbox=null; S.selSettings=false
+window.openBuilder = async (fresh)=>{ S.building=true; S.selMember=null; S.selRoom=null; S.selInbox=null
   if (fresh) S.builder = freshBuilder()
   paint()
   if (!fresh && S.org && (S.teams.members||[]).some(m=>m.org===S.org)) {
@@ -974,21 +934,85 @@ window.openBuilder = async (fresh)=>{ S.building=true; S.selMember=null; S.selRo
 window.closeBuilder = ()=>{ S.building=false; paint() }
 
 // ---- settings (#42 chunk C) ----
-window.openSettings = async ()=>{ S.selSettings=true; S.building=false; S.selRoom=S.selMember=S.selInbox=null; S.settings=null; paint()
+// #46: Settings is a MODAL (not a detail-pane render) — opening it must NOT touch selRoom/selMember/
+// selInbox, so closing returns to the exact room / thread / member you were on.
+window.openSettings = async ()=>{ S.settingsOpen=true; S.settings=null; renderModal()
   const r = await api('/api/settings').catch(()=>null)
-  // A 404/null means the endpoint isn't live on the CURRENT daemon yet (it's served fresh per-request, but
-  // /api/settings only exists after a daemon reload) — flag it so the tab SAYS so instead of "Loading…" forever.
+  // 404/null = the endpoint isn't live on the CURRENT daemon yet (served fresh per-request, but
+  // /api/settings only exists after a daemon reload) — flag it so the modal SAYS so, not a stuck "Loading…".
   if (r && r.ok) { S.settings=r; if (r.notify && r.notify.value) S.notifyPrefs=r.notify.value }
   else S.settings = { _failed: true }
-  if (S.selSettings) renderDetail() }
+  if (S.settingsOpen) renderModal() }
+window.closeSettings = ()=>{ S.settingsOpen=false; renderModal() }
 const sBadge = (scope,mut)=>`<span class="stag ${scope==='global'?'g':'p'}">${scope==='global'?'GLOBAL':'PER-PROJECT'}</span><span class="stag ${mut==='runtime'?'r':'l'}">${mut==='runtime'?'RUNTIME':'LAUNCH-TIME'}</span>`
-function renderSettings(d) {
+
+// Render the Settings modal — centered card + scrim over the whole app. EVENT-DRIVEN (openSettings /
+// closeSettings / the tg handlers / enableNotifyPerm) — deliberately NOT called from paint()/tick(), so
+// it never runs on the 1.5s poll. The `_modalShown` transition-guard makes repeated calls safe regardless:
+// build the shell + focus the card ONLY on the open transition; clear + return focus to the gear ONLY on
+// the close transition; an already-open call patches JUST the live Telegram bits (never rebuilds the inputs,
+// never touches focus). (An earlier version was wired into paint() and stole focus every tick — fixed.)
+let _modalShown = false, _modalSig = null
+function renderModal() {
+  const host = $('#modal'); if (!host) return
+  const gear = $('#gearBtn')
+  if (!S.settingsOpen) {
+    if (_modalShown) {   // CLOSE transition only — never focus the gear on an unchanged-closed tick
+      host.innerHTML=''; _modalShown=false; _modalSig=null
+      if (gear) gear.setAttribute('aria-expanded','false')
+      try { gear && gear.focus() } catch {}
+    }
+    return
+  }
+  if (!_modalShown) {   // OPEN transition — build the shell once, focus the CARD (not the ✕ → no hair-trigger Enter-close), trap Tab
+    _modalShown=true; _modalSig=null
+    if (gear) gear.setAttribute('aria-expanded','true')
+    host.innerHTML = `<div class="scrim" onclick="if(event.target===this)closeSettings()">
+      <div class="modalcard" role="dialog" aria-modal="true" aria-label="Settings" tabindex="-1">
+        <div class="modalhead"><h2 style="margin:0;font-size:14px">⚙ Settings</h2><button class="btn tiny" aria-label="Close settings" onclick="closeSettings()">✕</button></div>
+        <div class="modalbody" id="modalBody"></div>
+      </div></div>`
+    const card = host.querySelector('.modalcard')
+    if (card) {
+      try { card.focus() } catch {}
+      card.addEventListener('keydown', (e)=>{
+        if (e.key==='Escape') { e.preventDefault(); closeSettings(); return }
+        if (e.key!=='Tab') return
+        const f = [...card.querySelectorAll('button,a[href],input,select,textarea,[tabindex]:not([tabindex="-1"])')].filter(el=>!el.disabled && el.offsetParent!==null)
+        if (!f.length) return
+        const a=f[0], b=f[f.length-1]
+        if (e.shiftKey && document.activeElement===a) { e.preventDefault(); b.focus() }
+        else if (!e.shiftKey && document.activeElement===b) { e.preventDefault(); a.focus() }
+      })
+    }
+  }
+  // Body: full rebuild only when the content SIGNATURE changes (open / loading→content / forced via
+  // _modalSig=null); otherwise patch ONLY the live Telegram section — no input rebuild, no focus touch.
+  const body = $('#modalBody'); if (!body) return
+  const sig = (S.settings ? (S.settings._failed?'failed':'ok') : 'loading') + ':' + (S.org||'')
+  if (sig !== _modalSig) { body.innerHTML = settingsBody(); _modalSig = sig }
+  else {
+    const tgEl = $('#tgSection')
+    if (tgEl) {
+      tgEl.innerHTML = tgSectionHtml()
+      // A tg action (Confirm/Reject/unpair) replaced the very button that had focus → focus falls to
+      // <body>, OUTSIDE .modalcard, which silently breaks Esc + the Tab-trap (both bound to the card).
+      // Pull focus back into the modal: the new actionable element (the unpair link / next Confirm), else the card.
+      const card = host.querySelector('.modalcard')
+      if (card && !card.contains(document.activeElement)) { try { (tgEl.querySelector('a[href],button') || card).focus() } catch {} }
+    }
+  }
+}
+// The modal's contents: Global runtime knobs (every project), then this project's settings. Reuses the
+// .sblk/.srow/.shelp/.stag system + the _failed restart notice verbatim.
+function settingsBody() {
   const s = S.settings
-  if (!s) { d.innerHTML = `<h2>Settings</h2><div class="muted">Loading…</div>`; return }
-  if (s._failed) { d.innerHTML = `<h2>Settings</h2><div class="sblk"><div class="shelp" style="margin:0">⚠ Settings need a daemon restart to take effect — run <code>mrc rooms restart</code>. The <code>/api/settings</code> endpoint isn't live on the current daemon yet; this tab will work once it reloads.</div></div>`; return }
+  if (!s) return `<div class="muted">Loading…</div>`
+  if (s._failed) return `<div class="sblk"><div class="shelp" style="margin:0">⚠ Settings need a daemon restart to take effect — run <code>mrc rooms restart</code>. The <code>/api/settings</code> endpoint isn't live on the current daemon yet; settings will work once it reloads.</div></div>`
   const tc=s.turnCap||{}, nf=(s.notify&&s.notify.value)||{}, dp=s.dashboardPort||{}, web=s.web||{}
   const perm = ('Notification' in window) ? Notification.permission : 'denied'
-  d.innerHTML = `<h2>Settings</h2>
+  const hasProject = !!(S.org && (S.teams.members||[]).some(m=>m.org===S.org))
+  let html = `<div class="sgrouph">Global <span class="muted" style="font-weight:400">— applies to every project</span></div>
     <div class="sblk"><div class="srow"><b>Team turn-cap</b> ${sBadge('global','runtime')}</div>
       <div class="shelp">Pause a room for a check-in after this many messages, so a long autonomous run doesn't drift unattended. <b>0 disables</b> the pause.${tc.env!==''&&tc.env!=null?` Env default: <code>${esc(String(tc.env))}</code>.`:''}</div>
       <div class="row"><input id="setTurnCap" type="number" min="0" step="1" aria-label="turn-cap" value="${tc.value==null?'':esc(String(tc.value))}" style="max-width:120px"><button class="btn primary tiny" onclick="saveTurnCap()">Apply</button><span id="setTurnCapMsg" class="muted" style="font-size:12px"></span></div></div>
@@ -999,11 +1023,45 @@ function renderSettings(d) {
       <label class="setck"><input type="checkbox" id="nfF" ${nf.fyis!==false?'checked':''} onchange="saveNotify()"> Notify on FYIs (🔔)</label>
       <span id="setNotifyMsg" class="muted" style="font-size:12px"></span></div>
     <div class="sblk"><div class="srow"><b>Dashboard port</b> ${sBadge('global','launch')}</div>
-      <div class="shelp">Currently <code>${esc(String(dp.value))}</code>. Set <code>MRC_DASHBOARD_PORT</code> in your environment — applies next daemon restart.</div></div>
-    <div class="sblk"><div class="srow"><b>Telegram</b> ${sBadge('project','runtime')}</div>
-      <div class="shelp">Per-project bridge to your @you inbox. ${S.org?`Pair it from the <b>${esc(S.org)}</b> project view (the Telegram panel).`:'Select a project to pair it.'} Configured by the repo's <code>.env</code> bot token.</div></div>
-    <div class="sblk"><div class="srow"><b>Outbound egress (--web)</b> ${sBadge('project','launch')}</div>
-      <div class="shelp">${esc(web.note||'')}</div></div>`
+      <div class="shelp">Currently <code>${esc(String(dp.value))}</code>. Set <code>MRC_DASHBOARD_PORT</code> in your environment — applies next daemon restart.</div></div>`
+  if (hasProject) {
+    html += `<div class="sgrouph" style="margin-top:16px">This project — <b style="color:var(--fg)">${esc(S.org)}</b></div>
+      <div class="sblk"><div class="srow"><b>Telegram</b> ${sBadge('project','runtime')}</div><span id="tgSection">${tgSectionHtml()}</span></div>
+      <div class="sblk"><div class="srow"><b>Outbound egress (--web)</b> ${sBadge('project','launch')}</div>
+        <div class="shelp">${esc(web.note||'')}</div></div>
+      <div class="sblk danger"><div class="srow"><b>Danger zone</b></div>
+        <div class="shelp">Forget this project from Mister Claude — stops its sessions and removes the tab. <b>Nothing on disk is deleted</b> (team.json + transcripts stay; re-add with <code>mrc team up</code>).</div>
+        <div class="row" style="margin-top:6px"><button class="btn danger tiny" onclick="deleteProject()">🗑 Delete project</button></div></div>`
+  } else {
+    html += `<div class="muted" style="margin-top:14px;font-size:12.5px">Open a project to see its settings.</div>`
+  }
+  return html
+}
+// Per-project Telegram pairing (#12), inside the modal. Trust-gate markup (Confirm/Reject a pending chat,
+// the linked line + Unpair); every Telegram-supplied field is esc()'d (an unauthorized /start lands an
+// attacker-controlled name here). Handlers (tgConfirm/Reject/Unpair) are CSRF-guarded via actJSON→/api/tg.
+function tgSectionHtml() {
+  const tg = (S.teams.telegram||{})[S.org]
+  if (tg && tg.warning) return `<div class="bad" style="font-size:12px;margin-top:5px">⚠ ${esc(tg.warning)}</div>`
+  if (!tg || !tg.configured) return `<div class="shelp">DM the project's bot <code>/start</code>, then Confirm here. Enable it by setting <code>MRC_TELEGRAM_BOT_TOKEN</code> in the repo's <code>.env</code>.</div>`
+  const tgName = (x) => x.username ? `@${esc(x.username)}`
+    : ([x.firstName, x.lastName].filter(Boolean).join(' ') ? esc([x.firstName, x.lastName].filter(Boolean).join(' '))
+    : `chat ${esc(x.chatId || x.fromId)}`)
+  if (tg.pending && tg.pending.length) {
+    return `<div class="shelp" style="margin-top:5px">📱 Confirm to link a chat to <b>${esc(S.org)}</b> — confirm only YOUR account; an unexpected entry is someone else who messaged the bot — Reject it.</div>`
+      + tg.pending.map(p=>{
+          const realName = [p.firstName, p.lastName].filter(Boolean).join(' ')
+          const detail = (p.username || realName) ? ` <span class="muted">(${[p.username && realName, `id ${esc(p.fromId)}`].filter(Boolean).join(', ')})</span>` : ''
+          return `<div style="margin:6px 0"><div style="margin-bottom:5px"><b>${tgName(p)}</b>${detail} <span class="muted">→ link to</span> <b>${esc(S.org)}</b></div><div class="row" style="gap:6px"><button class="btn tiny primary" onclick="tgConfirm('${esc(p.fromId)}')">Confirm</button> <button class="btn tiny" onclick="tgReject('${esc(p.fromId)}')">Reject</button></div></div>`
+        }).join('')
+  }
+  if (tg.pinned) {
+    const p = tg.pinned
+    const envChip = p.prePinned ? ` <span title="pinned via this repo's .env (MRC_TELEGRAM_CHAT_ID)" style="opacity:.7;font-size:10px;border:1px solid var(--line);border-radius:4px;padding:1px 4px">.env</span>` : ''
+    return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;margin-top:5px"><span aria-hidden="true">📱</span><span class="muted">linked to</span><b style="font-weight:600">${tgName(p)}</b>${envChip}<a href="#" style="margin-left:auto;color:var(--link)" onclick="tgUnpair();return false">unpair</a></div>`
+      + (tg.lastPushError ? `<div class="bad" style="font-size:11px;margin-top:4px">⚠ last push failed: ${esc(tg.lastPushError)} — re-link if the chat is stale.</div>` : '')
+  }
+  return `<div class="shelp" style="margin-top:5px">📱 DM the bot <code>/start</code>, then Confirm here.</div>`
 }
 window.saveTurnCap = async ()=>{ const el=$('#setTurnCap'); const set=(h)=>{const m=$('#setTurnCapMsg'); if(m)m.innerHTML=h}; if(!el)return
   const v=el.value.trim(); if(v===''||!Number.isFinite(Number(v))||Number(v)<0){ set('<span class="bad">enter a number ≥ 0</span>'); return }
@@ -1020,7 +1078,7 @@ window.saveNotify = async ()=>{ const set=(h)=>{const m=$('#setNotifyMsg'); if(m
 window.enableNotifyPerm = async ()=>{ if(!('Notification' in window))return; let p=Notification.permission
   if(p==='default'){ try{ p=await Notification.requestPermission() }catch{ p='denied' } }
   if(p==='granted'){ S.notifyEnabled=true; try{ localStorage.setItem('mrc-notify','1') }catch{}; updateNotifyBtn() }
-  if(S.selSettings)renderDetail() }
+  if(S.settingsOpen){ _modalSig=null; renderModal() } }   // force a body rebuild so the permission line refreshes (deliberate action → focus jump OK)
 window.launchTeam = async ()=>{ const r=await postJSON('/api/team-launch',{org:S.org}); if(!(r&&r.ok)) alert('Launch failed: '+((r&&r.error)||'unknown')); tick() }
 // #43: a project-defined role is addable from EVERY surface — load this org's custom personas so the
 // live add-member chooser lists built-in + custom (mirrors the builder's roleOptions). Fetched on open
@@ -1033,10 +1091,10 @@ window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('
   const msg=$('#amMsg'); if(msg)msg.textContent='adding…'
   const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role,backend,territory})
   if(r&&r.ok){ S.addingTo=null; tick() } else { const m=$('#amMsg'); if(m)m.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
-window.selRoom = (id, openCu)=>{ S.selRoom=id; S.selInbox=null; S.selMember=null; S.building=false; S.selSettings=false; if(openCu)S.tab='catchups'; else S.tab='thread'; S.room=null; tick() }
+window.selRoom = (id, openCu)=>{ S.selRoom=id; S.selInbox=null; S.selMember=null; S.building=false; if(openCu)S.tab='catchups'; else S.tab='thread'; S.room=null; tick() }
 window.openRoom = (id)=>{ selRoom(id) }
-window.selInbox = (i)=>{ S.selInbox=i; S.selRoom=null; S.selMember=null; S.building=false; S.selSettings=false; paint() }
-window.selMember = (h)=>{ S.selRoom=null; S.selInbox=null; S.building=false; S.selSettings=false; S.selMember=h
+window.selInbox = (i)=>{ S.selInbox=i; S.selRoom=null; S.selMember=null; S.building=false; paint() }
+window.selMember = (h)=>{ S.selRoom=null; S.selInbox=null; S.building=false; S.selMember=h
   const m = memberByHandle(h)
   // #34/B: each member has its OWN ttyd, so selecting one just swaps the embedded iframe (via detailKey);
   // no server round-trip (the old /api/team-select → tmux select-window is gone).
@@ -1064,13 +1122,14 @@ window.dismissInbox = async (id)=>{
 }
 window.reopenInbox = async (i)=>{ const r=await act('reopen',{i}); if(!r.ok)return flashFail(r); S.flash=null; tick() }   // undo a dismiss → actionable again
 // Telegram pairing (#12): Confirm is the trust gate (on the localhost dashboard); Reject/Unpair too.
-window.tgConfirm = async (fromId)=>{ const r=await actJSON('/api/tg',{action:'tgconfirm',org:S.org,fromId:Number(fromId)}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
-window.tgReject = async (fromId)=>{ const r=await actJSON('/api/tg',{action:'tgreject',org:S.org,fromId:Number(fromId)}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
-window.tgUnpair = async ()=>{ if(!confirm('Unpair Telegram? The linked chat stops receiving questions until you re-link.'))return; const r=await actJSON('/api/tg',{action:'tgunpair',org:S.org}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
+// #46: these now live in the Settings modal, which is OFF the poll — so after the action, refresh the
+// data (await tick → fresh S.teams.telegram) and explicitly re-render the modal's live Telegram bits.
+window.tgConfirm = async (fromId)=>{ const r=await actJSON('/api/tg',{action:'tgconfirm',org:S.org,fromId:Number(fromId)}); if(!r.ok)return flashFail(r); S.flash=null; await tick(); if(S.settingsOpen)renderModal() }
+window.tgReject = async (fromId)=>{ const r=await actJSON('/api/tg',{action:'tgreject',org:S.org,fromId:Number(fromId)}); if(!r.ok)return flashFail(r); S.flash=null; await tick(); if(S.settingsOpen)renderModal() }
+window.tgUnpair = async ()=>{ if(!confirm('Unpair Telegram? The linked chat stops receiving questions until you re-link.'))return; const r=await actJSON('/api/tg',{action:'tgunpair',org:S.org}); if(!r.ok)return flashFail(r); S.flash=null; await tick(); if(S.settingsOpen)renderModal() }
 // Delete project (#13): forget it from the daemon + stop sessions; nothing on disk is deleted.
-window.deleteProject = async ()=>{ const org=S.org; if(!org||!confirm(`Delete "${org}" from Mister Claude? Its sessions stop and the tab is removed. Nothing on disk is deleted — your transcripts and team.json stay, so you can re-add it any time with \`mrc team up\`.`))return; const r=await actJSON('/api/team-delete',{org}); if(!r.ok)return flashFail(r); S.flash=null; S.org=null; S.selRoom=S.selInbox=S.selMember=null; S.building=false; tick() }
+window.deleteProject = async ()=>{ const org=S.org; if(!org||!confirm(`Delete "${org}" from Mister Claude? Its sessions stop and the tab is removed. Nothing on disk is deleted — your transcripts and team.json stay, so you can re-add it any time with \`mrc team up\`.`))return; const r=await actJSON('/api/team-delete',{org}); if(!r.ok)return flashFail(r); S.flash=null; S.org=null; S.selRoom=S.selInbox=S.selMember=null; S.building=false; closeSettings(); tick() }
 window.toggleDismissed = ()=>{ S.showDismissed=!S.showDismissed; paint() }
-window.toggleOther = ()=>{ S.showOther=!S.showOther; paint() }
 
 // ---- Browser notifications + chime for new @you messages (Notification API, behind the explicit 🔔 toggle) ----
 // Branded chime, inlined as a data-URI (swappable — @user auditions vs the inbox-ping). Self-contained,
@@ -1139,7 +1198,6 @@ window.removeMember = async (h, first)=>{ if(!confirm('Remove @'+first+' from th
 // The agent's conversation resumes (--continue). Goes through actJSON → CSRF-guarded + confirms a 2xx
 // before clearing (no optimistic success; a 403/error surfaces via flashFail).
 window.relaunchMember = async (h, first)=>{ if(!confirm(`Relaunch @${first}'s terminal? Its agent keeps running — this restores the terminal view (the conversation resumes; an in-flight turn may restart).`))return; const r=await actJSON('/api/team-relaunch-member',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
-window.killSession = async (id, name)=>{ if(!confirm('Kill container '+name+'? (force-removes it)'))return; const r=await actJSON('/api/kill-session',{id}); if(!r.ok)return flashFail(r); S.flash=null; S._tick=0; tick() }
 window.bLaunch = async ()=>{ const msg=$('#bMsg'); if(!msg)return; msg.innerHTML='<span class="muted">launching… first run builds the image (~minutes)</span>'
   const r=await postJSON('/api/team-launch',{roster:bRoster()})
   if(r&&r.ok){ msg.innerHTML='<span class="good">🚀 launching — pick each member to open its terminal and log in</span>'; S.org=bRoster().org||null; setOrgUrl(S.org); setTimeout(()=>{S.building=false;tick()},700) }
