@@ -548,3 +548,37 @@ test('#63-B1: a human reply records from=@user / role=human (the human is the tr
   assert.equal(reply.meta.role, 'human')
   assert.match(reply.meta.text, /inline please/)
 })
+
+test('engine: setStatus — strict-numeric, identity-from-session, lead-only rail (#64)', () => {
+  const h = harness(TEAM)
+  const arch = h.handle('architect'), engineer = h.handle('engineer')
+  const mstatus = (hh) => h.engine.status().members.find((m) => m.handle === hh)?.status
+  const rail = () => h.engine.status().orgs.find((o) => o.org === 'shop')?.rateLimit
+
+  // lead reports → per-member context bar + the shared org rate-limit rail (it IS the lead)
+  const r = h.engine.setStatus(h.sid(arch), { context: 42, fiveHour: 30, sevenDay: 10, name: 'login-flow' })
+  assert.deepEqual({ org: r.org, lead: r.lead }, { org: 'shop', lead: true })
+  assert.equal(mstatus(arch).context, 42)
+  assert.equal(mstatus(arch).name, 'login-flow')
+  assert.deepEqual({ fiveHour: rail().fiveHour, sevenDay: rail().sevenDay }, { fiveHour: 30, sevenDay: 10 })
+
+  // strict-numeric: a STRING is dropped (no coercion), out-of-range clamps 0–100, non-string name → ''
+  h.engine.setStatus(h.sid(arch), { context: '99', fiveHour: 150, sevenDay: -5, name: 42 })
+  assert.equal(mstatus(arch).context, null, 'string "99" is NOT coerced to 99')
+  assert.equal(mstatus(arch).name, '', 'non-string name → empty')
+  assert.deepEqual({ fiveHour: rail().fiveHour, sevenDay: rail().sevenDay }, { fiveHour: 100, sevenDay: 0 }, 'clamp 0–100')
+
+  // a NON-lead sets its OWN context bar but CANNOT move the shared org rail
+  const before = { fiveHour: rail().fiveHour, sevenDay: rail().sevenDay }
+  const r2 = h.engine.setStatus(h.sid(engineer), { context: 55, fiveHour: 88, sevenDay: 88 })
+  assert.equal(r2.lead, false)
+  assert.equal(mstatus(engineer).context, 55, 'non-lead still gets its own context bar')
+  assert.deepEqual({ fiveHour: rail().fiveHour, sevenDay: rail().sevenDay }, before, 'non-lead cannot spoof the org rail')
+
+  // identity is RESOLVED from the bound session — an unknown session is dropped (no member faked)
+  assert.equal(h.engine.setStatus('sess:nobody', { context: 1 }), null)
+
+  // the session name is length-capped here (escaped at display, not stored-escaped)
+  h.engine.setStatus(h.sid(arch), { context: 1, name: 'x'.repeat(200) })
+  assert.equal(mstatus(arch).name.length, 80)
+})

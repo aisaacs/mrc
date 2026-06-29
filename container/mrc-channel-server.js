@@ -14,7 +14,7 @@ import { Server } from '@modelcontextprotocol/sdk/server/index.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { ListToolsRequestSchema, CallToolRequestSchema } from '@modelcontextprotocol/sdk/types.js'
 import net from 'node:net'
-import { appendFileSync } from 'node:fs'
+import { appendFileSync, readFileSync } from 'node:fs'
 
 const PORT = parseInt(process.env.MRC_ROOM_PORT || '0', 10)        // daemon port (host.docker.internal)
 const HOST = process.env.MRC_ROOM_HOST || 'host.docker.internal'
@@ -315,6 +315,21 @@ function onFrame(f) {
   // peer message (untrusted), human directive (trusted), or notice — push into the session.
   if ((f.type === 'deliver' || f.type === 'directive' || f.type === 'notice' || f.type === 'peers' || f.type === 'catchup_request') && f.text) pushIn(f.text)
 }
+// #64: forward this session's statusline ints (context %, 5h/7d rate-limit %, session name) to the daemon —
+// transport B' (statusline tees to STATUS_FILE → here we forward over the session-bound socket). Team mode only.
+// The frame carries ONLY the values (no identity): the daemon resolves WHICH member from the bound session and
+// strict-validates the numbers, so a member can't report another's status or spoof the org rail. send() (no ack).
+const STATUS_FILE = process.env.MRC_STATUS_FILE || '/tmp/mrc-status.json'
+let lastStatusRaw = ''
+function forwardStatus() {
+  if (!TEAM_MODE || !connected) return
+  let raw; try { raw = readFileSync(STATUS_FILE, 'utf8') } catch { return }   // statusline hasn't written yet — skip
+  if (raw === lastStatusRaw) return                                          // unchanged — don't spam the daemon
+  lastStatusRaw = raw
+  let s; try { s = JSON.parse(raw) } catch { return }
+  send({ type: 'status', context: s.context, fiveHour: s.fiveHour, sevenDay: s.sevenDay, name: s.name })
+}
+
 function connect() {
   if (!PORT) { log('MRC_ROOM_PORT unset — dormant (no daemon)'); return }
   sock = net.connect(PORT, HOST)
@@ -335,3 +350,4 @@ function connect() {
 await mcp.connect(new StdioServerTransport())
 log(`channel up (session=${SESSION_ID} label=${LABEL} repo=${REPO} ${TEAM_MODE ? `member=${MEMBER} team=${TEAM} role=${ROLE}` : `room=${ROOM || '(ambient)'}`} port=${PORT})`)
 connect()
+if (TEAM_MODE) setInterval(forwardStatus, 4000)   // #64: poll the statusline tee + forward changes to the daemon

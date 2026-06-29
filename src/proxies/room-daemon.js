@@ -620,6 +620,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
         else if (f.type === 'resume' && sessionId) onAgentResume(sessionId)
         else if (f.type === 'say' && sessionId) onSay(sessionId, f)        // team room directed message
         else if (f.type === 'sendphoto' && sessionId) onSendPhoto(sessionId, f)   // #56: member → its human's Telegram
+        else if (f.type === 'status' && sessionId) engine.setStatus(sessionId, f)   // #64: statusline ints → per-agent bar + lead-only rate-limit rail (identity from the bound session)
         else if (f.type === 'whoami' && sessionId) send(sessionId, { type: 'teaminfo', view: engine.viewForSession(sessionId) })
       }
     })

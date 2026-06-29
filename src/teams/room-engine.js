@@ -588,12 +588,32 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
   }
   const getTurnCap = () => turnCap
 
+  // #64: a member's statusline ints (context %, rate-limit %, session name), forwarded by its channel server
+  // (transport B'). Identity is RESOLVED from the bound session — a member can NOT report another's status, and
+  // the frame carries no identity field. Strict-numeric: each value must be a finite NUMBER (no string coercion,
+  // so "99" is dropped, not parsed) → clamp 0–100, else null ("—" on display). The per-member CONTEXT bar updates
+  // from any member; the shared org RATE-LIMIT rail updates ONLY from the LEAD's session — a non-lead's 5h/7d is
+  // dropped so it can't spoof the org rail. The name is length-capped here and escaped at DISPLAY (it's untrusted
+  // text). Display-only — nothing in the engine branches on these values.
+  const clampPct = (v) => (typeof v === 'number' && Number.isFinite(v)) ? Math.max(0, Math.min(100, Math.floor(v))) : null
+  function setStatus(sessionId, f) {
+    const s = senderOf(sessionId); if (!s) return null
+    const m = mem(s.org, s.handle); if (!m) return null
+    const name = typeof f?.name === 'string' ? f.name.slice(0, 80) : ''
+    m.status = { context: clampPct(f?.context), name, at: now() }
+    if (m.lead) {
+      const org = orgs.get(String(s.org))
+      if (org) org.rateLimit = { fiveHour: clampPct(f?.fiveHour), sevenDay: clampPct(f?.sevenDay), at: now() }
+    }
+    return { org: s.org, handle: s.handle, lead: !!m.lead }
+  }
+
   function status() {
     const allMembers = []
     for (const omap of members.values()) for (const m of omap.values()) allMembers.push(m)
     return {
       orgs: [...orgs.values()],
-      members: allMembers.map((m) => ({ handle: m.handle, first: m.first, role: m.role, team: m.team, lead: m.lead, backend: m.backend, tier: m.tier, org: m.org, online: online(m.org, m.handle) })),
+      members: allMembers.map((m) => ({ handle: m.handle, first: m.first, role: m.role, team: m.team, lead: m.lead, backend: m.backend, tier: m.tier, org: m.org, online: online(m.org, m.handle), status: m.status || null })),
       rooms: [...rooms.values()].map((r) => ({
         roomId: r.roomId, kind: r.kind, team: r.team, org: r.org, state: r.state, pauseReason: r.pauseReason,
         turn: r.turn, turnCap: r.turnCap, members: [...r.members.keys()],
@@ -606,7 +626,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
   return {
     defineOrg, bindSession, unbindSession, route, endRoom, removeOrg, post,
     roomsForSession, roomsForHandle, resolveTargets, resolveInRoom, findRoom,
-    doBrake, doResume, doSteer, answerUser, dismissUser, reopenUser, restoreInbox, status, memberView, viewForSession, claimWorkerBatches, notifyRoom,
+    doBrake, doResume, doSteer, answerUser, dismissUser, reopenUser, restoreInbox, status, setStatus, memberView, viewForSession, claimWorkerBatches, notifyRoom,
     setTurnCap, getTurnCap,
     // exposed for the daemon/dashboard + tests
     _rooms: rooms, _members: members, _userInbox: userInbox, _workerQueue: workerQueue,
