@@ -560,6 +560,17 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
     if (!p) return send(sessionId, { type: 'notice', text: '[No active room to resume.]' })
     doResume(p); send(sessionId, { type: 'notice', text: '[Room resumed.]' })
   }
+  // #56: a member's send_photo. The frame carries ONLY { path, caption } — the member's org+handle are
+  // resolved from the BOUND session (it can't spoof its identity), and handleSendPhoto fixes the
+  // destination to the org's confirmed chat. Acked back so the tool reports sent/error truthfully.
+  function onSendPhoto(sessionId, f) {
+    const me = engine.viewForSession(sessionId)
+    const ack = (status, extra = {}) => send(sessionId, { type: 'ack', id: f.id, status, ...extra })
+    if (!me?.org || !me?.handle) return ack('error', { error: 'not bound to a team room' })
+    handleSendPhoto({ org: me.org, handle: me.handle, path: f.path, caption: f.caption })
+      .then((r) => ack(r.ok ? 'sent' : 'error', r.ok ? {} : { error: r.error }))
+      .catch((e) => ack('error', { error: String(e?.message || e) }))
+  }
 
   // --- relay server (channel servers connect here) ---
   const server = net.createServer((sock) => {
@@ -600,6 +611,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
         else if (f.type === 'pause' && sessionId) onAgentPause(sessionId)
         else if (f.type === 'resume' && sessionId) onAgentResume(sessionId)
         else if (f.type === 'say' && sessionId) onSay(sessionId, f)        // team room directed message
+        else if (f.type === 'sendphoto' && sessionId) onSendPhoto(sessionId, f)   // #56: member → its human's Telegram
         else if (f.type === 'whoami' && sessionId) send(sessionId, { type: 'teaminfo', view: engine.viewForSession(sessionId) })
       }
     })

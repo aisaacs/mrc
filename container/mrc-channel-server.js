@@ -159,6 +159,24 @@ const teamTools = [
     description: 'Ask your human a question (routes to their inbox + a notification). Shorthand for send_message to @user.',
     inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
   },
+  {
+    name: 'send_photo',
+    description: 'Send an IMAGE from your territory to your human on Telegram (only works if they have linked ' +
+      'a Telegram chat to this project). `path` is relative to /workspace (the repo root) — e.g. the path a ' +
+      'teammate reported, like "assets/cat.png". You can ONLY send images inside your own territory, and the ' +
+      'photo always goes to your human\'s OWN confirmed chat (you do not choose the recipient). ' +
+      'USE THIS DELIBERATELY — when your human asks to see an image (or clearly wants one on their phone), ' +
+      'not unprompted: this PUBLISHES the image to Telegram (an external service) and it may be cached there ' +
+      'even if later deleted.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'repo-relative path (under /workspace) to a PNG/JPG/GIF/WebP image inside your territory' },
+        caption: { type: 'string', description: 'optional short caption shown with the image (kept to ~1024 chars)' },
+      },
+      required: ['path'],
+    },
+  },
   shared('update_notes'), shared('pause_room'), shared('resume_room'), shared('submit_handoff'),
 ]
 const tools = TEAM_MODE ? teamTools : consultTools
@@ -204,6 +222,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       // The member chose ask_user → it's a QUESTION (wants a reply). A plain send_message to @user is
       // an FYI/notification. The `kind` rides the frame so the inbox can tell them apart (#11).
       return await sendAwaitAck({ type: 'say', text: `@user ${String(a.text ?? '')}`, kind: 'question' })
+    case 'send_photo':
+      // #56: the frame carries ONLY {path, caption} — the daemon resolves WHICH member (org/handle) from the
+      // bound session and the destination from the org's CONFIRMED chat, so the member controls neither.
+      return await sendAwaitAck({ type: 'sendphoto', path: String(a.path ?? ''), caption: a.caption != null ? String(a.caption) : undefined })
     case 'list_team':
       return await new Promise((resolve) => {
         pendingTeam = (view) => resolve({ content: [{ type: 'text', text: renderTeam(view) }] })
@@ -265,6 +287,7 @@ function ackText(status, frame = {}) {
     case 'noted': return 'Shared summary updated.'
     case 'recorded': return 'Handoff recorded for your human.'
     case 'no-pane': return 'Nothing to record — no catch-up was waiting (only relevant right after a catch-up request).'
+    case 'sent': return "Image sent to your human's Telegram."   // #56 send_photo success
     default: return 'Sent.'
   }
 }

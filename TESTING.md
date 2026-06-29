@@ -8,3 +8,4 @@ Features awaiting @user verification. Activation: 🔄 reload dashboard · ♻�
 - [ ] **Worker console → call-history** (#48) ♻️ — per-call cards, honest ✓/✕ verdict (surfaces silent failures), image thumbnails + audio players
 - [ ] **Never-blank terminal** (#4a) 🔄 — placeholder + "live from here, earlier output not replayed" banner instead of a blank box
 - [ ] **Builder header + ✕ Cancel + discard-guard** (#55) 🔄 — "New project"/"Editing {org}" header; ✕ Cancel returns to place; confirms before discarding unsaved edits
+- [ ] **Send image to Telegram** (#56) 🐳 — a live member's `send_photo` pushes an image from its own territory to your linked Telegram chat (needs a confirmed chat; image-only, own-territory-only, you don't choose the recipient)

@@ -364,7 +364,24 @@ test('#56 daemon send_photo: territory image → confirmed chat; no-pin / outsid
   assert.equal(r.ok, false); assert.match(r.error, /image/)
   // 6) traversal → rejected
   assert.equal((await sp({ path: '../secret.png' })).ok, false)
-  // only the 2 successful sends reached Telegram
+  // only the 2 successful CONTROL sends reached Telegram so far
   assert.equal(tg.photos.length, 2)
+
+  // 7) the REAL member-facing path: a BOUND member session sends a sendphoto FRAME carrying only
+  //    { path, caption } — NO org/handle/chatId. The daemon resolves the member from the session binding
+  //    (it can't spoof its identity) and the destination from the org's confirmed chat, and acks over the
+  //    session socket so the tool reports the truth.
+  const sock = net.connect(port, '127.0.0.1'); await new Promise((r) => sock.on('connect', r))
+  const acks = []
+  sock.on('data', (d) => { for (const l of d.toString().split('\n')) { if (l.trim()) { try { const fr = JSON.parse(l); if (fr.type === 'ack') acks.push(fr) } catch {} } } })
+  const ssend = (o) => sock.write(JSON.stringify(o) + '\n')
+  ssend({ type: 'register', sessionId: memberSessionId('shop', 'brigitte/claude'), memberHandle: 'brigitte/claude', repo: 'shop' })
+  await sleep(200)
+  ssend({ type: 'sendphoto', id: 77, path: 'client/shot.png', caption: 'from the bound session' })
+  await sleep(200)
+  assert.ok(acks.find((a) => a.id === 77 && a.status === 'sent'), 'bound-session send_photo acked sent')
+  assert.equal(tg.photos.length, 3, 'the bound-session send reached Telegram')
+  assert.equal(tg.photos[2].chatId, '555', "identity resolved from the binding → the org's own confirmed chat")
+  sock.destroy()
   daemon.stop()
 })
