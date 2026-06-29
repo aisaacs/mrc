@@ -165,6 +165,19 @@ by slot reuse), #29 (catch-up `expected` count), #31 (persist pendingInvite), an
 **normal-profile SNI/CDN egress bypass** (the non-adversary firewall allowlists CDN-hosted domains
 by IP with port 53 open → SNI-fronting to a co-tenant; orthogonal to the cage, its own review).
 
+**#27 RESOLVED 2026-06-29 — investigated, NOT a volume-durability bug (no code change; owner chose
+"leave as latest").** Verified live: the OAuth token (incl. the refresh token) is `~/.claude/.credentials.json`,
+which lives INSIDE the persistent named config volume (`mrc-config-<hash>`, mounted at `~/.claude`);
+`~/.claude.json` is just a symlink into it (`Dockerfile:91`), `.claude-defaults` is credential-free
+(`Dockerfile:51` copies a fresh install), and `container-setup.js` never touches `.credentials.json`. So
+the token **survives `docker rmi` + rebuild** at the filesystem level. The re-OAuth comes from the
+*Claude Code version bump*: `Dockerfile:35` installs `latest` at build time (`DISABLE_AUTOUPDATER=1` pins
+it per build), so a rebuild — even one done purely for mrc changes — can install a new binary that
+invalidates the stored token (hits every volume + Pierre slot at once). The fix would be to decouple
+mrc-rebuilds from Claude-updates (pin the version); the owner opted to keep always-latest and accept the
+occasional re-login. If it ever becomes annoying, the lever is a `CLAUDE_VERSION` build-arg (auto-pin:
+capture-once + reuse, re-fetch on an explicit `--update-claude`).
+
 **Resolution update (2026-06-23).** Several of these landed as small TARGETED fixes rather than
 waiting on the full record migration, and #31 (listed "separate") came along too:
 - **#26** — root cause was not the record at all: `--new` greedily consumed the repo PATH as the
