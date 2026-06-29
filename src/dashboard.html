@@ -380,7 +380,7 @@ async function tick() {
   S.teams = t && t.members ? t : { members:[], rooms:[], userInbox:[], orgs:[] }
   S.state = st && st.rooms ? st : { rooms:[], daemon:{} }
   if (!S.org) S.org = (S.teams.orgs && S.teams.orgs[0] && S.teams.orgs[0].org) || null
-  if (_scopedNav) { _scopedNav=false; const has=(S.teams.members||[]).some(m=>!_proj||m.org===_proj); S.building = !has; if (has && _proj) S.org=_proj }
+  if (_scopedNav) { _scopedNav=false; const has=(S.teams.members||[]).some(m=>!_proj||m.org===_proj); S.building = !has; if (has && _proj) S.org=_proj; if (S.building) markBuilderClean() }   // #55: baseline the scoped-launch builder entry too
   if (S.selRoom && needRoomFetch()) S.room = await api('/api/room?id='+encodeURIComponent(S.selRoom)).catch(()=>null)
   if (S.selMember) {
     const m = memberByHandle(S.selMember)
@@ -439,7 +439,7 @@ function orgNeed(org) {
 // A launch record only counts as "running" if the daemon reconciled it as live (≥1 member session up,
 // or still building) — a stale record from a crash reports running:false, so ▶ Resume/🚀 Launch comes back.
 const orgRunning = (org) => (S.teams.launch||[]).some(l=>l.org===org && l.running) || (S.teams.members||[]).some(m=>m.org===org && m.tier==='live' && (m.online||m.launched))
-function switchOrg(org) { if (org===S.org) return; S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; setOrgUrl(org); paint() }
+function switchOrg(org) { if (org===S.org) return; if (!confirmLeaveBuilder()) return; S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; setOrgUrl(org); paint() }   // #55-1: a project-tab switch from a dirty build would discard it
 window.switchOrg = switchOrg
 
 // Browser-style project tabs: one per defined org. Chrome-stable — tabs keep a FIXED position
@@ -920,7 +920,12 @@ function renderInboxChannel(d) {
 // ---- builder ----
 function renderBuilder(d) {
   const B = S.builder
-  d.innerHTML = `<div style="display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start">
+  // #55: editing an EXISTING org (its handles are in the live roster) vs a fresh build — drives the title.
+  const editing = !!(B.org && (S.teams.members||[]).some(m=>m.org===B.org))
+  d.innerHTML = `<div class="modalhead" style="margin-bottom:14px">
+      <h2 style="margin:0;font-size:15px">${editing ? 'Editing '+esc(B.org) : 'New project'}</h2>
+      <button class="btn tiny" aria-label="Cancel — discard unsaved changes and close the builder" onclick="closeBuilder()">✕ Cancel</button></div>
+    <div style="display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start">
     <div>
       <div class="grid2"><div><label>Project</label><input id="bOrg" value="${esc(B.org)}" placeholder="my-project"></div><div><label>Repo path (host)</label><input id="bRepo" value="${esc(B.repo)}" placeholder="/Users/you/code/app"></div></div>
       <div class="grid2" style="margin-top:8px"><div><label>Start from a preset (optional)</label><select id="bPreset"><option value="">— preset —</option></select></div>
@@ -1046,18 +1051,44 @@ function bPreview(){clearTimeout(bTimer);bTimer=setTimeout(async()=>{
     +(v.warnings.length?`<h2>Warnings</h2>`+v.warnings.map(w=>`<div class="warn" style="font-size:12px">⚠ ${esc(w)}</div>`).join(''):'')
 },250)}
 window.bSave=async()=>{const B=S.builder;const msg=$('#bMsg');if(!B.repo){msg.innerHTML='<span class="bad">set a repo path</span>';return}
-  const r=await api('/api/team-save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({repo:B.repo,roster:bRoster()})});msg.innerHTML=r.ok?`<span class="good">✓ ${esc(r.path)}</span>`:`<span class="bad">✗ ${esc(r.error)}</span>`}
-window.bDefine=async()=>{const r=await api('/api/team-define',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})});$('#bMsg').innerHTML=r.ok?`<span class="good">◎ defined ${(r.rooms||[]).length} room(s)</span> <a href="#" onclick="closeBuilder();return false">view</a>`:`<span class="bad">✗ ${esc(r.error||'daemon down')}</span>`; if(r.ok){S.org=bRoster().org||null; setOrgUrl(S.org); tick()}}
+  const r=await api('/api/team-save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({repo:B.repo,roster:bRoster()})});msg.innerHTML=r.ok?`<span class="good">✓ ${esc(r.path)}</span>`:`<span class="bad">✗ ${esc(r.error)}</span>`; if(r.ok)markBuilderClean()}
+window.bDefine=async()=>{const r=await api('/api/team-define',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})});$('#bMsg').innerHTML=r.ok?`<span class="good">◎ defined ${(r.rooms||[]).length} room(s)</span> <a href="#" onclick="closeBuilder();return false">view</a>`:`<span class="bad">✗ ${esc(r.error||'daemon down')}</span>`; if(r.ok){markBuilderClean(); S._builderReturn=null; S.org=bRoster().org||null; setOrgUrl(S.org); tick()}}   // #55: defining switches S.org to the new org → drop the now-stale pre-builder return so the "view" link (closeBuilder) lands on what was just defined, not the entry view
 
 // ---- actions ----
+// #55: a content signature of the builder for the discard-on-cancel guard. Covers what represents real
+// work (org/repo/name-style/teams/members/personas + USER-typed member names) and EXCLUDES auto-filled
+// names (m._nameAuto!==false) so the async name autofill never reads as an unsaved edit. The baseline
+// (B._sig) is captured on builder entry (openBuilder / scoped-nav) and refreshed after a save/define;
+// dirty = the current sig diverges from it. No baseline (an entry path that didn't set one) → treat as
+// dirty so a misclick can't silently discard.
+function builderSig(){ const B=S.builder||{}; return JSON.stringify({
+  org:B.org||'', repo:B.repo||'', nameStyle:B.nameStyle||'french', personas:B.personas||{},
+  teams:(B.teams||[]).map(t=>({ name:t.name||'', territory:t.territory||'', members:(t.members||[]).map(m=>({
+    role:m.role||'', backend:m.backend||'', lead:!!m.lead, territory:m.territory||'',
+    name:(m._nameAuto===false)?(m.name||''):'' })) })) }) }
+function builderDirty(){ const B=S.builder; if(!B) return false; return (B._sig!=null) ? (builderSig()!==B._sig) : true }
+const markBuilderClean = ()=>{ if(S.builder) S.builder._sig = builderSig() }
+// #55-1: the discard-guard must cover EVERY exit from a dirty build, not just ✕ Cancel — col2 (rooms/
+// members/inbox) and the project tabs stay clickable during the pane-takeover, and their handlers set
+// S.building=false directly. Every such exit (and a re-entry that would replace the build) routes through
+// this. It's a no-op (returns true) unless you're actually in a dirty builder, so non-builder nav is free.
+function confirmLeaveBuilder(){ return !(S.building && builderDirty()) || confirm('Discard unsaved team changes?') }
 const freshBuilder = () => ({ org:'', repo:'', personas:{}, _pEdit:null, nameStyle:'french', teams:[{ name:'team', territory:'.', members:[
   {role:'architect',backend:'claude',lead:true,territory:''},
   {role:'engineer',backend:'claude',lead:false,territory:''},
   {role:'critic',backend:'claude',lead:false,territory:''} ] }] })
 window.newProject = ()=>openBuilder(true)
 // fresh=true -> a blank new project; otherwise load the CURRENT project's roster so editing EXTENDS it.
-window.openBuilder = async (fresh)=>{ S.building=true; S.selMember=null; S.selRoom=null; S.selInbox=null
-  if (fresh) S.builder = freshBuilder()
+window.openBuilder = async (fresh)=>{
+  // #55-1: re-entering the builder (＋ New project / ✎ Edit teams) from a DIRTY build replaces S.builder →
+  // also a silent discard; guard it. No-op on a first entry (not building) so the normal open is unaffected.
+  if (!confirmLeaveBuilder()) return
+  // #55: capture the prior view ONCE (don't clobber it on a re-entry while already building) so ✕ Cancel
+  // returns to exactly where you were — the builder is a pane-takeover, so we capture+restore (vs #46's
+  // modal which just avoided nulling).
+  if (!S.building) S._builderReturn = { selRoom:S.selRoom, selMember:S.selMember, selInbox:S.selInbox, tab:S.tab }
+  S.building=true; S.selMember=null; S.selRoom=null; S.selInbox=null
+  if (fresh) { S.builder = freshBuilder(); markBuilderClean() }   // #55: baseline the empty build
   paint()
   if (!fresh && S.org && (S.teams.members||[]).some(m=>m.org===S.org)) {
     const r = await api('/api/team-roster?org='+encodeURIComponent(S.org)).catch(()=>null)
@@ -1068,10 +1099,18 @@ window.openBuilder = async (fresh)=>{ S.building=true; S.selMember=null; S.selRo
       // getroster drops personas (orgDefs/rosterFromDef don't carry them) — load them from team.json (#42).
       const pr = await api('/api/personas?org='+encodeURIComponent(S.org)).catch(()=>null)
       if (pr && pr.ok && pr.custom) S.builder.personas = pr.custom
+      markBuilderClean()   // #55: baseline AFTER the roster + personas load, so editing starts clean
       if (S.building) renderBuilder($('#detail'))
     }
   } }
-window.closeBuilder = ()=>{ S.building=false; paint() }
+// #55: ✕ Cancel — confirm before discarding unsaved edits (the builder doesn't auto-save, unlike Settings),
+// then restore the exact prior view (room/member/inbox/tab) captured at entry. Save/Define/Launch keep
+// their own post-action nav and mark the builder clean; only Cancel uses this restore.
+window.closeBuilder = ()=>{
+  if (!confirmLeaveBuilder()) return
+  const r = S._builderReturn || {}
+  S.selRoom = r.selRoom||null; S.selMember = r.selMember||null; S.selInbox = r.selInbox||null; if (r.tab) S.tab = r.tab
+  S._builderReturn = null; S.building=false; paint() }
 
 // ---- settings (#42 chunk C) ----
 // #46: Settings is a MODAL (not a detail-pane render) — opening it must NOT touch selRoom/selMember/
@@ -1231,13 +1270,13 @@ window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('
   const msg=$('#amMsg'); if(msg)msg.textContent='adding…'
   const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role,backend,territory})
   if(r&&r.ok){ S.addingTo=null; tick() } else { const m=$('#amMsg'); if(m)m.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
-window.selRoom = (id, openCu)=>{ S.selRoom=id; S.selInbox=null; S.selMember=null; S.building=false; if(openCu)S.tab='catchups'; else S.tab='thread'; S.room=null; tick() }
+window.selRoom = (id, openCu)=>{ if(!confirmLeaveBuilder())return; S.selRoom=id; S.selInbox=null; S.selMember=null; S.building=false; if(openCu)S.tab='catchups'; else S.tab='thread'; S.room=null; tick() }
 window.openRoom = (id)=>{ selRoom(id) }
 // #47: open the @you CHANNEL. `i` is 'channel' (the nav row) or a numeric item id (an OS-notification
 // click) — a numeric id sets a one-shot jumpTarget so the channel scrolls to + highlights that item.
 // paintedKey=null forces renderDetail (the content sig may be unchanged, but we still need the jump).
-window.selInbox = (i)=>{ S.selInbox = (i==='channel') ? 'channel' : i; S.jumpTarget = (typeof i==='number') ? i : null; S.selRoom=null; S.selMember=null; S.building=false; S.replyTo=null; paintedKey=null; paint() }
-window.selMember = (h)=>{ S.selRoom=null; S.selInbox=null; S.building=false; S.selMember=h
+window.selInbox = (i)=>{ if(!confirmLeaveBuilder())return; S.selInbox = (i==='channel') ? 'channel' : i; S.jumpTarget = (typeof i==='number') ? i : null; S.selRoom=null; S.selMember=null; S.building=false; S.replyTo=null; paintedKey=null; paint() }
+window.selMember = (h)=>{ if(!confirmLeaveBuilder())return; S.selRoom=null; S.selInbox=null; S.building=false; S.selMember=h
   const m = memberByHandle(h)
   // #34/B: each member has its OWN ttyd, so selecting one just swaps the embedded iframe (via detailKey);
   // no server round-trip (the old /api/team-select → tmux select-window is gone).
@@ -1346,7 +1385,7 @@ window.removeMember = async (h, first)=>{ if(!confirm('Remove @'+first+' from th
 window.relaunchMember = async (h, first)=>{ if(!confirm(`Relaunch @${first}'s terminal? Its agent keeps running — this restores the terminal view (the conversation resumes; an in-flight turn may restart).`))return; const r=await actJSON('/api/team-relaunch-member',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
 window.bLaunch = async ()=>{ const msg=$('#bMsg'); if(!msg)return; msg.innerHTML='<span class="muted">launching… first run builds the image (~minutes)</span>'
   const r=await postJSON('/api/team-launch',{roster:bRoster()})
-  if(r&&r.ok){ msg.innerHTML='<span class="good">🚀 launching — pick each member to open its terminal and log in</span>'; S.org=bRoster().org||null; setOrgUrl(S.org); setTimeout(()=>{S.building=false;tick()},700) }
+  if(r&&r.ok){ markBuilderClean(); msg.innerHTML='<span class="good">🚀 launching — pick each member to open its terminal and log in</span>'; S.org=bRoster().org||null; setOrgUrl(S.org); setTimeout(()=>{S.building=false;tick()},700) }
   else msg.innerHTML=`<span class="bad">✗ ${esc((r&&r.error)||'failed')}</span>` }
 
 // Scoped launch (mrc gui [repo]): pre-fill the builder from ?repo=&org=, then land on Build (or Teams
