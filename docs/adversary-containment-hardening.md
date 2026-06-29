@@ -96,6 +96,17 @@ As built:
 
 **Brick trigger, corrected (Pierre round-4):** it is NOT ">16 KB" — it's "any **multi-record** ClientHello", which is DISCRETIONARY (RFC-allowed at any size; anti-DPI splitters, ECH GREASE, or a stack bump can split a 2 KB hello). Low-probability on today's Node, but the 16 KB floor is false comfort — the strict parser rejects a fragmented hello at any size (fail-closed + observable + the reassembly relax-path is documented in `sni-proxy.js`).
 
+## #49 resolution + live gate (2026-06-25, fresh rebuild + `mrc rooms restart`)
+
+**Live gate re-run (the standing obligation, met this cycle):** a fresh caged Pierre confirmed the A/#40 wire seal HOLDS — direct `1.1.1.1` rc7, foreign-SNI-via-proxy rc35, model-via-proxy works, Pierre *alive* ⇒ Claude Code honored `HTTPS_PROXY` + its ClientHello cleared the strict single-record parser (no over-strict brick), no `NOTICE ECH` ⇒ ECH not negotiated. #47-A guard live (Pierre's room messages arrived tagged `[Untrusted — CONTAINED ADVERSARY …]`). The 5 host/UX fixes (#34/#26/#37/#28/#31) + `/rename` were also live-verified.
+
+**#49 resolved as the FUNCTIONAL slice (owner's call).** The gate's outreach/recon gaps materialized live, incl. a real **incident**: a session in another repo, told "red-team with Pierre," discovered the *existing* mrc-cage Pierre and `ask_peer`'d it instead of summoning a fresh one → wrong mount, role-not-memory broken. The owner's framing: they own every host + Pierre, so the *exfil-security* threat (a malicious adversary deputizing a web peer) is ~nil — but the *mis-route* is a real functional bug. So we built the functional fix only:
+
+- **`peerList` chokepoint scopes a summoned adversary's visibility to its OWN summoner** (read from the host record's `summonedBy`, B/#39). A Pierre stays discoverable/resolvable to its summoner — **resume and 3-party both still work via the same path** (3-party runs on room *membership*/broadcast, not discovery) — but is invisible/unconnectable to *other* sessions, closing the cross-session mis-route. Because `list_peers` and `resolvePeer` share `peerList`, this also closes the `resolvePeer {ambiguous: others}` recon fall-through. Tests: rooms-daemon 94/0 (#49-a summoner sees own / #49-b stranger doesn't / #49-c `:693` still refuses a summoner inviting its OWN visible adversary; the 4 invite-adversary tests now assert refusal-via-invisibility for a non-summoner).
+- **DROPPED per the owner** (defends a non-threat / hampers real work in a single-owner model): the caller-side outreach gate (a caged adversary can't `ask`/`invite`/`summon` out) **and** anything restricting the **summoner's web**. **Accepted residual:** a caged adversary can still *see + reach* normal web peers; the relay outreach path stays open by design for this threat model.
+
+Lesson: separate the *security* framing from the *functional* one — the owner can rightly discount the exfil threat for their model, but a real functional bug (the mis-route) hid right next to it; build that.
+
 ## Provenance / links
 
 Found by the summoned adversary (Pierre) red-teaming its own cage, 2026-06-19. Builds on **#32** (`docs/session-metadata.md`): B reuses the #32 host-only record + `classifySession`; C's fail-closed echoes #32's always-write-→-absence invariant. The lesson: summoning the adversary to attack its OWN containment found exactly what a malicious one would — before coworkers did.
