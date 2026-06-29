@@ -520,3 +520,31 @@ test('engine: an @user-only message from a multi-room lead routes to the leads r
   assert.equal(r.toUser, true, 'reaches the human inbox')
   assert.equal(h.engine.status().userInbox.length, 1)
 })
+
+// #63-B1: the structured transcript record carries the TRUSTED session-resolved author/role/at + the CLEAN
+// body text (not the whole routing line) — the daemon-authored fields the dashboard's Slack row renders from.
+test('#63-B1: transcript meta carries session-resolved from/role/at + clean body text', () => {
+  const h = harness(TEAM)
+  const arch = h.handle('architect')
+  h.engine.route({ fromHandle: arch, roomId: teamRoomId('shop', 'client'), text: '@engineer build the login form' })
+  const last = h.appended[h.appended.length - 1]
+  assert.ok(last.meta, 'meta present on the record')
+  assert.equal(typeof last.meta.from, 'string'); assert.ok(last.meta.from.length, 'from = the resolved display name')
+  assert.equal(last.meta.role, 'architect', 'role comes from the roster (session-resolved), not the message text')
+  assert.equal(last.meta.at, 1000, 'at = the trusted timestamp')
+  assert.match(last.meta.text, /login form/, 'text = the message body')
+  assert.ok(!last.meta.text.includes('->'), 'text is the CLEAN body — no routing prefix (that lives in the t line)')
+  assert.ok(last.line.includes('->'), 'the t line keeps the routing prefix (back-compat)')
+})
+
+test('#63-B1: a human reply records from=@user / role=human (the human is the trusted author)', () => {
+  const h = harness(TEAM)
+  const eng = h.handle('engineer')
+  h.engine.route({ fromHandle: eng, roomId: teamRoomId('shop', 'client'), text: '@user toasts or inline?', kind: 'question' })
+  const q = h.engine.status().userInbox.find((x) => /toasts/.test(x.text))
+  h.engine.answerUser(q.id, 'inline please')
+  const reply = h.appended.find((a) => a.meta && a.meta.from === '@user')
+  assert.ok(reply, 'the human reply carries a structured author')
+  assert.equal(reply.meta.role, 'human')
+  assert.match(reply.meta.text, /inline please/)
+})

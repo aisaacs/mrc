@@ -124,7 +124,15 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
   // field, never by re-scanning the spoofable log text.
   const appendBoth = (roomId, line, meta) => {
     appendThread(roomId, line)
-    try { appendTranscript(roomId, { t: line, q: meta?.qid ?? null, r: meta?.reqid ?? null }) } catch {}
+    // #63-B1: also persist the TRUSTED structured author/role/at/text on the record (forward-only) so the
+    // dashboard's Slack-style row renders the author header from a daemon field — never by scanning the
+    // spoofable line text. Old records (no from/role/at) fall back to the inert `t` path in the dashboard.
+    try {
+      appendTranscript(roomId, {
+        t: line, q: meta?.qid ?? null, r: meta?.reqid ?? null,
+        from: meta?.from ?? null, role: meta?.role ?? null, at: meta?.at ?? null, text: meta?.text ?? null,
+      })
+    } catch {}
   }
   const engine = createRoomEngine({ send, append: appendBoth, notify, onInbox: (ev) => { try { handleInboxEvent(ev) } catch (e) { daemonLog(`[tg] inbox event: ${e?.message || e}`) } persistInbox() }, now: () => Date.now(), turnCap })
   // Drives non-Claude (task-worker) members: a queued mention invokes the worker's CLI and posts the

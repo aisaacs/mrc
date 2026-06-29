@@ -337,7 +337,12 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     // Stamp a visible, meaningful [#<id>] on the @user line — a cross-surface reference (CLI/file/
     // dashboard/Telegram). The id is ALSO passed as the trusted `qid` meta so the dashboard anchors the
     // jump from that field, not from re-scanning this line's text (which a member could spoof) (#18).
-    _append(room.roomId, `${ts()} ${nameOf(room.org, h)} -> ${targets.map((t) => nameOf(room.org, t)).join(', ') || (toUser ? '@user' : '(no one)')}: ${text}${item ? ` [#${item.id}]` : ''}`, item ? { qid: item.id } : undefined)
+    // #63-B1: pass the TRUSTED structured fields (from/role/at + the clean body `text`, no routing prefix) so
+    // the dashboard's Slack row renders the author header from a daemon field. `h` is the session-RESOLVED
+    // sender (the #56 bound identity), so `from`/`role` are as spoof-proof as the [#N] chip — a member can't
+    // forge who it is. `text` is the body only (the `t` line wraps it with ts/author/targets/[#N]).
+    _append(room.roomId, `${ts()} ${nameOf(room.org, h)} -> ${targets.map((t) => nameOf(room.org, t)).join(', ') || (toUser ? '@user' : '(no one)')}: ${text}${item ? ` [#${item.id}]` : ''}`,
+      { qid: item ? item.id : null, from: nameOf(room.org, h), role: roleOf(room.org, h, room), at: now(), text })
     clearStallOnActivity(room)
 
     if (item) {
@@ -407,7 +412,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     }
     if (room.held.length) _append(room.roomId, `${ts()} [steer dropped ${room.held.length} held]`)
     room.held = []; room.state = 'Running'; room.pauseReason = null; room.lastActivityAt = now()
-    _append(room.roomId, `${ts()} HUMAN -> ${targets.map((t) => nameOf(room.org, t)).join(', ') || 'all'}: ${text}`)
+    _append(room.roomId, `${ts()} HUMAN -> ${targets.map((t) => nameOf(room.org, t)).join(', ') || 'all'}: ${text}`, { from: '@user', role: 'human', at: now(), text })   // #63-B1: trusted author (the human's steer)
     return { ok: true, targets }
   }
 
@@ -474,7 +479,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     if (m?.sessionId) send?.(m.sessionId, { type: 'directive', room: room.roomId, text: `${marker}: ${text}` })
     else workerQueue.push({ org: item.org, roomId: room.roomId, toHandle: item.from, fromHandle: '@user', text: `${marker}: ${text}`, at: now(), directive: true })
     item.answered = true; item.answer = text; item.answeredVia = via || 'dashboard'   // #24: which surface resolved it, so the OTHER surface can show "answered via …"
-    _append(room.roomId, `${ts()} HUMAN -> ${nameOf(item.org, item.from)}: ${text} (re #${item.id})`, { reqid: item.id })   // #18: trusted reqid → the dashboard makes a jump from the field, not a text-scan
+    _append(room.roomId, `${ts()} HUMAN -> ${nameOf(item.org, item.from)}: ${text} (re #${item.id})`, { reqid: item.id, from: '@user', role: 'human', at: now(), text })   // #18 reqid + #63-B1 trusted author (the human)
     _inbox('resolved', item)
     return { ok: true }
   }
