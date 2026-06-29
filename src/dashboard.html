@@ -150,6 +150,20 @@
   header .plabel { font-size:11px; color:var(--dim); margin-left:4px }
   .ib:hover { border-color:var(--needs-edge) } .ib.sel { border-color:var(--needs-you) } .ib .who{ font-size:12px; color:var(--dim) } .ib .who b{ color:var(--fg) }
   .ib .q { margin-top:3px } .ib.done { opacity:.5 }
+  /* #47: @you inbox channel (col3 transcript-style feed) */
+  .rm.you-row .nm { font-weight:650 } .rm.you-row .badge { margin-left:6px }
+  .ich-wrap { display:flex; flex-direction:column; height:100%; min-height:0; position:relative }
+  .ich-triage { position:absolute; top:6px; left:50%; transform:translateX(-50%); z-index:4; background:var(--needs-bg); color:var(--needs-fg); border:1px solid var(--needs-edge); border-radius:999px; font-size:11px; font-weight:700; padding:3px 11px; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,.4) }
+  .ich-scroll { flex:1 1 0; min-height:0; overflow:auto; padding:6px 4px 14px }
+  .ich-scroll .ib { cursor:default; margin-bottom:6px }
+  .ich-sender { font-size:12px; margin:12px 0 4px; padding:0 2px } .ich-sender b { color:var(--fg) }
+  .ich-line { display:flex; align-items:baseline; gap:8px }
+  .ich-body { flex:1 1 auto; white-space:pre-wrap; word-break:break-word; font-size:13px }
+  .ich-meta { flex:0 0 auto; font-size:11px; white-space:nowrap }
+  .ich-ans { margin-top:5px; font-size:12px; border-top:1px solid var(--line); padding-top:5px }
+  .ich-reply { margin-top:6px } .ich-reply textarea { width:100%; min-height:54px; box-sizing:border-box }
+  .ich-acts { margin-top:5px }
+  .ib.qhi { box-shadow:0 0 0 2px var(--needs-you); transition:box-shadow .3s }
   /* controls */
   textarea,input,select { background:var(--field); color:var(--fg); border:1px solid var(--line); border-radius:var(--radius-sm); padding:7px 9px; font:13px/1.4 inherit; width:100% }
   textarea { resize:vertical; min-height:38px }
@@ -325,7 +339,7 @@ const MEDIA_ROLE_BACKEND = { designer:'gemini', 'sound-designer':'elevenlabs', c
 const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
 
 const S = {
-  building: false, org: null, selRoom: null, selInbox: null, selMember: null, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, flash: null,
+  building: false, org: null, selRoom: null, selInbox: null, selMember: null, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, replyTo: null, jumpTarget: null, flash: null,
   notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
   notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
   teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null,
@@ -468,14 +482,11 @@ const roomMembers = (id) => { const r=(S.teams.rooms||[]).find(x=>x.roomId===id)
 
 // ---- painting ----
 const launchFor = () => (S.teams.launch||[]).find(x=>x.org===S.org && x.running)   // a stale (crashed) launch is not a terminal
-const inboxItem = (id) => (S.teams.userInbox||[]).find(x=>x.id===id)
-// #24: fold the item's RESOLUTION into the key so a REMOTE resolve (e.g. answered via Telegram) flips
-// the key → renderDetail re-runs → the open reply box is replaced by the read-only answered view
-// (instead of patchDetail leaving a now-stale textarea sitting there). 'gone' if it vanished.
-const inboxSig = (id) => { const q=inboxItem(id); return q ? (q.answered?'a':q.dismissed?'d':'o') : 'gone' }
+// #47: the @you channel's detailKey uses channelSig() (folds every item's RESOLUTION into the key, so a
+// REMOTE resolve — e.g. answered via Telegram — re-renders the channel) and FREEZES while composing.
 const detailKey = () => S.building ? 'build'
   : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+S.selMember+':'+(launchFor()?.members?.[S.selMember]?.state||'none'))
-  : S.selInbox!=null ? 'inbox:'+S.selInbox+':'+inboxSig(S.selInbox)
+  : S.selInbox!=null ? 'channel:'+(S.org||'')+':'+channelSig()
   : S.selRoom ? 'room:'+S.selRoom+':'+S.tab
   : 'empty'
 
@@ -513,18 +524,11 @@ function renderMain() {
 
   // @you: open QUESTIONS (actionable, badged) first, then notifications (FYI, muted, dismiss-only),
   // then catch-ups. The header badge counts questions only — notifications never inflate it (#11).
-  let html = `<h2 class="you">@you${ib.questions.length?` <span class="badge">${ib.questions.length}</span>`:''}${ib.notifications.length?` <span class="muted" style="font-weight:400;text-transform:none;letter-spacing:0">· ${ib.notifications.length} FYI</span>`:''}</h2>`
-  if (ib.questions.length || ib.notifications.length || ib.cu.length) {
-    html += ib.questions.map(q=>`<div class="ib slim q ${S.selInbox===q.id?'sel':''}" onclick="selInbox(${q.id})"><span class=" qicon">❓</span> <b>${esc(q.fromName||('@'+q.from))}</b> <span class="muted">· ${esc(q.room)}</span></div>`).join('')
-    html += ib.notifications.map(q=>`<div class="ib slim fyi ${S.selInbox===q.id?'sel':''}" onclick="selInbox(${q.id})"><span class="qicon">🔔</span> <b>${esc(q.fromName||('@'+q.from))}</b> <span class="muted">· ${esc(q.room)}</span><span class="dismx" title="Dismiss" onclick="event.stopPropagation();dismissInbox(${q.id})">✕</span></div>`).join('')
-    html += ib.cu.map(r=>`<div class="rm" onclick="selRoom('${esc(r.roomId)}',true)"><span class="nm">${esc(r.team||r.roomId)}</span><span class="meta">${r.unreviewed} catch-up${r.unreviewed>1?'s':''}</span></div>`).join('')
-  } else html += `<div class="muted" style="padding:2px 6px 6px">No messages — members reach you here.<div style="opacity:.5;font-style:italic;margin-top:1px">All quiet on Spaceball One.</div></div>`
-  // Recover a mis-dismissed item: a collapsed "show dismissed" toggle reveals dismissed items, which
-  // re-open from the detail (activates the dismissed branch; makes the silent-clear default reversible).
-  if (ib.dismissed.length) {
-    html += `<div class="muted focusable" role="button" tabindex="0" aria-expanded="${S.showDismissed}" style="padding:3px 6px;cursor:pointer;font-size:11.5px;user-select:none;border-radius:5px" onclick="toggleDismissed()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleDismissed()}else if(event.key==='Escape'&&S.showDismissed){toggleDismissed()}">${S.showDismissed?'▾':'▸'} ${ib.dismissed.length} dismissed</div>`
-    if (S.showDismissed) html += ib.dismissed.map(q=>`<div class="ib slim dism ${S.selInbox===q.id?'sel':''}" onclick="selInbox(${q.id})"><span class="qicon">${q.type==='question'?'❓':'🔔'}</span> <b>${esc(q.fromName||('@'+q.from))}</b> <span class="muted">· ${esc(q.room)}</span></div>`).join('')
-  }
+  // #47: @you collapses to ONE selectable row → opens the inbox CHANNEL in col3 (the per-item stack +
+  // dismissed toggle moved into the channel). Badge counts open QUESTIONS only; the FYI count is muted.
+  let html = `<h2 class="you">@you</h2>`
+    + `<div class="rm you-row ${S.selInbox!=null?'sel':''}" onclick="selInbox('channel')" title="Open your @you channel"><span class="nm">@you${ib.questions.length?` <span class="badge">${ib.questions.length}</span>`:''}</span><span class="meta">${ib.open.length?`${ib.open.length} message${ib.open.length===1?'':'s'}${ib.notifications.length?` · ${ib.notifications.length} FYI`:''}`:'all clear'}</span></div>`
+  if (ib.cu.length) html += ib.cu.map(r=>`<div class="rm" onclick="selRoom('${esc(r.roomId)}',true)"><span class="nm">${esc(r.team||r.roomId)}</span><span class="meta">${r.unreviewed} catch-up${r.unreviewed>1?'s':''}</span></div>`).join('')
 
   // Reopen panel (T7): the active project is defined but not running → explicit ▶ Resume, with the
   // honest cold-image + per-live-member Channels-accept expectation (no surprise multi-minute spin-up).
@@ -579,7 +583,7 @@ function renderDetail() {
   const d = $('#detail')
   if (S.building) return renderBuilder(d)
   if (S.selMember) return renderMember(d)
-  if (S.selInbox!=null) return renderInboxItem(d)
+  if (S.selInbox!=null) return renderInboxChannel(d)
   if (S.selRoom) return renderRoom(d)
   d.innerHTML = `<div class="empty"><svg class="hatwm" viewBox="0 0 32 32" width="60" height="60" aria-hidden="true"><ellipse cx="16" cy="23.4" rx="12.8" ry="3.05"/><path d="M10.5 9 Q10.75 6.3 16 6.1 Q21.25 6.3 21.5 9 L22 22.6 L10 22.6 Z"/></svg><div>Pick a member (terminal / log), a room (transcript &amp; steer), or an @you message — or ＋ New project.</div><div class="flavor">May the Schwartz be with you.</div></div>`
 }
@@ -736,7 +740,10 @@ function transcriptHTML(records) {
 // we never re-derive trust from text. Used only as a fallback when the transcript is empty.
 const inertThreadHTML = (raw) => String(raw||'').split('\n').map(l => `<div class="tline">${esc(l)||' '}</div>`).join('')
 const threadBodyHTML = (room) => { const tx=(room&&room.transcript)||[]; const raw=(room&&room.thread)||''; return tx.length ? transcriptHTML(tx) : (raw ? inertThreadHTML(raw) : '(no messages yet)') }
-window.jumpToQ = (id)=>{ const el=$('#q'+id); if(!el)return; el.scrollIntoView({block:'center',behavior:'smooth'}); el.classList.add('qhi'); setTimeout(()=>el.classList.remove('qhi'),1400) }
+window.jumpToQ = (id)=>{ const el=$('#q'+id); if(!el)return false; el.scrollIntoView({block:'center',behavior:'smooth'}); el.classList.add('qhi'); setTimeout(()=>el.classList.remove('qhi'),1400); return true }
+// #47 jump-to-original: open the room, then scroll its transcript to the question's #q<N> anchor. The
+// room thread renders async (selRoom→tick→fetch→paint), so retry jumpToQ until the anchor exists (or give up).
+window.openRoomAt = (roomId, n)=>{ openRoom(roomId); let tries=0; const t=setInterval(()=>{ if(jumpToQ(n)||++tries>25) clearInterval(t) }, 120) }
 function renderTab() {
   const b = $('#tabbody'); if (!b) return
   if (S.tab==='thread') { const raw=(S.room&&S.room.thread)||''; b.innerHTML = `<div class="thread" id="thread" tabindex="0">${threadBodyHTML(S.room)}</div>`; const t=$('#thread'); if(t){ t.dataset.raw=raw; t.scrollTop=t.scrollHeight } }
@@ -750,31 +757,68 @@ function renderTab() {
       : `<div class="muted">No catch-ups. (Auto handoffs fire when a room pauses; mainly used by 2-party consults today.)</div>`
   }
 }
-function renderInboxItem(d) {
-  const q = (S.teams.userInbox||[]).find(x=>x.id===S.selInbox)   // stable id, not array index
-  if (!q) { d.innerHTML = `<div class="empty">Message gone.</div>`; return }
-  const isQ = q.type==='question'
-  const head = isQ ? '❓ A member needs you' : '🔔 Notification'
-  // #24: when an item was resolved on ANOTHER surface (answered via Telegram), say so — the reply box
-  // here just closed under the user, and a silent vanish would read as a bug. Show how it resolved.
-  const viaTg = q.answeredVia === 'telegram'
-  // #35: a turn-cap item RESUMED (not "answered"); show its real resolution + any steered note.
-  const steered = q.pauseRoom && q.answer && q.answer !== '(resumed)'
-  const done = q.answered ? (q.pauseRoom
-      ? `<div class="good" style="font-size:12px">✓ Resumed${viaTg?' via Telegram':''}</div>${steered?`<div class="muted">↳ steered: ${esc(q.answer)}</div>`:''}`
-      : `<div class="good" style="font-size:12px">✓ Answered${viaTg?' via Telegram':''}</div><div class="muted">↳ ${esc(q.answer||'')}</div>`)
-    : q.dismissed ? `<div class="muted">↳ dismissed — re-open to act on it</div>` : ''
-  // EVERY open item is replyable (#15) — a reply routes a [Human reply] via answerUser (open-revalidation
-  // stale-guards a double-answer). A notification differs only in framing ("reply optional", it never
-  // badges) — not in capability. Dismiss clears without replying (instant on a notification, confirmed
-  // on a question — handled in dismissInbox). Dismissed → ↺ Re-open. All keep "Open room".
-  const actions = q.answered ? `<div style="margin-top:8px"><button class="btn" onclick="openRoom('${esc(q.roomId)}')">Open room</button></div>`
-    : q.dismissed ? `<div class="row" style="margin-top:8px"><button class="btn primary" onclick="reopenInbox(${S.selInbox})">↺ Re-open</button> <button class="btn" onclick="openRoom('${esc(q.roomId)}')">Open room</button></div>`
-    : `${isQ ? '' : '<div class="muted" style="margin:6px 0">FYI — reply optional.</div>'}<textarea id="ansTx" placeholder="Your reply (routes back as [Human reply])…"></textarea><div class="row" style="margin-top:8px"><button class="btn primary" onclick="answer(${S.selInbox})">Send reply</button> <button class="btn" onclick="dismissInbox(${S.selInbox})">✕ Dismiss</button> <button class="btn" onclick="openRoom('${esc(q.roomId)}')">Open room</button></div>`
-  d.innerHTML = `<h2>${head}</h2>
-    <div class="pane ${isQ?'':'fyi'}"><div class="who muted"><b style="color:var(--fg)">${esc(q.fromName||('@'+q.from))}</b> in <b>${esc(q.room)}</b></div>
-    <div style="margin:8px 0;white-space:pre-wrap">${esc(q.text)}</div>
-    ${done}${actions}</div>`
+const hhmm = (at) => { try { return new Date(at).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }) } catch { return '' } }
+// #47: detailKey signature for the @you CHANNEL — re-render on any inbox change / showDismissed toggle.
+// While a reply composer is OPEN (S.replyTo), FREEZE the content sig so a poll-tick inbox refresh can't
+// rebuild the channel and clobber the textarea mid-type (mirrors `if(!S.addingTo)renderMain()`).
+function channelSig() {
+  if (S.replyTo != null) return 'compose:' + S.replyTo
+  const ib = inbox()
+  return ib.all.length + (S.showDismissed?'|d':'') + '|' + ib.all.map(q => q.id + (q.answered?'a':q.dismissed?'x':'o')).join(',')
+}
+// The @you inbox rendered as a CHANNEL (replaces the single-item detail): a scrolling, room-transcript-
+// style feed of every @you item for the active org (oldest→newest), grouped by sender, with the
+// answered/resolved state inline and a PER-ROW reply composer (each reply routes a [Human reply] to a
+// DIFFERENT member). Dismissed hide under a toggle. View-only — reuses answer/dismissInbox/reopenInbox/
+// openRoom/jumpToQ + the existing .ib/.qnum styles, no model/endpoint change.
+function renderInboxChannel(d) {
+  // #47 MED-1: capture the OLD scroll position BEFORE the rebuild (the element is replaced by d.innerHTML),
+  // so a re-render (new item / resolution / toggle) keeps a mid-read user where they were instead of yanking
+  // them to the bottom — the followScroll discipline, across a full rebuild. First open (no prev) → bottom.
+  const prevSc = $('#ichScroll')
+  const wasAtBottom = prevSc ? (prevSc.scrollHeight - prevSc.scrollTop - prevSc.clientHeight < 40) : true
+  const prevTop = prevSc ? prevSc.scrollTop : 0
+  const ib = inbox()
+  const live = ib.all.filter(q => !q.dismissed).slice().sort((a,b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id - b.id))
+  const unanswered = live.filter(q => !q.answered && q.type==='question')
+  let feed = '', lastGroup = null
+  for (const q of live) {
+    const isQ = q.type==='question'
+    // #47 LOW: group by from+room (not from alone) — a member who @user'd you from TWO rooms must not
+    // collapse under one header that mislabels the later items' room.
+    const gk = q.from + '\x00' + q.room
+    if (gk !== lastGroup) { feed += `<div class="ich-sender"><b>${esc(q.fromName||('@'+q.from))}</b> <span class="muted">· ${esc(q.room)}</span></div>`; lastGroup = gk }
+    const viaTg = q.answeredVia==='telegram'
+    const steered = q.pauseRoom && q.answer && q.answer !== '(resumed)'
+    const openRoomBtn = `<button class="btn tiny" onclick="openRoomAt('${esc(q.roomId)}',${q.id})">↗ Open room</button>`
+    let state
+    if (q.answered) {
+      state = q.pauseRoom
+        ? `<div class="ich-ans"><span class="good">✓ Resumed${viaTg?' via Telegram':''}</span>${steered?` <span class="muted">↳ ${esc(q.answer)}</span>`:''} ${openRoomBtn}</div>`
+        : `<div class="ich-ans"><span class="muted">↳ you · re #${q.id} · ${esc(q.answer||'')}</span> <span class="good">✓ Answered${viaTg?' via Telegram':''}</span> ${openRoomBtn}</div>`
+    } else if (S.replyTo===q.id) {
+      state = `<div class="ich-reply"><textarea id="ansTx" placeholder="Your reply — routes back as a [Human reply] to @${esc(q.fromName||q.from)}…"></textarea><div class="row" style="margin-top:6px;gap:6px"><button class="btn primary tiny" onclick="answer(${q.id})">Send</button> <button class="btn tiny" onclick="dismissInbox(${q.id})">✕ Dismiss</button> ${openRoomBtn} <button class="btn tiny" onclick="cancelReply()">cancel</button></div></div>`
+    } else {
+      state = `<div class="row ich-acts" style="gap:6px"><button class="btn tiny" onclick="openReply(${q.id})">↩ Reply</button>${isQ?'':`<button class="btn tiny" onclick="dismissInbox(${q.id})">✕ Dismiss</button>`}${openRoomBtn}</div>`
+    }
+    feed += `<div class="ib ${isQ?'q':'fyi'}" id="q${q.id}"><div class="ich-line"><span class="qicon">${isQ?'❓':'🔔'}</span><span class="ich-body">${esc(q.text)}</span><span class="ich-meta"><span class="muted">${hhmm(q.at)}</span> <span class="qnum">#${q.id}</span></span></div>${state}</div>`
+  }
+  if (!live.length) feed = `<div class="muted" style="padding:24px 12px;text-align:center">No messages. Your team will reach you here.<div style="opacity:.5;font-style:italic;margin-top:2px">All quiet on Spaceball One.</div></div>`
+  let dism = ''
+  if (ib.dismissed.length) {
+    dism = `<div class="muted focusable" role="button" tabindex="0" aria-expanded="${S.showDismissed}" style="padding:6px;cursor:pointer;font-size:12px;user-select:none;border-radius:5px;margin-top:8px" onclick="toggleDismissed()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleDismissed()}else if(event.key==='Escape'&&S.showDismissed){toggleDismissed()}">${S.showDismissed?'▾':'▸'} ${ib.dismissed.length} dismissed</div>`
+    if (S.showDismissed) dism += ib.dismissed.slice().sort((a,b)=>(a.at<b.at?-1:1)).map(q=>`<div class="ib dism" id="q${q.id}"><div class="ich-line"><span class="qicon">${q.type==='question'?'❓':'🔔'}</span><span class="ich-body">${esc(q.text)}</span><span class="ich-meta"><span class="muted">${esc(q.fromName||('@'+q.from))} · ${hhmm(q.at)}</span> <span class="qnum">#${q.id}</span></span></div><div class="row ich-acts"><button class="btn tiny primary" onclick="reopenInbox(${q.id})">↺ Re-open</button></div></div>`).join('')
+  }
+  const triage = unanswered.length ? `<div class="ich-triage focusable" role="button" tabindex="0" onclick="jumpToQ(${unanswered[0].id})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToQ(${unanswered[0].id})}" title="jump to the next open question">${unanswered.length} unanswered ⌄</div>` : ''
+  // triage floats over the top — pad the scroll content so it doesn't sit over row 1.
+  d.innerHTML = `<div class="ich-wrap">${triage}<div class="ich-scroll" id="ichScroll" tabindex="0"${triage?' style="padding-top:36px"':''}>${feed}${dism}</div></div>`
+  const sc = $('#ichScroll'); if (!sc) return
+  if (S.replyTo!=null) { const tx=$('#ansTx'); if(tx){ try{tx.focus()}catch{} } const row=$('#q'+S.replyTo); if(row)row.scrollIntoView({block:'center'}) }
+  // #47 MED-2: a numeric selInbox (OS-notification click) sets a one-shot jumpTarget → scroll to + highlight
+  // that item's #q<id>; falls back to the followScroll position if it's not in the live feed.
+  else if (S.jumpTarget!=null) { const did=jumpToQ(S.jumpTarget); S.jumpTarget=null; if(!did) sc.scrollTop = wasAtBottom ? sc.scrollHeight : prevTop }
+  // #47 MED-1: stick to the bottom only if the user was already there; otherwise keep their position.
+  else sc.scrollTop = wasAtBottom ? sc.scrollHeight : prevTop
 }
 
 // ---- builder ----
@@ -1093,7 +1137,10 @@ window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('
   if(r&&r.ok){ S.addingTo=null; tick() } else { const m=$('#amMsg'); if(m)m.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
 window.selRoom = (id, openCu)=>{ S.selRoom=id; S.selInbox=null; S.selMember=null; S.building=false; if(openCu)S.tab='catchups'; else S.tab='thread'; S.room=null; tick() }
 window.openRoom = (id)=>{ selRoom(id) }
-window.selInbox = (i)=>{ S.selInbox=i; S.selRoom=null; S.selMember=null; S.building=false; paint() }
+// #47: open the @you CHANNEL. `i` is 'channel' (the nav row) or a numeric item id (an OS-notification
+// click) — a numeric id sets a one-shot jumpTarget so the channel scrolls to + highlights that item.
+// paintedKey=null forces renderDetail (the content sig may be unchanged, but we still need the jump).
+window.selInbox = (i)=>{ S.selInbox = (i==='channel') ? 'channel' : i; S.jumpTarget = (typeof i==='number') ? i : null; S.selRoom=null; S.selMember=null; S.building=false; S.replyTo=null; paintedKey=null; paint() }
 window.selMember = (h)=>{ S.selRoom=null; S.selInbox=null; S.building=false; S.selMember=h
   const m = memberByHandle(h)
   // #34/B: each member has its OWN ttyd, so selecting one just swaps the embedded iframe (via detailKey);
@@ -1110,15 +1157,18 @@ window.answer = async (i)=>{ const tx=$('#ansTx'); if(!tx||!tx.value.trim())retu
   // #24 stale-guard: it was resolved elsewhere (answered via Telegram / another window) between opening
   // the box and hitting Send. Do NOT swallow — tell the user their reply didn't go, and let the panel
   // re-render to the answered view (selInbox kept; detailKey now reflects the resolution).
-  if(!r.ok){ if(/already (answered|dismissed)/i.test(r.error||'')){ S.flash={kind:'note',text:'Already resolved (answered via Telegram or another window) — your reply was not sent.'}; renderFlash(); tick(); return } return flashFail(r) }
-  S.flash=null; S.selInbox=null; tick() }
+  if(!r.ok){ if(/already (answered|dismissed)/i.test(r.error||'')){ S.flash={kind:'note',text:'Already resolved (answered via Telegram or another window) — your reply was not sent.'}; S.replyTo=null; renderFlash(); tick(); return } return flashFail(r) }
+  S.flash=null; S.replyTo=null; tick() }   // #47: stay in the channel (don't close it); the item re-renders to its answered state inline
+// #47: per-row reply composer — open/close which item's inline textarea is expanded (one at a time).
+window.openReply = (id)=>{ S.replyTo=id; paint() }
+window.cancelReply = ()=>{ S.replyTo=null; paint() }
 // Dismiss without replying (#11). A QUESTION is a permanent-loss-on-misclick path → confirm first
 // (the ✕ sits next to Send reply); a NOTIFICATION is fast FYI triage → instant, no confirm.
 window.dismissInbox = async (id)=>{
   const it = (S.teams.userInbox||[]).find(x=>x.id===id)
   if (it && it.type==='question' && !confirm(`Dismiss without replying? ${it.fromName||('@'+it.from)} won't get an answer. (You can re-open it later from "show dismissed".)`)) return
   const r = await act('dismiss',{i:id}); if(!r.ok)return flashFail(r)   // keep it if the dismiss didn't land (#20)
-  S.flash=null; if(S.selInbox===id)S.selInbox=null; tick()
+  S.flash=null; if(S.replyTo===id)S.replyTo=null; tick()   // #47: stay in the channel; just close this item's composer
 }
 window.reopenInbox = async (i)=>{ const r=await act('reopen',{i}); if(!r.ok)return flashFail(r); S.flash=null; tick() }   // undo a dismiss → actionable again
 // Telegram pairing (#12): Confirm is the trust gate (on the localhost dashboard); Reject/Unpair too.
