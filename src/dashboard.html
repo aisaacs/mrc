@@ -77,6 +77,17 @@
   /* #40: persistent terminal host — overlays the detail cell (col 2) so member iframes survive a
      re-render / member-switch (no remount = no blank/reconnect). One keep-alive iframe per org+handle. */
   #termhost { grid-column:2; grid-row:1; display:none; flex-direction:column; overflow:hidden; padding:16px 20px; min-width:0; min-height:0; background:var(--bg) }
+  /* #62 new-project full-view takeover: a FRESH build (not Edit-teams) fills the width — hide the contextual
+     list + collapse the grid to one column, and hide the project tabs (visibility:hidden keeps the header's
+     flex:1 spacer so the alerts/daemon/gear pills stay right-aligned). The app header itself stays. Editing an
+     existing team carries no .build-takeover class → it remains the in-place subpanel. ✕ Cancel clears
+     S.building → paint() drops the class → the layout restores. */
+  .app.build-takeover .main { grid-template-columns:1fr }
+  .app.build-takeover .list { display:none }
+  /* #detail is pinned to grid-column:2 by an ID rule (below) — match that ID specificity to span it full-width,
+     else the hidden list's column 1 leaves an empty gutter beside the builder. */
+  .app.build-takeover #detail { grid-column:1 / -1 }
+  .app.build-takeover .tabwrap { visibility:hidden }
   #detail { grid-column:2; grid-row:1 }
   .termblock { display:none; flex-direction:column; flex:1 1 0; min-height:0 }
   .termhdr { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px }
@@ -426,7 +437,7 @@ async function tick() {
   S.teams = t && t.members ? t : { members:[], rooms:[], userInbox:[], orgs:[] }
   S.state = st && st.rooms ? st : { rooms:[], daemon:{} }
   if (!S.org) S.org = (S.teams.orgs && S.teams.orgs[0] && S.teams.orgs[0].org) || null
-  if (_scopedNav) { _scopedNav=false; const has=(S.teams.members||[]).some(m=>!_proj||m.org===_proj); S.building = !has; if (has && _proj) S.org=_proj; if (S.building) markBuilderClean() }   // #55: baseline the scoped-launch builder entry too
+  if (_scopedNav) { _scopedNav=false; const has=(S.teams.members||[]).some(m=>!_proj||m.org===_proj); S.building = !has; if (has && _proj) S.org=_proj; if (S.building) { S.builder._fresh = true; markBuilderClean() } }   // #55: baseline the scoped-launch builder entry too; #62: a scoped launch with no existing team is a FRESH build → takeover
   // #61-C: first load with a project active and nothing selected → land on its HOME (not the bare welcome,
   // which now shows only when NO project is active). One-time, so it doesn't fight later navigation.
   if (!_landed && S.org && !S.building && !S.selRoom && !S.selMember && S.selInbox==null) { _landed=true; S.selHome=true; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }) }
@@ -575,6 +586,10 @@ function paint() {
   dp.className = 'pill '+(up?'on':'off'); dp.textContent = up?'daemon up':'daemon down'
   updateNotifyBtn()
   renderTabs()   // project tabs replace the old org dropdown + global needs-you pill (per-tab badges)
+  // #62: a FRESH new-project build takes over the full view (CSS hides the tabs + contextual list, builder
+  // fills width); editing an existing team stays the in-place subpanel. Re-evaluated every paint; ✕ Cancel
+  // (S.building=false) drops the class and restores the layout.
+  $('.app').classList.toggle('build-takeover', S.building && builderIsFresh())
   if (!S.addingTo) renderMain()   // freeze the list while the add-member form is open (don't clobber inputs)
   const key = detailKey()
   if (key!==paintedKey) { renderDetail(); paintedKey=key } else patchDetail()
@@ -1173,10 +1188,15 @@ function renderInboxChannel(d) {
 }
 
 // ---- builder ----
+// #62: fresh-create vs edit is an INTENT fixed at ENTRY — S.builder._fresh, set on every fresh-build entry
+// (newProject→openBuilder(true)→freshBuilder, and the scoped-launch new-project boot) and cleared on the edit
+// path. The full-view takeover AND the builder title both derive from this flag — NOT from a name-match on the
+// live, mutable org input (#55's builderEditing heuristic), which could flip true mid-type if you typed a name
+// colliding with an existing org, reflowing the whole layout. Stable by intent. (Closes the deferred #55 title nit.)
+function builderIsFresh() { return !!(S.builder && S.builder._fresh) }
 function renderBuilder(d) {
   const B = S.builder
-  // #55: editing an EXISTING org (its handles are in the live roster) vs a fresh build — drives the title.
-  const editing = !!(B.org && (S.teams.members||[]).some(m=>m.org===B.org))
+  const editing = !builderIsFresh()
   d.innerHTML = `<div class="modalhead" style="margin-bottom:14px">
       <h2 style="margin:0;font-size:15px">${editing ? 'Editing '+esc(B.org) : 'New project'}</h2>
       <button class="btn tiny" aria-label="Cancel — discard unsaved changes and close the builder" onclick="closeBuilder()">✕ Cancel</button></div>
@@ -1328,7 +1348,7 @@ const markBuilderClean = ()=>{ if(S.builder) S.builder._sig = builderSig() }
 // S.building=false directly. Every such exit (and a re-entry that would replace the build) routes through
 // this. It's a no-op (returns true) unless you're actually in a dirty builder, so non-builder nav is free.
 function confirmLeaveBuilder(){ return !(S.building && builderDirty()) || confirm('Discard unsaved team changes?') }
-const freshBuilder = () => ({ org:'', repo:'', personas:{}, _pEdit:null, nameStyle:'french', teams:[{ name:'team', territory:'.', members:[
+const freshBuilder = () => ({ _fresh:true, org:'', repo:'', personas:{}, _pEdit:null, nameStyle:'french', teams:[{ name:'team', territory:'.', members:[
   {role:'architect',backend:'claude',lead:true,territory:''},
   {role:'engineer',backend:'claude',lead:false,territory:''},
   {role:'critic',backend:'claude',lead:false,territory:''} ] }] })
@@ -1349,7 +1369,7 @@ window.openBuilder = async (fresh)=>{
   if (!fresh && S.org && (S.teams.members||[]).some(m=>m.org===S.org)) {
     const r = await api('/api/team-roster?org='+encodeURIComponent(S.org)).catch(()=>null)
     if (r && r.ok && r.roster && (r.roster.teams||[]).length) {
-      S.builder = { org: r.roster.org||S.org, repo: r.roster.repo||S.builder.repo||'', personas:{}, _pEdit:null, nameStyle:'french', teams: r.roster.teams }
+      S.builder = { _fresh:false, org: r.roster.org||S.org, repo: r.roster.repo||S.builder.repo||'', personas:{}, _pEdit:null, nameStyle:'french', teams: r.roster.teams }   // #62: editing an existing team is NOT a fresh build → no takeover
       // #44: members loaded with a pinned name are NOT auto — never re-roll a name the roster already has.
       for (const t of (S.builder.teams||[])) for (const m of (t.members||[])) m._nameAuto = !m.name
       // getroster drops personas (orgDefs/rosterFromDef don't carry them) — load them from team.json (#42).
