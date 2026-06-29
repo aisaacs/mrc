@@ -94,6 +94,34 @@ export async function editMessageText({ token, chatId, messageId, text, fetchFn 
   return j?.ok ? { ok: true } : { ok: false, error: j?.description || 'edit failed' }
 }
 
+// #56: send an image to a chat as multipart/form-data. Telegram caps sendPhoto at 10MB; a larger image
+// transparently falls back to sendDocument (50MB cap) so the asset still ARRIVES (as a file) rather than
+// silently failing; past 50MB it's rejected with a clear error. caption is optional (already defanged +
+// length-capped by the caller — this layer is transport only). A 429 returns { ok:false, retryAfter } so
+// the caller can honor Telegram's backoff window (ties to #22) instead of hammering.
+const TG_PHOTO_MAX = 10 * 1024 * 1024
+const TG_DOC_MAX = 50 * 1024 * 1024
+export async function sendPhoto({ token, chatId, photo, filename = 'image', caption, fetchFn = globalThis.fetch } = {}) {
+  const bytes = Buffer.isBuffer(photo) ? photo : Buffer.from(photo || [])
+  if (!bytes.length) return { ok: false, error: 'empty image' }
+  if (bytes.length > TG_DOC_MAX) return { ok: false, error: `image too large: ${(bytes.length / 1048576).toFixed(1)}MB exceeds Telegram's 50MB cap` }
+  const asDoc = bytes.length > TG_PHOTO_MAX            // >10MB can't go as a photo; send as a document instead
+  const method = asDoc ? 'sendDocument' : 'sendPhoto'
+  let res
+  try {
+    const form = new FormData()
+    form.append('chat_id', String(chatId))
+    if (caption != null && String(caption).length) form.append('caption', String(caption))
+    form.append(asDoc ? 'document' : 'photo', new Blob([bytes]), filename)
+    res = await fetchFn(api(token, method), { method: 'POST', body: form })   // fetch sets the multipart boundary
+  } catch (e) { return { ok: false, error: `network: ${e?.message || e}` } }
+  let j
+  try { j = await res.json() } catch { return { ok: false, error: 'bad telegram response' } }
+  if (j?.ok) return { ok: true, messageId: j.result?.message_id, asDocument: asDoc }
+  const retryAfter = (res?.status === 429) ? (Number(j?.parameters?.retry_after) || 0) : 0
+  return { ok: false, error: j?.description || 'photo send failed', ...(retryAfter ? { retryAfter } : {}) }
+}
+
 // Drives the long-poll loop for ONE org's bot — the per-org lifecycle. Everything external is
 // injected: persistence (getOffset/setOffset), the handoff (onMessages), timers (schedule), fetch.
 //   • ADVANCE-ONLY-AFTER-SUCCESS: the offset is persisted ONLY after onMessages resolves, so a crash

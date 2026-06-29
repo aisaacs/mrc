@@ -2,7 +2,7 @@
 // message shaping (chat type + from identity for the trust layer), send/edit/getMe. Injected fetch.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { pollOnce, shapeMessage, isStart, sendMessage, editMessageText, getMe, createTelegramBridge } from '../src/teams/telegram.js'
+import { pollOnce, shapeMessage, isStart, sendMessage, editMessageText, getMe, createTelegramBridge, sendPhoto } from '../src/teams/telegram.js'
 
 const ok = (result) => ({ status: 200, json: async () => ({ ok: true, result }) })
 const msg = (update_id, over = {}) => ({ update_id, message: { message_id: 100 + update_id, date: 1, chat: { id: 555, type: 'private' }, from: { id: 42, username: 'jane', first_name: 'Jane', last_name: 'Doe' }, text: 'hi', ...over } })
@@ -145,4 +145,57 @@ test('telegram bridge: stop() is idempotent and halts the loop', async () => {
   // after stop, start() must not schedule (no throw, no work)
   h.b.start()
   assert.ok(true)
+})
+
+// #56: sendPhoto — multipart image send, >10MB→sendDocument fallback, >50MB reject, 429 retryAfter.
+// The mock captures the request URL (→ method) and the FormData body fields.
+const cap = () => { const c = { url: null, form: null }; const fetchFn = async (url, opts) => { c.url = url; c.form = opts?.body; return ok({ message_id: 7 }) }; return { c, fetchFn } }
+
+test('#56 sendPhoto: small image → POST sendPhoto with chat_id + photo + caption', async () => {
+  const { c, fetchFn } = cap()
+  const r = await sendPhoto({ token: 't', chatId: 555, photo: Buffer.from('PNGDATA'), filename: 'cat.png', caption: 'a cat', fetchFn })
+  assert.equal(r.ok, true); assert.equal(r.messageId, 7); assert.equal(r.asDocument, false)
+  assert.match(c.url, /\/sendPhoto$/)
+  assert.equal(c.form.get('chat_id'), '555')
+  assert.equal(c.form.get('caption'), 'a cat')
+  assert.ok(c.form.has('photo') && !c.form.has('document'), 'photo field set, not document')
+})
+
+test('#56 sendPhoto: no caption → caption field omitted', async () => {
+  const { c, fetchFn } = cap()
+  await sendPhoto({ token: 't', chatId: 1, photo: Buffer.from('X'), fetchFn })
+  assert.equal(c.form.has('caption'), false)
+})
+
+test('#56 sendPhoto: >10MB falls back to sendDocument (asset still arrives)', async () => {
+  const { c, fetchFn } = cap()
+  const r = await sendPhoto({ token: 't', chatId: 1, photo: Buffer.alloc(10 * 1024 * 1024 + 1), filename: 'big.png', fetchFn })
+  assert.equal(r.ok, true); assert.equal(r.asDocument, true)
+  assert.match(c.url, /\/sendDocument$/)
+  assert.ok(c.form.has('document') && !c.form.has('photo'), 'document field, not photo')
+})
+
+test('#56 sendPhoto: >50MB rejected before any network call', async () => {
+  let called = false
+  const r = await sendPhoto({ token: 't', chatId: 1, photo: Buffer.alloc(50 * 1024 * 1024 + 1), fetchFn: async () => { called = true; return ok({}) } })
+  assert.equal(r.ok, false); assert.match(r.error, /50MB/); assert.equal(called, false, 'no send attempted')
+})
+
+test('#56 sendPhoto: empty image rejected, no network call', async () => {
+  let called = false
+  const r = await sendPhoto({ token: 't', chatId: 1, photo: Buffer.alloc(0), fetchFn: async () => { called = true; return ok({}) } })
+  assert.equal(r.ok, false); assert.match(r.error, /empty/); assert.equal(called, false)
+})
+
+test('#56 sendPhoto: 429 returns retryAfter (honor Telegram backoff)', async () => {
+  const fetchFn = async () => ({ status: 429, json: async () => ({ ok: false, description: 'Too Many Requests', parameters: { retry_after: 12 } }) })
+  const r = await sendPhoto({ token: 't', chatId: 1, photo: Buffer.from('X'), fetchFn })
+  assert.equal(r.ok, false); assert.equal(r.retryAfter, 12)
+})
+
+test('#56 sendPhoto: telegram error + network throw both fail closed', async () => {
+  const errResp = await sendPhoto({ token: 't', chatId: 1, photo: Buffer.from('X'), fetchFn: async () => ({ status: 400, json: async () => ({ ok: false, description: 'chat not found' }) }) })
+  assert.equal(errResp.ok, false); assert.match(errResp.error, /chat not found/)
+  const net = await sendPhoto({ token: 't', chatId: 1, photo: Buffer.from('X'), fetchFn: async () => { throw new Error('ECONNRESET') } })
+  assert.equal(net.ok, false); assert.match(net.error, /network/)
 })
