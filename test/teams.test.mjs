@@ -3,7 +3,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { pickFirstName, makeHandle, parseMention, extractMentions, stripMentions, backendFamily, FRENCH_NAMES, NAME_STYLES, NAME_STYLE_NAMES } from '../src/teams/names.js'
 import { buildPersona, roleDef, ROLES } from '../src/teams/personas.js'
-import { parseRoster, validateRoster, editPersona, assertSafeName, teamRoomId, leadsRoomId } from '../src/teams/roster.js'
+import { parseRoster, validateRoster, editPersona, assertSafeName, assertSafeProjectName, teamRoomId, leadsRoomId } from '../src/teams/roster.js'
 import { classifyTerminal } from '../src/commands/team.js'
 
 // Deterministic RNG for reproducible name draws.
@@ -483,4 +483,31 @@ test('terminal state machine (#41): fail-toward-starting, evidence-gated orphane
   assert.equal(classifyTerminal({ ttydPort: 7681 }, { containerAlive: true, online: false, withinGrace: true }), 'starting')
   // inconclusive default → starting, never orphaned
   assert.equal(classifyTerminal({}, { containerAlive: true, withinGrace: true }), 'starting')
+})
+
+// #65: the org/team-name allowlist validator (closes a live dashboard XSS via a malicious team.json
+// `project` field). Allowlist (`\p{L}\p{N}` + literal space + . _ -) — complete-by-construction: rejects
+// every HTML/JS metachar AND the Unicode line-terminators (literal space, NOT \s), while ACCEPTING readable
+// accented/CJK names (#38 — no ASCII-only over-rejection, the @mention accent-trap).
+test('#65 assertSafeProjectName: rejects breakout + unicode separators; accepts readable accented/spaced names', () => {
+  const NBSP = String.fromCharCode(0xA0), LS = String.fromCharCode(0x2028), PS = String.fromCharCode(0x2029), IDS = String.fromCharCode(0x3000), BOM = String.fromCharCode(0xFEFF), NL = String.fromCharCode(10)
+  // ACCEPT — readable, accented, CJK, spaced (the #38 anti-over-rejection direction)
+  for (const g of ['My Project', 'Équipe Alpha', '项目', 'Café', 'São Paulo', 'app.v2', 'my_project', 'node-app', 'A1']) {
+    assert.equal(assertSafeProjectName(g), g, `should accept readable name: ${g}`)
+  }
+  // REJECT — the exploit + every breakout char + the Unicode line-terminator class (proves literal-space, not \s)
+  for (const bad of ["evil');alert(1)//", 'a<b', 'R&D', 'f(x)', 'a;b', 'a{b}', 'a`b', 'a"b', 'a' + NBSP + 'b', 'a' + LS + 'b', 'a' + PS + 'b', 'a' + IDS + 'b', 'a' + BOM + 'b', 'a' + NL + 'b', '-dash', '_under', '.dot', '', '   ']) {
+    assert.throws(() => assertSafeProjectName(bad), /invalid|empty/, `should reject: ${JSON.stringify(bad)}`)
+  }
+  // leading/trailing whitespace is TRIMMED (user-friendly), not rejected
+  assert.equal(assertSafeProjectName('  My Project  '), 'My Project')
+})
+
+test('#65 parseRoster: a malicious team.json project / team name is rejected at the parse chokepoint', () => {
+  const evil = "x');alert(document.cookie)//"
+  assert.throws(() => parseRoster({ project: evil, teams: [{ name: 'core', members: [{ role: 'architect', backend: 'claude', lead: true }] }] }), /invalid/, 'malicious project name rejected')
+  assert.throws(() => parseRoster({ project: 'ok', teams: [{ name: evil, members: [{ role: 'architect', backend: 'claude', lead: true }] }] }), /invalid/, 'malicious team name rejected')
+  // a clean readable project + team still parse
+  const r = parseRoster({ project: 'My Project', teams: [{ name: 'Équipe A', members: [{ role: 'architect', backend: 'claude', lead: true }] }] })
+  assert.equal(r.org, 'My Project')
 })

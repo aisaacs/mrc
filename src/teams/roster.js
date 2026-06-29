@@ -55,6 +55,32 @@ export function assertSafeName(name, role, kind = 'member name') {
   }
 }
 
+// #65: org/team NAMES pass through this single parse chokepoint. Unlike a free-form chat body (#63-A, which
+// must legitimately contain < ' & → render-safe by construction), a NAME has no legitimate need for any
+// HTML/JS metacharacter — so ALLOW-LIST the readable set and reject everything else. An allow-list is
+// complete BY CONSTRUCTION: quotes / <>& / parens / ; { } / backslash / backtick AND the Unicode line-
+// terminators (U+2028/U+2029/U+0085/NBSP/etc) are all rejected because none are \p{L}/\p{N}/the literal
+// space/`. _ -` — no deny-list to leave a gap. \p{L} + the u flag accepts readable accented / non-ASCII
+// names ("My Project", "Équipe Alpha", "项目" — #38), unlike the strict member-name SAFE_NAME.
+// CRITICAL: the whitespace allowance is a LITERAL ' ' (U+0020), NEVER \s — \s re-admits U+2028/U+2029/nbsp
+// and would leak the guard. Must start with a letter/digit (no leading space/punct). Length-capped.
+const SAFE_PROJECT_NAME = /^[\p{L}\p{N}][\p{L}\p{N} ._-]*$/u
+export function assertSafeProjectName(name, kind = 'project') {
+  const s = String(name == null ? '' : name).trim()
+  if (!s) throw new Error(`${kind} name must not be empty`)
+  if (s.length > 64) throw new Error(`${kind} name is too long (max 64 characters)`)
+  if (!SAFE_PROJECT_NAME.test(s)) {
+    throw new Error(`${kind} name ${JSON.stringify(name)} is invalid — use letters, digits, spaces, and . _ - (start with a letter or digit; no quotes, angle brackets, ampersand, parentheses, braces, semicolons, backslashes, backticks, or control characters). Rename it.`)
+  }
+  return s
+}
+// For the BENIGN fallback only (a local repo basename, NOT the team.json attack vector): strip disallowed
+// chars so a weird local directory name can't break — never throws (a derived default shouldn't fail launch).
+export function sanitizeProjectName(s) {
+  const cleaned = String(s == null ? '' : s).replace(/[^\p{L}\p{N} ._-]/gu, '').replace(/^[^\p{L}\p{N}]+/u, '').trim()
+  return cleaned.slice(0, 64)
+}
+
 // Custom personas — team.json top-level `personas`: { <key>: { label, mandate, mount?, leadByDefault? } }.
 // Each KEY becomes a usable @role (and an @mention surface), so validate it like a member name (#36 —
 // reject shell/handle-hostile keys at the parse boundary). Custom personas are AGENT charters only: a key
@@ -106,7 +132,10 @@ export function parseRoster(input, { repo, rng } = {}) {
   const data = typeof input === 'string' ? JSON.parse(input) : input
   if (!data || typeof data !== 'object') throw new Error('roster: not an object')
   const repoPath = data.repo || repo || process.cwd()
-  const org = data.project || data.org || basename(repoPath) || 'org'   // "project" is the friendly name for "org"
+  // #65: validate the EXPLICIT project/org name (the malicious-team.json XSS vector) at this chokepoint;
+  // the benign basename fallback (a local dir, not attacker-controlled) is sanitized rather than thrown on.
+  const explicitName = data.project || data.org
+  const org = explicitName ? assertSafeProjectName(explicitName, 'project') : (sanitizeProjectName(basename(repoPath)) || 'org')
   const teamsIn = Array.isArray(data.teams) ? data.teams : []
   const customPersonas = parsePersonas(data.personas)
   rng = rng || rngFromString(`mrc-team:${org}`)   // stable per-org names by default
@@ -128,7 +157,7 @@ export function parseRoster(input, { repo, rng } = {}) {
   // "every member gets a unique handle" contract (lines 16-17).
   const seenHandles = new Set()
   for (const t of teamsIn) {
-    const teamName = t.name || `team-${teams.length + 1}`
+    const teamName = t.name ? assertSafeProjectName(t.name, 'team') : `team-${teams.length + 1}`   // #65: validate explicit team names
     const teamTerritory = resolveTerritory(t.territory, '.')
     const memberIds = []
     let leadHandle = null

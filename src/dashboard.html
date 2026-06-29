@@ -474,11 +474,13 @@ function renderTabs() {
     // A pending Telegram link is a "verify me" event — surfaced on the OWNING tab regardless of which
     // tab is active (#14 B), and visually DISTINCT from the ❓ needs-you badge (a 🔗, not an answer count).
     const link = (S.teams.telegram||{})[o]?.pending?.length || 0
-    return `<div class="ptab ${cls}" onclick="${o===S.org?'openProjectHome()':`switchOrg('${esc(o)}')`}" title="${esc(o)} · ${orgRunning(o)?'running':'stopped'} — ${o===S.org?'open project home':'switch'}">`
+    // #65: the org rides a data-attr (esc IS correct for attr-VALUE context); the onclick is a FIXED string
+    // reading this.dataset.org — never interpolates the value into a JS-string-in-attribute (the XSS class).
+    return `<div class="ptab ${cls}" data-org="${esc(o)}" onclick="${o===S.org?'openProjectHome()':'switchOrg(this.dataset.org)'}" title="${esc(o)} · ${orgRunning(o)?'running':'stopped'} — ${o===S.org?'open project home':'switch'}">`
       + `<span class="pdot"></span><span class="pname">${esc(o)}</span>`
       + (link?`<span class="plink" title="Telegram link awaiting your confirmation${link>1?` (${link})`:''}">🔗${link>1?link:''}</span>`:'')
       + (need?`<span class="pbadge" title="${need} need you">${need}</span>`:'')
-      + `<span class="pclose" title="Close (stop members, keep the team)" onclick="event.stopPropagation();closeTab('${esc(o)}')">✕</span></div>`
+      + `<span class="pclose" title="Close (stop members, keep the team)" onclick="event.stopPropagation();closeTab(this.closest('.ptab').dataset.org)">✕</span></div>`
   }
   el.innerHTML = orgs.map(tab).join('') + `<div class="ptab add" title="New project (Build)" onclick="newProject()">＋</div>`
   const act = el.querySelector('.ptab.active')
@@ -552,7 +554,7 @@ const label2 = (r) => r.a&&r.b ? `${r.a} ⇄ ${r.b}` : r.roomId
 // Friendly label for a room's pauseReason, so a Paused badge says WHY (turn-cap check-in vs a deliberate
 // brake vs a stall) — a routine check-in reads very differently from a real hold.
 const pauseLabel = (x) => ({ turnCap:'turn-cap', brake:'brake', stall:'stall' }[x] || x)
-const roomRow = (r) => `<div class="rm ${r.roomId===S.selRoom?'sel':''}" onclick="selRoom('${esc(r.roomId)}')" title="${r.turn!=null?`${r.turn} messages exchanged${r.turnCap?` — checks in with you at ${r.turnCap}`:''}`:''}"><span class="nm">${esc(r.team||label2(r))}</span><span class="state ${r.state}">${esc(r.state)}${r.state==='Paused'&&r.pauseReason?` · ${esc(pauseLabel(r.pauseReason))}`:''}</span><span class="meta">${esc(r.kind||'')}${r.turn?` · ${r.turn} msgs`:''}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`
+const roomRow = (r) => `<div class="rm ${r.roomId===S.selRoom?'sel':''}" data-room="${esc(r.roomId)}" onclick="selRoom(this.dataset.room)" title="${r.turn!=null?`${r.turn} messages exchanged${r.turnCap?` — checks in with you at ${r.turnCap}`:''}`:''}"><span class="nm">${esc(r.team||label2(r))}</span><span class="state ${r.state}">${esc(r.state)}${r.state==='Paused'&&r.pauseReason?` · ${esc(pauseLabel(r.pauseReason))}`:''}</span><span class="meta">${esc(r.kind||'')}${r.turn?` · ${r.turn} msgs`:''}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`
 const teamRunning = (ms) => { const live=ms.filter(m=>m.tier==='live'); return !live.length || live.some(m=>m.online||m.launched) }
 
 // One scrolling overview: @you (your messages) on top, then Teams, then Rooms.
@@ -561,10 +563,10 @@ function renderMain() {
   const ib = inbox()
   const byTeam = {}; for (const m of orgMembers()) (byTeam[m.team] ||= []).push(m)
   const teams = Object.keys(byTeam)
-  const memberRow = (m) => { const s=memberState(m); return `<div class="mem ${m.lead?'lead':''} ${m.handle===S.selMember?'sel':''}" onclick="selMember('${esc(m.handle)}')" title="${m.tier==='worker'?'on-demand — click for activity':'click for terminal'}"><span class="dot ${s.cls}"></span><div class="who"><div class="nm">${esc(m.first)}${m.lead?' <span class="leadstar" title="lead">★</span>':''}</div><div class="role">${esc(m.role)} <span class="bk">· ${esc(m.backend)}</span></div></div><span class="mstate ${s.cls}">${esc(s.label)}</span><span class="membar" aria-hidden="true"></span></div>` }
+  const memberRow = (m) => { const s=memberState(m); return `<div class="mem ${m.lead?'lead':''} ${m.handle===S.selMember?'sel':''}" data-h="${esc(m.handle)}" onclick="selMember(this.dataset.h)" title="${m.tier==='worker'?'on-demand — click for activity':'click for terminal'}"><span class="dot ${s.cls}"></span><div class="who"><div class="nm">${esc(m.first)}${m.lead?' <span class="leadstar" title="lead">★</span>':''}</div><div class="role">${esc(m.role)} <span class="bk">· ${esc(m.backend)}</span></div></div><span class="mstate ${s.cls}">${esc(s.label)}</span><span class="membar" aria-hidden="true"></span></div>` }
   const teamCard = (t) => { const ms=byTeam[t]; const running=teamRunning(ms)
     return `<div class="team"><div class="tn">${esc(t)}${running?'':' <span class="state Paused" style="font-size:10px;padding:1px 6px">not running</span>'}</div>${ms.map(memberRow).join('')}
-      ${S.addingTo===t ? amForm(t) : `<div class="row" style="margin-top:8px;gap:6px"><button class="btn tiny" onclick="startAddMember('${esc(t)}')">＋ add member</button></div>`}</div>` }
+      ${S.addingTo===t ? amForm(t) : `<div class="row" style="margin-top:8px;gap:6px"><button class="btn tiny" data-team="${esc(t)}" onclick="startAddMember(this.dataset.team)">＋ add member</button></div>`}</div>` }
 
   // @you: open QUESTIONS (actionable, badged) first, then notifications (FYI, muted, dismiss-only),
   // then catch-ups. The header badge counts questions only — notifications never inflate it (#11).
@@ -572,7 +574,7 @@ function renderMain() {
   // dismissed toggle moved into the channel). Badge counts open QUESTIONS only; the FYI count is muted.
   let html = `<h2 class="you">@you</h2>`
     + `<div class="rm you-row ${S.selInbox!=null?'sel':''}" onclick="selInbox('channel')" title="Open your @you channel"><span class="nm">@you${ib.questions.length?` <span class="badge">${ib.questions.length}</span>`:''}</span><span class="meta">${ib.open.length?`${ib.open.length} message${ib.open.length===1?'':'s'}${ib.notifications.length?` · ${ib.notifications.length} FYI`:''}`:'all clear'}</span></div>`
-  if (ib.cu.length) html += ib.cu.map(r=>`<div class="rm" onclick="selRoom('${esc(r.roomId)}',true)"><span class="nm">${esc(r.team||r.roomId)}</span><span class="meta">${r.unreviewed} catch-up${r.unreviewed>1?'s':''}</span></div>`).join('')
+  if (ib.cu.length) html += ib.cu.map(r=>`<div class="rm" data-room="${esc(r.roomId)}" onclick="selRoom(this.dataset.room,true)"><span class="nm">${esc(r.team||r.roomId)}</span><span class="meta">${r.unreviewed} catch-up${r.unreviewed>1?'s':''}</span></div>`).join('')
 
   // Reopen panel (T7): the active project is defined but not running → explicit ▶ Resume, with the
   // honest cold-image + per-live-member Channels-accept expectation (no surprise multi-minute spin-up).
@@ -581,7 +583,7 @@ function renderMain() {
     html += `<div class="resume"><h3>⏸ "${esc(S.org)}" is stopped</h3>`
       + `<div class="step">Resume relaunches the saved team — each live member <b>--continues its own conversation</b> from where it left off.</div>`
       + `<div class="step">First run rebuilds the image (~minutes). Each live member must re-accept its one-time <b>Channels prompt in its Console</b> before it's active${live.length?`: ${live.map(m=>'@'+esc(m.first)).join(', ')}`:''}. Workers are on-demand (no accept).</div>`
-      + `<div style="margin-top:10px"><button class="btn launch" onclick="resumeTeam('${esc(S.org)}')">▶ Resume team</button></div></div>`
+      + `<div style="margin-top:10px"><button class="btn launch" data-org="${esc(S.org)}" onclick="resumeTeam(this.dataset.org)">▶ Resume team</button></div></div>`
   }
 
   if (teams.length) html += `<h2>Teams</h2>` + teams.map(teamCard).join('')
@@ -618,7 +620,7 @@ function amForm(t) {
     <div class="row"><select id="amRole" style="flex:1.2" onchange="amSyncBackend()">${ROLES.concat((S.addCustomRoles||[]).filter(k=>!ROLES.includes(k))).map(r=>`<option ${r==='engineer'?'selected':''}>${esc(r)}</option>`).join('')}</select>
       <span id="amBackendWrap" style="flex:1;display:flex">${amBackendControl('engineer')}</span></div>
     <input id="amTerr" placeholder="territory (e.g. server) — optional" style="margin-top:6px">
-    <div class="row" style="margin-top:6px"><button class="btn tiny primary" onclick="submitAddMember('${esc(t)}')">Add</button><button class="btn tiny" onclick="cancelAddMember()">Cancel</button> <span id="amMsg" class="muted"></span></div>
+    <div class="row" style="margin-top:6px"><button class="btn tiny primary" data-team="${esc(t)}" onclick="submitAddMember(this.dataset.team)">Add</button><button class="btn tiny" onclick="cancelAddMember()">Cancel</button> <span id="amMsg" class="muted"></span></div>
   </div>`
 }
 
@@ -684,11 +686,11 @@ function renderTerminal(d, m) {
   const L = launchFor()
   const state = L && L.members && L.members[m.handle] && L.members[m.handle].state
   if (state === 'serve') { d.innerHTML = ''; return }   // the persistent overlay shows the live terminal
-  const removeBtn = `<div class="row" style="justify-content:flex-end;margin-bottom:8px"><button class="btn tiny" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove @${esc(m.first)}</button></div>`
+  const removeBtn = `<div class="row" style="justify-content:flex-end;margin-bottom:8px"><button class="btn tiny" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="removeMember(this.dataset.h,this.dataset.f)">✕ remove @${esc(m.first)}</button></div>`
   let body
   if (state === 'orphaned') {
     body = `<div class="empty"><b>@${esc(m.first)} is still running</b> — its agent is alive and working in the room; only the terminal <i>view</i> was lost (its host-side plumbing died). Relaunch to restore the terminal — the conversation resumes where it left off (an in-flight turn may restart).
-      <div style="margin-top:12px"><button class="btn primary" onclick="relaunchMember('${esc(m.handle)}','${esc(m.first)}')">↻ Relaunch terminal</button></div></div>`
+      <div style="margin-top:12px"><button class="btn primary" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="relaunchMember(this.dataset.h,this.dataset.f)">↻ Relaunch terminal</button></div></div>`
   } else if (state === 'building') {
     body = `<div class="empty">Building @${esc(m.first)}'s image — first run takes a few minutes. The terminal appears here once it's up.</div>`
   } else if (state === 'starting') {
@@ -705,7 +707,7 @@ function renderTerminal(d, m) {
 function termHeaderHTML(m, url) {
   const live = orgMembers().filter(x=>x.tier==='live'); const ready=live.filter(x=>x.online).length; const starting=live.filter(x=>!x.online && x.launched).length
   return `<b>@${esc(m.first)} <span class="muted">· terminal</span></b>
-    <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(url)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny" style="margin-left:8px" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove</button> <button class="btn tiny danger" onclick="stopTeam()">■ Stop team</button>`
+    <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(url)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny" style="margin-left:8px" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="removeMember(this.dataset.h,this.dataset.f)">✕ remove</button> <button class="btn tiny danger" onclick="stopTeam()">■ Stop team</button>`
 }
 function syncTermHost() {
   const host = $('#termhost'), detail = $('#detail')
@@ -746,7 +748,7 @@ function syncTermHost() {
       ? `<div class="tp-main">Connecting to @${f}'s terminal…</div><div class="tp-sub muted">You're attached to the live session — @${f}'s <b>live screen from here</b>; earlier output isn't replayed.</div>`
       : `<div class="tp-main">First launch — activate @${f}</div><div class="tp-sub muted">Log in and accept the <b>Channels</b> prompt in this terminal to put @${f} to work.</div>`
     block.innerHTML = `<div class="termhdr"></div>`
-      + `<div class="termbanner">↑ You're seeing @${f}'s <b>live screen from here</b> — earlier output before you opened this isn't replayed.<span class="bx" role="button" tabindex="0" title="dismiss" onclick="dismissTermBanner('${esc(target.key)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();dismissTermBanner('${esc(target.key)}')}">✕</span></div>`
+      + `<div class="termbanner">↑ You're seeing @${f}'s <b>live screen from here</b> — earlier output before you opened this isn't replayed.<span class="bx" role="button" tabindex="0" title="dismiss" data-key="${esc(target.key)}" onclick="dismissTermBanner(this.dataset.key)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();dismissTermBanner(this.dataset.key)}">✕</span></div>`
       + `<div class="termwrap"><iframe class="termframe" title="@${f} terminal" src="${esc(target.url)}"></iframe>`
       + (showPh ? `<div class="termplaceholder">${phCopy}</div>` : '')
       + `</div><div class="termfoot muted">First launch: log in + accept the Channels prompt in this terminal.</div>`
@@ -809,7 +811,7 @@ function renderWorkerLog(d, m) {
   const n = wl.records.length, last = n ? wl.records[n-1] : null
   d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:4px">
       <b>@${esc(m.first)} <span class="muted">/${esc(m.backend)} · ${esc(m.role)}</span></b>
-      <span><span class="mstate worker">on-demand</span> <button class="btn tiny" style="margin-left:8px" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove</button></span></div>
+      <span><span class="mstate worker">on-demand</span> <button class="btn tiny" style="margin-left:8px" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="removeMember(this.dataset.h,this.dataset.f)">✕ remove</button></span></div>
     <div class="muted" style="margin-bottom:8px;font-size:12px">${n?`On-demand worker — runs only when @mentioned. <b>${n}</b> call${n===1?'':'s'}${last?` · last run ${relTime(last.at)}`:''}.`:`@${esc(m.first)} hasn't run yet — @mention @${esc(m.first)} in a room to put them to work.`}</div>
     <div class="wlog" id="wlog" tabindex="0">${workerHistoryHTML(wl)}</div>`
   const w=$('#wlog'); if(w){ w.dataset.sig = workerLogSig(wl); w.scrollTop = w.scrollHeight }
@@ -969,7 +971,7 @@ function renderInboxChannel(d) {
     if (gk !== lastGroup) { feed += `<div class="ich-sender"><b>${esc(q.fromName||('@'+q.from))}</b> <span class="muted">· ${esc(q.room)}</span></div>`; lastGroup = gk }
     const viaTg = q.answeredVia==='telegram'
     const steered = q.pauseRoom && q.answer && q.answer !== '(resumed)'
-    const openRoomBtn = `<button class="btn tiny" onclick="openRoomAt('${esc(q.roomId)}',${q.id})">↗ Open room</button>`
+    const openRoomBtn = `<button class="btn tiny" data-room="${esc(q.roomId)}" onclick="openRoomAt(this.dataset.room,${q.id})">↗ Open room</button>`
     let state
     if (q.answered) {
       state = q.pauseRoom
@@ -1040,8 +1042,8 @@ function bRenderPersonas() {
   const list = keys.length ? keys.map(k=>{ const p=cps[k]||{}; const used=membersUsingPersona(k)
     return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)"><code style="flex:0 0 auto">@${esc(k)}</code>
       <span class="muted" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.label||k)} · ${p.mount==='rw'?'rw':'ro'}${p.leadByDefault?' · lead':''}${used.length?' · '+used.length+' member'+(used.length>1?'s':''):''}</span>
-      <button class="btn tiny" style="flex:0 0 auto" onclick="bEditPersona('${esc(k)}')">edit</button>
-      <button class="btn tiny" style="flex:0 0 auto" ${used.length?`title="in use by ${esc(used.join(', '))}"`:''} onclick="bRemovePersona('${esc(k)}')">✕</button></div>` }).join('')
+      <button class="btn tiny" style="flex:0 0 auto" data-k="${esc(k)}" onclick="bEditPersona(this.dataset.k)">edit</button>
+      <button class="btn tiny" style="flex:0 0 auto" ${used.length?`title="in use by ${esc(used.join(', '))}"`:''} data-k="${esc(k)}" onclick="bRemovePersona(this.dataset.k)">✕</button></div>` }).join('')
     : `<div class="muted" style="font-size:12px">No custom roles yet — add one to define a project-specific expert (e.g. <code>@advertiser</code>).</div>`
   el.innerHTML = list + `<div style="margin-top:8px">${f ? personaForm(f) : `<button class="btn tiny" onclick="bNewPersona()">＋ custom role</button>`}</div><div id="bPMsg" class="muted" style="font-size:12px;margin-top:4px"></div>`
 }
@@ -1301,7 +1303,7 @@ function tgSectionHtml() {
       + tg.pending.map(p=>{
           const realName = [p.firstName, p.lastName].filter(Boolean).join(' ')
           const detail = (p.username || realName) ? ` <span class="muted">(${[p.username && realName, `id ${esc(p.fromId)}`].filter(Boolean).join(', ')})</span>` : ''
-          return `<div style="margin:6px 0"><div style="margin-bottom:5px"><b>${tgName(p)}</b>${detail} <span class="muted">→ link to</span> <b>${esc(S.org)}</b></div><div class="row" style="gap:6px"><button class="btn tiny primary" onclick="tgConfirm('${esc(p.fromId)}')">Confirm</button> <button class="btn tiny" onclick="tgReject('${esc(p.fromId)}')">Reject</button></div></div>`
+          return `<div style="margin:6px 0"><div style="margin-bottom:5px"><b>${tgName(p)}</b>${detail} <span class="muted">→ link to</span> <b>${esc(S.org)}</b></div><div class="row" style="gap:6px"><button class="btn tiny primary" data-fid="${esc(p.fromId)}" onclick="tgConfirm(this.dataset.fid)">Confirm</button> <button class="btn tiny" data-fid="${esc(p.fromId)}" onclick="tgReject(this.dataset.fid)">Reject</button></div></div>`
         }).join('')
   }
   if (tg.pinned) {
