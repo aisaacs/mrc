@@ -8,17 +8,19 @@
 // before. One daemon serves all sessions, so it outlives any single session.
 import net from 'node:net'
 import { spawn, execFileSync } from 'node:child_process'
-import { openSync, mkdirSync, appendFileSync, readFileSync, writeFileSync } from 'node:fs'
+import { openSync, mkdirSync, appendFileSync, readFileSync, writeFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join } from 'node:path'
+import { join, basename } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { ensureRoom, appendThread, appendTranscript, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadLaunches, removeLaunch, loadTgStates, saveTgStates, loadInbox, saveInbox, loadUserPrefs, saveUserPrefs } from '../rooms.js'
 import { createRoomEngine } from '../teams/room-engine.js'
 import { createWorkerRunner, workerLogPath, parseWorkerLog } from '../teams/worker-runner.js'
 import { memberSessionId } from '../teams/session-id.js'
-import { createTelegramBridge, sendMessage as tgSend, editMessageText as tgEdit } from '../teams/telegram.js'
+import { createTelegramBridge, sendMessage as tgSend, editMessageText as tgEdit, sendPhoto as tgSendPhoto } from '../teams/telegram.js'
 import { freshTgState, classifyInbound, addPending, confirmPending, rejectPending, unpair as tgUnpair, prePin, tgView, isDuplicateUpdate, markUpdateProcessed } from '../teams/telegram-auth.js'
+import { defangTrustMarkers } from '../teams/trust.js'
+import { resolveTerritoryImage } from '../safe-path.js'   // #56: shared dual-containment (repo + territory) image guard
 import { leadsRoomId } from '../teams/roster.js'
 import { repoEnvKeyStrict } from '../config.js'
 
@@ -236,6 +238,37 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
   }
   function stopAllTg() { for (const b of tgBridges.values()) { try { b.stop() } catch {} } tgBridges.clear() }
   function stopTgForOrg(org) { const b = tgBridges.get(org); if (b) { try { b.stop() } catch {} tgBridges.delete(org) } }
+
+  // #56: route a member's send_photo → Telegram. Bytes leaving the sandbox to an EXTERNAL service via an
+  // untrusted (possibly prompt-injected) agent — so the gate is layered and fails CLOSED at every step:
+  //  • `path` is REPO-relative (the member's real /workspace view). safeAssetPath(repo, path) gives
+  //    repo-containment (realpath / isFile / reject ../abs/NUL/symlink-escape/sibling-prefix), THEN a
+  //    territory-subtree assertion (same realpath + trailing-`sep` rigor) contains a compromised member to
+  //    its OWN sub-tree — it can leak only its own work, never repo-wide. territory="." collapses to the
+  //    repo check (a broad-territory relay member, by design).
+  //  • IMAGE ext only — reuse ASSET_CONTENT_TYPES but require image/* (excludes the #48c mp3 and svg).
+  //  • CONFIRMED (pinned) chat ONLY — never an unpaired/unconfirmed chat. Caption defanged + length-capped.
+  //  • Size-capped before read; failures surfaced LOUD (no silent drop — the #19 lesson).
+  const SENDPHOTO_MAX = 50 * 1024 * 1024
+  async function handleSendPhoto({ org, handle, path: rel, caption }) {
+    const def = orgDefs.get(org)
+    if (!def?.repo) return { ok: false, error: 'unknown org' }
+    const m = engine.memberByHandle(handle, org)
+    if (!m) return { ok: false, error: `unknown member @${handle}` }
+    const repo = def.repo, territory = m.territory || '.'
+    const { file, error } = resolveTerritoryImage(repo, territory, rel)    // dual-containment + image-ext (shared primitive)
+    if (error) return { ok: false, error }
+    let size; try { size = statSync(file).size } catch { return { ok: false, error: 'cannot read file' } }
+    if (size > SENDPHOTO_MAX) return { ok: false, error: `image too large: ${(size / 1048576).toFixed(1)}MB exceeds the 50MB cap` }
+    const s = tgStates.get(org)
+    if (!s?.token) return { ok: false, error: 'no Telegram bot is configured for this project' }
+    if (!s.pinned?.chatId) return { ok: false, error: 'no confirmed Telegram chat — link one in the dashboard first' }
+    const cap = caption != null ? defangTrustMarkers(String(caption)).slice(0, 1024) : undefined   // untrusted member text → defang + Telegram's 1024 cap
+    let buf; try { buf = readFileSync(file) } catch { return { ok: false, error: 'cannot read file' } }
+    const r = await tgSendPhoto({ token: s.token, chatId: s.pinned.chatId, photo: buf, filename: basename(file), caption: cap, fetchFn: tgFetch })
+    if (!r.ok) daemonLog(`send_photo @${handle} (${org}) → Telegram FAILED: ${r.error}`)   // loud — no silent drop (#19)
+    return r
+  }
   // Drain a batch of inbound updates. Dedups by update_id BEFORE any side effect (the fresh-message →
   // leads inject has no stale-guard). No try/catch around the side effects on purpose: if a handoff
   // throws it propagates to the bridge, which then does NOT advance the offset → re-delivers, and the
@@ -760,6 +793,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
           if (m?.repo) { try { raw = readFileSync(workerLogPath(m.repo, f.handle), 'utf8').split('\n').slice(-500).join('\n') } catch {} }
           const { records, legacy } = parseWorkerLog(raw)
           reply({ ok: true, records, legacy }); continue
+        }
+        // #56: a member sends an image from its territory to the org's confirmed Telegram chat. The control
+        // handler is sync, so fire-and-forget the async send and reply when it resolves (like launchMember).
+        if (f.action === 'sendphoto' && f.org && f.handle) {
+          handleSendPhoto({ org: f.org, handle: f.handle, path: f.path, caption: f.caption }).then(reply, (e) => reply({ ok: false, error: String(e?.message || e) }))
+          continue
         }
         // Add a member to a (possibly running) org: re-define from a PINNED roster (existing members
         // keep their names) + the new member, then launch just its terminal if the team is up.

@@ -8,9 +8,10 @@ import net from 'node:net'
 import { randomBytes } from 'node:crypto'
 import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync, chmodSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { join, dirname, extname, sep } from 'node:path'
+import { join, dirname, extname } from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
+import { ASSET_CONTENT_TYPES, safeAssetPath } from './safe-path.js'
 import { roomsRoot, roomDir, listRooms, readCatchups, updateCatchup, readTranscript, atomicWriteFileSync } from './rooms.js'
 import { findFreePort } from './ports.js'
 import { parseRoster, validateRoster, editPersona } from './teams/roster.js'
@@ -84,29 +85,10 @@ async function buildState() {
 
 function sendJSON(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)) }
 
-// #48b/#48c: media content-types served by /api/asset. RASTER images + mp3 audio ONLY — no svg (it can
-// carry script → XSS if ever rendered outside an <img>); the list mirrors exactly what media.js emits
-// (Gemini → png/jpg, ElevenLabs sfx/music → mp3), so there's no extension here without a producer.
-export const ASSET_CONTENT_TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.mp3': 'audio/mpeg' }
-
-// Resolve `rel` to a real file INSIDE `repo`, or null if it's unsafe / escapes. THE guard for /api/asset
-// (it serves file bytes — the highest-risk endpoint). Reject absolute / NUL / `..` BEFORE touching the fs,
-// then realpathSync the FINAL file + the repo and require containment with a trailing path.sep — a bare
-// startsWith would let a sibling-prefix dir (`<repo>-secret/x.png`) pass. realpath-on-the-final-file
-// defeats both `..` traversal and symlink-escape. (The query param is decoded exactly ONCE by
-// URLSearchParams, so `%252e` games stay literal and fail the realpath lookup.)
-export function safeAssetPath(repo, rel) {
-  if (!repo || typeof rel !== 'string' || !rel) return null
-  if (rel.startsWith('/') || rel.startsWith('\\') || rel.includes('\0') || /(^|[\\/])\.\.([\\/]|$)/.test(rel)) return null
-  let realRepo, realFile
-  try { realRepo = realpathSync(repo) } catch { return null }
-  try { realFile = realpathSync(join(repo, rel)) } catch { return null }
-  if (realFile !== realRepo && !realFile.startsWith(realRepo + sep)) return null
-  // Self-contained contract (Roland): return a safe regular-FILE path or null — never a directory — so a
-  // future caller that forgets its own isFile() check can't be bitten (the /api/asset endpoint also checks).
-  try { if (!statSync(realFile).isFile()) return null } catch { return null }
-  return realFile
-}
+// #56: ASSET_CONTENT_TYPES + safeAssetPath now live in ./safe-path.js (the single audited implementation,
+// shared with the room daemon's send_photo). Imported above for internal use; re-exported here so any
+// existing importer of rooms-dashboard.js stays valid.
+export { ASSET_CONTENT_TYPES, safeAssetPath }
 
 // --- CSRF defense for the browser-only HTTP surface (2b.1) --------------------------------------
 // The HTTP `/api` surface is reachable only by a browser (the `mrc rooms/team` CLIs use the control

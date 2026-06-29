@@ -6,7 +6,8 @@ import http from 'node:http'
 import os from 'node:os'
 import fs from 'node:fs'
 import { join } from 'node:path'
-import { startDashboard, safeAssetPath, ASSET_CONTENT_TYPES } from '../src/rooms-dashboard.js'
+import { startDashboard } from '../src/rooms-dashboard.js'
+import { safeAssetPath, ASSET_CONTENT_TYPES, resolveTerritoryImage } from '../src/safe-path.js'   // #56: canonical shared impl (re-exported by rooms-dashboard.js too)
 
 // A throwaway HOME so listRooms/etc. never touch the real store.
 process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-dash-`)
@@ -141,4 +142,38 @@ test('#48c ASSET_CONTENT_TYPES: admits raster + mp3 only; never svg / html / sou
   for (const bad of ['.svg', '.html', '.htm', '.js', '.wav', '.ogg', '.m4a', '.env', '.json']) {
     assert.equal(ASSET_CONTENT_TYPES[bad], undefined, `${bad} must NOT be served`)
   }
+})
+
+// #56: resolveTerritoryImage — the send_photo guard (untrusted agent → external service). DUAL containment
+// (repo via safeAssetPath, THEN the member's territory sub-tree with realpath+trailing-sep rigor) + image-
+// ext only. The threat is exfiltration, so a member must only reach IMAGES inside its OWN territory.
+test('#56 resolveTerritoryImage: image inside the member territory resolves; sibling-prefix / cross-territory / non-image / traversal all reject', () => {
+  const root = fs.mkdtempSync(join(os.tmpdir(), 'mrc-terr-'))
+  const repo = join(root, 'repo')
+  for (const d of ['client', 'src', 'src-evil', 'b', 'a', 'assets']) fs.mkdirSync(join(repo, d), { recursive: true })
+  fs.writeFileSync(join(repo, 'client', 'shot.png'), 'PNG')
+  fs.writeFileSync(join(repo, 'src', 'ok.png'), 'PNG')
+  fs.writeFileSync(join(repo, 'src-evil', 'leak.png'), 'LEAK')   // sibling dir sharing the 'src' prefix
+  fs.writeFileSync(join(repo, 'b', 'secret.png'), 'B')           // another member's subtree
+  fs.writeFileSync(join(repo, 'assets', 'cat.png'), 'PNG')
+  fs.writeFileSync(join(repo, 'assets', 'chime.mp3'), 'MP3')     // an allowed /api/asset type, but NOT image
+  fs.writeFileSync(join(repo, 'assets', 'notes.txt'), 'TXT')
+  fs.writeFileSync(join(root, 'outside.png'), 'OUT')
+
+  // ✓ image within the member's own territory (repo-relative path, the agent's real view)
+  assert.equal(resolveTerritoryImage(repo, 'client', 'client/shot.png').file, fs.realpathSync(join(repo, 'client', 'shot.png')))
+  // ✓ territory='.' → collapses to the repo check (a broad-territory relay member) — any repo image
+  assert.equal(resolveTerritoryImage(repo, '.', 'assets/cat.png').file, fs.realpathSync(join(repo, 'assets', 'cat.png')))
+  // ✗ SIBLING-PREFIX: src-evil/leak.png must NOT pass a `src` territory (the trailing-sep rigor)
+  assert.ok(resolveTerritoryImage(repo, 'src', 'src-evil/leak.png').error, 'src-evil sibling rejected past src territory')
+  // ✗ CROSS-TERRITORY: member with territory 'a' reaching member-b's subtree
+  assert.ok(resolveTerritoryImage(repo, 'a', 'b/secret.png').error, 'cross-territory reach rejected')
+  // ✗ NON-IMAGE: mp3 is an /api/asset content-type but not image/* → rejected for send_photo
+  assert.ok(resolveTerritoryImage(repo, '.', 'assets/chime.mp3').error, 'mp3 rejected (image-only)')
+  assert.ok(resolveTerritoryImage(repo, '.', 'assets/notes.txt').error, 'txt rejected')
+  // ✗ traversal / absolute / a directory all reject (inherited from safeAssetPath)
+  assert.ok(resolveTerritoryImage(repo, '.', '../outside.png').error, 'traversal rejected')
+  assert.ok(resolveTerritoryImage(repo, '.', 'client').error, 'a directory is not a file')
+  // ✗ an image that exists but is OUTSIDE the narrower territory (in repo, in a different subtree)
+  assert.ok(resolveTerritoryImage(repo, 'client', 'assets/cat.png').error, 'repo-valid but outside client territory')
 })
