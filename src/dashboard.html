@@ -128,6 +128,13 @@
   .sblk .srow b { font-size:14px }
   .sblk .shelp { color:var(--dim); font-size:12px; margin:4px 0 8px; line-height:1.45 }
   .setck { display:flex; align-items:center; gap:7px; font-size:13px; color:var(--fg); margin:3px 0 } .setck input { width:auto }
+  /* #61: project HOME pane */
+  .home { padding:18px 20px; max-width:680px }
+  .homehd { display:flex; align-items:center; gap:12px; margin-bottom:14px }
+  .homestat { font-size:11.5px; font-weight:700; padding:2px 9px; border-radius:11px; border:1px solid var(--line) }
+  .homestat.on { color:var(--online); border-color:#2f6b3f } .homestat.off { color:var(--dim) }
+  .homeov { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:6px }
+  .ovchip { font-size:12.5px; color:var(--dim); background:var(--inset); border:1px solid var(--line); border-radius:8px; padding:5px 10px } .ovchip b { color:var(--fg) }
   .stag { font-size:9.5px; font-weight:700; letter-spacing:.04em; padding:2px 6px; border-radius:4px; border:1px solid var(--line); white-space:nowrap }
   .stag.g { color:var(--accent); border-color:var(--accent) } .stag.p { color:var(--info); border-color:var(--info) }
   .stag.r { color:var(--online); border-color:var(--online) } .stag.l { color:var(--warning); border-color:var(--warning) }
@@ -362,7 +369,7 @@ const MEDIA_ROLE_BACKEND = { designer:'gemini', 'sound-designer':'elevenlabs', c
 const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
 
 const S = {
-  building: false, org: null, selRoom: null, selInbox: null, selMember: null, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, replyTo: null, jumpTarget: null, flash: null,
+  building: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, replyTo: null, jumpTarget: null, flash: null,
   notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
   notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
   teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null,
@@ -371,6 +378,7 @@ const S = {
     {role:'architect',backend:'claude',lead:true,territory:''},{role:'engineer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
 }
 let paintedKey = null
+let _landed = false   // #61: one-time initial-landing guard (land on the active project's home on first load)
 
 // ---- data ----
 let _prefsLoaded = false
@@ -381,6 +389,9 @@ async function tick() {
   S.state = st && st.rooms ? st : { rooms:[], daemon:{} }
   if (!S.org) S.org = (S.teams.orgs && S.teams.orgs[0] && S.teams.orgs[0].org) || null
   if (_scopedNav) { _scopedNav=false; const has=(S.teams.members||[]).some(m=>!_proj||m.org===_proj); S.building = !has; if (has && _proj) S.org=_proj; if (S.building) markBuilderClean() }   // #55: baseline the scoped-launch builder entry too
+  // #61-C: first load with a project active and nothing selected → land on its HOME (not the bare welcome,
+  // which now shows only when NO project is active). One-time, so it doesn't fight later navigation.
+  if (!_landed && S.org && !S.building && !S.selRoom && !S.selMember && S.selInbox==null) { _landed=true; S.selHome=true; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }) }
   if (S.selRoom && needRoomFetch()) S.room = await api('/api/room?id='+encodeURIComponent(S.selRoom)).catch(()=>null)
   if (S.selMember) {
     const m = memberByHandle(S.selMember)
@@ -439,7 +450,7 @@ function orgNeed(org) {
 // A launch record only counts as "running" if the daemon reconciled it as live (≥1 member session up,
 // or still building) — a stale record from a crash reports running:false, so ▶ Resume/🚀 Launch comes back.
 const orgRunning = (org) => (S.teams.launch||[]).some(l=>l.org===org && l.running) || (S.teams.members||[]).some(m=>m.org===org && m.tier==='live' && (m.online||m.launched))
-function switchOrg(org) { if (org===S.org) return; if (!confirmLeaveBuilder()) return; S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; setOrgUrl(org); paint() }   // #55-1: a project-tab switch from a dirty build would discard it
+function switchOrg(org) { if (org===S.org) return; if (!confirmLeaveBuilder()) return; S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; S.selHome=true; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }); setOrgUrl(org); paint() }   // #55-1: guard a dirty build; #61: entering a project lands on its home
 window.switchOrg = switchOrg
 
 // Browser-style project tabs: one per defined org. Chrome-stable — tabs keep a FIXED position
@@ -456,7 +467,7 @@ function renderTabs() {
     // A pending Telegram link is a "verify me" event — surfaced on the OWNING tab regardless of which
     // tab is active (#14 B), and visually DISTINCT from the ❓ needs-you badge (a 🔗, not an answer count).
     const link = (S.teams.telegram||{})[o]?.pending?.length || 0
-    return `<div class="ptab ${cls}" onclick="switchOrg('${esc(o)}')" title="${esc(o)} · ${orgRunning(o)?'running':'stopped'}">`
+    return `<div class="ptab ${cls}" onclick="${o===S.org?'openProjectHome()':`switchOrg('${esc(o)}')`}" title="${esc(o)} · ${orgRunning(o)?'running':'stopped'} — ${o===S.org?'open project home':'switch'}">`
       + `<span class="pdot"></span><span class="pname">${esc(o)}</span>`
       + (link?`<span class="plink" title="Telegram link awaiting your confirmation${link>1?` (${link})`:''}">🔗${link>1?link:''}</span>`:'')
       + (need?`<span class="pbadge" title="${need} need you">${need}</span>`:'')
@@ -510,6 +521,7 @@ const launchFor = () => (S.teams.launch||[]).find(x=>x.org===S.org && x.running)
 // #47: the @you channel's detailKey uses channelSig() (folds every item's RESOLUTION into the key, so a
 // REMOTE resolve — e.g. answered via Telegram — re-renders the channel) and FREEZES while composing.
 const detailKey = () => S.building ? 'build'
+  : S.selHome ? 'home:'+(S.org||'')+':'+(S.settings?'s':'-')   // #61: rebuild once settings load (for the --web note)
   : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+S.selMember+':'+(launchFor()?.members?.[S.selMember]?.state||'none'))
   : S.selInbox!=null ? 'channel:'+(S.org||'')+':'+channelSig()
   : S.selRoom ? 'room:'+S.selRoom+':'+S.tab
@@ -607,10 +619,42 @@ function amForm(t) {
 function renderDetail() {
   const d = $('#detail')
   if (S.building) return renderBuilder(d)
+  if (S.selHome) return renderProjectHome(d)
   if (S.selMember) return renderMember(d)
   if (S.selInbox!=null) return renderInboxChannel(d)
   if (S.selRoom) return renderRoom(d)
   d.innerHTML = `<div class="empty"><svg class="hatwm" viewBox="0 0 32 32" width="60" height="60" aria-hidden="true"><ellipse cx="16" cy="23.4" rx="12.8" ry="3.05"/><path d="M10.5 9 Q10.75 6.3 16 6.1 Q21.25 6.3 21.5 9 L22 22.6 L10 22.6 Z"/></svg><div>Pick a member (terminal / log), a room (transcript &amp; steer), or an @you message — or ＋ New project.</div><div class="flavor">May the Schwartz be with you.</div></div>`
+}
+// #61: the at-a-glance counts — kept LIGHT (members ready/total, on-demand workers, rooms) so home reads as
+// "home," not a settings dump. Split out so patchDetail can refresh it on a poll without rebuilding the pane.
+function homeOverviewHTML() {
+  const live = orgMembers().filter(m=>m.tier==='live'); const ready = live.filter(m=>m.online).length
+  const workers = orgMembers().filter(m=>m.tier==='worker').length
+  const rooms = mergedRooms().filter(inOrg).length
+  return `<span class="ovchip"><b>${ready}/${live.length}</b> member${live.length===1?'':'s'} ready</span>`
+    + (workers?`<span class="ovchip"><b>${workers}</b> on-demand</span>`:'')
+    + `<span class="ovchip"><b>${rooms}</b> room${rooms===1?'':'s'}</span>`
+}
+// #61: the project home pane — light overview + the per-project settings (Telegram / --web / Delete) moved
+// out of the gear modal. The live bits (#homeOverview counts + #tgSection) are poll-patched in patchDetail
+// (no rebuild → a focused Telegram Confirm/Reject isn't stolen — the #46 focus lesson).
+function renderProjectHome(d) {
+  const org = S.org
+  if (!org) { d.innerHTML = `<div class="empty"><div>No project open.</div></div>`; return }
+  const running = orgRunning(org)
+  const web = (S.settings && S.settings.web) || {}
+  d.innerHTML = `<div class="home">
+    <div class="homehd"><h2 style="margin:0;font-size:17px">${esc(org)}</h2>
+      <span class="homestat ${running?'on':'off'}">${running?'● running':'○ suspended'}</span></div>
+    <div id="homeOverview" class="homeov">${homeOverviewHTML()}</div>
+    <div class="sgrouph" style="margin-top:18px">Project settings</div>
+    <div class="sblk"><div class="srow"><b>Telegram</b> ${sBadge('project','runtime')}</div><span id="tgSection">${tgSectionHtml()}</span></div>
+    <div class="sblk"><div class="srow"><b>Outbound egress (--web)</b> ${sBadge('project','launch')}</div>
+      <div class="shelp">${S.settings ? esc(web.note||'Not enabled — this project reaches only the sanctioned proxy + whitelisted domains.') : '<span class="muted">loading…</span>'}</div></div>
+    <div class="sblk danger"><div class="srow"><b>Danger zone</b></div>
+      <div class="shelp">Forget this project from Mister Claude — stops its sessions and removes the tab. <b>Nothing on disk is deleted</b> (team.json + transcripts stay; re-add with <code>mrc team up</code>).</div>
+      <div class="row" style="margin-top:6px"><button class="btn danger tiny" onclick="deleteProject()">🗑 Delete project</button></div></div>
+  </div>`
 }
 function renderMember(d) {
   const m = memberByHandle(S.selMember)
@@ -764,6 +808,13 @@ function renderWorkerLog(d, m) {
   const w=$('#wlog'); if(w){ w.dataset.sig = workerLogSig(wl); w.scrollTop = w.scrollHeight }
 }
 function patchDetail() {
+  if (S.selHome) {
+    // #61-F: refresh ONLY the live bits — the overview counts and the Telegram section — never a full
+    // rebuild, so a poll can't steal focus from a Telegram Confirm/Reject the way #46's modal would.
+    const ov = $('#homeOverview'); if (ov) { const h=homeOverviewHTML(); if (ov.innerHTML!==h) ov.innerHTML=h }
+    const tg = $('#tgSection'); if (tg) { const h=tgSectionHtml(); if (tg.innerHTML!==h && !tg.contains(document.activeElement)) tg.innerHTML=h }
+    return
+  }
   if (S.selMember) {
     const m = memberByHandle(S.selMember)
     if (m && m.tier==='worker') { const w=$('#wlog'); const wl=S.workerLog||{records:[],legacy:''}; const sig=workerLogSig(wl); if (w && w.dataset.sig!==sig) followScroll(w, () => { w.innerHTML = workerHistoryHTML(wl); w.dataset.sig=sig }) }
@@ -1086,8 +1137,8 @@ window.openBuilder = async (fresh)=>{
   // #55: capture the prior view ONCE (don't clobber it on a re-entry while already building) so ✕ Cancel
   // returns to exactly where you were — the builder is a pane-takeover, so we capture+restore (vs #46's
   // modal which just avoided nulling).
-  if (!S.building) S._builderReturn = { selRoom:S.selRoom, selMember:S.selMember, selInbox:S.selInbox, tab:S.tab }
-  S.building=true; S.selMember=null; S.selRoom=null; S.selInbox=null
+  if (!S.building) S._builderReturn = { selRoom:S.selRoom, selMember:S.selMember, selInbox:S.selInbox, selHome:S.selHome, tab:S.tab }
+  S.building=true; S.selMember=null; S.selRoom=null; S.selInbox=null; S.selHome=false
   if (fresh) { S.builder = freshBuilder(); markBuilderClean() }   // #55: baseline the empty build
   paint()
   if (!fresh && S.org && (S.teams.members||[]).some(m=>m.org===S.org)) {
@@ -1109,20 +1160,26 @@ window.openBuilder = async (fresh)=>{
 window.closeBuilder = ()=>{
   if (!confirmLeaveBuilder()) return
   const r = S._builderReturn || {}
-  S.selRoom = r.selRoom||null; S.selMember = r.selMember||null; S.selInbox = r.selInbox||null; if (r.tab) S.tab = r.tab
+  S.selRoom = r.selRoom||null; S.selMember = r.selMember||null; S.selInbox = r.selInbox||null; S.selHome = !!r.selHome; if (r.tab) S.tab = r.tab
   S._builderReturn = null; S.building=false; paint() }
 
 // ---- settings (#42 chunk C) ----
 // #46: Settings is a MODAL (not a detail-pane render) — opening it must NOT touch selRoom/selMember/
 // selInbox, so closing returns to the exact room / thread / member you were on.
-window.openSettings = async ()=>{ S.settingsOpen=true; S.settings=null; renderModal()
+// Fetch the settings payload into S.settings. 404/null = the endpoint isn't live on the CURRENT daemon yet
+// (served fresh per-request, but /api/settings only exists after a daemon reload) — flag it so the surface
+// SAYS so (restart notice), not a stuck "Loading…". Shared by the gear modal (#46) and the project home (#61).
+async function loadSettings() {
   const r = await api('/api/settings').catch(()=>null)
-  // 404/null = the endpoint isn't live on the CURRENT daemon yet (served fresh per-request, but
-  // /api/settings only exists after a daemon reload) — flag it so the modal SAYS so, not a stuck "Loading…".
   if (r && r.ok) { S.settings=r; if (r.notify && r.notify.value) S.notifyPrefs=r.notify.value }
   else S.settings = { _failed: true }
-  if (S.settingsOpen) renderModal() }
+}
+window.openSettings = async ()=>{ S.settingsOpen=true; S.settings=null; renderModal(); await loadSettings(); if (S.settingsOpen) renderModal() }
 window.closeSettings = ()=>{ S.settingsOpen=false; renderModal() }
+// #61: the project HOME — entering a project lands here (overview + the per-project settings moved out of
+// the gear). Clears the other selections; lazy-loads settings for the --web note (detailKey's settings flag
+// rebuilds the pane once it arrives). Guarded by confirmLeaveBuilder so it can't silently discard a build.
+window.openProjectHome = ()=>{ if (!confirmLeaveBuilder()) return; S.selHome=true; S.selRoom=S.selInbox=S.selMember=null; S.building=false; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }); paint() }
 const sBadge = (scope,mut)=>`<span class="stag ${scope==='global'?'g':'p'}">${scope==='global'?'GLOBAL':'PER-PROJECT'}</span><span class="stag ${mut==='runtime'?'r':'l'}">${mut==='runtime'?'RUNTIME':'LAUNCH-TIME'}</span>`
 
 // Render the Settings modal — centered card + scrim over the whole app. EVENT-DRIVEN (openSettings /
@@ -1165,22 +1222,13 @@ function renderModal() {
       })
     }
   }
-  // Body: full rebuild only when the content SIGNATURE changes (open / loading→content / forced via
-  // _modalSig=null); otherwise patch ONLY the live Telegram section — no input rebuild, no focus touch.
+  // Body: the gear modal is GLOBAL-only now (#61) — turn-cap / notifications / port. No live Telegram
+  // section here anymore (moved to the project home), so a full rebuild only on a SIGNATURE change
+  // (open / loading→content / failed→ok) is enough; the inputs aren't clobbered on a poll because
+  // renderModal is event-driven, not called from paint().
   const body = $('#modalBody'); if (!body) return
-  const sig = (S.settings ? (S.settings._failed?'failed':'ok') : 'loading') + ':' + (S.org||'')
+  const sig = S.settings ? (S.settings._failed?'failed':'ok') : 'loading'
   if (sig !== _modalSig) { body.innerHTML = settingsBody(); _modalSig = sig }
-  else {
-    const tgEl = $('#tgSection')
-    if (tgEl) {
-      tgEl.innerHTML = tgSectionHtml()
-      // A tg action (Confirm/Reject/unpair) replaced the very button that had focus → focus falls to
-      // <body>, OUTSIDE .modalcard, which silently breaks Esc + the Tab-trap (both bound to the card).
-      // Pull focus back into the modal: the new actionable element (the unpair link / next Confirm), else the card.
-      const card = host.querySelector('.modalcard')
-      if (card && !card.contains(document.activeElement)) { try { (tgEl.querySelector('a[href],button') || card).focus() } catch {} }
-    }
-  }
 }
 // The modal's contents: Global runtime knobs (every project), then this project's settings. Reuses the
 // .sblk/.srow/.shelp/.stag system + the _failed restart notice verbatim.
@@ -1188,9 +1236,8 @@ function settingsBody() {
   const s = S.settings
   if (!s) return `<div class="muted">Loading…</div>`
   if (s._failed) return `<div class="sblk"><div class="shelp" style="margin:0">⚠ Settings need a daemon restart to take effect — run <code>mrc rooms restart</code>. The <code>/api/settings</code> endpoint isn't live on the current daemon yet; settings will work once it reloads.</div></div>`
-  const tc=s.turnCap||{}, nf=(s.notify&&s.notify.value)||{}, dp=s.dashboardPort||{}, web=s.web||{}
+  const tc=s.turnCap||{}, nf=(s.notify&&s.notify.value)||{}, dp=s.dashboardPort||{}   // #61: web/Telegram/delete moved to the project home
   const perm = ('Notification' in window) ? Notification.permission : 'denied'
-  const hasProject = !!(S.org && (S.teams.members||[]).some(m=>m.org===S.org))
   let html = `<div class="sgrouph">Global <span class="muted" style="font-weight:400">— applies to every project</span></div>
     <div class="sblk"><div class="srow"><b>Team turn-cap</b> ${sBadge('global','runtime')}</div>
       <div class="shelp">Pause a room for a check-in after this many messages, so a long autonomous run doesn't drift unattended. <b>0 disables</b> the pause.${tc.env!==''&&tc.env!=null?` Env default: <code>${esc(String(tc.env))}</code>.`:''}</div>
@@ -1203,17 +1250,8 @@ function settingsBody() {
       <span id="setNotifyMsg" class="muted" style="font-size:12px"></span></div>
     <div class="sblk"><div class="srow"><b>Dashboard port</b> ${sBadge('global','launch')}</div>
       <div class="shelp">Currently <code>${esc(String(dp.value))}</code>. Set <code>MRC_DASHBOARD_PORT</code> in your environment — applies next daemon restart.</div></div>`
-  if (hasProject) {
-    html += `<div class="sgrouph" style="margin-top:16px">This project — <b style="color:var(--fg)">${esc(S.org)}</b></div>
-      <div class="sblk"><div class="srow"><b>Telegram</b> ${sBadge('project','runtime')}</div><span id="tgSection">${tgSectionHtml()}</span></div>
-      <div class="sblk"><div class="srow"><b>Outbound egress (--web)</b> ${sBadge('project','launch')}</div>
-        <div class="shelp">${esc(web.note||'')}</div></div>
-      <div class="sblk danger"><div class="srow"><b>Danger zone</b></div>
-        <div class="shelp">Forget this project from Mister Claude — stops its sessions and removes the tab. <b>Nothing on disk is deleted</b> (team.json + transcripts stay; re-add with <code>mrc team up</code>).</div>
-        <div class="row" style="margin-top:6px"><button class="btn danger tiny" onclick="deleteProject()">🗑 Delete project</button></div></div>`
-  } else {
-    html += `<div class="muted" style="margin-top:14px;font-size:12.5px">Open a project to see its settings.</div>`
-  }
+  // #61: the gear modal is GLOBAL-only now (turn-cap / notifications / port — always relevant). Per-project
+  // settings (Telegram / --web / Delete) moved to the project HOME pane, so no dead "open a project" section.
   return html
 }
 // Per-project Telegram pairing (#12), inside the modal. Trust-gate markup (Confirm/Reject a pending chat,
@@ -1270,13 +1308,13 @@ window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('
   const msg=$('#amMsg'); if(msg)msg.textContent='adding…'
   const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role,backend,territory})
   if(r&&r.ok){ S.addingTo=null; tick() } else { const m=$('#amMsg'); if(m)m.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
-window.selRoom = (id, openCu)=>{ if(!confirmLeaveBuilder())return; S.selRoom=id; S.selInbox=null; S.selMember=null; S.building=false; if(openCu)S.tab='catchups'; else S.tab='thread'; S.room=null; tick() }
+window.selRoom = (id, openCu)=>{ if(!confirmLeaveBuilder())return; S.selRoom=id; S.selInbox=null; S.selMember=null; S.selHome=false; S.building=false; if(openCu)S.tab='catchups'; else S.tab='thread'; S.room=null; tick() }
 window.openRoom = (id)=>{ selRoom(id) }
 // #47: open the @you CHANNEL. `i` is 'channel' (the nav row) or a numeric item id (an OS-notification
 // click) — a numeric id sets a one-shot jumpTarget so the channel scrolls to + highlights that item.
 // paintedKey=null forces renderDetail (the content sig may be unchanged, but we still need the jump).
-window.selInbox = (i)=>{ if(!confirmLeaveBuilder())return; S.selInbox = (i==='channel') ? 'channel' : i; S.jumpTarget = (typeof i==='number') ? i : null; S.selRoom=null; S.selMember=null; S.building=false; S.replyTo=null; paintedKey=null; paint() }
-window.selMember = (h)=>{ if(!confirmLeaveBuilder())return; S.selRoom=null; S.selInbox=null; S.building=false; S.selMember=h
+window.selInbox = (i)=>{ if(!confirmLeaveBuilder())return; S.selInbox = (i==='channel') ? 'channel' : i; S.jumpTarget = (typeof i==='number') ? i : null; S.selRoom=null; S.selMember=null; S.selHome=false; S.building=false; S.replyTo=null; paintedKey=null; paint() }
+window.selMember = (h)=>{ if(!confirmLeaveBuilder())return; S.selRoom=null; S.selInbox=null; S.selHome=false; S.building=false; S.selMember=h
   const m = memberByHandle(h)
   // #34/B: each member has its OWN ttyd, so selecting one just swaps the embedded iframe (via detailKey);
   // no server round-trip (the old /api/team-select → tmux select-window is gone).
@@ -1309,11 +1347,14 @@ window.reopenInbox = async (i)=>{ const r=await act('reopen',{i}); if(!r.ok)retu
 // Telegram pairing (#12): Confirm is the trust gate (on the localhost dashboard); Reject/Unpair too.
 // #46: these now live in the Settings modal, which is OFF the poll — so after the action, refresh the
 // data (await tick → fresh S.teams.telegram) and explicitly re-render the modal's live Telegram bits.
-window.tgConfirm = async (fromId)=>{ const r=await actJSON('/api/tg',{action:'tgconfirm',org:S.org,fromId:Number(fromId)}); if(!r.ok)return flashFail(r); S.flash=null; await tick(); if(S.settingsOpen)renderModal() }
-window.tgReject = async (fromId)=>{ const r=await actJSON('/api/tg',{action:'tgreject',org:S.org,fromId:Number(fromId)}); if(!r.ok)return flashFail(r); S.flash=null; await tick(); if(S.settingsOpen)renderModal() }
-window.tgUnpair = async ()=>{ if(!confirm('Unpair Telegram? The linked chat stops receiving questions until you re-link.'))return; const r=await actJSON('/api/tg',{action:'tgunpair',org:S.org}); if(!r.ok)return flashFail(r); S.flash=null; await tick(); if(S.settingsOpen)renderModal() }
+// #61: Telegram now lives in the project HOME — a deliberate Confirm/Reject/unpair re-renders the home
+// (a rebuild on a user action is fine; the #46 focus discipline is for the 1.5s POLL, handled in patchDetail).
+const _tgAfter = ()=>{ S.flash=null; tick().then(()=>{ if(S.selHome) renderProjectHome($('#detail')) }) }
+window.tgConfirm = async (fromId)=>{ const r=await actJSON('/api/tg',{action:'tgconfirm',org:S.org,fromId:Number(fromId)}); if(!r.ok)return flashFail(r); _tgAfter() }
+window.tgReject = async (fromId)=>{ const r=await actJSON('/api/tg',{action:'tgreject',org:S.org,fromId:Number(fromId)}); if(!r.ok)return flashFail(r); _tgAfter() }
+window.tgUnpair = async ()=>{ if(!confirm('Unpair Telegram? The linked chat stops receiving questions until you re-link.'))return; const r=await actJSON('/api/tg',{action:'tgunpair',org:S.org}); if(!r.ok)return flashFail(r); _tgAfter() }
 // Delete project (#13): forget it from the daemon + stop sessions; nothing on disk is deleted.
-window.deleteProject = async ()=>{ const org=S.org; if(!org||!confirm(`Delete "${org}" from Mister Claude? Its sessions stop and the tab is removed. Nothing on disk is deleted — your transcripts and team.json stay, so you can re-add it any time with \`mrc team up\`.`))return; const r=await actJSON('/api/team-delete',{org}); if(!r.ok)return flashFail(r); S.flash=null; S.org=null; S.selRoom=S.selInbox=S.selMember=null; if (S.building && S.builder?.org === org) S.building=false; closeSettings(); tick() }   // #55-2: only drop the build if it's the org being deleted — deleting project X must not discard an unrelated in-progress build of Y (the builder pane runs off S.builder, independent of S.org)
+window.deleteProject = async ()=>{ const org=S.org; if(!org||!confirm(`Delete "${org}" from Mister Claude? Its sessions stop and the tab is removed. Nothing on disk is deleted — your transcripts and team.json stay, so you can re-add it any time with \`mrc team up\`.`))return; const r=await actJSON('/api/team-delete',{org}); if(!r.ok)return flashFail(r); S.flash=null; S.org=null; S.selRoom=S.selInbox=S.selMember=null; S.selHome=false; if (S.building && S.builder?.org === org) S.building=false; tick() }   // #55-2: only drop the build if it's the org being deleted — deleting project X must not discard an unrelated in-progress build of Y (the builder pane runs off S.builder, independent of S.org)
 window.toggleDismissed = ()=>{ S.showDismissed=!S.showDismissed; paint() }
 
 // ---- Browser notifications + chime for new @you messages (Notification API, behind the explicit 🔔 toggle) ----

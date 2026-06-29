@@ -9,3 +9,4 @@ Features awaiting @user verification. Activation: 🔄 reload dashboard · ♻�
 - [ ] **Never-blank terminal** (#4a) 🔄 — placeholder + "live from here, earlier output not replayed" banner instead of a blank box
 - [ ] **Builder header + ✕ Cancel + discard-guard** (#55) 🔄 — "New project"/"Editing {org}" header; ✕ Cancel returns to place; confirms before discarding unsaved edits
 - [ ] **Send image to Telegram** (#56) 🐳 — a live member's `send_photo` pushes an image from its own territory to your linked Telegram chat (needs a confirmed chat; image-only, own-territory-only, you don't choose the recipient)
+- [ ] **Project home panel** (#61) 🔄 — entering a project lands on a HOME overview (members/rooms/status) + its Telegram/--web/Delete settings; the ⚙ gear is now global-only; clicking the active tab reopens home
