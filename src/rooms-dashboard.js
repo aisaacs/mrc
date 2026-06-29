@@ -5,7 +5,7 @@
 // into a chat; the only writes are the room controls and marking a catch-up reviewed.
 import http from 'node:http'
 import net from 'node:net'
-import { randomBytes } from 'node:crypto'
+import { randomBytes, createHash } from 'node:crypto'
 import { readFileSync, existsSync, statSync, writeFileSync, mkdirSync, chmodSync, realpathSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, dirname, extname } from 'node:path'
@@ -112,6 +112,20 @@ async function buildState() {
 }
 
 function sendJSON(res, code, obj) { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)) }
+// #69-A: ETag + conditional-304 for the heavy POLL reads. The dashboard re-fetches /api/teams (~277 KB, mostly
+// the static roster/topology + the accumulated @user inbox) and /api/state every ~1.5s, but across ticks the
+// payload is usually byte-identical (only context/rate-limit/turn/online change, and only when something happens).
+// `Cache-Control: no-cache` makes the browser REVALIDATE each fetch (send If-None-Match) rather than skip the
+// cache; an unchanged body → 304 with NO body → the transfer is saved (~all of it when idle) while fetch still
+// resolves with the cached JSON. Read-only, same bytes the GET already serves — no new surface. (The daemon still
+// recomputes the body to hash it; CPU isn't the bottleneck, the repeated 277 KB transfer is.)
+export function sendJSONCached(req, res, obj) {
+  const body = JSON.stringify(obj)
+  const etag = '"' + createHash('sha1').update(body).digest('base64') + '"'
+  if (req.headers['if-none-match'] === etag) { res.writeHead(304, { etag, 'cache-control': 'no-cache' }); return res.end() }
+  res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-cache', etag })
+  res.end(body)
+}
 
 // #56: ASSET_CONTENT_TYPES + safeAssetPath now live in ./safe-path.js (the single audited implementation,
 // shared with the room daemon's send_photo). Imported above for internal use; re-exported here so any
@@ -333,11 +347,11 @@ async function handle(req, res) {
       const r = meta?.controlPort ? await ctrl(meta.controlPort, 'sessions') : { ok: false }
       return sendJSON(res, 200, r?.ok ? r : { ok: false, sessions: [] })
     }
-    if (req.method === 'GET' && url.pathname === '/api/state') return sendJSON(res, 200, await buildState())
+    if (req.method === 'GET' && url.pathname === '/api/state') return sendJSONCached(req, res, await buildState())   // #69-A
     if (req.method === 'GET' && url.pathname === '/api/teams') {
       const meta = daemonMeta()
       const t = meta?.controlPort ? await ctrl(meta.controlPort, 'team') : { ok: false }
-      return sendJSON(res, 200, t?.ok ? t : { ok: false, members: [], rooms: [], userInbox: [] })
+      return sendJSONCached(req, res, t?.ok ? t : { ok: false, members: [], rooms: [], userInbox: [] })   // #69-A: the 277 KB poll read → ETag/304
     }
     if (req.method === 'GET' && url.pathname === '/api/room') {
       const id = url.searchParams.get('id')

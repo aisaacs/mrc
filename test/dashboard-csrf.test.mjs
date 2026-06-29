@@ -6,7 +6,7 @@ import http from 'node:http'
 import os from 'node:os'
 import fs from 'node:fs'
 import { join } from 'node:path'
-import { startDashboard, rejectScriptTokens } from '../src/rooms-dashboard.js'
+import { startDashboard, rejectScriptTokens, sendJSONCached } from '../src/rooms-dashboard.js'
 import { safeAssetPath, ASSET_CONTENT_TYPES, resolveTerritoryImage } from '../src/safe-path.js'   // #56: canonical shared impl (re-exported by rooms-dashboard.js too)
 
 // A throwaway HOME so listRooms/etc. never touch the real store.
@@ -191,4 +191,49 @@ test('#63-A rejectScriptTokens: throws on script-tag/comment-open tokens; the re
   // THE no-op-today property: the real shipped module contains none of the three tokens → passes.
   const realMod = fs.readFileSync(new URL('../src/safe-md.js', import.meta.url), 'utf8')
   assert.doesNotThrow(() => rejectScriptTokens(realMod), 'the shipped safe-md.js must inject cleanly')
+})
+
+// #69-A: ETag + conditional-304 for the heavy poll reads (/api/teams ~277 KB, /api/state) — an unchanged
+// payload across ticks returns 304 (no body), saving the repeated transfer; a changed payload returns 200.
+test('#69-A: sendJSONCached ETags a poll read and 304s it when unchanged', () => {
+  const mk = (headers = {}) => ({ headers, _code: 0, _head: null, _body: '',
+    writeHead(code, h) { this._code = code; this._head = h; return this }, end(b) { this._body = b || '' } })
+  const obj = { ok: true, members: [{ handle: 'a/claude' }], userInbox: [{ id: 1, text: 'hi' }] }
+
+  // first GET (no If-None-Match) → 200 + a quoted ETag + Cache-Control: no-cache (revalidate) + the body
+  const r1 = mk(); sendJSONCached({ headers: {} }, r1, obj)
+  assert.equal(r1._code, 200)
+  const etag = r1._head.etag
+  assert.match(etag, /^".+"$/, 'a quoted ETag is set')
+  assert.equal(r1._head['cache-control'], 'no-cache', 'no-cache → the browser revalidates each fetch')
+  assert.ok(r1._body.length > 0, '200 carries the body')
+
+  // second GET with If-None-Match = the ETag → 304 with NO body (the saved transfer)
+  const r2 = mk(); sendJSONCached({ headers: { 'if-none-match': etag } }, r2, obj)
+  assert.equal(r2._code, 304)
+  assert.equal(r2._body, '', '304 carries no body')
+  assert.equal(r2._head.etag, etag, '304 echoes the ETag')
+
+  // a CHANGED payload (a member came online) → a different ETag → 200 + body, not a stale 304
+  const r3 = mk(); sendJSONCached({ headers: { 'if-none-match': etag } }, r3, { ...obj, members: [{ handle: 'a/claude', online: true }] })
+  assert.equal(r3._code, 200, 'a changed payload is not 304')
+  assert.notEqual(r3._head.etag, etag, 'the ETag changed with the body')
+})
+
+// #69-A integration: the real /api/state endpoint emits an ETag and 304s a conditional re-request (the poll path).
+test('#69-A: /api/state emits an ETag and 304s an If-None-Match re-poll', async () => {
+  const { server, port } = await startDashboard({ port: 18940 })
+  try {
+    const first = await request(port, { path: '/api/state', headers: { host: `127.0.0.1:${port}` } })
+    assert.equal(first.status, 200)
+    const etag = first.headers['etag']
+    assert.match(etag || '', /^".+"$/, '/api/state returns a quoted ETag')
+    assert.equal(first.headers['cache-control'], 'no-cache', 'no-cache so the browser revalidates')
+    // re-poll with the ETag → 304 no-body (the repeated transfer is saved)
+    const second = await request(port, { path: '/api/state', headers: { host: `127.0.0.1:${port}`, 'if-none-match': etag } })
+    assert.equal(second.status, 304, 'unchanged state → 304')
+    assert.equal(second.body, '', '304 carries no body')
+  } finally {
+    server.close()
+  }
 })
