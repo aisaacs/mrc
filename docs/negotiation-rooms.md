@@ -106,6 +106,15 @@ the channel connects to `host.docker.internal:<port>` over the firewall and regi
   orphaned daemon still gets reaped) — **unless a dashboard is open**, which counts as activity and
   keeps it up. Survives `docker rmi` (it's a host process, not a container). The next session (or
   `mrc rooms dashboard`) reboots it in <1 s.
+- **Dead-room GC (#35).** A periodic sweep drops a **dead** pairing from the in-memory map (so dormant
+  and spent-adversary rooms don't pile up in `mrc rooms status` or the dashboard's live overlay): a room
+  with **no member online**, or an `adversary-<sha>` room whose **adversary has left** (red-team over),
+  pruned after `roomTtlMs` (default 5 min — longer than the 90 s adversary boot window so a booting
+  Pierre is never swept; a consent/boot handshake in flight is also spared). It removes **only the
+  live-state** — the on-disk dir (`thread.log` + `consensus.md` + brief) is **kept** (the dashboard
+  still lists it from disk, and the human prunes history there), and the pairing **re-creates itself**
+  on resume (`ensurePairing` rebuilds from the deterministic id / room name and reuses the dir). The
+  separate failed-boot reaper still removes never-connected `adversary-<sha>` *dirs* (nothing to lose).
 - **Hosts the dashboard.** Serves the `mrc rooms dashboard` web UI (Decision 13) on its own
   `127.0.0.1` port (recorded in `room-daemon.json`), so the dashboard lives as long as the daemon
   and needs no foreground tab.

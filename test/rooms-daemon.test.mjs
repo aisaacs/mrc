@@ -16,7 +16,7 @@ const here = dirname(fileURLToPath(import.meta.url))
 process.env.HOME = mkdtempSync(join(tmpdir(), 'mrc-roomtest-'))
 const { startRoomDaemon } = await import(join(here, '../src/proxies/room-daemon.js'))
 const { findFreePort } = await import(join(here, '../src/ports.js'))
-const { savePairings, removeRoomDir, ensureRoom, readCatchups } = await import(join(here, '../src/rooms.js'))
+const { savePairings, removeRoomDir, ensureRoom, readCatchups, roomsRoot } = await import(join(here, '../src/rooms.js'))
 const { saveSessionRecord } = await import(join(here, '../src/session-record.js'))
 
 process.env.MRC_SUMMON_OPEN_CMD = 'true'   // no-op opener; we simulate the adversary booting by connecting a client
@@ -585,6 +585,33 @@ async function main() {
   pane = readCatchups(r29b).slice(-1)[0]
   check('29c leave finalizes the pending pane (not stuck pending)', pane.status === 'ready', JSON.stringify(pane))
   d29.stop(); [CA, CB, CC, CD].forEach((c) => { try { c.close() } catch {} })
+
+  // 30 — #35: GC dead pairings (memberless OR adversary-gone) from the in-memory map; on-disk history kept.
+  // Short roomTtlMs so the periodic sweep fires fast; huge stall/idle/catchup so nothing else interferes.
+  console.log('\n[30] #35 dead-room GC (history preserved, resume re-creates)')
+  const p30 = await findFreePort(port + 500), c30 = await findFreePort(p30 + 1)
+  const d30 = startRoomDaemon({ port: p30, controlPort: c30, notifyPort: 0, version: 't30', idleMs: 9e8, tickMs: 100, stallMs: 9e8, catchupTimeoutMs: 9e8, roomTtlMs: 200 })
+  await sleep(120)
+  // (a) memberless regular room → GC'd; its history dir is KEPT
+  const GA = mkClient(p30, 'GA'), GB = mkClient(p30, 'GB'); GA.register(); GB.register(); await sleep(100)
+  GA.send({ type: 'ask', question: 'q', peer: 'GB' }); await sleep(120)
+  const rGAB = roomBy(await status(c30), 'GA', 'GB').roomId
+  GA.close(); GB.close(); await sleep(500)   // both gone, > roomTtlMs, several ticks
+  let s30 = await status(c30)
+  check('30a memberless regular room GC\'d from the live pairings', !roomBy(s30, 'GA', 'GB'), JSON.stringify((s30.pairings || []).map((p) => p.roomId)))
+  check('30b ...but its history dir is KEPT on disk (re-creates on resume)', existsSync(join(roomsRoot(), rGAB)))
+  // (b) adversary-<sha> room whose adversary left → GC'd even though the summoner stays online
+  const GS = mkClient(p30, 'GS'); GS.register(); await sleep(60)
+  const GP = mkClient(p30, 'GP'); GP.register({ summonedBy: 'GS', room: 'adversary-gctest' }); await sleep(150)   // onAdversaryUp relabels GP → "Pierre"
+  check('30c adversary room formed (GS <-> Pierre)', !!roomBy(await status(c30), 'GS', 'Pierre'))
+  GP.close(); await sleep(500)   // Pierre gone; GS still online
+  s30 = await status(c30)
+  check('30d adversary room GC\'d though summoner GS is still online (adversary-gone)', !roomBy(s30, 'GS', 'Pierre') && (s30.sessions || []).some((x) => x.id === 'GS'), JSON.stringify((s30.pairings || []).map((p) => p.roomId)))
+  // (c) a LIVE room (both online) is NOT GC'd, even past roomTtlMs
+  const GC2 = mkClient(p30, 'GC2'), GD2 = mkClient(p30, 'GD2'); GC2.register(); GD2.register(); await sleep(100)
+  GC2.send({ type: 'ask', question: 'q', peer: 'GD2' }); await sleep(500)
+  check('30e a live room (both online) is NOT GC\'d', !!roomBy(await status(c30), 'GC2', 'GD2'))
+  d30.stop(); [GA, GB, GS, GP, GC2, GD2].forEach((c) => { try { c.close() } catch {} })
 
   console.log(`\n${'='.repeat(40)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(40)}`)
   d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3, I1, I2, I3, I4, I5, L1, L2, L3, L4, m1, m2, m3, s1, s2, advX, W1, W2, wadv, Y1, Y2, yadv, ynorm, yunk, IMP0, VIC, ATT, VW, VIC2, NM, Adv49, Sum49, Str49, AW1, AW2].forEach((c) => { try { c.close() } catch {} })

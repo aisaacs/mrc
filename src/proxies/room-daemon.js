@@ -32,6 +32,7 @@ const safeName = (s) => deTrust(norm(s)).slice(0, 80)
 const sanitizePeerText = (s) => deTrust(String(s))
 
 const CATCHUP_TIMEOUT_MS = 120_000   // finalize a catch-up pane even if a side never files its handoff
+const ROOM_TTL_MS = 300_000   // #35: GC a DEAD pairing from the in-memory map after this much inactivity (history on disk is kept; the pairing re-creates on resume). Longer than the 90s adversary-boot window so a booting Pierre is never swept.
 const catchupPrompt = (reason) =>
   `[Room handoff requested — system message, not a peer] Your human stepped away and the room just ` +
   `paused (${reason}). Write a SHORT handoff for them and submit it via the submit_handoff tool. ` +
@@ -64,7 +65,7 @@ const adversaryBriefFile = (brief) => `${ADVERSARY_PROMPT}\n\n---\n\n## The desi
 // apostrophe-free so it survives shell + AppleScript quoting; the full persona lives in the brief file.
 const adversaryPrime = (roomId) => `You are Pierre, the faultfinding older step-brother, just summoned into a room to red-team a design. Your full character and the design under review are in /rooms/${roomId}/adversary-brief.md. Read that file FIRST, in full. Then open the volley: send your sharpest grounded objections to the peer using the reply tool, and keep replying to keep it going. Stay in character and stay adversarial.`
 
-export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS }) {
+export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS, roomTtlMs = ROOM_TTL_MS }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
   let roomSeq = 0              // monotonic room counter — the NEWEST room a session is in wins its single "live" slot
@@ -962,8 +963,35 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     }
   }
 
+  // #35: GC DEAD pairings from the in-memory map so dormant/adversary rooms don't pile up in
+  // `mrc rooms status`, the dashboard's live overlay, and the restart dump. Drops ONLY the live-state —
+  // the on-disk dir (thread.log + consensus + brief) is KEPT (history; the dashboard still lists it from
+  // disk, and the human prunes history there), and the pairing RE-CREATES itself on resume: ensurePairing
+  // rebuilds from the deterministic id (regular room) or the room name (adversary-<sha>) and reuses the
+  // dir. "Dead" = no member online, OR an adversary-<sha> room whose adversary member(s) have all gone
+  // (red-team over; a fresh summon / a resumed Pierre both re-create it). Pruned only after roomTtlMs of
+  // no activity, so a reconnect blip or a booting Pierre (≤90s) is never swept; a consent/boot handshake
+  // in flight is also spared.
+  function pruneDeadRooms() {
+    const now = Date.now()
+    let pruned = false
+    for (const p of [...pairings.values()]) {
+      if (p.pendingInvite || p.incomingAdversary) continue   // a consent reservation / adversary boot is mid-flight — let it resolve or time out
+      const advRoom = p.roomId.startsWith('adversary-')
+      const advGone = advRoom && p.members.some((m) => adversaries.has(m)) && !p.members.some((m) => adversaries.has(m) && online(m))
+      const dead = !p.members.some(online) || advGone
+      if (!dead || now - (p.lastActivityAt || 0) <= roomTtlMs) continue
+      pairings.delete(p.roomId)
+      for (const m of p.members) { const s = sessions.get(m); if (s && s.activeRoom === p.roomId) s.activeRoom = null }   // clear a dangling active-room pointer
+      appendThread(p.roomId, `${ts()} [room GC'd from the daemon — dead ${Math.round((now - (p.lastActivityAt || now)) / 60000)}m (history kept on disk; re-opens on the next ask/summon/resume)]`)
+      pruned = true
+    }
+    if (pruned) recomputeSidechannelBrakes()   // a pruned sidechannel room may unblock others
+  }
+
   const stallTimer = setInterval(() => {
     reapFailedSummonDirs()
+    pruneDeadRooms()   // #35: sweep dead pairings (history kept on disk; re-creates on resume)
     for (const p of pairings.values()) {
       if (p.state === 'Running' && p.members.filter((id) => sessions.has(id)).length >= 2 && Date.now() - p.lastActivityAt > stallMs) {
         // Soft, self-healing pause: flag a quiet room for the human, but the next real message
