@@ -16,6 +16,33 @@
 // full from identity) so that layer can decide.
 
 const api = (token, method) => `https://api.telegram.org/bot${encodeURIComponent(token)}/${method}`
+// #22: the retry backoff sleep — UNREF'd so a pending retry never keeps the host process alive (matches the
+// bridge's unref'd schedule). Injectable in the send fns so tests don't actually wait.
+const defaultSleep = (ms) => new Promise((r) => { const t = setTimeout(r, ms); t.unref?.() })
+
+// #22: Telegram caps a single message at 4096 chars (UTF-16 code units). A longer @user push used to FAIL the
+// whole send ("message is too long"); truncate it to fit with a pointer instead, so the notification still
+// ARRIVES (the full text is in the dashboard). One message, not a noisy multi-part chunk — this is a
+// notification bridge, the dashboard is the system of record.
+export const TG_TEXT_MAX = 4096
+const TG_TRUNC_MARK = '\n\n… (truncated — full text in the dashboard)'
+export function clampTgText(text) {
+  const s = String(text ?? '')
+  if (s.length <= TG_TEXT_MAX) return s
+  return s.slice(0, TG_TEXT_MAX - TG_TRUNC_MARK.length) + TG_TRUNC_MARK
+}
+// #22: classify a send/edit failure so the CALLER surfaces an ACCURATE message instead of a blanket "re-link":
+//  • fatal     → an AUTH failure (401 bad token) — re-pairing is the right fix
+//  • transient → network / 5xx / 429 — RETRY; do NOT tell the user to re-pair (it's not their pairing)
+//  • retryAfter → Telegram's 429 backoff window (seconds), so the caller waits the amount Telegram asked
+// Anything else carries Telegram's own `description` verbatim (e.g. "chat not found"), not a generic re-link.
+function classifySend(res, j) {
+  const error = j?.description || 'send failed'
+  if (res?.status === 401 || res?.status === 403) return { fatal: true, kind: 'auth', error: j?.description || (res.status === 401 ? 'unauthorized: bad bot token' : 'forbidden: the bot was blocked or removed from the chat') }
+  if (res?.status === 429) return { transient: true, kind: 'rate-limit', retryAfter: Number(j?.parameters?.retry_after) || 1, error: j?.description || 'rate limited (429)' }
+  if (res && res.status >= 500) return { transient: true, kind: 'transient', error: j?.description || `telegram ${res.status}` }
+  return { kind: 'other', error }   // e.g. 400 "chat not found" / a formatting 400 (#58 falls back to plain) — accurate, NOT an auth/re-link case
+}
 
 // One getUpdates round. Returns { offset, messages, error } — `offset` is the next offset to poll
 // with (advanced past every update seen this round, processed or skipped, so we never reread them),
@@ -27,6 +54,9 @@ export async function pollOnce({ token, offset = 0, fetchFn = globalThis.fetch, 
   } catch (e) { return { offset, messages: [], error: `network: ${e?.message || e}` } }
   if (res.status === 409) return { offset, messages: [], error: 'conflict: another getUpdates is running for this token (one bot per org)', conflict: true }
   if (res.status === 401) return { offset, messages: [], error: 'unauthorized: bad bot token', fatal: true }
+  // #22: honor Telegram's 429 backoff on the poll too — surface retry_after so the bridge waits the asked amount
+  // (this is also the proper fix for the old 409-storm class: back off, don't hot-loop).
+  if (res.status === 429) { let p = {}; try { p = await res.json() } catch {} return { offset, messages: [], error: 'rate limited (429)', retryAfter: Number(p?.parameters?.retry_after) || 1, transient: true } }
   let j
   try { j = await res.json() } catch { return { offset, messages: [], error: 'bad telegram response' } }
   if (!j || !j.ok) return { offset, messages: [], error: `telegram: ${j?.description || 'error'}` }
@@ -66,32 +96,72 @@ export function shapeMessage(updateId, m) {
 // `/start` (optionally "/start payload") — the only command the bot honors while unpaired.
 export function isStart(text) { return /^\/start(?:\s|@|$)/i.test(String(text || '').trim()) }
 
-export async function sendMessage({ token, chatId, text, replyMarkup, fetchFn = globalThis.fetch } = {}) {
-  let res
-  try {
-    res = await fetchFn(api(token, 'sendMessage'), {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, text: String(text ?? ''), ...(replyMarkup ? { reply_markup: replyMarkup } : {}) }),
-    })
-  } catch (e) { return { ok: false, error: `network: ${e?.message || e}` } }
-  let j
-  try { j = await res.json() } catch { return { ok: false, error: 'bad telegram response' } }
-  return j?.ok ? { ok: true, messageId: j.result?.message_id } : { ok: false, error: j?.description || 'send failed' }
+// #22: split a >4096 body into ≤4096 chunks on a natural boundary (last newline, else last space, else hard
+// cut) so a long @you item is delivered in full across sequential messages rather than failing or truncating.
+export function splitTgText(text, max = TG_TEXT_MAX) {
+  const s = String(text ?? '')
+  if (s.length <= max) return [s]
+  const out = []
+  let rest = s
+  while (rest.length > max) {
+    let cut = rest.lastIndexOf('\n', max)
+    if (cut < max * 0.6) cut = rest.lastIndexOf(' ', max)   // don't honor a too-early newline; prefer a late space
+    if (cut < max * 0.6) cut = max                          // no good boundary → hard cut
+    out.push(rest.slice(0, cut))
+    rest = rest.slice(cut).replace(/^\s+/, '')
+  }
+  if (rest.length) out.push(rest)
+  return out
+}
+
+// One sendMessage attempt-with-retry: honors a 429 `retry_after` (waits the amount Telegram asked, BOUNDED
+// retries) and clamps text to the 4096 limit as a safety floor. Returns the classified result (#22) so the
+// caller surfaces an accurate message (transient/retryAfter/fatal) rather than a blanket "re-link".
+export async function sendMessage({ token, chatId, text, replyMarkup, fetchFn = globalThis.fetch, maxRetries = 2, sleep = defaultSleep } = {}) {
+  const body = JSON.stringify({ chat_id: chatId, text: clampTgText(text), ...(replyMarkup ? { reply_markup: replyMarkup } : {}) })
+  for (let attempt = 0; ; attempt++) {
+    let res
+    try { res = await fetchFn(api(token, 'sendMessage'), { method: 'POST', headers: { 'content-type': 'application/json' }, body }) }
+    catch (e) { if (attempt < maxRetries) { await sleep(1000); continue } return { ok: false, transient: true, kind: 'transient', error: `network: ${e?.message || e}` } }   // network blip → bounded retry
+    let j
+    try { j = await res.json() } catch { return { ok: false, transient: true, kind: 'transient', error: 'bad telegram response' } }
+    if (j?.ok) return { ok: true, messageId: j.result?.message_id }
+    const c = classifySend(res, j)
+    // retry the TRANSIENT classes (429 → wait Telegram's retry_after; 5xx → short backoff), bounded; auth/other don't retry
+    if ((c.retryAfter || c.transient) && attempt < maxRetries) { await sleep((c.retryAfter ? Math.min(c.retryAfter, 60) : 1) * 1000); continue }
+    return { ok: false, ...c }
+  }
+}
+
+// #22: send a long @you body in full as ≤4096 chunks, sequentially. Returns the FIRST message's id (the one the
+// caller pins for the H4 resolve-edit; continuations are extra context). Stops + reports on the first failure so
+// nothing's silently dropped, and the classified error (transient/fatal/retryAfter) rides up.
+export async function sendMessageChunked({ token, chatId, text, replyMarkup, fetchFn = globalThis.fetch, maxRetries = 2, sleep } = {}) {
+  const parts = splitTgText(text)
+  let firstId = null
+  for (let i = 0; i < parts.length; i++) {
+    const r = await sendMessage({ token, chatId, text: parts[i], replyMarkup: i === 0 ? replyMarkup : undefined, fetchFn, maxRetries, sleep })
+    if (!r.ok) return { ok: false, ...r, messageId: firstId, sent: i }   // partial: report what failed, keep the first id for an edit
+    if (i === 0) firstId = r.messageId
+  }
+  return { ok: true, messageId: firstId, parts: parts.length }
 }
 
 // Edit a previously-pushed message in place (H4 cross-surface sync: when a question is answered/
 // dismissed from any surface, its Telegram message updates to reflect the resolution).
-export async function editMessageText({ token, chatId, messageId, text, fetchFn = globalThis.fetch } = {}) {
-  let res
-  try {
-    res = await fetchFn(api(token, 'editMessageText'), {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ chat_id: chatId, message_id: messageId, text: String(text ?? '') }),
-    })
-  } catch (e) { return { ok: false, error: `network: ${e?.message || e}` } }
-  let j
-  try { j = await res.json() } catch { return { ok: false, error: 'bad telegram response' } }
-  return j?.ok ? { ok: true } : { ok: false, error: j?.description || 'edit failed' }
+export async function editMessageText({ token, chatId, messageId, text, fetchFn = globalThis.fetch, maxRetries = 2, sleep = defaultSleep } = {}) {
+  const body = JSON.stringify({ chat_id: chatId, message_id: messageId, text: clampTgText(text) })
+  for (let attempt = 0; ; attempt++) {
+    let res
+    try { res = await fetchFn(api(token, 'editMessageText'), { method: 'POST', headers: { 'content-type': 'application/json' }, body }) }
+    catch (e) { return { ok: false, transient: true, error: `network: ${e?.message || e}` } }
+    let j
+    try { j = await res.json() } catch { return { ok: false, transient: true, error: 'bad telegram response' } }
+    if (j?.ok) return { ok: true }
+    const c = classifySend(res, j)
+    if (c.retryAfter && attempt < maxRetries) { await sleep(Math.min(c.retryAfter, 60) * 1000); continue }
+    return { ok: false, ...c }
+  }
 }
 
 // #56: send an image to a chat as multipart/form-data. Telegram caps sendPhoto at 10MB; a larger image
@@ -118,8 +188,7 @@ export async function sendPhoto({ token, chatId, photo, filename = 'image', capt
   let j
   try { j = await res.json() } catch { return { ok: false, error: 'bad telegram response' } }
   if (j?.ok) return { ok: true, messageId: j.result?.message_id, asDocument: asDoc }
-  const retryAfter = (res?.status === 429) ? (Number(j?.parameters?.retry_after) || 0) : 0
-  return { ok: false, error: j?.description || 'photo send failed', ...(retryAfter ? { retryAfter } : {}) }
+  return { ok: false, ...classifySend(res, j) }   // #22: 401→fatal, 429→retryAfter+transient, 5xx→transient, else the verbatim description
 }
 
 // Drives the long-poll loop for ONE org's bot — the per-org lifecycle. Everything external is
@@ -138,7 +207,7 @@ export function createTelegramBridge({ token, org, fetchFn = globalThis.fetch, g
   async function tickOnce() {
     const offset = (await getOffset()) || 0
     const r = await pollOnce({ token, offset, fetchFn, timeout: longPoll })
-    if (r.error) { log(`[tg ${org}] ${r.error}`); return r.fatal ? fatalMs : (r.conflict ? 5000 : 1000) }
+    if (r.error) { log(`[tg ${org}] ${r.error}`); return r.retryAfter ? Math.min(r.retryAfter, 60) * 1000 : r.fatal ? fatalMs : r.conflict ? 5000 : 1000 }   // #22: back off by Telegram's retry_after on 429
     if (r.messages.length) {
       try { await onMessages(r.messages) }
       catch (e) { log(`[tg ${org}] handoff failed (will re-deliver): ${e?.message || e}`); return 1000 }   // do NOT advance

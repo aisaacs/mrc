@@ -1506,6 +1506,19 @@ function settingsBody() {
   // settings (Telegram / --web / Delete) moved to the project HOME pane, so no dead "open a project" section.
   return html
 }
+// #22: a push failure surfaces by KIND — re-link ONLY on an auth failure (the bot token / bot-blocked); a
+// rate-limit or transient hiccup is retrying (no re-pair); anything else shows Telegram's accurate cause. The
+// generic "re-link if stale" used to fire on every failure (a 429 or oversize) and mislead @user into re-pairing.
+// Accepts the new classified object OR a legacy string. The `error` text is esc()'d (Telegram-supplied).
+function tgPushErrHtml(e) {
+  const o = (typeof e === 'string') ? { error: e, kind: 'other' } : (e || {})
+  const msg = esc(String(o.error || 'error'))
+  const amber = 'color:var(--warning);font-size:11px;margin-top:4px'
+  if (o.kind === 'auth') return `<div class="bad" style="font-size:11px;margin-top:4px">⚠ Telegram delivery failed (bot auth): ${msg}. Re-link the bot below.</div>`
+  if (o.kind === 'rate-limit') return `<div style="${amber}">⏳ Telegram rate-limited: ${msg}. Retrying automatically — no action needed.</div>`
+  if (o.kind === 'transient') return `<div style="${amber}">⚠ Telegram delivery hiccup (transient): ${msg}. Retrying.</div>`
+  return `<div class="bad" style="font-size:11px;margin-top:4px">⚠ Telegram delivery failed: ${msg}.</div>`   // accurate cause (e.g. "chat not found"), no misleading re-link
+}
 // Per-project Telegram pairing (#12), inside the modal. Trust-gate markup (Confirm/Reject a pending chat,
 // the linked line + Unpair); every Telegram-supplied field is esc()'d (an unauthorized /start lands an
 // attacker-controlled name here). Handlers (tgConfirm/Reject/Unpair) are CSRF-guarded via actJSON→/api/tg.
@@ -1528,7 +1541,7 @@ function tgSectionHtml() {
     const p = tg.pinned
     const envChip = p.prePinned ? ` <span title="pinned via this repo's .env (MRC_TELEGRAM_CHAT_ID)" style="opacity:.7;font-size:10px;border:1px solid var(--line);border-radius:4px;padding:1px 4px">.env</span>` : ''
     return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;margin-top:5px"><span aria-hidden="true">📱</span><span class="muted">linked to</span><b style="font-weight:600">${tgName(p)}</b>${envChip}<a href="#" style="margin-left:auto;color:var(--link)" onclick="tgUnpair();return false">unpair</a></div>`
-      + (tg.lastPushError ? `<div class="bad" style="font-size:11px;margin-top:4px">⚠ last push failed: ${esc(tg.lastPushError)} — re-link if the chat is stale.</div>` : '')
+      + (tg.lastPushError ? tgPushErrHtml(tg.lastPushError) : '')
   }
   return `<div class="shelp" style="margin-top:5px">📱 DM the bot <code>/start</code>, then Confirm here.</div>`
 }

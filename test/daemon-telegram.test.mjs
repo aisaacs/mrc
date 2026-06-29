@@ -288,7 +288,10 @@ test('daemon telegram: a failed outbound push is NOT silent — surfaced in the 
 
   const tgv = (await controlCall(controlPort, { action: 'team' })).telegram.shop
   assert.ok(tgv.pinned, 'org is linked (inbound side is fine)')
-  assert.match(tgv.lastPushError, /chat not found/, 'the outbound failure is SURFACED in the dashboard tgView, not swallowed')
+  // #22: lastPushError is now a CLASSIFIED object {error, kind} (so the dashboard surfaces re-link only on auth);
+  // a "chat not found" 400 is kind:'other' (accurate cause, NOT a misleading re-link), still surfaced not swallowed.
+  assert.match(tgv.lastPushError.error, /chat not found/, 'the outbound failure is SURFACED in the dashboard tgView, not swallowed')
+  assert.equal(tgv.lastPushError.kind, 'other', 'a 400 chat-not-found classifies as other (not an auth/re-link failure)')
   sock.destroy(); daemon.stop()
 })
 

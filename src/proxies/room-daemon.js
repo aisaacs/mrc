@@ -17,7 +17,7 @@ import { ensureRoom, appendThread, appendTranscript, writeConsensus, readCatchup
 import { createRoomEngine } from '../teams/room-engine.js'
 import { createWorkerRunner, workerLogPath, parseWorkerLog } from '../teams/worker-runner.js'
 import { memberSessionId } from '../teams/session-id.js'
-import { createTelegramBridge, sendMessage as tgSend, editMessageText as tgEdit, sendPhoto as tgSendPhoto } from '../teams/telegram.js'
+import { createTelegramBridge, sendMessage as tgSend, sendMessageChunked as tgSendChunked, editMessageText as tgEdit, sendPhoto as tgSendPhoto } from '../teams/telegram.js'
 import { freshTgState, classifyInbound, addPending, confirmPending, rejectPending, unpair as tgUnpair, prePin, tgView, isDuplicateUpdate, markUpdateProcessed } from '../teams/telegram-auth.js'
 import { defangTrustMarkers } from '../teams/trust.js'
 import { resolveTerritoryImage } from '../safe-path.js'   // #56: shared dual-containment (repo + territory) image guard
@@ -337,9 +337,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
     if (kind === 'new' && s) daemonLog(`[tg ${item.org}] ${item.type || 'message'} #${item.id}: ${s.pinned ? `pushing → chat ${s.pinned.chatId}` : 'NOT pushed — bot not linked (Confirm the pairing in the dashboard)'}`)
     if (!s || !s.pinned) return
     if (kind === 'new') {
-      const r = await tgSend({ token: s.token, chatId: s.pinned.chatId, text: tgNewText(item), fetchFn: tgFetch })
+      const r = await tgSendChunked({ token: s.token, chatId: s.pinned.chatId, text: tgNewText(item), fetchFn: tgFetch })   // #22: chunk a >4096 body so nothing's lost; bounded 429/transient retry inside
       if (r.ok && r.messageId != null) { tgPushed.set(pushKey(item.org, item.id), { chatId: s.pinned.chatId, messageId: r.messageId }); s.lastPushError = null }
-      else { s.lastPushError = r.error || 'no message id'; daemonLog(`[tg ${item.org}] push FAILED for inbox #${item.id}: ${s.lastPushError}`) }   // never silent — surfaces a stale chat_id / 400 / too-long, AND in the dashboard (tgView)
+      else { s.lastPushError = { error: r.error || 'no message id', kind: r.kind || 'other', retryAfter: r.retryAfter || null, at: Date.now() }; daemonLog(`[tg ${item.org}] push FAILED for inbox #${item.id}: ${s.lastPushError.error} (${s.lastPushError.kind})`) }   // #22: classified so the dashboard surfaces an ACCURATE message (re-link only on auth), never a blanket re-link
     } else if (kind === 'resolved' || kind === 'reopened') {
       const ref = tgPushed.get(pushKey(item.org, item.id))
       if (!ref) return
