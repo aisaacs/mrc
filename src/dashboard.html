@@ -164,6 +164,18 @@
   .ich-reply { margin-top:6px } .ich-reply textarea { width:100%; min-height:54px; box-sizing:border-box }
   .ich-acts { margin-top:5px }
   .ib.qhi { box-shadow:0 0 0 2px var(--needs-you); transition:box-shadow .3s }
+  /* #48: worker call-history */
+  .wlog { flex:1 1 0; min-height:0; overflow:auto; padding:2px 2px 12px }
+  .wcard { border:1px solid var(--line); border-radius:9px; padding:9px 11px; margin-bottom:8px; background:var(--panel) }
+  .wcard.fail { border-color:var(--danger); background:#23161b }
+  .wcard-h { display:flex; align-items:center; gap:7px; font-size:12px; margin-bottom:5px }
+  .wstat { margin-left:auto; font-size:11px; font-weight:700 } .wstat.ok { color:var(--online) } .wstat.fail { color:var(--danger) }
+  .wreq { font-size:12px; margin-bottom:5px } .wask { padding:1px 0; word-break:break-word } .wask b { color:var(--link) }
+  .wask.directive { color:var(--ref); font-weight:600 }
+  .wmono { margin:0; white-space:pre-wrap; word-break:break-word; font-size:12px; background:var(--inset); border-radius:6px; padding:7px 9px }
+  .wfail { white-space:pre-wrap; word-break:break-word; font-size:12px; color:#f4b9c4; background:#2a1a1f; border:1px solid var(--danger); border-radius:6px; padding:7px 9px }
+  .wasset .wchip { display:inline-flex; align-items:center; gap:5px; font-size:12px; border:1px solid var(--line); border-radius:6px; padding:3px 8px; background:var(--inset) }
+  .wlegacy { margin-bottom:10px; padding-bottom:8px; border-bottom:1px dashed var(--line) }
   /* controls */
   textarea,input,select { background:var(--field); color:var(--fg); border:1px solid var(--line); border-radius:var(--radius-sm); padding:7px 9px; font:13px/1.4 inherit; width:100% }
   textarea { resize:vertical; min-height:38px }
@@ -362,14 +374,16 @@ async function tick() {
   if (S.selMember) {
     const m = memberByHandle(S.selMember)
     if (m && m.tier==='worker') {
+      // #48: /api/worker-log returns parsed call-history { records, legacy }. Keep the transcript-scrape
+      // fallback as legacy text (a pre-restart daemon returns no records).
       const r = await api('/api/worker-log?handle='+encodeURIComponent(m.handle)+'&org='+encodeURIComponent(m.org||S.org||'')).catch(()=>null)
-      let log = r && r.ok ? (r.log||'') : ''
-      if (!log) {   // fallback: scrape the team transcript for this worker (works on any daemon)
+      const wl = (r && r.ok) ? { records: Array.isArray(r.records)?r.records:[], legacy: r.legacy||'' } : { records:[], legacy:'' }
+      if (!wl.records.length && !wl.legacy) {   // fallback: scrape the team transcript (works on any daemon)
         const room = mergedRooms().find(rr=>rr.team===m.team && rr.kind==='team')
         const rd = room ? await api('/api/room?id='+encodeURIComponent(room.roomId)).catch(()=>null) : null
-        if (rd) log = (rd.thread||'').split('\n').filter(l=>l.toLowerCase().includes(m.first.toLowerCase())).join('\n')
+        if (rd) wl.legacy = (rd.thread||'').split('\n').filter(l=>l.toLowerCase().includes(m.first.toLowerCase())).join('\n')
       }
-      S.workerLog = log
+      S.workerLog = wl
     }
   }
   notifyNewInbox(S.teams.userInbox || [])   // fire OS notifications for @you items that arrived since the last tick
@@ -659,18 +673,48 @@ function syncTermHost() {
   for (const b of host.children) b.style.display = (b===block) ? 'flex' : 'none'
   host.style.display='flex'; detail.style.display='none'
 }
-// On-demand worker -> no terminal; show its recent activity from the team transcript.
+// #48: an on-demand worker has no terminal — show its CALL HISTORY (one card per invocation: request
+// lines, ✓/✕ status, codex→mono / media→asset chip; failures error-styled — the real win, surfacing a
+// throttle/couldn't-generate/read-as-feedback that was an indistinct line in the old <pre> blob).
+const relTime = (at)=>{ try{ const s=Math.round((Date.now()-new Date(at).getTime())/1000); if(s<5)return 'just now'; if(s<60)return s+'s ago'; const mn=Math.round(s/60); if(mn<60)return mn+'m ago'; const h=Math.round(mn/60); if(h<24)return h+'h ago'; return Math.round(h/24)+'d ago' }catch{ return '' } }
+const WFAIL_RE = /^\[@.*(couldn't|could not|throttled|read as feedback)/
+const workerLogSig = (wl)=> (wl.records.length)+':'+((wl.records[wl.records.length-1]||{}).at||'')+':'+(wl.legacy?wl.legacy.length:0)
+const ASSET_GLYPH = (k)=> k==='sfx'?'🔊':k==='music'?'🎵':'🖼'
+function workerCardHTML(rec, k) {
+  // #48 LOW-1: trust the backend's authoritative `ok` when present; the regex is only a legacy fallback
+  // for pre-JSONL records that lack the field — so a SUCCESSFUL call whose text merely starts with
+  // "[@x couldn't find Y, but…]" isn't mislabelled failed.
+  const fail = (typeof rec.ok === 'boolean') ? !rec.ok : WFAIL_RE.test(String(rec.result||''))
+  const req = (rec.askers||[]).map(a=> a.directive
+    ? `<div class="wask directive" title="trusted [Human directive]/[Human reply]">⦉ ${esc(a.text)} ⦊</div>`
+    : `<div class="wask"><b>${esc(a.from||'@?')}</b> <span class="muted">→</span> ${esc(a.text)}</div>`).join('')
+  let result
+  if (fail) result = `<div class="wfail">${esc(rec.result||'(failed)')}</div>`
+  else if (rec.asset) { const a=rec.asset; const fn=String(a.path||'').split('/').pop(); const kb=a.bytes?` · ${(a.bytes/1024).toFixed(0)} KB`:''
+    result = `<div class="wasset"><span class="wchip">${ASSET_GLYPH(rec.kind)} ${esc(fn)}${kb}</span>${a.prompt?`<div class="muted" style="font-size:11px;margin-top:3px">from "${esc(a.prompt)}"</div>`:''}</div>` }
+  else result = `<pre class="wmono">${esc(rec.result||'')}</pre>`
+  return `<div class="wcard ${fail?'fail':'ok'}"><div class="wcard-h"><b>⚡ Call #${k}</b> <span class="muted">· ${relTime(rec.at)}</span> <span class="wstat ${fail?'fail':'ok'}" title="${esc(rec.at||'')}">${fail?'✕ failed':'✓ ok'}</span></div><div class="wreq">${req}</div>${result}</div>`
+}
+function workerHistoryHTML(wl) {
+  let html = ''
+  if (wl.legacy) html += `<div class="wlegacy"><div class="muted" style="font-size:11px;margin-bottom:3px">— earlier activity (legacy log) —</div><pre style="margin:0;white-space:pre-wrap;font-size:11.5px;opacity:.65">${esc(wl.legacy)}</pre></div>`
+  html += wl.records.map((rec,i)=>workerCardHTML(rec,i+1)).join('')
+  return html || `<div class="muted" style="padding:14px">(no activity yet)</div>`
+}
 function renderWorkerLog(d, m) {
-  d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:6px">
+  const wl = S.workerLog || { records:[], legacy:'' }
+  const n = wl.records.length, last = n ? wl.records[n-1] : null
+  d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:4px">
       <b>@${esc(m.first)} <span class="muted">/${esc(m.backend)} · ${esc(m.role)}</span></b>
       <span><span class="mstate worker">on-demand</span> <button class="btn tiny" style="margin-left:8px" onclick="removeMember('${esc(m.handle)}','${esc(m.first)}')">✕ remove</button></span></div>
-    <div class="muted" style="margin-bottom:8px">No terminal — runs when a teammate @mentions it. Invocation log (request + result per call):</div>
-    <pre class="thread" id="wlog">${esc(S.workerLog || '(no activity yet — @mention @'+m.first+' to put them to work)')}</pre>`
+    <div class="muted" style="margin-bottom:8px;font-size:12px">${n?`On-demand worker — runs only when @mentioned. <b>${n}</b> call${n===1?'':'s'}${last?` · last run ${relTime(last.at)}`:''}.`:`@${esc(m.first)} hasn't run yet — @mention @${esc(m.first)} in a room to put them to work.`}</div>
+    <div class="wlog" id="wlog" tabindex="0">${workerHistoryHTML(wl)}</div>`
+  const w=$('#wlog'); if(w){ w.dataset.sig = workerLogSig(wl); w.scrollTop = w.scrollHeight }
 }
 function patchDetail() {
   if (S.selMember) {
     const m = memberByHandle(S.selMember)
-    if (m && m.tier==='worker') { const w=$('#wlog'); if (w && w.textContent!==(S.workerLog||'')) followScroll(w, () => { w.textContent = S.workerLog || '(no activity yet)' }) }
+    if (m && m.tier==='worker') { const w=$('#wlog'); const wl=S.workerLog||{records:[],legacy:''}; const sig=workerLogSig(wl); if (w && w.dataset.sig!==sig) followScroll(w, () => { w.innerHTML = workerHistoryHTML(wl); w.dataset.sig=sig }) }
     return
   }
   if (S.selRoom && S.room) {

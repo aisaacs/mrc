@@ -14,16 +14,42 @@ import { defangTrustMarkers } from './trust.js'
 
 export const workerLogPath = (repo, handle) => join(repo, '.mrc', 'worker-logs', handle.replace(/[^a-z0-9]+/gi, '-') + '.log')
 
-// Append a detailed entry (request + result + timestamp) to a worker's own log file, so the dashboard
-// can show real per-invocation history rather than scraping the transcript.
-function logWorker(member, items, text, nameOf) {
+// Decide a call's `ok` (#48). ✓/✕ means "did the CALL succeed", not "did the answer sound negative":
+// a thrown invoke fails (`threw`); otherwise an EXPLICIT `ok` from the invoker is authoritative (media.js
+// sets it on every return path); else (a codex/text worker that ran and returned) it succeeded — ✓,
+// regardless of the answer's tone. No server-side text heuristic — that lives ONLY as the client's
+// legacy-record fallback (pre-JSONL records with no `ok`).
+export function workerCallOk(threw, explicitOk) {
+  if (threw) return false
+  if (typeof explicitOk === 'boolean') return explicitOk
+  return true
+}
+
+// Append one JSONL call-history record per invocation to the worker's own log — { at, ok, askers[], result,
+// kind, asset } — so the dashboard renders structured per-call history (request lines, status, media asset
+// chip) instead of scraping a text blob. #48.
+function logWorker(member, items, { text, asset, ok }, nameOf) {
   if (!member.repo) return
   try {
     mkdirSync(join(member.repo, '.mrc', 'worker-logs'), { recursive: true })
-    const asked = items.map((it) => it.directive ? `  ${it.text}` : `  ${nameOf(it.fromHandle)}: ${it.text}`).join('\n')
-    appendFileSync(workerLogPath(member.repo, member.handle),
-      `${new Date().toISOString()}  @${member.first} (${member.role})\n asked:\n${asked}\n result: ${text}\n\n`)
+    const askers = items.map((it) => ({ from: it.directive ? null : nameOf(it.fromHandle), text: it.text, directive: !!it.directive }))
+    const rec = { at: new Date().toISOString(), ok, askers, result: text, kind: asset?.kind || null,
+      asset: asset ? { path: asset.path, ext: asset.ext, bytes: asset.bytes, prompt: asset.prompt } : null }
+    appendFileSync(workerLogPath(member.repo, member.handle), JSON.stringify(rec) + '\n')
   } catch {}
+}
+
+// Parse a worker log file into call-history records. New entries are JSONL (one record per line); OLD
+// entries are the pre-#48 multi-line text format — TOLERATE them (collect unparseable lines into `legacy`,
+// rendered raw/inert by the dashboard) rather than throw on a non-JSON line. #48.
+export function parseWorkerLog(raw) {
+  const records = []; const legacy = []
+  for (const line of String(raw || '').split('\n')) {
+    const s = line.trim(); if (!s) continue
+    if (s[0] === '{') { try { const r = JSON.parse(s); if (r && typeof r === 'object' && !Array.isArray(r)) { records.push(r); continue } } catch {} }
+    legacy.push(line)
+  }
+  return { records, legacy: legacy.join('\n') }
 }
 
 // Build the single prompt handed to a worker for a batch of messages addressed to it. Pure.
@@ -55,15 +81,17 @@ export function createWorkerRunner({ engine, invoke, intervalMs = 2000, log = ()
     const nameOf = (h) => { const m = engine.memberByHandle(h, b.org); return m ? '@' + m.first : h }
     const senders = [...new Set(b.items.map((i) => i.fromHandle).filter((h) => h && h !== '@user'))]
     const prompt = buildWorkerPrompt(member, b.items, nameOf)
-    let text
+    let text, asset = null, threw = false, explicitOk
     try {
       const r = await invoke(member, { prompt, items: b.items, repo: member.repo, room: b.roomId })
       text = (r && r.text) ? String(r.text) : '(the worker produced no output)'
+      asset = (r && r.asset) ? r.asset : null
+      explicitOk = (r && typeof r.ok === 'boolean') ? r.ok : undefined   // media.js signals ok explicitly; codex has none
     } catch (e) {
-      text = `[@${member.first} could not run: ${e?.message || e}]`
+      text = `[@${member.first} could not run: ${e?.message || e}]`; threw = true
       log(`worker ${b.toHandle} failed: ${e?.message || e}`)
     }
-    logWorker(member, b.items, text, nameOf)
+    logWorker(member, b.items, { text, asset, ok: workerCallOk(threw, explicitOk) }, nameOf)
     // Reply to whoever pinged the worker; if that's unclear, fall back to the room lead.
     const targets = senders.length ? senders
       : [...room.members.keys()].filter((k) => k !== member.handle && k !== '@user').slice(0, 1)

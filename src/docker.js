@@ -124,9 +124,11 @@ export function runWorkerExec({ repoPath, envFlags, volumes, allowWeb }) {
     ...envFlags, ...volumes, IMAGE_NAME,
   ]
   try {
-    return execFileSync('docker', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 })
+    return { text: execFileSync('docker', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }), ok: true }
   } catch (e) {
-    return (e.stdout || '') + (e.stderr ? `\n[worker stderr] ${e.stderr}` : `\n[worker failed: ${e.message}]`)
+    // #48: a non-zero docker/codex exit — KEEP the output for the user, but PRESERVE the failure signal
+    // (ok:false) instead of flattening the exit away into text (which made a failed codex call read ✓).
+    return { text: (e.stdout || '') + (e.stderr ? `\n[worker stderr] ${e.stderr}` : `\n[worker failed: ${e.message}]`), ok: false }
   }
 }
 

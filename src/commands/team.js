@@ -117,7 +117,8 @@ export async function execWorker(norm, member, repoPath, prompt) {
   ]
   const openai = repoEnvKey(repoPath, 'OPENAI_API_KEY')   // per-repo .env first, then global
   if (openai) env.push('-e', `OPENAI_API_KEY=${openai}`)
-  return cleanWorkerOutput(runWorkerExec({ repoPath, envFlags: env, volumes: vols, allowWeb: true }))
+  const r = runWorkerExec({ repoPath, envFlags: env, volumes: vols, allowWeb: true })   // #48: { text, ok }
+  return { text: cleanWorkerOutput(r.text), ok: r.ok }
 }
 
 function readStdin() {
@@ -670,8 +671,12 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
       let prompt = sub === 'exec' ? rest.slice(1).filter((a) => !a.startsWith('--')).join(' ') : ''
       if (!prompt) prompt = await readStdin()
       if (!prompt.trim()) { console.error('No prompt (positional arg or stdin).'); process.exit(1) }
-      process.stdout.write(await execWorker(norm, member, repo, prompt))
-      return
+      // #48: print the worker's output, then EXIT NON-ZERO on a failed call so the daemon's
+      // spawnWorkerInvoke rejects (→ threw → ✕ in the call-history) instead of swallowing the failure as
+      // exit 0. Applies to both the daemon's _worker-exec and a manual `mrc team exec` (proper shell semantics).
+      const wr = await execWorker(norm, member, repo, prompt)
+      process.stdout.write(wr.text)
+      process.exit(wr.ok ? 0 : 1)
     }
 
     case 'down': {

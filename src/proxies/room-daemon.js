@@ -15,7 +15,7 @@ import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
 import { ensureRoom, appendThread, appendTranscript, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadLaunches, removeLaunch, loadTgStates, saveTgStates, loadInbox, saveInbox, loadUserPrefs, saveUserPrefs } from '../rooms.js'
 import { createRoomEngine } from '../teams/room-engine.js'
-import { createWorkerRunner, workerLogPath } from '../teams/worker-runner.js'
+import { createWorkerRunner, workerLogPath, parseWorkerLog } from '../teams/worker-runner.js'
 import { memberSessionId } from '../teams/session-id.js'
 import { createTelegramBridge, sendMessage as tgSend, editMessageText as tgEdit } from '../teams/telegram.js'
 import { freshTgState, classifyInbound, addPending, confirmPending, rejectPending, unpair as tgUnpair, prePin, tgView, isDuplicateUpdate, markUpdateProcessed } from '../teams/telegram-auth.js'
@@ -755,9 +755,11 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
           // Pass org so a handle shared across two orgs reads the RIGHT member's repo (their logs live
           // in different repos). Without org, memberByHandle returns whichever org is first in the map.
           const m = engine.memberByHandle(f.handle, f.org)
-          let log = ''
-          if (m?.repo) { try { log = readFileSync(workerLogPath(m.repo, f.handle), 'utf8').slice(-20000) } catch {} }
-          reply({ ok: true, log }); continue
+          let raw = ''
+          // Read the last ~500 LINES (not chars — avoid truncating a JSONL record mid-line). #48.
+          if (m?.repo) { try { raw = readFileSync(workerLogPath(m.repo, f.handle), 'utf8').split('\n').slice(-500).join('\n') } catch {} }
+          const { records, legacy } = parseWorkerLog(raw)
+          reply({ ok: true, records, legacy }); continue
         }
         // Add a member to a (possibly running) org: re-define from a PINNED roster (existing members
         // keep their names) + the new member, then launch just its terminal if the team is up.

@@ -134,17 +134,17 @@ async function artDirect(rawRequest, kind, { apiKey, fetchFn = globalThis.fetch 
 // `member` carries { role, repo, territory, first }; ctx carries { items, fetchFn? }.
 export async function generateMedia(member, { items = [], fetchFn, room, now } = {}) {
   const kind = MEDIA_ROLES[member.role]
-  if (!kind) return { text: `[@${member.first}: not a media role]` }
+  if (!kind) return { text: `[@${member.first}: not a media role]`, ok: false }
   const raw = mediaPrompt(items)
-  if (!raw) return { text: `[@${member.first}: nothing to make — say what you want generated]` }
+  if (!raw) return { text: `[@${member.first}: nothing to make — say what you want generated]`, ok: false }
   // Intent gate — cheap, BEFORE the paid art-director (Haiku) call: feedback/discussion never spends.
-  if (!GENERATION_INTENT.test(raw)) return { text: `[@${member.first}: that read as feedback/discussion, not a new ${kind} request — start with "make/generate/draw …" when you want a NEW asset.]` }
+  if (!GENERATION_INTENT.test(raw)) return { text: `[@${member.first}: that read as feedback/discussion, not a new ${kind} request — start with "make/generate/draw …" when you want a NEW asset.]`, ok: false }
   // Rate cap — bound a runaway generation loop in this room before any paid call.
-  if (!withinRateCap(room, typeof now === 'number' ? now : Date.now())) return { text: `[@${member.first}: throttled — too many ${kind} generations in this room in the last minute. Give it a moment, then ask again.]` }
+  if (!withinRateCap(room, typeof now === 'number' ? now : Date.now())) return { text: `[@${member.first}: throttled — too many ${kind} generations in this room in the last minute. Give it a moment, then ask again.]`, ok: false }
   // Art-director pass: clean the prompt + filename, and skip messages that are just feedback.
   const adKey = repoEnvKey(member.repo, 'MRC_SESSION_NAMING_ANTHROPIC_API_KEY') || repoEnvKey(member.repo, 'ANTHROPIC_API_KEY')
   const ad = await artDirect(raw, kind, { apiKey: adKey, fetchFn })
-  if (ad?.skip) return { text: `[@${member.first}: that read as feedback, not a new ${kind} request — start with "make/generate …" when you want a new asset.]` }
+  if (ad?.skip) return { text: `[@${member.first}: that read as feedback, not a new ${kind} request — start with "make/generate …" when you want a new asset.]`, ok: false }
   const prompt = (ad?.prompt) || raw
   const fileBase = slug(ad?.name || prompt)
   const apiKey = repoEnvKey(member.repo, KEY_FOR[kind])   // per-repo .env first, then the global key
@@ -157,7 +157,7 @@ export async function generateMedia(member, { items = [], fetchFn, room, now } =
     : prompt
   let asset
   try { asset = await GENERATORS[kind](genPrompt, { apiKey, fetchFn }) }
-  catch (e) { return { text: `[@${member.first} couldn't generate it: ${e?.message || e}]` } }
+  catch (e) { return { text: `[@${member.first} couldn't generate it: ${e?.message || e}]`, ok: false } }
   let transparent = false
   if (wantTransparent && asset.ext === 'png') {
     try { const { chromaKey } = await import('./png.js'); asset = { ...asset, bytes: chromaKey(asset.bytes, CHROMA, 70) }; transparent = true } catch {}
@@ -166,7 +166,13 @@ export async function generateMedia(member, { items = [], fetchFn, room, now } =
   const dir = join(member.repo, territory)
   const name = `${fileBase}-${createHash('sha1').update(prompt + asset.bytes.length).digest('hex').slice(0, 6)}.${asset.ext}`
   try { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, name), asset.bytes) }
-  catch (e) { return { text: `[@${member.first} generated it but couldn't write the file: ${e?.message || e}]` } }
+  catch (e) { return { text: `[@${member.first} generated it but couldn't write the file: ${e?.message || e}]`, ok: false } }
   const rel = join(territory, name)
-  return { text: `Generated ${kind === 'image' ? 'image' : kind === 'sfx' ? 'sound effect' : 'music'}: \`${rel}\`${transparent ? ' (transparent bg)' : ''} (${(asset.bytes.length / 1024).toFixed(0)} KB) — from "${prompt.slice(0, 80)}".` }
+  // #48: return the structured asset alongside the text (the clean {text, asset} contract — no backtick
+  // regex downstream) so the worker-runner can record path/ext/bytes/kind/prompt for the call-history UI.
+  return {
+    ok: true,
+    text: `Generated ${kind === 'image' ? 'image' : kind === 'sfx' ? 'sound effect' : 'music'}: \`${rel}\`${transparent ? ' (transparent bg)' : ''} (${(asset.bytes.length / 1024).toFixed(0)} KB) — from "${prompt.slice(0, 80)}".`,
+    asset: { path: rel, ext: asset.ext, bytes: asset.bytes.length, kind, prompt: prompt.slice(0, 200) },
+  }
 }
