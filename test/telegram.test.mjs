@@ -2,7 +2,7 @@
 // message shaping (chat type + from identity for the trust layer), send/edit/getMe. Injected fetch.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { pollOnce, shapeMessage, isStart, sendMessage, editMessageText, getMe, createTelegramBridge, sendPhoto, clampTgText, splitTgText, sendMessageChunked, TG_TEXT_MAX } from '../src/teams/telegram.js'
+import { pollOnce, shapeMessage, isStart, sendMessage, editMessageText, getMe, createTelegramBridge, sendPhoto, clampTgText, splitTgText, sendMessageChunked, TG_TEXT_MAX, mdToTelegramHTML } from '../src/teams/telegram.js'
 
 const ok = (result) => ({ status: 200, json: async () => ({ ok: true, result }) })
 const msg = (update_id, over = {}) => ({ update_id, message: { message_id: 100 + update_id, date: 1, chat: { id: 555, type: 'private' }, from: { id: 42, username: 'jane', first_name: 'Jane', last_name: 'Doe' }, text: 'hi', ...over } })
@@ -248,4 +248,36 @@ test('#22 sendMessageChunked sends a long body in parts, returns the FIRST messa
 test('#22 pollOnce surfaces 429 retry_after so the bridge backs off by it', async () => {
   const r = await pollOnce({ token: 't', offset: 0, fetchFn: async () => ({ status: 429, json: async () => ({ ok: false, description: 'Too Many Requests', parameters: { retry_after: 4 } }) }) })
   assert.equal(r.retryAfter, 4); assert.equal(r.transient, true); assert.match(r.error, /429/)
+})
+
+// ---- #58 Telegram markdown: mdToTelegramHTML (escape-first, Telegram tag subset) + parse_mode + plain fallback ----
+test('#58 mdToTelegramHTML: renders the Telegram tag subset; lists→• bullets, newlines stay, no <ul>/<br>', () => {
+  assert.equal(mdToTelegramHTML('**b**'), '<b>b</b>')
+  assert.match(mdToTelegramHTML('a *i* b'), /<i>i<\/i>/)
+  assert.match(mdToTelegramHTML('`x`'), /<code>x<\/code>/)
+  assert.match(mdToTelegramHTML('- one\n- two'), /• one\n• two/)
+  assert.ok(!/<ul>|<li>|<br>/.test(mdToTelegramHTML('- a\nb\n- c')), 'no <ul>/<li>/<br> (Telegram-unsupported)')
+})
+
+test('#58 mdToTelegramHTML: escape-FIRST → a member cannot inject Telegram tags', () => {
+  assert.equal(mdToTelegramHTML('<b>evil</b>'), '&lt;b&gt;evil&lt;/b&gt;')   // inert, not a live tag
+  assert.match(mdToTelegramHTML('a & b < c'), /a &amp; b &lt; c/)
+  assert.ok(!/<a [^>]*onclick/i.test(mdToTelegramHTML('<a href="x" onclick="bad">y</a>')), 'forged <a onclick> is escaped, never live')
+})
+
+test('#58 mdToTelegramHTML: links allowlist http/https/mailto; reject javascript/data; no " breakout', () => {
+  assert.match(mdToTelegramHTML('[g](https://x.com)'), /<a href="https:\/\/x\.com">g<\/a>/)
+  assert.equal(mdToTelegramHTML('[g](javascript:alert(1))'), '[g](javascript:alert(1))')   // inert literal, no anchor
+  assert.ok(!/<a /.test(mdToTelegramHTML('[g](data:text/html,x)')), 'data: not linked')
+  assert.ok(!mdToTelegramHTML('[g](https://x/"onmouseover=)').includes('"onmouseover'), 'a literal " in the url is %22-encoded — no attribute breakout')
+})
+
+test('#58 sendMessage parseMode sets parse_mode; classifySend flags a formatting 400 (plain fallback), not chat-not-found', async () => {
+  let body
+  await sendMessage({ token: 't', chatId: 1, text: '<b>x</b>', parseMode: 'HTML', fetchFn: async (u, o) => { body = JSON.parse(o.body); return { json: async () => ({ ok: true, result: { message_id: 1 } }) } } })
+  assert.equal(body.parse_mode, 'HTML')
+  const fmt = await sendMessage({ token: 't', chatId: 1, text: 'x', maxRetries: 0, fetchFn: async () => ({ status: 400, json: async () => ({ ok: false, description: "Bad Request: can't parse entities: unsupported start tag" }) }) })
+  assert.equal(fmt.kind, 'other'); assert.equal(fmt.formatting, true); assert.notEqual(fmt.fatal, true)
+  const cnf = await sendMessage({ token: 't', chatId: 1, text: 'x', maxRetries: 0, fetchFn: async () => ({ status: 400, json: async () => ({ ok: false, description: 'Bad Request: chat not found' }) }) })
+  assert.equal(cnf.kind, 'other'); assert.notEqual(cnf.formatting, true)
 })

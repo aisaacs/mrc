@@ -41,7 +41,55 @@ function classifySend(res, j) {
   if (res?.status === 401 || res?.status === 403) return { fatal: true, kind: 'auth', error: j?.description || (res.status === 401 ? 'unauthorized: bad bot token' : 'forbidden: the bot was blocked or removed from the chat') }
   if (res?.status === 429) return { transient: true, kind: 'rate-limit', retryAfter: Number(j?.parameters?.retry_after) || 1, error: j?.description || 'rate limited (429)' }
   if (res && res.status >= 500) return { transient: true, kind: 'transient', error: j?.description || `telegram ${res.status}` }
-  return { kind: 'other', error }   // e.g. 400 "chat not found" / a formatting 400 (#58 falls back to plain) — accurate, NOT an auth/re-link case
+  // #58: flag a parse_mode FORMATTING 400 (a malformed/unsupported HTML entity) so the caller resends PLAIN.
+  // Still kind:'other' (accurate "formatting", NOT auth/re-link); only the fallback path keys on `formatting`.
+  const formatting = res?.status === 400 && /can't parse entit|unsupported (start |end )?tag|unclosed|can't find end|byte offset|reserved/i.test(error)
+  return { kind: 'other', error, ...(formatting ? { formatting: true } : {}) }   // e.g. 400 "chat not found" → accurate cause, NOT auth/re-link
+}
+
+// #58: convert a SMALL Markdown subset to TELEGRAM HTML (parse_mode:'HTML'). A SIBLING of safeMD — same cardinal
+// rule (escape ALL HTML first, THEN allowlisted transforms on the inert text) — but it emits ONLY the tags
+// Telegram supports (<b>/<i>/<u>/<s>/<code>/<pre>/<a>); lists become plain "• " bullets and newlines STAY "\n"
+// (Telegram has no <ul>/<br>). Telegram escapes ONLY < > & (not "/' — those are literal in text). Because the
+// base text is escaped before any transform, a member writing "<b>x</b>" or a forged tag is inert escaped text;
+// transforms add only FIXED tags + an allowlisted href. Output is balanced (complete-pair fires) → valid Telegram
+// HTML; a malformed/oversized result 400s and the caller falls back to PLAIN (never lost). ReDoS-bounded (capped).
+const TG_HTML_ESC = { '&': '&amp;', '<': '&lt;', '>': '&gt;' }
+const escTgHtml = (s) => String(s == null ? '' : s).replace(/[&<>]/g, (c) => TG_HTML_ESC[c])
+const TG_NUL = String.fromCharCode(0)
+const TG_NUL_RE = new RegExp(TG_NUL, 'g')
+const TG_SLOT_RE = new RegExp(TG_NUL + '(\\d+)' + TG_NUL, 'g')
+const TG_CTRL_WS_RE = new RegExp('[' + TG_NUL + '-' + String.fromCharCode(0x20) + ']+', 'g')   // all control + space (0x00..0x20)
+// Link only an http/https/mailto url; the url is already <>&-escaped, so add the SCHEME gate (normalize: strip
+// control/space + lowercase) and percent-encode a literal " so it can't break out of href="...". Else → null
+// (the caller leaves the inert literal "[text](url)").
+function tgHref(escapedUrl) {
+  const probe = escapedUrl.replace(TG_CTRL_WS_RE, '').toLowerCase()
+  const m = probe.match(/^([a-z][a-z0-9+.\-]*):/)
+  if (!(m && (m[1] === 'http' || m[1] === 'https' || m[1] === 'mailto'))) return null
+  return escapedUrl.replace(/"/g, '%22')
+}
+export function mdToTelegramHTML(input) {
+  let s = String(input == null ? '' : input).replace(TG_NUL_RE, '')      // drop NULs (our slot sentinel)
+  if (s.length > TG_TEXT_MAX) s = s.slice(0, TG_TEXT_MAX) + '…'          // bound it (a long result 400s → plain fallback)
+  s = escTgHtml(s)                                                        // (1) ESCAPE < > & FIRST — rest transforms inert text
+  const slots = []
+  const stash = (html) => TG_NUL + (slots.push(html) - 1) + TG_NUL
+  // (2) code spans BEFORE other transforms (** / _ / [ ] inside code stay literal); the fenced lang tag is DROPPED
+  s = s.replace(/```[^\n]*\n([\s\S]*?)```/g, (_, body) => stash('<pre>' + body + '</pre>'))
+  s = s.replace(/`([^`\n]+)`/g, (_, body) => stash('<code>' + body + '</code>'))
+  // (3) links [text](url): allowlisted+escaped href, escaped text; a disallowed scheme leaves the inert literal
+  s = s.replace(/\[([^\]\n]*)\]\(([^)\s]+)\)/g, (m0, text, url) => { const h = tgHref(url); return h ? '<a href="' + h + '">' + text + '</a>' : m0 })
+  // (4) bold (** / __) then italic (* / _), each only on a COMPLETE same-line pair → balanced
+  s = s.replace(/\*\*([^\n]+?)\*\*/g, '<b>$1</b>')
+  s = s.replace(/__([^\n]+?)__/g, '<b>$1</b>')
+  s = s.replace(/(^|[^\w*])\*([^*\n]+?)\*(?=[^\w*]|$)/g, '$1<i>$2</i>')
+  s = s.replace(/(^|[^\w_])_([^_\n]+?)_(?=[^\w_]|$)/g, '$1<i>$2</i>')
+  // (5) "- " / "* " bullet lines → plain "• " (Telegram has no <ul>); newlines STAY "\n" (no <br>). Numbered
+  //     "N. " lines are already plain and untouched. Run AFTER italic so a "*text*" isn't seen as a bullet.
+  s = s.replace(/^[ \t]*[-*][ \t]+/gm, '• ')
+  // (6) restore the stashed code spans verbatim
+  return s.replace(TG_SLOT_RE, (_, i) => slots[Number(i)])
 }
 
 // One getUpdates round. Returns { offset, messages, error } — `offset` is the next offset to poll
@@ -117,8 +165,8 @@ export function splitTgText(text, max = TG_TEXT_MAX) {
 // One sendMessage attempt-with-retry: honors a 429 `retry_after` (waits the amount Telegram asked, BOUNDED
 // retries) and clamps text to the 4096 limit as a safety floor. Returns the classified result (#22) so the
 // caller surfaces an accurate message (transient/retryAfter/fatal) rather than a blanket "re-link".
-export async function sendMessage({ token, chatId, text, replyMarkup, fetchFn = globalThis.fetch, maxRetries = 2, sleep = defaultSleep } = {}) {
-  const body = JSON.stringify({ chat_id: chatId, text: clampTgText(text), ...(replyMarkup ? { reply_markup: replyMarkup } : {}) })
+export async function sendMessage({ token, chatId, text, replyMarkup, parseMode, fetchFn = globalThis.fetch, maxRetries = 2, sleep = defaultSleep } = {}) {
+  const body = JSON.stringify({ chat_id: chatId, text: clampTgText(text), ...(replyMarkup ? { reply_markup: replyMarkup } : {}), ...(parseMode ? { parse_mode: parseMode } : {}) })
   for (let attempt = 0; ; attempt++) {
     let res
     try { res = await fetchFn(api(token, 'sendMessage'), { method: 'POST', headers: { 'content-type': 'application/json' }, body }) }
@@ -149,8 +197,8 @@ export async function sendMessageChunked({ token, chatId, text, replyMarkup, fet
 
 // Edit a previously-pushed message in place (H4 cross-surface sync: when a question is answered/
 // dismissed from any surface, its Telegram message updates to reflect the resolution).
-export async function editMessageText({ token, chatId, messageId, text, fetchFn = globalThis.fetch, maxRetries = 2, sleep = defaultSleep } = {}) {
-  const body = JSON.stringify({ chat_id: chatId, message_id: messageId, text: clampTgText(text) })
+export async function editMessageText({ token, chatId, messageId, text, parseMode, fetchFn = globalThis.fetch, maxRetries = 2, sleep = defaultSleep } = {}) {
+  const body = JSON.stringify({ chat_id: chatId, message_id: messageId, text: clampTgText(text), ...(parseMode ? { parse_mode: parseMode } : {}) })
   for (let attempt = 0; ; attempt++) {
     let res
     try { res = await fetchFn(api(token, 'editMessageText'), { method: 'POST', headers: { 'content-type': 'application/json' }, body }) }

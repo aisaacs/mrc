@@ -388,3 +388,39 @@ test('#56 daemon send_photo: territory image → confirmed chat; no-pin / outsid
   sock.destroy()
   daemon.stop()
 })
+
+// #58: an @you push goes out as Telegram HTML (parse_mode); if Telegram rejects the formatting (400), the daemon
+// falls back to a PLAIN send so the message is NEVER lost — and it stays accurate (formatting), not "re-link".
+test('daemon telegram (#58): an HTML push rejected on formatting falls back to PLAIN (nothing lost)', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-tgfmt-`)
+  const port = await findFreePort(19450)
+  const controlPort = await findFreePort(port + 1)
+  const tg = fakeTelegram()
+  const base = tg.fetchFn
+  const htmlSeen = []
+  const fetchFn = async (url, opts) => {
+    if (String(url).includes('/sendMessage')) {
+      const body = JSON.parse(opts.body)
+      if (body.parse_mode === 'HTML') { htmlSeen.push(body); return { status: 400, json: async () => ({ ok: false, description: "Bad Request: can't parse entities: unsupported start tag" }) } }
+    }
+    return base(url, opts)
+  }
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }), tgFetch: fetchFn, tgToken: { shop: 'BOT:TOKEN' } })
+
+  const norm = parseRoster({ org: 'shop', repo: TMP_HOME, teams: [{ name: 'core', members: [{ role: 'architect', backend: 'claude', name: 'roland', lead: true }] }] }, {})
+  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  tg.queue.push([upd(1, 555, '/start')]); await sleep(200)
+  await controlCall(controlPort, { action: 'tgconfirm', org: 'shop', fromId: 555 })
+
+  const sock = net.connect(port, '127.0.0.1'); await new Promise((r) => sock.on('connect', r))
+  sock.write(JSON.stringify({ type: 'register', sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop' }) + '\n'); await sleep(200)
+  sock.write(JSON.stringify({ type: 'say', id: 1, text: '@user **ship** the candy theme?', kind: 'question', room: 'leads' }) + '\n'); await sleep(250)
+
+  assert.ok(htmlSeen.length >= 1, 'tried the HTML (parse_mode) send first')
+  const plain = tg.sent.find((m) => !m.parse_mode && /candy theme/.test(m.text))
+  assert.ok(plain, 'fell back to a PLAIN send carrying the full text (nothing lost)')
+  // the failure was NOT surfaced as a push error (the fallback succeeded) → no misleading re-link
+  const tgv = (await controlCall(controlPort, { action: 'team' })).telegram.shop
+  assert.equal(tgv.lastPushError, null, 'a recovered formatting error is not surfaced as a push failure')
+  sock.destroy(); daemon.stop()
+})
