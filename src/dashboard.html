@@ -222,7 +222,11 @@
   .msg-author b { color:var(--fg) }
   .msg-author .qicon { font-size:12px }
   .msg-role { font-size:10px; text-transform:uppercase; letter-spacing:.04em; opacity:.65 }
-  .msg-time { font-size:11px; margin-left:auto }
+  .msg-room { font-size:11px } .msg-time { font-size:11px; margin-left:auto }
+  .msg.qhi { background:#2a2440; border-radius:5px; transition:background .3s }   /* #63-B jump highlight (anchor on the .msg wrap) */
+  .msg-fyi { opacity:.82 }   /* @you FYIs read dimmer than questions (the ❓/🔔 icon is the primary distinction) */
+  .msg-needs { border-left:2px solid var(--needs-edge); padding-left:7px }   /* #63-B2: an OPEN question still needing your reply */
+  .msg-needs .qicon { color:var(--needs-you) }   /* the ❓ glows for an open question (glyph already distinguishes) */
   .ra-arch b { color:#a78bfa } .ra-eng b { color:#5ec878 } .ra-crit b { color:#f2a65a } .ra-adv b { color:#f2607a } .ra-human b { color:#6aa0f5 } .ra-media b { color:#e29bd8 } .ra-sys b { color:var(--dim) }
   .pane { background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:10px 12px; margin-bottom:8px; flex-shrink:0 }
   .pane.unrev { border-color:var(--needs-edge) }
@@ -897,9 +901,9 @@ const ROLE_CLASS = { architect:'ra-arch', engineer:'ra-eng', critic:'ra-crit', a
 // DOM-APPENDED as sibling nodes (hhmm, the [#N] chip / re-#N jump) from STRUCTURED daemon fields ONLY. Both
 // #63 invariants by construction: (1) author/role/chip from msg fields, NEVER parsed from the body text; (2)
 // author name via textContent + the jump handler JS-wired — never an inline onclick string interpolation.
-// msg: { from, role, at, text, qid, rid, newGroup, icon, anchorId, extra(DOM node|null) }
+// msg: { from, role, at, text, qid, rid, newGroup, icon(header), rowIcon(per-msg), roomTag, cls(wrap), anchorId, extra(DOM|null) }
 function slackRow(msg) {
-  const wrap = document.createElement('div'); wrap.className = 'msg'
+  const wrap = document.createElement('div'); wrap.className = 'msg' + (msg.cls ? ' ' + msg.cls : '')   // cls → @you's `ib q`/`ib fyi` card
   if (msg.anchorId != null) wrap.id = 'q' + msg.anchorId          // jump target for a question
   if (msg.newGroup) {
     const hdr = document.createElement('div'); hdr.className = 'msg-author ' + (ROLE_CLASS[msg.role] || 'ra-other')
@@ -907,10 +911,12 @@ function slackRow(msg) {
     const who = document.createElement('b'); who.textContent = msg.from || '@?'   // textContent = esc'd display
     hdr.appendChild(who)
     if (msg.role) { const rl = document.createElement('span'); rl.className = 'msg-role'; rl.textContent = msg.role; hdr.appendChild(rl) }
+    if (msg.roomTag) { const rt = document.createElement('span'); rt.className = 'msg-room muted'; rt.textContent = '· ' + msg.roomTag; hdr.appendChild(rt) }   // @you cross-room context (omitted in a single-room transcript)
     if (msg.at) { const tm = document.createElement('span'); tm.className = 'msg-time muted'; tm.textContent = hhmm(msg.at); hdr.appendChild(tm) }
     wrap.appendChild(hdr)
   }
   const row = document.createElement('div'); row.className = 'tline'
+  if (msg.rowIcon) { const ri = document.createElement('span'); ri.className = 'qicon'; ri.textContent = msg.rowIcon; row.appendChild(ri); row.appendChild(document.createTextNode(' ')) }   // @you's per-message ❓/🔔
   const body = document.createElement('div'); body.className = 'body'
   body.innerHTML = safeMD(msg.text || ''); if (!body.innerHTML) body.textContent = ' '
   row.appendChild(body)
@@ -927,19 +933,29 @@ function slackRow(msg) {
   if (msg.extra) wrap.appendChild(msg.extra)
   return wrap
 }
+// #63-B2: consecutive-same-author grouping with a >7-min time-gap BREAK (so a slow-room burst hours apart
+// gets a fresh header+time rather than collapsing under one misleading timestamp). Shared by the transcript
+// AND @you. A null author key (legacy/system) → header-less, never a group.
+const GROUP_GAP_MS = 7 * 60 * 1000
+const tsMs = (at) => { const m = new Date(at).getTime(); return isFinite(m) ? m : 0 }
+function startsNewGroup(prevKey, prevAt, key, at) {
+  if (key == null) return false                          // no author → header-less
+  if (key !== prevKey) return true                       // author (or author+room, for @you) changed
+  const a = tsMs(at), p = tsMs(prevAt)
+  return !!(a && p && (a - p) > GROUP_GAP_MS)             // same author, big time gap → new header+time
+}
 function fillTranscript(host, records) {
   host.textContent = ''
-  const frag = document.createDocumentFragment(); let lastGroup = null
-  for (let i = 0; i < (records||[]).length; i++) {
-    const rec = records[i]
-    // #63-B: a B1-enriched record carries trusted from/role/at + the clean `text` → Slack row with an author
-    // header (grouped by author). A legacy { t, q, r } record (pre-B1, no fields) → header-less, body = the
-    // whole `t` line with only the daemon's own trailing [#N]/(re #N) stripped; NEVER parse `t` for an author.
-    const enriched = rec.from != null || rec.text != null
-    const text = enriched ? String(rec.text || '') : String(rec.t || '').replace(/\s*\[#\d+\]\s*$/, '').replace(/\s*\(re #\d+\)\s*$/, '')
-    const group = enriched ? rec.from + '\x00' + (rec.role || '') : '\x00legacy:' + i   // legacy rows never group
-    const newGroup = enriched && group !== lastGroup; lastGroup = group
-    frag.appendChild(slackRow({ from: rec.from, role: rec.role, at: rec.at, text, qid: rec.q, rid: rec.r, newGroup, anchorId: rec.q }))
+  const frag = document.createDocumentFragment(); let prevKey = null, prevAt = null
+  for (const rec of (records||[])) {
+    // #63-B: a B1-enriched record carries trusted from/role/at + the clean `text` → Slack row (author header
+    // gated on `from`). A legacy { t, q, r } record (pre-B1, no from) → header-less, body = the whole `t` with
+    // only the daemon's own trailing [#N]/(re #N) stripped; NEVER parse `t` for an author.
+    const from = rec.from ?? null
+    const text = rec.text != null ? String(rec.text) : String(rec.t || '').replace(/\s*\[#\d+\]\s*$/, '').replace(/\s*\(re #\d+\)\s*$/, '')
+    const newGroup = startsNewGroup(prevKey, prevAt, from, rec.at)
+    prevKey = from; prevAt = rec.at
+    frag.appendChild(slackRow({ from, role: rec.role, at: rec.at, text, qid: rec.q, rid: rec.r, newGroup, anchorId: rec.q }))
   }
   host.appendChild(frag)
 }
@@ -998,13 +1014,13 @@ function renderInboxChannel(d) {
   const ib = inbox()
   const live = ib.all.filter(q => !q.dismissed).slice().sort((a,b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id - b.id))
   const unanswered = live.filter(q => !q.answered && q.type==='question')
-  let feed = '', lastGroup = null
+  // #63-B2-inbox: build the LIVE feed as DOM nodes via the shared slackRow — body → safeMD, the [#N] chip
+  // DOM-appended (the #5 property), author header (role-color) grouped by from+room with the 7-min gap-break,
+  // ❓/🔔 as the per-message rowIcon. The per-item reply/answered/acts STATE rides as the row's `extra` node
+  // (its buttons are numeric-id / data-* — #65-clean — reused verbatim). Dismissed/triage/scroll unchanged.
+  const feedFrag = document.createDocumentFragment(); let prevKey = null, prevAt = null
   for (const q of live) {
     const isQ = q.type==='question'
-    // #47 LOW: group by from+room (not from alone) — a member who @user'd you from TWO rooms must not
-    // collapse under one header that mislabels the later items' room.
-    const gk = q.from + '\x00' + q.room
-    if (gk !== lastGroup) { feed += `<div class="ich-sender"><b>${esc(q.fromName||('@'+q.from))}</b> <span class="muted">· ${esc(q.room)}</span></div>`; lastGroup = gk }
     const viaTg = q.answeredVia==='telegram'
     const steered = q.pauseRoom && q.answer && q.answer !== '(resumed)'
     const openRoomBtn = `<button class="btn tiny" data-room="${esc(q.roomId)}" onclick="openRoomAt(this.dataset.room,${q.id})">↗ Open room</button>`
@@ -1018,9 +1034,19 @@ function renderInboxChannel(d) {
     } else {
       state = `<div class="row ich-acts" style="gap:6px"><button class="btn tiny" onclick="openReply(${q.id})">↩ Reply</button>${isQ?'':`<button class="btn tiny" onclick="dismissInbox(${q.id})">✕ Dismiss</button>`}${openRoomBtn}</div>`
     }
-    feed += `<div class="ib ${isQ?'q':'fyi'}" id="q${q.id}"><div class="ich-line"><span class="qicon">${isQ?'❓':'🔔'}</span><span class="ich-body">${esc(q.text)}</span><span class="ich-meta"><span class="muted">${hhmm(q.at)}</span> <span class="qnum">#${q.id}</span></span></div>${state}</div>`
+    const extra = document.createElement('div'); extra.innerHTML = state
+    const groupKey = q.from + '\x00' + q.room   // #47 LOW: from+room (two rooms from one sender don't collapse)
+    const newGroup = startsNewGroup(prevKey, prevAt, groupKey, q.at)
+    prevKey = groupKey; prevAt = q.at
+    // #63-B2-inbox: ONLY an open QUESTION gets a needs-you accent (left rail + glowing ❓) — recovers the
+    // at-a-glance "which still needs my reply" cue the old .ib.q rail gave (glyph+color, color not load-bearing).
+    // FYIs are reply-OPTIONAL → always `.msg-fyi`-dim (never needs-you, even unanswered — no crying wolf);
+    // an answered question → plain. So only the actionable rows pop.
+    const cls = isQ ? (q.answered ? '' : 'msg-needs') : 'msg-fyi'
+    feedFrag.appendChild(slackRow({ from: q.fromName || ('@'+q.from), role: q.role, at: q.at, text: q.text,
+      qid: q.id, anchorId: q.id, rowIcon: isQ?'❓':'🔔', roomTag: q.room, cls, newGroup, extra }))
   }
-  if (!live.length) feed = `<div class="muted" style="padding:24px 12px;text-align:center">No messages. Your team will reach you here.<div style="opacity:.5;font-style:italic;margin-top:2px">All quiet on Spaceball One.</div></div>`
+  const emptyMsg = !live.length ? `<div class="muted" style="padding:24px 12px;text-align:center">No messages. Your team will reach you here.<div style="opacity:.5;font-style:italic;margin-top:2px">All quiet on Spaceball One.</div></div>` : ''
   let dism = ''
   if (ib.dismissed.length) {
     dism = `<div class="muted focusable" role="button" tabindex="0" aria-expanded="${S.showDismissed}" style="padding:6px;cursor:pointer;font-size:12px;user-select:none;border-radius:5px;margin-top:8px" onclick="toggleDismissed()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleDismissed()}else if(event.key==='Escape'&&S.showDismissed){toggleDismissed()}">${S.showDismissed?'▾':'▸'} ${ib.dismissed.length} dismissed</div>`
@@ -1028,7 +1054,8 @@ function renderInboxChannel(d) {
   }
   const triage = unanswered.length ? `<div class="ich-triage focusable" role="button" tabindex="0" onclick="jumpToQ(${unanswered[0].id})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToQ(${unanswered[0].id})}" title="jump to the next open question">${unanswered.length} unanswered ⌄</div>` : ''
   // triage floats over the top — pad the scroll content so it doesn't sit over row 1.
-  d.innerHTML = `<div class="ich-wrap">${triage}<div class="ich-scroll" id="ichScroll" tabindex="0"${triage?' style="padding-top:36px"':''}>${feed}${dism}</div></div>`
+  d.innerHTML = `<div class="ich-wrap">${triage}<div class="ich-scroll" id="ichScroll" tabindex="0"${triage?' style="padding-top:36px"':''}><div id="ichFeed"></div>${emptyMsg}${dism}</div></div>`
+  const feedHost = $('#ichFeed'); if (feedHost) feedHost.appendChild(feedFrag)   // #63-B2-inbox: the slackRow DOM feed
   const sc = $('#ichScroll'); if (!sc) return
   if (S.replyTo!=null) { const tx=$('#ansTx'); if(tx){ try{tx.focus()}catch{} } const row=$('#q'+S.replyTo); if(row)row.scrollIntoView({block:'center'}) }
   // #47 MED-2: a numeric selInbox (OS-notification click) sets a one-shot jumpTarget → scroll to + highlight
