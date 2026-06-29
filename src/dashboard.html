@@ -205,6 +205,12 @@
   .tabs { display:flex; gap:6px; margin:14px 0 10px } .tabs button { background:transparent; border:1px solid transparent; color:var(--dim); border-radius:7px; padding:5px 10px; cursor:pointer; font-size:12.5px }
   .tabs button.on { background:var(--panel2); color:var(--fg); border-color:var(--line) }
   .thread { background:var(--inset); border:1px solid var(--line); border-radius:var(--radius); padding:14px; white-space:pre-wrap; word-break:break-word; font-size:12.5px; flex:1 1 0; min-height:0; overflow:auto; margin:0 }
+  /* #63-C: bottom-anchored room composer (the steer box) — header+tabs fixed, transcript flexes+scrolls, composer sticks at the bottom */
+  .roomview { display:flex; flex-direction:column; height:100%; min-height:0 }
+  .roombody { flex:1 1 0; min-height:0; display:flex; flex-direction:column }
+  .composer { flex:0 0 auto; display:flex; gap:7px; align-items:flex-end; padding:9px 2px 2px; border-top:1px solid var(--line) }
+  .composer select { max-width:170px; flex:0 0 auto } .composer .btn { flex:0 0 auto }
+  .composer textarea { flex:1 1 auto; min-height:38px; max-height:160px; box-sizing:border-box; resize:none }
   .thread:focus-visible, .focusable:focus-visible { outline:2px solid var(--accent); outline-offset:-2px }   /* keyboard-scroll a11y (#2a E) */
   .tline { word-break:break-word; margin:1px 0 }
   .tline .body { display:inline-block; vertical-align:top; max-width:100%; white-space:pre-wrap }   /* #63-A: member text rendered as safe MD; chrome is a sibling, not inside */
@@ -388,7 +394,7 @@ const MEDIA_ROLE_BACKEND = { designer:'gemini', 'sound-designer':'elevenlabs', c
 const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
 
 const S = {
-  building: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, replyTo: null, jumpTarget: null, flash: null,
+  building: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, replyTo: null, jumpTarget: null, flash: null, roomDrafts: {},
   notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
   notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
   teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null,
@@ -865,7 +871,10 @@ function renderRoom(d) {
     ? ['<option value="all">everyone</option>'].concat(mem.map(h=>{const m=memberByHandle(h);return `<option value="${esc(h)}">${m?'@'+m.first+' ('+m.role+')':esc(h)}</option>`})).join('')
     : ['both','a','b'].map(x=>`<option value="${x}">${x==='both'?'both sides':'side '+x}</option>`).join('')
   const cu = (S.room&&S.room.catchups)||[]; const unrev = cu.filter(c=>c.status==='ready'&&!c.reviewedAt).length
-  d.innerHTML = `
+  // #63-C: bottom-anchored Slack composer — the room view is a flex column (header + tabs fixed, the
+  // tabbody/transcript flexes + scrolls, the composer sticks at the bottom). The composer IS the steer box;
+  // its trusted-[Human directive] send semantics are unchanged (doSteer → act('steer')), just the UX.
+  d.innerHTML = `<div class="roomview">
     <div class="row wrap" style="justify-content:space-between;align-items:flex-start">
       <div><b>${esc(r.team||label2(r))}</b> <span class="muted">[${esc(r.kind||'room')}]</span> <span class="state ${r.state}">${esc(r.state)}${r.state==='Paused'&&r.pauseReason?(' · '+esc(pauseLabel(r.pauseReason))):''}</span></div>
       <div class="row">${r.state==='Paused'
@@ -873,15 +882,32 @@ function renderRoom(d) {
         : r.state==='Running' ? `<button class="btn" onclick="roomAct('brake')">⏸ Pause</button>` : ''
       }<button class="btn danger" onclick="roomAct('end')">✕ Close</button></div>
     </div>
-    <h2>Steer — trusted [Human directive]</h2>
-    <div class="row"><select id="steerT" style="max-width:220px">${steerOpts}</select><textarea id="steerTx" placeholder="Direct the team or a member…"></textarea><button class="btn primary" onclick="doSteer()">Send</button></div>
     <div class="tabs">
       <button class="${S.tab==='thread'?'on':''}" onclick="setTab('thread')">Transcript</button>
       <button class="${S.tab==='summary'?'on':''}" onclick="setTab('summary')">Summary</button>
       <button class="${S.tab==='catchups'?'on':''}" onclick="setTab('catchups')">Catch-ups${unrev?` · ${unrev}`:''}</button>
     </div>
-    <div id="tabbody"></div>`
+    <div id="tabbody" class="roombody"></div>
+    <div class="composer">
+      <select id="steerT" title="who to steer">${steerOpts}</select>
+      <textarea id="steerTx" rows="1" placeholder="Message the team — sends as a trusted [Human directive] · Enter to send, Shift+Enter for a newline"></textarea>
+      <button class="btn primary" onclick="doSteer()">Send</button>
+    </div>
+  </div>`
   renderTab()
+  // #63-D: restore this room's in-memory draft; #63-E: Enter submits / Shift+Enter newline + IME guard.
+  const stx = $('#steerTx')
+  if (stx) {
+    if (S.roomDrafts && S.roomDrafts[S.selRoom]) stx.value = S.roomDrafts[S.selRoom]
+    const grow = () => { stx.style.height = 'auto'; stx.style.height = Math.min(stx.scrollHeight, 160) + 'px' }
+    stx.addEventListener('keydown', (e) => {
+      // #63-E: Enter submits, Shift+Enter newline; the isComposing/229 guard so a CJK/IME commit-Enter
+      // (which fires keydown Enter while composing) doesn't send a half-composed message.
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); doSteer() }
+    })
+    stx.addEventListener('input', () => { (S.roomDrafts ||= {})[S.selRoom] = stx.value; grow() })   // #63-D draft + auto-grow
+    grow()
+  }
 }
 // Render the STRUCTURED transcript (#18) by DOM construction (#63-A). Each record is one logical message
 // {t: line text, q: question id|null, r: reply-to id|null}. The body renders as safe Markdown into its OWN
@@ -1419,7 +1445,10 @@ window.selMember = (h)=>{ if(!confirmLeaveBuilder())return; S.selRoom=null; S.se
   else paint() }
 window.setTab = (t)=>{ S.tab=t; paintedKey=null; paint() }
 window.roomAct = async (a)=>{ if(a==='end'&&!confirm('Close this room?'))return; const r=await act(a,{roomId:S.selRoom}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
-window.doSteer = async ()=>{ const tx=$('#steerTx'); const t=$('#steerT'); if(!tx||!tx.value.trim())return; const r=await act('steer',{roomId:S.selRoom,target:t.value,text:tx.value.trim()}); if(!r.ok)return flashFail(r); tx.value=''; S.flash=null; tick() }
+window.doSteer = async ()=>{ const tx=$('#steerTx'); const t=$('#steerT'); if(!tx||!tx.value.trim())return; const r=await act('steer',{roomId:S.selRoom,target:t.value,text:tx.value.trim()}); if(!r.ok)return flashFail(r); tx.value=''; if(S.roomDrafts)delete S.roomDrafts[S.selRoom]   // #63-D: sent → clear the draft
+  // #63-C: autoscroll the transcript to bottom to reveal the sent steer — only if already near bottom (no yank).
+  const th=$('#thread'); if(th && th.scrollHeight-th.scrollTop-th.clientHeight<120) th.scrollTop=th.scrollHeight
+  S.flash=null; tick() }
 window.reviewCu = async (seq)=>{ const r=await act('review',{roomId:S.selRoom,seq}); if(!r.ok)return flashFail(r); S.flash=null; S.room=await api('/api/room?id='+encodeURIComponent(S.selRoom)); paintedKey=null; paint() }
 // #20: confirm the reply landed (2xx) BEFORE closing the panel. A 403 (stale token) / network / 500 keeps
 // the item open and surfaces the error — never optimistic-close (that was the silent-swallow @user hit).
