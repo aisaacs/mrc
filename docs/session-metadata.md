@@ -177,10 +177,17 @@ waiting on the full record migration, and #31 (listed "separate") came along too
 - **The CDN egress bypass** — was promoted to its own effort and SEALED for the *adversary* cage by the
   A/#40 SNI-pinning egress proxy (`docs/adversary-containment-hardening.md`). The *normal-profile* bypass
   remains its own (lower-priority) review.
-- **#48 (NEW, OPEN)** — a fresh session pulled into a room by a peer gets named after the PEER's topic:
-  `generateName` reads its transcript, which early on is dominated by the peer's injected prompt. NOT a
-  record/source-of-truth drift. Deferred fix: have `generateName` exclude `<channel>`/peer-injected
-  content so a consulted session is named from its own contribution.
+- **#48 (DONE 2026-06-29)** — a fresh session pulled into a room by a peer got named after the PEER's
+  topic (often the asking session's own name): a peer's prompt arrives as a `type:"user"` turn whose
+  STRING content is `<channel source=...>`-prefixed and flagged `isMeta`, and `generateName` fed those
+  straight into the namer — so a consulted session's transcript was dominated by the peer's framing. NOT
+  a record/source-of-truth drift. Fixed in `src/sessions/transcript.js`: `extractTranscript` gained an
+  opt-in `{ excludeMeta }` that drops injected user turns (`isMeta === true`, or `<channel`-prefixed as a
+  belt-and-suspenders guard — this also strips the `--continue` resume marker and local-command caveats).
+  `generateName` passes it; `summarize` does NOT, so a summary still reflects a consultation. A human's
+  own typed prompt is never `isMeta`, so own input is untouched; a pure-consultation session falls below
+  the 200-char naming floor and stays *unnamed* (correct) rather than mis-named. Host-side (no rebuild).
+  Tested: `test/transcript.test.mjs` (6/0).
 
 ## Deploy / rebuild
 

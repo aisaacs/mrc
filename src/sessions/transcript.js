@@ -5,8 +5,15 @@ import { join, basename } from 'node:path'
  * Extract a condensed transcript from a session JSONL.
  * If maxChars > 0, stop once that length is reached.
  * Otherwise cap at ~16K chars (first 8K + last 8K).
+ *
+ * `excludeMeta` (#48): drop system-injected user turns — room/channel peer messages, the
+ * `--continue` resume marker, local-command caveats. Claude Code flags every one of these
+ * `isMeta` (and a peer delivery is additionally `<channel source=...>`-prefixed); a human's own
+ * typed prompt is never isMeta. Naming passes this so a *consulted* session (one a peer opened a
+ * room with and fed a prompt) gets named from its OWN input, not the peer's topic — which is often
+ * the asking session's very name. Summaries leave it off, so a summary still reflects a consultation.
  */
-export function extractTranscript(mrcDir, uuid, maxChars = 0) {
+export function extractTranscript(mrcDir, uuid, maxChars = 0, { excludeMeta = false } = {}) {
   const file = join(mrcDir, `${uuid}.jsonl`)
   let raw
   try { raw = readFileSync(file, 'utf8') } catch { return '' }
@@ -24,6 +31,10 @@ export function extractTranscript(mrcDir, uuid, maxChars = 0) {
       if (Array.isArray(content)) {
         content = content.filter(c => c.type === 'text').map(c => c.text || '').join(' ')
       }
+      // #48: skip injected turns. isMeta is Claude Code's flag for not-human-typed input; the
+      // `<channel` prefix is a belt-and-suspenders guard in case a build stops setting isMeta on
+      // channel deliveries. Either way the peer's prompt never reaches the namer.
+      if (excludeMeta && (obj.isMeta === true || (typeof content === 'string' && /^\s*<channel\b/.test(content)))) continue
       if (content.trim()) {
         const line = `USER: ${content.trim()}`
         lines.push(line)

@@ -73,7 +73,10 @@ export async function generateName(mrcDir, uuid) {
     return
   }
 
-  const transcript = extractTranscript(mrcDir, uuid, 2000)
+  // #48: excludeMeta strips room/channel peer messages (and other injected turns) so a session a
+  // peer consulted is named from its OWN input — not the peer's topic. If that leaves too little
+  // (a pure-consultation session), the floor below skips naming and it stays unnamed (correct).
+  const transcript = extractTranscript(mrcDir, uuid, 2000, { excludeMeta: true })
   // Floor: don't ask the namer to name an empty/near-empty session — it replies "no transcript
   // provided", which fails the kebab-case check below and surfaces as a confusing "bad format" error.
   // The watcher already gates on ~10KB of .jsonl, but this guards manual/resumed callers too.
