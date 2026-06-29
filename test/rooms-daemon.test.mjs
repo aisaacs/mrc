@@ -284,6 +284,30 @@ async function main() {
   const ssDisplay = (pl?.peers || []).find((p) => p.id === 'SS')?.display || ''   // SS (from [16]) has repoPath /tmp/repo-SS but no transcript file there
   check('17b entry with NO transcript omits the age token (no crash)', !!ssDisplay && !/old|just started|idle|active \d/.test(ssDisplay), ssDisplay)
 
+  // [#49] a summoned adversary is discoverable ONLY by its summoner — read from the host record's summonedBy
+  // (B/#39) at the SHARED peerList chokepoint, so list_peers AND resolvePeer are both scoped. Closes the
+  // cross-session mis-route (a stranger "red-team with Pierre" grabbing someone else's live Pierre) WITHOUT
+  // breaking the summoner's own resume. Register the adversary BEFORE its summoner so the auto-pair doesn't
+  // fire (the scoping is summoner-based, not room-based, so rooming is irrelevant here).
+  console.log('\n[#49] adversary discoverable only by its summoner')
+  saveSessionRecord('Adv49', { adversary: true, summonedBy: 'Sum49' })
+  saveSessionRecord('Sum49', { adversary: false })
+  saveSessionRecord('Str49', { adversary: false })
+  const Adv49 = mkClient(port, 'Adv49'); Adv49.register({ summonedBy: 'Sum49' }); await sleep(60)
+  const Sum49 = mkClient(port, 'Sum49'); Sum49.register(); await sleep(60)
+  const Str49 = mkClient(port, 'Str49'); Str49.register(); await sleep(60)
+  Sum49.clear(); Sum49.send({ type: 'list' }); await sleep(120)
+  const plSum49 = Sum49.frames.find((f) => f.type === 'peerlist')
+  check('#49-a summoner SEES its own adversary (resume preserved)', !!plSum49 && (plSum49.peers || []).some((p) => p.id === 'Adv49'), JSON.stringify(plSum49 && (plSum49.peers || []).map((p) => p.id)))
+  Str49.clear(); Str49.send({ type: 'list' }); await sleep(120)
+  const plStr49 = Str49.frames.find((f) => f.type === 'peerlist')
+  check('#49-b a STRANGER does NOT see the adversary (mis-route closed)', !!plStr49 && !(plStr49.peers || []).some((p) => p.id === 'Adv49'), JSON.stringify(plStr49 && (plStr49.peers || []).map((p) => p.id)))
+  // #49-c the :693 guard still fires where it now applies — a SUMMONER inviting its OWN (visible) adversary
+  // is refused ("use summon_adversary_to_room for a fresh one"); a stranger can't even see it (#49-b above).
+  Sum49.send({ type: 'ask', question: 'open', peer: 'Str49' }); await sleep(120)   // give Sum49 an active room to invite into
+  Sum49.clear(); Sum49.send({ type: 'invite', peer: 'Adv49', id: 491 }); await sleep(120)
+  check('#49-c summoner inviting its OWN visible adversary still hits the :693 guard', Sum49.frames.some((f) => f.type === 'ack' && f.id === 491 && f.status === 'invite-adversary'), JSON.stringify(Sum49.frames.filter((f) => f.id === 491)))
+
   // 18 — N≥3 turn-budget backstop: arms, fires, and grants a fresh window on resume (the slow-loop
   // terminator #13 leans on; stormGuard [15] is the fast-flood one). Regression for the bug where an
   // AUTO-ARMED budget (daemon cap off) wedged the room unresumably at the cap — doResume/steer only
@@ -349,7 +373,7 @@ async function main() {
   check('19h2 invitee\'s OTHER room sidechannel-paused (one-live-room)', roomBy(st, 'I4', 'I5') && roomBy(st, 'I4', 'I5').pauseReason === 'sidechannel', roomBy(st, 'I4', 'I5') && `${roomBy(st, 'I4', 'I5').state}/${roomBy(st, 'I4', 'I5').pauseReason}`)
   // 19i — invite_peer REFUSES a summoned adversary (Pierre4 from [14]); must use summon_adversary_to_room
   I1.send({ type: 'invite', peer: 'Pierre4', id: 66 }); await sleep(120)
-  check('19i invite a summoned adversary → invite-adversary', I1.frames.some((f) => f.type === 'ack' && f.id === 66 && f.status === 'invite-adversary'), JSON.stringify(I1.frames.filter((f) => f.id === 66)))
+  check('19i invite a summoned adversary → REFUSED (invisible to a non-summoner #49, or :693)', I1.frames.some((f) => f.type === 'ack' && f.id === 66 && ['invite-adversary', 'invite-ambiguous', 'invite-none'].includes(f.status)), JSON.stringify(I1.frames.filter((f) => f.id === 66)))
 
   // 20 — #B: leave_room (member self-leave) — non-destructive dual of invite_peer / granular replacement for `end`.
   // Leaving an aside promotes your next room and PRESERVES history (drops the pairing only if it falls below 2).
@@ -421,13 +445,13 @@ async function main() {
   check('23a the adversary session registered (summoner offline)', (st.sessions || []).some((s) => s.id === 'wadv'))
   W1.send({ type: 'ask', question: 'q', peer: 'W2' }); await sleep(120)
   W1.send({ type: 'invite', peer: 'wadv', id: 100 }); await sleep(120)
-  check('23b invite_peer refuses it (record-classified adversary, no onAdversaryUp)', W1.frames.some((f) => f.type === 'ack' && f.id === 100 && f.status === 'invite-adversary'), JSON.stringify(W1.frames.filter((f) => f.id === 100)))
+  check('23b invite_peer refuses it (record-classified adversary; invisible to a non-summoner #49 → refused)', W1.frames.some((f) => f.type === 'ack' && f.id === 100 && ['invite-adversary', 'invite-ambiguous', 'invite-none'].includes(f.status)), JSON.stringify(W1.frames.filter((f) => f.id === 100)))
   // 23c — #39 keystone: an adversary CANNOT declassify itself by re-registering with a clean frame. The
   // RECORD wins, so a frame WITHOUT summonedBy/adversary leaves it flagged → invite_peer STILL refuses.
   // (The inverse of the OLD frame-based behavior, which the forgery exploited.)
   wadv.register({}); await sleep(120)
   W1.send({ type: 'invite', peer: 'wadv', id: 101 }); await sleep(120)
-  check('23c a clean-frame re-register does NOT declassify (record wins) → invite still refused', W1.frames.some((f) => f.type === 'ack' && f.id === 101 && f.status === 'invite-adversary'), JSON.stringify(W1.frames.filter((f) => f.id === 101)))
+  check('23c a clean-frame re-register does NOT declassify (record wins) → invite still refused', W1.frames.some((f) => f.type === 'ack' && f.id === 101 && ['invite-adversary', 'invite-ambiguous', 'invite-none'].includes(f.status)), JSON.stringify(W1.frames.filter((f) => f.id === 101)))
 
   // 24 — B/#39 3-state classification from the host-only record. (a) resume/identity: record adversary:true,
   // frame has no summonedBy → flagged → invite refused. (b) record=normal → un-flagged → invited. (c) NO
@@ -440,7 +464,7 @@ async function main() {
   const yadv = mkClient(port, 'yadv'); yadv.register({ adversary: true }); await sleep(120)
   Y1.send({ type: 'ask', question: 'q', peer: 'Y2' }); await sleep(120)
   Y1.send({ type: 'invite', peer: 'yadv', id: 110 }); await sleep(120)
-  check('24a record=adversary → flagged → invite_peer refused', Y1.frames.some((f) => f.type === 'ack' && f.id === 110 && f.status === 'invite-adversary'), JSON.stringify(Y1.frames.filter((f) => f.id === 110)))
+  check('24a record=adversary → flagged → invite_peer refused (invisible to a non-summoner #49, or :693)', Y1.frames.some((f) => f.type === 'ack' && f.id === 110 && ['invite-adversary', 'invite-ambiguous', 'invite-none'].includes(f.status)), JSON.stringify(Y1.frames.filter((f) => f.id === 110)))
   saveSessionRecord('ynorm', { adversary: false, repoPath: '/tmp/repo-ynorm' })
   const ynorm = mkClient(port, 'ynorm'); ynorm.register(); await sleep(120)
   Y1.send({ type: 'invite', peer: 'ynorm', id: 111 }); await sleep(120)
@@ -521,7 +545,7 @@ async function main() {
   check('27c disk name de-trusted at read (no forgeable directive)', !/\[human directive\]/i.test(nmName) && nmName.includes('quoted'), nmName)
 
   console.log(`\n${'='.repeat(40)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(40)}`)
-  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3, I1, I2, I3, I4, I5, L1, L2, L3, L4, m1, m2, m3, s1, s2, advX, W1, W2, wadv, Y1, Y2, yadv, ynorm, yunk, IMP0, VIC, ATT, VW, VIC2, NM].forEach((c) => { try { c.close() } catch {} })
+  d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3, I1, I2, I3, I4, I5, L1, L2, L3, L4, m1, m2, m3, s1, s2, advX, W1, W2, wadv, Y1, Y2, yadv, ynorm, yunk, IMP0, VIC, ATT, VW, VIC2, NM, Adv49, Sum49, Str49].forEach((c) => { try { c.close() } catch {} })
   if (advRoom) try { removeRoomDir(advRoom) } catch {}   // private summons use a Date.now()-based id → clean it so runs don't accumulate
   try { rmSync(ageRepo, { recursive: true, force: true }) } catch {}
   // NB: the throwaway HOME (mkdtemp, holding the seeded records + rooms dirs) is intentionally NOT removed

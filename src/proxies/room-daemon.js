@@ -222,7 +222,19 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
 
   function peerList(exceptId) {
     const fmtAge = (ms) => ms < 90_000 ? 'just started' : ms < 3_600_000 ? `${Math.floor(ms / 60_000)}m old` : ms < 86_400_000 ? `${Math.floor(ms / 3_600_000)}h old` : `${Math.floor(ms / 86_400_000)}d old`
-    const raw = [...sessions.keys()].filter((id) => id !== exceptId).map((id) => ({ name: nameOf(id), repo: repoOf(id), id }))
+    // #49: a summoned adversary is discoverable ONLY by its own summoner — invisible/unconnectable to other
+    // sessions. Closes the cross-session mis-route (a stranger told "red-team with Pierre" finding + ask_peer-ing
+    // SOMEONE ELSE'S live Pierre instead of summoning a fresh one — wrong mount, role-not-memory broken) WITHOUT
+    // breaking the summoner's own resume (it still sees + re-addresses its Pierre to re-activate the room). The
+    // summoner is read from the TAMPER-PROOF host record (B/#39), not the forgeable register frame, so a Pierre
+    // can't widen its own audience. This is the SHARED chokepoint for list_peers AND resolvePeer, so it also
+    // closes the resolvePeer `{ambiguous: others}` fall-through leak in one place. A 3-party room is unaffected:
+    // co-members talk via the room broadcast (membership), not discovery, and a Pierre enters a multi-party room
+    // via summon_adversary_to_room (any normal member) — neither needs the non-summoner to "discover" it.
+    const raw = [...sessions.keys()]
+      .filter((id) => id !== exceptId)
+      .filter((id) => !adversaries.has(id) || loadSessionRecord(id).summonedBy === exceptId)
+      .map((id) => ({ name: nameOf(id), repo: repoOf(id), id }))
     // Each peer's display carries at-a-glance metadata so a human can pick the right one of N same-repo
     // sessions: fresh-vs-named (a fresh session still shows its repo basename, so name==repo ⇒ fresh; the
     // generated/manual name is the has-content signal — the watcher only names after ~10KB), active/idle,

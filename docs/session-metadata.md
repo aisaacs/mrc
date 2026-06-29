@@ -165,6 +165,23 @@ by slot reuse), #29 (catch-up `expected` count), #31 (persist pendingInvite), an
 **normal-profile SNI/CDN egress bypass** (the non-adversary firewall allowlists CDN-hosted domains
 by IP with port 53 open → SNI-fronting to a co-tenant; orthogonal to the cage, its own review).
 
+**Resolution update (2026-06-23).** Several of these landed as small TARGETED fixes rather than
+waiting on the full record migration, and #31 (listed "separate") came along too:
+- **#26** — root cause was not the record at all: `--new` greedily consumed the repo PATH as the
+  session name (`mrc --new ~/repo` → garbage name + wrong repo + the auto-namer gated off because
+  `newSessionName` was truthy). Fixed in `src/config.js` with an `!existsSync` guard (a path is the
+  repo, not a name). DONE.
+- **#28** — the short `[last6]` cross-ref id now renders in the statusline (`mrc-statusline.js`), and
+  `mrc rooms status` falls back to `?` for a missing repo (matching `list_peers`). DONE.
+- **#31** — `pendingInvite` is now persisted in `savePairings` (restored like `incomingAdversary`). DONE.
+- **The CDN egress bypass** — was promoted to its own effort and SEALED for the *adversary* cage by the
+  A/#40 SNI-pinning egress proxy (`docs/adversary-containment-hardening.md`). The *normal-profile* bypass
+  remains its own (lower-priority) review.
+- **#48 (NEW, OPEN)** — a fresh session pulled into a room by a peer gets named after the PEER's topic:
+  `generateName` reads its transcript, which early on is dominated by the peer's injected prompt. NOT a
+  record/source-of-truth drift. Deferred fix: have `generateName` exclude `<channel>`/peer-injected
+  content so a consulted session is named from its own contribution.
+
 ## Deploy / rebuild
 
 **Host-side (effective immediately, no rebuild):** the records, always-write, the launch readers,
