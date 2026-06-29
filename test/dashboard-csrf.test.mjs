@@ -237,3 +237,40 @@ test('#69-A: /api/state emits an ETag and 304s an If-None-Match re-poll', async 
     server.close()
   }
 })
+
+// #69-B: the SSE delta stream — same-origin opens a text/event-stream and receives a pushed delta; a foreign
+// Host (DNS-rebinding) is rejected 403; the push is a read (server→client), there's no client write path.
+test('#69-B: /api/events streams deltas same-origin and rejects a rebound Host', async () => {
+  let broadcast = null
+  const { server, port } = await startDashboard({ port: 18950, subscribe: (fn) => { broadcast = fn } })
+  try {
+    assert.equal(typeof broadcast, 'function', 'startDashboard wired the delta subscription')
+
+    // cross-origin / rebound Host → 403 (no stream)
+    const rebind = await new Promise((resolve) => {
+      const r = http.request({ host: '127.0.0.1', port, path: '/api/events', headers: { host: 'evil.example' } }, (res) => { res.resume(); resolve(res.statusCode) })
+      r.on('error', () => resolve(0)); r.end()
+    })
+    assert.equal(rebind, 403, 'a rebound Host on the stream → 403')
+
+    // same-origin → 200 text/event-stream; a pushed delta arrives as a data: line
+    const got = await new Promise((resolve, reject) => {
+      const req = http.request({ host: '127.0.0.1', port, path: '/api/events', headers: { host: `127.0.0.1:${port}` } }, (res) => {
+        assert.equal(res.statusCode, 200, 'same-origin stream → 200')
+        assert.match(res.headers['content-type'] || '', /text\/event-stream/)
+        let buf = ''
+        res.on('data', (d) => {
+          buf += d
+          if (buf.includes('\n\n') && buf.includes('"type":"status"')) { req.destroy(); resolve(buf) }
+        })
+      })
+      req.on('error', (e) => { if (!/socket hang up|aborted/i.test(String(e))) reject(e) })
+      req.end()
+      // push a delta once the stream is open
+      setTimeout(() => broadcast && broadcast({ type: 'status', org: 'shop', handle: 'a/claude', status: { context: 50 }, rateLimit: null }), 120)
+    })
+    assert.match(got, /^data: \{.*"type":"status".*\}$/m, 'the pushed delta arrives as a data: SSE frame')
+  } finally {
+    server.close()
+  }
+})

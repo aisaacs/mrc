@@ -619,7 +619,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
         org.rateLimit = { fiveHour, sevenDay, at: now(), fromLead: !!m.lead }
       }
     }
-    return { org: s.org, handle: s.handle, lead: !!m.lead }
+    return { org: s.org, handle: s.handle, lead: !!m.lead, status: m.status, rateLimit: orgs.get(String(s.org))?.rateLimit || null }   // #69-B: the applied values, for the daemon's status delta broadcast
   }
 
   function status() {

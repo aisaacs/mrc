@@ -1692,7 +1692,48 @@ const _proj = decodeURIComponent(location.pathname.replace(/^\/+/, '').split('/'
 if (_proj) { S.org = _proj; S.builder.org = _proj }       // path is the project -> jump straight to it
 if (_qRepo) { S.builder.repo = _qRepo }
 let _scopedNav = !!_qRepo
-tick(); setInterval(tick, 1500)
+// #69-B: live delta stream replaces the 1.5s full-payload poll (which re-sent the ~277 KB /api/teams every tick).
+// Fetch full state ONCE on load, then apply pushed deltas IN PLACE + re-render through the EXISTING gated
+// renderers — the handlers MUTATE S and call paint()/fillThread (→ renderInboxChannel/slackRow, renderMain/ctxBar),
+// they NEVER innerHTML a pushed record, so the #63 display-safety rides the push path by reuse, not a new sink.
+let _paintQ = false
+function schedulePaint() { if (_paintQ) return; _paintQ = true; setTimeout(() => { _paintQ = false; paint() }, 80) }   // coalesce a delta burst into one paint
+function upsertInbox(item) {   // the engine emits the FULL updated item → upsert-by-id covers new / resolved / reopened
+  if (!item || item.id == null) return
+  S.teams.userInbox ||= []
+  const i = S.teams.userInbox.findIndex(x => x.id === item.id)
+  if (i >= 0) S.teams.userInbox[i] = item; else S.teams.userInbox.push(item)
+}
+function applyDelta(ev) {
+  if (!ev || !ev.type) return
+  switch (ev.type) {
+    case 'msg':
+      // append the one new line to the OPEN room's transcript + re-render via the gated fillThread (no innerHTML,
+      // no room re-fetch); a non-open room is re-fetched on its next open. followScroll keeps the no-yank discipline.
+      if (ev.roomId === S.selRoom && S.room) {
+        (S.room.transcript ||= []).push(ev.record)
+        const t = $('#thread'); if (t && S.tab === 'thread') followScroll(t, () => fillThread(t, S.room))
+      }
+      break
+    case 'inbox': upsertInbox(ev.item); schedulePaint(); break
+    case 'status': {
+      const m = (S.teams.members || []).find(x => x.org === ev.org && x.handle === ev.handle); if (m) m.status = ev.status
+      const o = (S.teams.orgs || []).find(x => x.org === ev.org); if (o && ev.rateLimit) o.rateLimit = ev.rateLimit
+      schedulePaint(); break
+    }
+    case 'presence': { const m = (S.teams.members || []).find(x => x.org === ev.org && x.handle === ev.handle); if (m) m.online = ev.online; schedulePaint(); break }
+    case 'roster': tick(); break   // structure changed → re-fetch the heavy /api/teams (rare; ETag/304 keeps it cheap)
+  }
+}
+let _esOpened = false
+function openEventStream() {
+  let es; try { es = new EventSource('/api/events') } catch { return setInterval(tick, 1500) }   // no SSE support → fall back to polling
+  es.onmessage = (e) => { let ev; try { ev = JSON.parse(e.data) } catch { return } applyDelta(ev) }
+  es.onopen = () => { if (_esOpened) tick(); _esOpened = true }   // RE-connect → re-sync full state once (catches deltas missed while down); boot already did the first. ETag/304-cheap
+  // es.onerror: EventSource auto-reconnects with the server's `retry` backoff; the next onopen re-syncs.
+}
+tick()   // initial full state
+if (window.EventSource) openEventStream(); else setInterval(tick, 1500)   // #69-B: SSE deltas, or poll if unsupported
 $('#tabs')?.addEventListener('scroll', updateTabHints, { passive: true })   // #2a E: keep the off-screen hints live
 addEventListener('resize', updateTabHints)
 addEventListener('pagehide', leaveUnread)   // #63-F: closing/navigating away from the dashboard flushes the open room's unread watermark (pagehide fires on bfcache too, unlike beforeunload)

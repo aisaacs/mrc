@@ -158,6 +158,8 @@ function loadOrMintToken() {
 }
 let DASH_TOKEN = ''   // loaded/minted at startDashboard; persisted 0600 so an open tab survives a restart
 let DASH_PORT = 0
+const sseClients = new Set()   // #69-B: open /api/events responses; the daemon's delta bus fans out to these
+let SSE_WIRED = false          // subscribe once per process (the daemon calls startDashboard once with `subscribe`)
 const isLocalHostName = (h) => h === '127.0.0.1' || h === 'localhost' || h === '[::1]' || h === '::1'
 function originIsSelf(origin) {
   try { const u = new URL(origin); return isLocalHostName(u.hostname) && Number(u.port) === DASH_PORT } catch { return false }
@@ -171,6 +173,20 @@ function hostIsSelf(hostHeader) {
 // Returns null if allowed, else a {code,error} to reject with. Checked BEFORE the body is consumed.
 function rejectStateChange(req) {
   if (!DASH_TOKEN || req.headers['x-mrc-token'] !== DASH_TOKEN) return { code: 403, error: 'forbidden: missing or invalid X-MRC-Token (reload the dashboard)' }
+  const origin = req.headers['origin']
+  if (origin && !originIsSelf(origin)) return { code: 403, error: 'forbidden: cross-origin request' }
+  if (!hostIsSelf(req.headers['host'])) return { code: 403, error: 'forbidden: unexpected Host (possible DNS-rebinding)' }
+  return null
+}
+// #69-B: DNS-rebinding read-gate for the SENSITIVE reads — the SSE stream (mandatory) + the heavy state reads
+// (defense-in-depth). SOP already blocks the SIMPLE cross-origin read (the daemon sends no Access-Control-Allow-
+// Origin → the response is opaque, and a cross-origin EventSource is rejected), but NOT DNS-rebinding (a rebind
+// to 127.0.0.1 makes the browser treat the request as same-origin, so SOP allows the read). This is the SAME
+// Origin+Host check the state-changing POSTs already use (rejectStateChange), applied to these reads because
+// they carry continuous/bulk room state — closing the read-vs-POST asymmetry. NO token (reads carry none, and
+// EventSource cannot send custom headers — CSRF is the wrong tool for a read); the legit same-origin dashboard
+// passes (127.0.0.1 → 127.0.0.1). Only the Origin/Host control, which is exactly what DNS-rebinding defeats.
+function rejectRead(req) {
   const origin = req.headers['origin']
   if (origin && !originIsSelf(origin)) return { code: 403, error: 'forbidden: cross-origin request' }
   if (!hostIsSelf(req.headers['host'])) return { code: 403, error: 'forbidden: unexpected Host (possible DNS-rebinding)' }
@@ -347,8 +363,23 @@ async function handle(req, res) {
       const r = meta?.controlPort ? await ctrl(meta.controlPort, 'sessions') : { ok: false }
       return sendJSON(res, 200, r?.ok ? r : { ok: false, sessions: [] })
     }
-    if (req.method === 'GET' && url.pathname === '/api/state') return sendJSONCached(req, res, await buildState())   // #69-A
+    // #69-B: the SSE delta stream — replaces the dashboard's full-payload poll. Origin-gated (DNS-rebinding read
+    // control, MANDATORY — it carries continuous room state). The daemon's delta bus (wired in startDashboard)
+    // writes server-sent events to every client in `sseClients`; read-push only, no client write path.
+    if (req.method === 'GET' && url.pathname === '/api/events') {
+      const bad = rejectRead(req); if (bad) { res.writeHead(bad.code, { 'cache-control': 'no-store' }); return res.end() }
+      res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive', 'x-accel-buffering': 'no' })
+      res.write('retry: 3000\n\n')                                  // EventSource auto-reconnect backoff hint
+      sseClients.add(res)
+      const hb = setInterval(() => { try { res.write(': hb\n\n') } catch {} }, 25000)   // heartbeat so proxies/idle don't drop the stream
+      req.on('close', () => { clearInterval(hb); sseClients.delete(res) })
+      return
+    }
+    // #69-B defense-in-depth: the heavy state reads carry bulk room state → origin-gate them too (closes the
+    // read-vs-POST DNS-rebinding asymmetry; the legit same-origin dashboard passes 127.0.0.1→127.0.0.1).
+    if (req.method === 'GET' && url.pathname === '/api/state') { const bad = rejectRead(req); if (bad) return sendJSON(res, bad.code, { error: bad.error }); return sendJSONCached(req, res, await buildState()) }   // #69-A ETag/304
     if (req.method === 'GET' && url.pathname === '/api/teams') {
+      const bad = rejectRead(req); if (bad) return sendJSON(res, bad.code, { error: bad.error })
       const meta = daemonMeta()
       const t = meta?.controlPort ? await ctrl(meta.controlPort, 'team') : { ok: false }
       return sendJSONCached(req, res, t?.ok ? t : { ok: false, members: [], rooms: [], userInbox: [] })   // #69-A: the 277 KB poll read → ETag/304
@@ -401,7 +432,7 @@ async function handle(req, res) {
   }
 }
 
-export async function startDashboard({ port, onActivity } = {}) {
+export async function startDashboard({ port, onActivity, subscribe } = {}) {
   if (!existsSync(roomsRoot())) { /* no rooms yet — the page will just show an empty list */ }
   const base = port || Number(process.env.MRC_DASHBOARD_PORT) || 8787
   const free = await findFreePort(base)
@@ -409,6 +440,11 @@ export async function startDashboard({ port, onActivity } = {}) {
   // across restarts means an already-open tab's next POST still validates instead of silently 403'ing.
   DASH_PORT = free
   DASH_TOKEN = loadOrMintToken()
+  // #69-B: fan the daemon's in-process delta bus out to every connected SSE client (read-push; server→client only).
+  if (typeof subscribe === 'function' && !SSE_WIRED) {
+    SSE_WIRED = true
+    subscribe((ev) => { const line = `data: ${JSON.stringify(ev)}\n\n`; for (const r of sseClients) { try { r.write(line) } catch {} } })
+  }
   // onActivity fires per request; the daemon uses it as a keep-alive so an open dashboard
   // prevents idle-shutdown (you won't lose the view mid-browse).
   const server = http.createServer((req, res) => { try { onActivity?.() } catch {} handle(req, res) })
