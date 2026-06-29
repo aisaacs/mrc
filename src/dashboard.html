@@ -49,6 +49,7 @@
     --success-bg:#1f3a26; --success-border:#2f6b3f; --success-fg:#bfe6c8;
     --needs-bg:#3a2f4f; --needs-fg:#d7c5f5;          /* soft needs-you badge */
     --needs-edge:#5a4a7a; --needs-edge-fg:#e7dcff;   /* brighter needs-you: tab badge + needs-you panel borders */
+    --unread:#f56565;    /* #63-F unread divider — a RED read-position marker, deliberately distinct from the PURPLE needs-you action accent (two cues, not one) */
     /* rhythm (8px scale) + radius — defined now for 2b; adopted value-preserving where it matches */
     --sp1:4px; --sp2:8px; --sp3:12px; --sp4:16px; --sp5:24px; --sp6:32px;
     --radius:10px; --radius-sm:7px; --radius-pill:999px;
@@ -233,6 +234,17 @@
   .msg-fyi { opacity:.82 }   /* @you FYIs read dimmer than questions (the ❓/🔔 icon is the primary distinction) */
   .msg-needs { border-left:2px solid var(--needs-edge); padding-left:7px }   /* #63-B2: an OPEN question still needing your reply */
   .msg-needs .qicon { color:var(--needs-you) }   /* the ❓ glows for an open question (glyph already distinguishes) */
+  /* #63-F unread: a RED full-width divider marking the read-position (where new-since-last-visit begins), and a
+     jump pill when that divider has scrolled off the top. Red ≠ the purple needs-you accent → two distinct cues. */
+  .unread-div { display:flex; align-items:center; gap:8px; margin:8px 2px; color:var(--unread); font-size:11px; font-weight:600; letter-spacing:.02em }
+  .unread-div::before, .unread-div::after { content:''; flex:1 1 0; height:1px; background:var(--unread); opacity:.5 }
+  .unread-pill { position:absolute; top:7px; left:50%; transform:translateX(-50%); z-index:6; background:var(--unread); color:#1a0c0c; border:none; border-radius:11px; padding:3px 11px; font-size:11px; font-weight:700; cursor:pointer; box-shadow:0 1px 7px rgba(0,0,0,.35) }
+  .unread-pill:hover { filter:brightness(1.08) }
+  /* #63-F de-collision: on @you the triage pill ("N unanswered", top-center) and the unread pill share the
+     top-center anchor. When the triage IS present (it precedes the pill in .ich-wrap), drop the secondary unread
+     pill below it so BOTH stay visible — triage keeps the stable spot. Sibling-gated, so a transcript room (no
+     triage) and an @you with no unanswered questions keep the unread pill top-center. */
+  .ich-triage ~ .unread-pill { top:34px }
   .ra-arch b { color:#a78bfa } .ra-eng b { color:#5ec878 } .ra-crit b { color:#f2a65a } .ra-adv b { color:#f2607a } .ra-human b { color:#6aa0f5 } .ra-media b { color:#e29bd8 } .ra-sys b { color:var(--dim) }
   .pane { background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:10px 12px; margin-bottom:8px; flex-shrink:0 }
   .pane.unrev { border-color:var(--needs-edge) }
@@ -395,6 +407,7 @@ const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
 
 const S = {
   building: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, replyTo: null, jumpTarget: null, flash: null, roomDrafts: {},
+  _wmCur: null, _wmLatest: 0, _openWm: {},   // #63-F unread watermark: the room/channel currently open + its latest position + the per-key captured-at-open boundary
   notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
   notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
   teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null,
@@ -475,7 +488,7 @@ function orgNeed(org) {
 // A launch record only counts as "running" if the daemon reconciled it as live (≥1 member session up,
 // or still building) — a stale record from a crash reports running:false, so ▶ Resume/🚀 Launch comes back.
 const orgRunning = (org) => (S.teams.launch||[]).some(l=>l.org===org && l.running) || (S.teams.members||[]).some(m=>m.org===org && m.tier==='live' && (m.online||m.launched))
-function switchOrg(org) { if (org===S.org) return; if (!confirmLeaveBuilder()) return; S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; S.selHome=true; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }); setOrgUrl(org); paint() }   // #55-1: guard a dirty build; #61: entering a project lands on its home
+function switchOrg(org) { if (org===S.org) return; if (!confirmLeaveBuilder()) return; leaveUnread(); S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; S.selHome=true; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }); setOrgUrl(org); paint() }   // #55-1: guard a dirty build; #61: entering a project lands on its home
 window.switchOrg = switchOrg
 
 // Browser-style project tabs: one per defined org. Chrome-stable — tabs keep a FIXED position
@@ -527,6 +540,7 @@ window.scrollTabs = (dir) => { const el = $('#tabs'); if (!el) return; el.scroll
 // history — the tab stays as closed-dormant and ▶ Resume brings it back. (Delete is deferred.)
 window.closeTab = async (org) => {
   if (!confirm(`Close "${org}"? Members stop; the team, transcripts, and history stay — reopen to resume.`)) return
+  if (org === S.org) leaveUnread()   // #63-F: closing the active project leaves its open room — flush its watermark
   const r = await actJSON('/api/team-stop', { org }); if(!r.ok)return flashFail(r); S.flash=null
   tick()
 }
@@ -970,27 +984,88 @@ function startsNewGroup(prevKey, prevAt, key, at) {
   const a = tsMs(at), p = tsMs(prevAt)
   return !!(a && p && (a - p) > GROUP_GAP_MS)             // same author, big time gap → new header+time
 }
-function fillTranscript(host, records) {
+// #63-F: per-room unread watermark — the last message-position the human has SEEN in this room/channel,
+// persisted in localStorage (HUMAN-LOCAL; no untrusted surface, no server state). The "position" is a
+// number that is monotonic PER KEY: a room transcript uses the message timestamp (ms), the @you channel
+// uses the item #id. The boundary is captured AT OPEN (S._openWm) so the red divider stays put as you read
+// and as new messages stream in; the persisted watermark advances to the latest only when you LEAVE.
+function wmKey(k) { return 'mrc-unread-' + k }
+function getWm(k) { try { return Number(localStorage.getItem(wmKey(k))) || 0 } catch { return 0 } }
+function setWm(k, v) { try { if (v > getWm(k)) localStorage.setItem(wmKey(k), String(v)) } catch {} }
+// Mark this key the open one and capture its boundary on a FRESH open (key changed). Re-renders/polls of the
+// SAME key keep the captured boundary (stable divider) and only refresh the latest position. Returns the
+// boundary: messages whose position exceeds it are "new". Boundary 0 = never-before-seen → no divider.
+function enterUnread(key, latestPos) {
+  S._openWm = S._openWm || {}
+  if (S._wmCur !== key) {
+    if (S._wmCur) setWm(S._wmCur, S._wmLatest)   // switching room→room/channel: flush the one we just left to its last-seen latest
+    S._wmCur = key; S._openWm[key] = getWm(key)
+  }
+  S._wmLatest = latestPos || 0
+  return S._openWm[key] || 0
+}
+// Leaving a room/channel for a non-room view: persist "seen up to the latest" so the next open reflects it.
+// (selRoom/selInbox switches advance the prior key implicitly via enterUnread's key-change capture.)
+function leaveUnread() { if (S._wmCur) { setWm(S._wmCur, S._wmLatest); S._wmCur = null; S._wmLatest = 0 } }
+function unreadDivider(n) {
+  const d = document.createElement('div'); d.className = 'unread-div'; d.dataset.n = String(n)
+  const s = document.createElement('span'); s.textContent = `${n} new message${n===1?'':'s'}`; d.appendChild(s)
+  return d
+}
+// Show/refresh a "↑ N new — jump to unread" pill over the scroll container when its red divider has scrolled
+// above the viewport top; clicking scrolls the divider back into view. No divider → no pill. Re-wires its
+// scroll listener idempotently (renders rebuild the DOM, so a stale listener on an orphaned node is harmless,
+// but we still de-dup on the live element).
+function wireUnreadPill(scrollEl) {
+  if (!scrollEl) return
+  const host = scrollEl.parentElement; if (!host) return
+  const div = scrollEl.querySelector('.unread-div')
+  let pill = host.querySelector(':scope > .unread-pill')
+  if (!div) { if (pill) pill.remove(); return }
+  if (!pill) {
+    pill = document.createElement('button'); pill.className = 'unread-pill'
+    if (getComputedStyle(host).position === 'static') host.style.position = 'relative'
+    pill.onclick = () => div.scrollIntoView({ block:'center', behavior:'smooth' })
+    host.appendChild(pill)
+  }
+  pill.textContent = `↑ ${div.dataset.n} new — jump to unread`
+  const upd = () => {
+    const dr = div.getBoundingClientRect(), sr = scrollEl.getBoundingClientRect()
+    pill.style.display = (dr.bottom < sr.top + 4) ? '' : 'none'   // divider scrolled above the viewport top
+  }
+  if (scrollEl._unreadUpd) scrollEl.removeEventListener('scroll', scrollEl._unreadUpd)
+  scrollEl._unreadUpd = upd; scrollEl.addEventListener('scroll', upd, { passive:true }); upd()
+}
+function fillTranscript(host, records, key) {
   host.textContent = ''
-  const frag = document.createDocumentFragment(); let prevKey = null, prevAt = null
-  for (const rec of (records||[])) {
+  const recs = records || []
+  // #63-F: the unread boundary for THIS room (timestamp positions). Legacy records (no `at`) → pos 0 → never
+  // exceed a >0 boundary, so they never anchor a divider — the same graceful degrade as the author header.
+  const latest = recs.reduce((m, r) => Math.max(m, tsMs(r.at)), 0)
+  const boundary = key ? enterUnread(key, latest) : 0
+  const unread = boundary > 0 ? recs.filter(r => tsMs(r.at) > boundary).length : 0
+  const frag = document.createDocumentFragment(); let prevKey = null, prevAt = null, placed = false
+  for (const rec of recs) {
     // #63-B: a B1-enriched record carries trusted from/role/at + the clean `text` → Slack row (author header
     // gated on `from`). A legacy { t, q, r } record (pre-B1, no from) → header-less, body = the whole `t` with
     // only the daemon's own trailing [#N]/(re #N) stripped; NEVER parse `t` for an author.
     const from = rec.from ?? null
     const text = rec.text != null ? String(rec.text) : String(rec.t || '').replace(/\s*\[#\d+\]\s*$/, '').replace(/\s*\(re #\d+\)\s*$/, '')
+    if (unread && !placed && tsMs(rec.at) > boundary) { frag.appendChild(unreadDivider(unread)); placed = true }   // #63-F divider before the first unread
     const newGroup = startsNewGroup(prevKey, prevAt, from, rec.at)
     prevKey = from; prevAt = rec.at
     frag.appendChild(slackRow({ from, role: rec.role, at: rec.at, text, qid: rec.q, rid: rec.r, newGroup, anchorId: rec.q }))
   }
   host.appendChild(frag)
+  wireUnreadPill(host)
 }
 // Fill a #thread host: the structured transcript (DOM-append) when present, else inert thread.log lines
 // (textContent → auto-escaped, no anchors — we never re-derive trust from raw text), else the empty notice.
 function fillThread(host, room) {
   const tx = (room&&room.transcript)||[]; const raw = (room&&room.thread)||''
-  if (tx.length) return fillTranscript(host, tx)
+  if (tx.length) return fillTranscript(host, tx, S.selRoom)   // #63-F: key the unread watermark on the open room
   host.textContent = ''
+  wireUnreadPill(host)   // legacy raw-line thread has no positions → no divider; clear any stale pill
   if (raw) {
     for (const l of raw.split('\n')) {
       const line = document.createElement('div'); line.className = 'tline'
@@ -1044,7 +1119,11 @@ function renderInboxChannel(d) {
   // DOM-appended (the #5 property), author header (role-color) grouped by from+room with the 7-min gap-break,
   // ❓/🔔 as the per-message rowIcon. The per-item reply/answered/acts STATE rides as the row's `extra` node
   // (its buttons are numeric-id / data-* — #65-clean — reused verbatim). Dismissed/triage/scroll unchanged.
-  const feedFrag = document.createDocumentFragment(); let prevKey = null, prevAt = null
+  // #63-F: unread boundary for the @you channel (positions = item #id; always present — @you is clean from day one).
+  const latestId = live.reduce((m, q) => Math.max(m, q.id || 0), 0)
+  const boundary = enterUnread('inbox:' + (S.org || ''), latestId)
+  const unread = boundary > 0 ? live.filter(q => (q.id || 0) > boundary).length : 0
+  const feedFrag = document.createDocumentFragment(); let prevKey = null, prevAt = null, placed = false
   for (const q of live) {
     const isQ = q.type==='question'
     const viaTg = q.answeredVia==='telegram'
@@ -1069,6 +1148,7 @@ function renderInboxChannel(d) {
     // FYIs are reply-OPTIONAL → always `.msg-fyi`-dim (never needs-you, even unanswered — no crying wolf);
     // an answered question → plain. So only the actionable rows pop.
     const cls = isQ ? (q.answered ? '' : 'msg-needs') : 'msg-fyi'
+    if (unread && !placed && (q.id || 0) > boundary) { feedFrag.appendChild(unreadDivider(unread)); placed = true }   // #63-F divider before first unread
     feedFrag.appendChild(slackRow({ from: q.fromName || ('@'+q.from), role: q.role, at: q.at, text: q.text,
       qid: q.id, anchorId: q.id, rowIcon: isQ?'❓':'🔔', roomTag: q.room, cls, newGroup, extra }))
   }
@@ -1089,6 +1169,7 @@ function renderInboxChannel(d) {
   else if (S.jumpTarget!=null) { const did=jumpToQ(S.jumpTarget); S.jumpTarget=null; if(!did) sc.scrollTop = wasAtBottom ? sc.scrollHeight : prevTop }
   // #47 MED-1: stick to the bottom only if the user was already there; otherwise keep their position.
   else sc.scrollTop = wasAtBottom ? sc.scrollHeight : prevTop
+  wireUnreadPill(sc)   // #63-F: jump-to-unread pill when the divider is above the viewport
 }
 
 // ---- builder ----
@@ -1261,6 +1342,7 @@ window.openBuilder = async (fresh)=>{
   // returns to exactly where you were — the builder is a pane-takeover, so we capture+restore (vs #46's
   // modal which just avoided nulling).
   if (!S.building) S._builderReturn = { selRoom:S.selRoom, selMember:S.selMember, selInbox:S.selInbox, selHome:S.selHome, tab:S.tab }
+  leaveUnread()   // #63-F: opening the builder leaves any open room — flush its watermark
   S.building=true; S.selMember=null; S.selRoom=null; S.selInbox=null; S.selHome=false
   if (fresh) { S.builder = freshBuilder(); markBuilderClean() }   // #55: baseline the empty build
   paint()
@@ -1302,7 +1384,7 @@ window.closeSettings = ()=>{ S.settingsOpen=false; renderModal() }
 // #61: the project HOME — entering a project lands here (overview + the per-project settings moved out of
 // the gear). Clears the other selections; lazy-loads settings for the --web note (detailKey's settings flag
 // rebuilds the pane once it arrives). Guarded by confirmLeaveBuilder so it can't silently discard a build.
-window.openProjectHome = ()=>{ if (!confirmLeaveBuilder()) return; S.selHome=true; S.selRoom=S.selInbox=S.selMember=null; S.building=false; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }); paint() }
+window.openProjectHome = ()=>{ if (!confirmLeaveBuilder()) return; leaveUnread(); S.selHome=true; S.selRoom=S.selInbox=S.selMember=null; S.building=false; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }); paint() }
 const sBadge = (scope,mut)=>`<span class="stag ${scope==='global'?'g':'p'}">${scope==='global'?'GLOBAL':'PER-PROJECT'}</span><span class="stag ${mut==='runtime'?'r':'l'}">${mut==='runtime'?'RUNTIME':'LAUNCH-TIME'}</span>`
 
 // Render the Settings modal — centered card + scrim over the whole app. EVENT-DRIVEN (openSettings /
@@ -1437,7 +1519,7 @@ window.openRoom = (id)=>{ selRoom(id) }
 // click) — a numeric id sets a one-shot jumpTarget so the channel scrolls to + highlights that item.
 // paintedKey=null forces renderDetail (the content sig may be unchanged, but we still need the jump).
 window.selInbox = (i)=>{ if(!confirmLeaveBuilder())return; S.selInbox = (i==='channel') ? 'channel' : i; S.jumpTarget = (typeof i==='number') ? i : null; S.selRoom=null; S.selMember=null; S.selHome=false; S.building=false; S.replyTo=null; paintedKey=null; paint() }
-window.selMember = (h)=>{ if(!confirmLeaveBuilder())return; S.selRoom=null; S.selInbox=null; S.selHome=false; S.building=false; S.selMember=h
+window.selMember = (h)=>{ if(!confirmLeaveBuilder())return; leaveUnread(); S.selRoom=null; S.selInbox=null; S.selHome=false; S.building=false; S.selMember=h
   const m = memberByHandle(h)
   // #34/B: each member has its OWN ttyd, so selecting one just swaps the embedded iframe (via detailKey);
   // no server round-trip (the old /api/team-select → tmux select-window is gone).
@@ -1566,6 +1648,7 @@ let _scopedNav = !!_qRepo
 tick(); setInterval(tick, 1500)
 $('#tabs')?.addEventListener('scroll', updateTabHints, { passive: true })   // #2a E: keep the off-screen hints live
 addEventListener('resize', updateTabHints)
+addEventListener('pagehide', leaveUnread)   // #63-F: closing/navigating away from the dashboard flushes the open room's unread watermark (pagehide fires on bfcache too, unlike beforeunload)
 </script>
 </body>
 </html>
