@@ -81,6 +81,15 @@
   .termhdr { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px }
   .termframe { width:100%; flex:1 1 0; min-height:0; border:1px solid var(--line); border-radius:8px; background:#000 }
   .termfoot { margin-top:6px }
+  /* #4a never-blank terminal: history-not-replayed banner + first-mount placeholder over the iframe */
+  .termbanner { display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--dim); background:var(--inset); border:1px solid var(--line); border-radius:6px; padding:4px 9px; margin-bottom:6px }
+  .termbanner .bx { margin-left:auto; cursor:pointer; opacity:.55; flex:0 0 auto } .termbanner .bx:hover { opacity:1 }
+  .termwrap { position:relative; flex:1 1 0; min-height:0; display:flex }
+  .termwrap .termframe { flex:1 1 0 }
+  .termplaceholder { position:absolute; inset:0; z-index:2; pointer-events:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; text-align:center; padding:24px; background:var(--bg); border:1px solid var(--line); border-radius:8px; transition:opacity .5s }
+  .termplaceholder.hide { opacity:0 }
+  .termplaceholder .tp-main { font-size:14px; color:var(--fg); font-weight:600 }
+  .termplaceholder .tp-sub { font-size:12px; color:var(--dim); max-width:440px; line-height:1.5 }
   .detail > * { flex-shrink:0 }   /* flowing views keep natural height + the pane scrolls; fill children (#tabbody / the iframe) override below */
   #tabbody { flex:1 1 0; min-height:0; display:flex; flex-direction:column; overflow:auto }   /* transcript/summary fill the remaining height; catch-up cards scroll */
   /* pills / badges */
@@ -607,6 +616,10 @@ function renderMember(d) {
   if (!m) { d.innerHTML = `<div class="empty">Member gone.</div>`; return }
   return m.tier==='worker' ? renderWorkerLog(d, m) : renderTerminal(d, m)
 }
+// #4a never-blank-terminal state (per org|handle, per session): which members' placeholders have already
+// shown (fire once, never on a switch-back) + which "history not replayed" banners the user dismissed.
+const _termPlaceholderShown = new Set(); const _termBannerDismissed = new Set()
+window.dismissTermBanner = (key)=>{ _termBannerDismissed.add(key); syncTermHost() }
 // Live member -> its OWN embedded ttyd. #40: the live terminal lives in the PERSISTENT #termhost overlay
 // (managed by syncTermHost) so switching members never remounts the iframe (no blank/reconnect). Here we
 // only render the #detail fallback when there's no live ttyd yet; when there IS one, #detail is emptied
@@ -658,15 +671,40 @@ function syncTermHost() {
   // transitioned serve→orphaned) — removes the iframe → closes its ws, no stale blank embed.
   const liveKeys = new Set()
   for (const l of (S.teams.launch||[])) if (l.running && l.members) for (const h of Object.keys(l.members)) if (l.members[h] && l.members[h].state === 'serve') liveKeys.add(l.org+'|'+h)
-  for (const b of [...host.children]) if (!liveKeys.has(b.dataset.key)) b.remove()   // removes the iframe → closes its ws
+  // #4a-1: on teardown, clear placeholder-shown for the removed key so a RELAUNCH (orphan-recovery / stop→
+  // relaunch / suspend→resume) — whose iframe genuinely re-mounts blank — re-shows the "Connecting…" cover.
+  // A member-SWITCH only hides blocks (display:none, below) and never teardown (still in liveKeys), so the
+  // placeholder correctly stays once-per-session there. Banner-dismiss is intentionally NOT cleared: "earlier
+  // output isn't replayed" is a one-time FYI (re-nagging it every relaunch is annoying), and the re-shown
+  // placeholder's own sub-copy re-carries that line transiently, so the relaunch blank stays explained.
+  for (const b of [...host.children]) if (!liveKeys.has(b.dataset.key)) { _termPlaceholderShown.delete(b.dataset.key); b.remove() }   // removes the iframe → closes its ws
   if (!target) { host.style.display='none'; detail.style.display=''; return }
   let block = [...host.children].find(b => b.dataset.key===target.key)
+  const online = !!target.m.online   // recomputed every paint → the banner appears once the member registers
   if (!block) {
+    // #4a: FIRST mount of this member's keep-alive iframe — the only time it can read bare-blank (a member-
+    // switch reuses the existing block). dtach relays only bytes emitted AFTER attach, so an idle agent's
+    // screen stays blank until new output; we can't read inside the iframe or get a byte-signal (Q2). So a
+    // placeholder over the iframe (shown once per member per session, time-revealed ~1.7s, pointer-events:none
+    // so it never blocks a fast typer), with copy branched on m.online — the one signal we have.
     block = document.createElement('div'); block.className='termblock'; block.dataset.key=target.key
-    block.innerHTML = `<div class="termhdr"></div><iframe class="termframe" title="@${esc(target.m.first)} terminal" src="${esc(target.url)}"></iframe><div class="termfoot muted">First launch: log in + accept the Channels prompt in this terminal.</div>`
+    const f = esc(target.m.first)
+    const showPh = !_termPlaceholderShown.has(target.key)
+    const phCopy = online
+      ? `<div class="tp-main">Connecting to @${f}'s terminal…</div><div class="tp-sub muted">You're attached to the live session — @${f}'s <b>live screen from here</b>; earlier output isn't replayed.</div>`
+      : `<div class="tp-main">First launch — activate @${f}</div><div class="tp-sub muted">Log in and accept the <b>Channels</b> prompt in this terminal to put @${f} to work.</div>`
+    block.innerHTML = `<div class="termhdr"></div>`
+      + `<div class="termbanner">↑ You're seeing @${f}'s <b>live screen from here</b> — earlier output before you opened this isn't replayed.<span class="bx" role="button" tabindex="0" title="dismiss" onclick="dismissTermBanner('${esc(target.key)}')" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();dismissTermBanner('${esc(target.key)}')}">✕</span></div>`
+      + `<div class="termwrap"><iframe class="termframe" title="@${f} terminal" src="${esc(target.url)}"></iframe>`
+      + (showPh ? `<div class="termplaceholder">${phCopy}</div>` : '')
+      + `</div><div class="termfoot muted">First launch: log in + accept the Channels prompt in this terminal.</div>`
     host.appendChild(block)   // lazily created once; src is never changed after this
+    if (showPh) { _termPlaceholderShown.add(target.key); const ph=block.querySelector('.termplaceholder'); if(ph) setTimeout(()=>{ if(document.contains(ph)) ph.classList.add('hide') }, 1700) }   // time-reveal; guard a torn-down block
   }
   block.querySelector('.termhdr').innerHTML = termHeaderHTML(target.m, target.url)   // header patch is cheap; iframe sibling untouched
+  // banner: only for ONLINE members (history-not-replayed is the active-agent issue; a not-yet-online member
+  // shows the login placeholder instead), and not dismissed for this org|handle this session.
+  const banner = block.querySelector('.termbanner'); if (banner) banner.style.display = (online && !_termBannerDismissed.has(target.key)) ? 'flex' : 'none'
   // Reload the iframe ONLY when the member's ttyd URL actually changed (its viewer respawned on a new
   // port) — a member-switch keeps the same URL, so this is a no-op then (keep-alive preserved).
   const frame = block.querySelector('.termframe')
