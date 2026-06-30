@@ -86,6 +86,14 @@ RUN mkdir -p /opt/mrc-channel \
     && npm install --loglevel=error @modelcontextprotocol/sdk
 COPY container/mrc-channel-server.js /opt/mrc-channel/mrc-channel-server.js
 
+# Local marketplace for the room channel plugin: loaded via `--channels plugin:room@mrc` with NO
+# experimental-channel prompt (vs `--dangerously-load-development-channels`, which prompts). The
+# managed-settings allowlist below makes the plugin load silent. The plugin's .mcp.json points back at
+# /opt/mrc-channel/mrc-channel-server.js above.
+COPY mrc-marketplace /opt/mrc-marketplace
+RUN mkdir -p /etc/claude-code \
+    && printf '%s\n' '{ "channelsEnabled": true, "allowedChannelPlugins": [ { "marketplace": "mrc", "plugin": "room" } ] }' > /etc/claude-code/managed-settings.json
+
 # Create workspace and config directories
 RUN mkdir -p /workspace && \
     ln -sf /home/coder/.claude/claude.json /home/coder/.claude.json

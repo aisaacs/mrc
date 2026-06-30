@@ -63,9 +63,9 @@ case "$AGENT" in
   claude)
     echo "Launching Claude Code..."
     if [ -n "${MRC_ROOM_PORT:-}" ]; then
-      # Room session: load the channel server directly (no wrapper). Claude renders natively and
-      # the user accepts the one-time dev-channel prompt manually. NO auto-accept — an injected
-      # "1<Enter>" was dangerous (it could land on an unintended menu, e.g. trigger a compact).
+      # Room/crew session: load the channel from the baked-in `mrc` plugin marketplace. It's allowlisted
+      # in /etc/claude-code/managed-settings.json, so `--channels plugin:room@mrc` loads the channel with
+      # NO experimental-channel prompt (container-setup.js registered the plugin into this volume).
       # Pin a stable conversation id for a NEW session (empty RESUME_FLAG) so rooms survive a later
       # resume; resume/continue keep their flag, which already targets the right conversation.
       SESSION_FLAG="$RESUME_FLAG"
@@ -76,13 +76,11 @@ case "$AGENT" in
       # a file so backticks/$ in the prompt are not re-evaluated by the shell ($(cat …) is not rescanned).
       if [ -n "${MRC_PERSONA_FILE:-}" ] && [ -f "${MRC_PERSONA_FILE}" ]; then
         claude --dangerously-skip-permissions \
-          --dangerously-load-development-channels server:room \
-          --mcp-config /tmp/mrc-room-mcp.json \
+          --channels plugin:room@mrc \
           --append-system-prompt "$(cat "${MRC_PERSONA_FILE}")" $SESSION_FLAG "$@"
       else
         claude --dangerously-skip-permissions \
-          --dangerously-load-development-channels server:room \
-          --mcp-config /tmp/mrc-room-mcp.json $SESSION_FLAG "$@"
+          --channels plugin:room@mrc $SESSION_FLAG "$@"
       fi
     else
       claude --dangerously-skip-permissions $RESUME_FLAG "$@"

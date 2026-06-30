@@ -1,0 +1,9 @@
+{
+  "name": "room",
+  "version": "1.0.0",
+  "description": "mrc negotiation-room / crew channel server — consult a peer session (host-mediated relay).",
+  "author": { "name": "mrc" },
+  "channels": [
+    { "server": "room" }
+  ]
+}
