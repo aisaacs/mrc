@@ -82,6 +82,7 @@ ENV NODE_PATH=/usr/local/lib/node_modules
 RUN mkdir -p /opt/mrc-channel \
     && cd /opt/mrc-channel \
     && npm init -y >/dev/null 2>&1 \
+    && npm pkg set type=module \
     && npm install --loglevel=error @modelcontextprotocol/sdk
 COPY container/mrc-channel-server.js /opt/mrc-channel/mrc-channel-server.js
 
