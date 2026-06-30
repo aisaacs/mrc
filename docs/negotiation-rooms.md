@@ -256,7 +256,14 @@ The load-bearing section — the whole point of `mrc` is the sandbox.
 - **Remote Control** was ruled out: requires claude.ai OAuth *and* routes through Anthropic's
   cloud ("API keys not supported"). Channels work on either auth and stay local.
 - **ESM gotcha:** the channel server uses ESM `import`, which (unlike `require`) ignores
-  `NODE_PATH`. So it ships in its own dir `/opt/mrc-channel/` with a **local** SDK install.
+  `NODE_PATH`. So it ships in its own dir `/opt/mrc-channel/` with a **local** SDK install. That dir's
+  `package.json` **must pin `"type": "module"`** — the Dockerfile runs `npm pkg set type=module` after
+  `npm init -y` (#54). A recent npm changed `npm init -y` to write `"type": "commonjs"`, and an
+  *explicit* `type:commonjs` overrides node 24's automatic ESM-syntax detection → node parses the `.js`
+  as CommonJS → "Cannot use import statement outside a module" → the server crashes on load → its MCP
+  never starts → **rooms silently break**. (The sibling `/usr/local/bin` scripts are ESM too but have no
+  local `package.json`, so node's auto-detect still loads them as ESM — only the channel dir, which has
+  its own `npm init` package.json, needs the explicit pin.)
 - **Activation:** the dev-channel "I am using this for local development" prompt is interactive and
   **not persisted**. Auto-answering it via a PTY wrapper (`expect`) proved version-brittle and
   dangerous (it once landed on the wrong menu and triggered a compact), so it was **removed**: the
