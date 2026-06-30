@@ -397,9 +397,13 @@ let notifyPort = 0
 let roomDaemon = null
 if (roomsActive) {
   const { ensureRoomDaemon } = await import('./src/commands/pair.js')
-  clipPort = await findFreePort(portBase)
+  // #50: reserve portBase ITSELF for the daemon's relay port — a fixed, concurrency-independent constant
+  // (cages pin it; it doubles as the deterministic fallback when room-daemon.json is unreadable). The
+  // per-session proxies scan from portBase+1 so they can never self-squat the relay; the relay never
+  // derives from notifyPort (which is concurrency-dependent and was the old #50 strand).
+  clipPort = await findFreePort(portBase + 1)
   notifyPort = await findFreePort(clipPort + 1)
-  roomDaemon = await ensureRoomDaemon({ portBase: notifyPort + 1, notifyPort })
+  roomDaemon = await ensureRoomDaemon({ relayPort: portBase, notifyPort })
 }
 
 // Build image
@@ -517,7 +521,7 @@ if (config.daemon) {
 }
 
 // Start proxies (reuse ports pre-allocated above when rooms booted the daemon early).
-if (!clipPort) clipPort = await findFreePort(portBase)
+if (!clipPort) clipPort = await findFreePort(portBase + 1)   // #50: portBase is reserved for the room relay; proxies start above it
 try {
   clipboardServer = await startClipboardProxy(clipPort)
   envFlags.push('-e', `MRC_CLIPBOARD_PORT=${clipPort}`)

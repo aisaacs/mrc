@@ -6,7 +6,7 @@
 //
 import { createConnection } from 'node:net'
 
-const PORT = process.env.MRC_NOTIFY_PORT || '7723'
+const PORT = process.env.MRC_NOTIFY_PORT || '7724'   // #50: notify default tracks relay=portBase (clip=portBase+1, notify=portBase+2)
 const REPO = process.env.MRC_REPO_NAME || 'workspace'
 
 function clean(s) {

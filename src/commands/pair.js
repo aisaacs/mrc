@@ -3,7 +3,7 @@
 // a single detached process so it outlives any one session.)
 import net from 'node:net'
 import { spawn } from 'node:child_process'
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, renameSync } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
@@ -14,6 +14,10 @@ const daemonMetaPath = () => join(homedir(), '.local', 'share', 'mrc', 'room-dae
 const daemonScript = () => fileURLToPath(new URL('../proxies/room-daemon.js', import.meta.url))
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const readMeta = () => { try { return JSON.parse(readFileSync(daemonMetaPath(), 'utf8')) } catch { return null } }
+// #2: atomic write (tmp + rename) so a concurrent reader (another launcher) never sees a half-written
+// record. renameSync is atomic on one filesystem; this closes the torn-READ — the only real concern, since
+// the relay CONSTANT (not this file) is the durable truth for the port, so power-loss durability/fsync isn't load-bearing.
+const writeAtomic = (path, data) => { const tmp = path + '.tmp'; writeFileSync(tmp, data); renameSync(tmp, path) }
 
 // The daemon is a long-lived host singleton that survives image rebuilds and code edits. Stamp it
 // with a content hash of room-daemon.js so a reused daemon running OLD code is detected and
@@ -32,6 +36,21 @@ function probeControl(port) {
     c.on('data', () => finish(true))
     c.on('error', () => finish(false))
     setTimeout(() => finish(false), 800)
+  })
+}
+
+// Like probeControl but returns the parsed status object (or null). #50/#5: lets the launcher read
+// `relayBound` so it can print honest "degraded" readiness when the daemon is up on controlPort but its
+// relay port is squatted (peers unreachable), instead of a false "ready".
+function probeStatus(port) {
+  return new Promise((res) => {
+    if (!port) return res(null)
+    const c = net.connect(port, '127.0.0.1', () => c.write(JSON.stringify({ action: 'status' }) + '\n'))
+    let buf = '', done = false
+    const finish = (v) => { if (!done) { done = true; res(v); try { c.destroy() } catch {} } }
+    c.on('data', (d) => { buf += d; const i = buf.indexOf('\n'); if (i >= 0) { try { finish(JSON.parse(buf.slice(0, i))) } catch { finish(null) } } })
+    c.on('error', () => finish(null))
+    setTimeout(() => finish(null), 800)
   })
 }
 
@@ -60,31 +79,40 @@ async function stopDaemon(meta) {
 }
 
 // Ensure the singleton room daemon is running CURRENT code; return { port, controlPort, notifyPort }.
-export async function ensureRoomDaemon({ portBase, notifyPort }) {
+// #50: the relay port is a FIXED constant (relayPort = portBase) — never findFreePort'd, never derived from
+// notifyPort — so cages pin a stable port and a launch whose record is missing recovers to the SAME port
+// deterministically. The daemon binds controlPort FIRST (discovery anchor) and bind-retries the relay ITSELF,
+// so the caller never relocates: an occupied relay is the daemon's problem, surfaced here as honest "degraded"
+// readiness rather than a silent move that strands every cage pinned to the old port.
+export async function ensureRoomDaemon({ relayPort, notifyPort }) {
   const version = daemonVersion()
   const meta = readMeta()
   if (meta && await probeControl(meta.controlPort)) {
     if (meta.version === version) { console.log('  ◎ Negotiation-room daemon ready.'); return meta }   // live and current → reuse
-    // Live but running OLD code: refresh in place on the SAME ports so connected sessions reconnect.
+    // Live but running OLD code: refresh to current code on the relay CONSTANT (relayPort). In steady state
+    // relayPort == the running port, so it's a no-op move; a version bump that CHANGED the constant re-pins
+    // here ONCE (old-scheme sessions strand — the accepted version-stability contract). controlPort is reused.
     process.stdout.write('  ◎ Refreshing the negotiation-room daemon (code changed)...')
     await stopDaemon(meta)
-    spawnDaemon(meta.port, meta.controlPort, meta.notifyPort ?? notifyPort)
+    spawnDaemon(relayPort, meta.controlPort, meta.notifyPort ?? notifyPort)
     const ok = await waitUp(meta.controlPort)
     console.log(ok ? ' ready.' : ' (could not rebind — booting a fresh one).')
-    if (ok) return { port: meta.port, controlPort: meta.controlPort, notifyPort: meta.notifyPort ?? notifyPort, version }
-    // else fall through to a fresh daemon on new ports
+    if (ok) return { port: relayPort, controlPort: meta.controlPort, notifyPort: meta.notifyPort ?? notifyPort, version }
+    // else fall through to a fresh daemon
   }
-  // #50: prefer the last-known port (from a crashed / idle-shut-down / `mrc rooms stop` tombstone
-  // record) so a relaunch RE-BINDS the port live sessions are pinned to — both in their env
-  // (MRC_ROOM_PORT) and in their container firewall allowlist (init-firewall.sh HOST_PORTS) — and they
-  // reconnect on their own via the channel server's retry. findFreePort only scans past it if it's
-  // actually taken (in which case those sessions are stranded by the cage and must relaunch).
-  const port = await findFreePort(meta?.port || portBase)
-  const controlPort = await findFreePort(port + 1)
+  // #50: relay = the fixed constant; controlPort floats above the relay + the per-session proxies. The daemon
+  // bind-retries the relay itself and comes up on controlPort first, so waitUp(controlPort) succeeds even while
+  // the relay is (briefly) still rebinding — and a permanently-squatted relay shows as "degraded", not a hang.
+  const port = relayPort
+  const controlPort = await findFreePort(relayPort + 1)
   process.stdout.write('  ◎ Booting the negotiation-room daemon...')
   spawnDaemon(port, controlPort, notifyPort)
   const ok = await waitUp(controlPort)
-  console.log(ok ? ' ready.' : ' slow to start — rooms may be unavailable this session.')
+  if (!ok) { console.log(' slow to start — rooms may be unavailable this session.'); return { port, controlPort, notifyPort, version } }
+  const st = await probeStatus(controlPort)   // #5: honest readiness — controlPort answers even when the relay is squatted
+  console.log(st && st.relayBound === false
+    ? ` up, but DEGRADED — relay port ${port} is blocked by another listener; peers can't connect until it clears (see: mrc rooms status).`
+    : ' ready.')
   return { port, controlPort, notifyPort, version }
 }
 
@@ -97,20 +125,23 @@ export async function restartRoomDaemon() {
     // a session launch uses, instead of erroring "start a session first". It idle-shuts-down ~10min
     // later if nothing connects, so a no-op restart can't leak a stray daemon. (After `mrc rooms stop`
     // the record now SURVIVES as a tombstone — #50 — so that path falls through below and reuses its port.)
-    const d = await ensureRoomDaemon({ portBase: Number(process.env.MRC_PORT_BASE) || 7722, notifyPort: 0 })
+    const d = await ensureRoomDaemon({ relayPort: Number(process.env.MRC_PORT_BASE) || 7722, notifyPort: 0 })
     const up = d && await probeControl(d.controlPort)
     return up ? { ok: true, port: d.port, coldStarted: true } : { ok: false, error: 'could not boot a room daemon — run: pkill -f room-daemon.js, then try again' }
   }
   // Stop it only if it's actually up (a tombstoned/crashed record is already down).
   if (await probeControl(meta.controlPort)) await stopDaemon(meta)
-  // #50: REBIND the recorded port so live sessions — pinned to it in their env AND their firewall
-  // allowlist — reconnect on their own. findFreePort returns meta.port when free and only scans past it
-  // if it got taken; if it had to MOVE, live sessions are stranded by the cage and must relaunch (moved).
-  const port = await findFreePort(meta.port)
+  // #50: REBIND the relay CONSTANT (= portBase) — never relocate. In steady state this equals the recorded
+  // port; across a version bump that changed the constant it converges to the new one ONCE (old-scheme
+  // sessions strand — the version contract). The daemon binds controlPort first and bind-retries the relay
+  // itself, so live sessions (pinned to the constant in env + firewall) reconnect. controlPort floats freely.
+  const port = Number(process.env.MRC_PORT_BASE) || 7722
   const controlPort = await findFreePort(port + 1)
   spawnDaemon(port, controlPort, meta.notifyPort || 0)
   const ok = await waitUp(controlPort)
-  return ok ? { ok: true, port, moved: port !== meta.port } : { ok: false, error: 'could not rebind — run: pkill -f room-daemon.js' }
+  if (!ok) return { ok: false, error: 'could not rebind — run: pkill -f room-daemon.js' }
+  const st = await probeStatus(controlPort)   // #5: a squatted relay surfaces as degraded, not a false success
+  return { ok: true, port, degraded: !!(st && st.relayBound === false) }
 }
 
 // `mrc rooms stop`: stop the daemon without respawning. Leave a TOMBSTONE (record kept, marked
@@ -121,7 +152,7 @@ export async function stopRoomDaemon() {
   const meta = readMeta()
   if (!meta || meta.stopped) return { ok: false, error: 'no room daemon running' }
   const stopped = await stopDaemon(meta)
-  if (stopped) { try { writeFileSync(daemonMetaPath(), JSON.stringify({ ...meta, stopped: true }, null, 2)) } catch {} }
+  if (stopped) { try { writeAtomic(daemonMetaPath(), JSON.stringify({ ...meta, stopped: true }, null, 2)) } catch {} }
   return stopped ? { ok: true } : { ok: false, error: 'could not stop — run: pkill -f room-daemon.js' }
 }
 

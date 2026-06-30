@@ -8,7 +8,7 @@
 import net from 'node:net'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
-import { writeFileSync, statSync, readdirSync, readFileSync, existsSync, mkdirSync } from 'node:fs'
+import { writeFileSync, statSync, readdirSync, readFileSync, existsSync, mkdirSync, renameSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { homedir } from 'node:os'
 import { createHash } from 'node:crypto'
@@ -65,7 +65,7 @@ const adversaryBriefFile = (brief) => `${ADVERSARY_PROMPT}\n\n---\n\n## The desi
 // apostrophe-free so it survives shell + AppleScript quoting; the full persona lives in the brief file.
 const adversaryPrime = (roomId) => `You are Pierre, the faultfinding older step-brother, just summoned into a room to red-team a design. Your full character and the design under review are in /rooms/${roomId}/adversary-brief.md. Read that file FIRST, in full. Then open the volley: send your sharpest grounded objections to the peer using the reply tool, and keep replying to keep it going. Stay in character and stay adversarial.`
 
-export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS, roomTtlMs = ROOM_TTL_MS }) {
+export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort = 0, recordPath = join(homedir(), '.local', 'share', 'mrc', 'room-daemon.json'), onIdle = null, relayRetryMs = 2000, firstConnectGraceMs = 1_800_000, turnCap = 0, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS, roomTtlMs = ROOM_TTL_MS }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
   let roomSeq = 0              // monotonic room counter — the NEWEST room a session is in wins its single "live" slot
@@ -101,6 +101,38 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     catch (e) { console.error(`[room-daemon] WARN couldn't persist the secret-arm bit (${e.message}) — strict register enforcement won't survive a daemon restart until this write succeeds`) }
   }
   const summoningPrivate = new Set()  // issuer ids with a private summon in flight — block a 2nd until it registers or times out
+
+  // #50: relay-port lifecycle. The relay port is a FIXED constant (= portBase); the daemon binds controlPort
+  // first as the discovery anchor and bind-RETRIES the relay forever rather than relocating (a launch-pinned
+  // cage + a launch-pinned channel server can't follow a move). `relayBound` is set ONLY from server's
+  // 'listening' event and cleared ONLY on a retry — truthful-by-construction, because #4 refuses to idle-reap
+  // while it's false (a lying flag would be an unkillable daemon).
+  let relayBound = false
+  // The daemon OWNS room-daemon.json (the discovery single-source-of-truth). It writes the COMPLETE record
+  // (a deferring duplicate can't — it doesn't know the live daemon's pid/notifyPort/dashboardPort) once it
+  // owns/will-own the relay, atomically (#2: tmp+rename closes the torn-read; the relay CONSTANT, not this
+  // file, is the durable truth, so no fsync), and self-heals it on the tick if it's deleted/clobbered.
+  // recordPath is a signature param (default = the real path) so tests point it at a temp file, not the live record.
+  const writeRecord = () => {
+    try {
+      mkdirSync(dirname(recordPath), { recursive: true })
+      const tmp = recordPath + '.tmp'
+      writeFileSync(tmp, JSON.stringify({ port, controlPort, notifyPort, dashboardPort, pid: process.pid, version }, null, 2))
+      renameSync(tmp, recordPath)
+    } catch {}
+  }
+  // #7: on relay-EADDRINUSE, is the occupant a SIBLING daemon already serving the relay (answers our ping with
+  // a pong) or a foreign squatter / draining corpse (ECONNREFUSED or silence)? A sibling means we'd be a
+  // duplicate → defer. Reuses #51's ping/pong wire (no new primitive), and doesn't race the self-release window:
+  // a draining daemon has already server.close()'d → ECONNREFUSED, never a stale pong.
+  const probeOccupant = (p) => new Promise((res) => {
+    let b = '', done = false
+    const c = net.connect(p, '127.0.0.1', () => { try { c.write(JSON.stringify({ type: 'ping' }) + '\n') } catch {} })
+    const finish = (v) => { if (!done) { done = true; res(v); try { c.destroy() } catch {} } }
+    c.on('data', (d) => { b += d; if (b.includes('"pong"')) finish(true) })
+    c.on('error', () => finish(false))
+    setTimeout(() => finish(false), 500)
+  })
   // Restore pairings a graceful restart dumped, so an in-flight room survives `mrc rooms restart`
   // (turn count / autoCatchup preserved). Sockets re-attach as the sessions reconnect + re-register.
   for (const sp of loadPairings()) pairings.set(sp.roomId, { ...sp, members: sp.members || [sp.a, sp.b].filter(Boolean), seq: sp.seq || (++roomSeq), held: [], lastActivityAt: sp.lastActivityAt || Date.now() })   // #35: a restored pairing gets a fresh activity clock so the dead-room GC gives its members the full roomTtlMs to reconnect (a no-lastActivityAt restore reads as ancient → would insta-prune on the first tick)
@@ -896,8 +928,22 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
     // this it would delete the live reconnected session and ghost it offline.
     sock.on('close', () => { if (sessionId && sessions.get(sessionId)?.sock === sock) { for (const p of roomsContaining(sessionId)) reconcileCatchupDepart(p, sessionId); sessions.delete(sessionId); noteSessions(); recomputeSidechannelBrakes([sessionId]) } })   // #29: drop the disconnected side from any pending catch-up pane · #36: scope the recompute to this session's cluster
   })
-  server.listen(port, '127.0.0.1')
-  server.on('error', () => process.exit(1))   // e.g. EADDRINUSE on an in-place restart → let the caller fall back
+  // #3/#4/#7: bind-retry-FOREVER on the relay constant — NEVER relocate. On EADDRINUSE, probe the occupant:
+  // a sibling daemon (pong) → defer/exit so we don't duplicate it or clobber its record; a foreign squat /
+  // draining corpse → keep our record current (relayBound:false surfaces the (d) signal) and retry on a
+  // backoff. Only a non-EADDRINUSE relay error is fatal. `relayBound` flips true ONLY in 'listening'.
+  const tryBindRelay = () => { try { server.listen(port, '127.0.0.1') } catch { setTimeout(tryBindRelay, relayRetryMs) } }
+  server.on('listening', () => { relayBound = true; writeRecord() })
+  server.on('error', (e) => {
+    if (e && e.code === 'EADDRINUSE') {
+      relayBound = false
+      probeOccupant(port).then((sibling) => {
+        if (sibling) { try { control.close() } catch {} ; process.exit(0) }   // a sibling already serves the relay → defer (singleton preserved, no record clobber)
+        else { writeRecord(); setTimeout(tryBindRelay, relayRetryMs) }       // foreign squat / corpse → stay the sole legit daemon, surface (d), retry forever
+      })
+    } else { process.exit(1) }
+  })
+  tryBindRelay()
 
   // --- control server (`mrc rooms` connects here) ---
   const pick = (roomId) => roomId ? pairings.get(roomId) : (pairings.size === 1 ? [...pairings.values()][0] : null)
@@ -913,6 +959,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
           reply({
             ok: true,
             version,
+            relayBound,   // #5/#50: false ⇒ daemon up on controlPort but the relay port is squatted (peers can't connect) — the (d) signal
             sessions: [...sessions.entries()].map(([id, v]) => ({ id, repo: v.repo || '?', name: nameOf(id), adversary: adversaries.has(id) || undefined, unverified: unverified.has(id) || undefined })),   // #28: `|| '?'` so a missing repo matches list_peers (repoOf) — no blank cell; nameOf reads the source-of-truth record, so status reflects an in-session /rename with no push
             pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, turnCap: p.turnCap, turnBudget: budgetOf(p), autoCatchup: p.autoCatchup, members: p.members.map(nameOf), awaiting: p.members.filter((m) => !online(m)).map(nameOf), a: nameOf(p.members[0]), b: nameOf(p.members[1]), pendingInvite: p.pendingInvite ? nameOf(p.pendingInvite.by) : null, requireConsent: !!p.requireConsent })),   // #50: `awaiting` = persisted members not currently connected; the CLI flags a PARTIALLY-connected room (some on, some off) as "awaiting reconnect" — the stranded-peer signal (a fully-empty room is just dormant)
           })
@@ -1030,13 +1077,18 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 0, st
         maybeCatchup(p, 'stall')
       }
     }
-    // Idle auto-shutdown: exit after idleMs with zero connected sessions (longer grace until the
-    // first session ever connects, so a slow image build doesn't kill the daemon mid-launch). An
-    // open dashboard counts as activity, so the daemon never quits out from under someone watching.
-    const idleGrace = everConnected ? idleMs : Math.max(idleMs, 1_800_000)
-    if (emptySince !== null && Date.now() - emptySince > idleGrace && Date.now() - lastDashboardHit > dashboardKeepaliveMs) {
+    // #7: self-heal the record — if it was deleted/clobbered while we own the relay, rewrite it from our
+    // complete in-memory state so the CLI/dashboard can always find the live daemon (a deferring duplicate
+    // can't fill pid/notifyPort/dashboardPort, so the OWNER heals it). Recovers a deleted record within a tick.
+    if (relayBound) { try { const r = existsSync(recordPath) ? JSON.parse(readFileSync(recordPath, 'utf8')) : null; if (!r || r.controlPort !== controlPort || r.pid !== process.pid) writeRecord() } catch { writeRecord() } }
+    // Idle auto-shutdown: exit after idleMs with zero connected sessions (longer grace until the first session
+    // ever connects). #4: gate on relayBound — a relay-PENDING daemon has zero relay sessions BY CONSTRUCTION
+    // (a squatted relay takes no registrations), so without this gate it would self-reap at the 30-min fuse
+    // exactly when it should be holding the door open to auto-heal. An open dashboard also blocks shutdown.
+    const idleGrace = everConnected ? idleMs : Math.max(idleMs, firstConnectGraceMs)
+    if (relayBound && emptySince !== null && Date.now() - emptySince > idleGrace && Date.now() - lastDashboardHit > dashboardKeepaliveMs) {
       try { server.close(); control.close() } catch {}
-      process.exit(0)
+      if (onIdle) onIdle(); else process.exit(0)   // #4: onIdle injectable so the carve-out is testable in-process
     }
   }, tickMs)
   stallTimer.unref?.()
@@ -1059,13 +1111,13 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // Serve the dashboard from inside the daemon so it persists without a foreground tab. Port is
   // allocated here so it can be recorded in room-daemon.json (MRC_DASHBOARD_PORT=0 disables it).
   const dashboardPort = process.env.MRC_DASHBOARD_PORT === '0' ? 0 : await findFreePort(Number(process.env.MRC_DASHBOARD_PORT) || 8787)
-  const daemon = startRoomDaemon({ port, controlPort, notifyPort, version, turnCap })
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort, dashboardPort, version, turnCap })
   if (dashboardPort) {
     const { startDashboard } = await import('../rooms-dashboard.js')
     startDashboard({ port: dashboardPort, onActivity: daemon.noteDashboardActivity }).catch(() => {})
   }
-  const dir = join(homedir(), '.local', 'share', 'mrc')
-  mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, 'room-daemon.json'), JSON.stringify({ port, controlPort, notifyPort, dashboardPort, pid: process.pid, version }, null, 2))
+  // #7: the daemon OWNS room-daemon.json now — it writes the COMPLETE record atomically once it owns (or
+  // confirms it's the sole legit owner of) the relay, and self-heals it on the tick. Writing it here too would
+  // let a deferring duplicate clobber the live daemon's record with its own controlPort before it exits.
   console.log(`mrc room daemon v${version} listening on ${port} (control ${controlPort}${dashboardPort ? `, dashboard ${dashboardPort}` : ''})`)
 }

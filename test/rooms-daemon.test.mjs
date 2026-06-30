@@ -9,7 +9,7 @@ import net from 'node:net'
 import { fileURLToPath } from 'node:url'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
-import { mkdirSync, writeFileSync, rmSync, mkdtempSync, existsSync } from 'node:fs'
+import { mkdirSync, writeFileSync, rmSync, mkdtempSync, existsSync, readFileSync } from 'node:fs'
 const here = dirname(fileURLToPath(import.meta.url))
 // Isolate the host-only session records + rooms dir into a throwaway HOME, so seeding adversary records
 // (B/#39 is now classified from those records, not the register frame) never pollutes the real ~.
@@ -660,6 +660,60 @@ async function main() {
   check('33a ping → pong{version}', HB.frames.some((f) => f.type === 'pong' && f.version === 'test'), JSON.stringify(HB.frames))
   check('33b pong came pre-register (HB never registered → not a session, yet got a pong)', !(await status(controlPort)).sessions.some((s) => s.id === 'HB') && HB.frames.some((f) => f.type === 'pong'))
   HB.close()
+
+  // 34 — #50: relay bind-retry + relayBound + the (d) signal. A FOREIGN listener (no pong) squats the relay
+  // port: the daemon still comes up on controlPort (discovery anchor), the occupant-probe gets no pong →
+  // relay-pending (relayBound:false = (d)), and it bind-RETRIES the SAME constant until the squatter clears,
+  // then binds — never relocating (the old #50 strand).
+  console.log('\n[34] #50 relay bind-retry / relayBound / (d) under a foreign squat')
+  const p34 = await findFreePort(port + 800), c34 = await findFreePort(p34 + 1)
+  const squat34 = net.createServer(() => {})   // foreign: accepts, never speaks the room protocol (no pong)
+  await new Promise((r) => squat34.listen(p34, '127.0.0.1', r))
+  const d34 = startRoomDaemon({ port: p34, controlPort: c34, notifyPort: 0, version: 't34', recordPath: join(process.env.HOME, 'rec34.json'), relayRetryMs: 120, idleMs: 9e8, tickMs: 200 })
+  let s34 = await waitUntil(c34, (s) => s && s.ok, 60)
+  check('34a daemon answers on controlPort while the relay is squatted', !!(s34 && s34.ok), JSON.stringify(s34))
+  check('34b relayBound:false surfaces (d) — peers unreachable, not a silent move', s34 && s34.relayBound === false, JSON.stringify(s34 && s34.relayBound))
+  squat34.close(); await sleep(50)   // squatter clears → the next retry must capture the SAME constant
+  s34 = await waitUntil(c34, (s) => s && s.relayBound === true, 120)
+  check('34c relay auto-binds the same constant once the squat clears (never moved)', !!(s34 && s34.relayBound === true), JSON.stringify(s34 && s34.relayBound))
+  d34.stop(); try { squat34.close() } catch {}
+
+  // 35 — #7: the LIVE daemon self-heals room-daemon.json. Delete the record under a running daemon; within a
+  // tick it rewrites the COMPLETE record from in-memory state (a deferring duplicate couldn't fill pid/
+  // notifyPort/dashboardPort), so status/dashboard never go blind to a healthy daemon after an rm.
+  console.log('\n[35] #7 daemon self-heals its own record')
+  const p35 = await findFreePort(port + 900), c35 = await findFreePort(p35 + 1)
+  const rec35 = join(process.env.HOME, 'rec35.json')
+  const d35 = startRoomDaemon({ port: p35, controlPort: c35, notifyPort: 4242, dashboardPort: 9191, version: 't35', recordPath: rec35, idleMs: 9e8, tickMs: 120 })
+  await waitUntil(c35, (s) => s && s.relayBound === true, 60)
+  check('35a record written once the relay is bound', existsSync(rec35), rec35)
+  const before35 = existsSync(rec35) ? JSON.parse(readFileSync(rec35, 'utf8')) : {}
+  check('35b record is COMPLETE (all fields)', before35.port === p35 && before35.controlPort === c35 && before35.notifyPort === 4242 && before35.dashboardPort === 9191 && !!before35.pid && before35.version === 't35', JSON.stringify(before35))
+  rmSync(rec35, { force: true }); await sleep(300)   // record deleted under a live daemon; > tickMs → self-heal
+  check('35c deleted record self-heals within a tick', existsSync(rec35), 'not rewritten')
+  const after35 = existsSync(rec35) ? JSON.parse(readFileSync(rec35, 'utf8')) : {}
+  check('35d healed record matches the live daemon', after35.controlPort === c35 && after35.pid === before35.pid, JSON.stringify(after35))
+  d35.stop()
+
+  // 36 — #4 (HOLE 3): a relay-PENDING daemon is NOT idle-reaped (it has zero relay sessions by construction,
+  // so the fuse would kill the very daemon that should hold the door open to auto-heal) — while #37 is
+  // preserved (a relay-BOUND empty daemon still reaps). onIdle makes the reap observable instead of exiting.
+  console.log('\n[36] #4 relayBound-gated no-reap (HOLE 3) + #37 preserved')
+  const p36 = await findFreePort(port + 1000), c36 = await findFreePort(p36 + 1)
+  const squat36 = net.createServer(() => {}); await new Promise((r) => squat36.listen(p36, '127.0.0.1', r))
+  let reaped36 = false
+  const d36 = startRoomDaemon({ port: p36, controlPort: c36, notifyPort: 0, version: 't36a', recordPath: join(process.env.HOME, 'rec36a.json'), relayRetryMs: 120, idleMs: 50, firstConnectGraceMs: 50, tickMs: 80, onIdle: () => { reaped36 = true } })
+  await waitUntil(c36, (s) => s && s.ok && s.relayBound === false, 60)
+  await sleep(400)   // many ticks past idleGrace=50 — a broken gate would have reaped this relay-pending daemon
+  check('36a relay-pending daemon is NOT reaped (HOLE 3 carve-out)', reaped36 === false)
+  try { squat36.close() } catch {}; d36.stop()
+  const p36b = await findFreePort(port + 1100), c36b = await findFreePort(p36b + 1)
+  let reaped36b = false
+  const d36b = startRoomDaemon({ port: p36b, controlPort: c36b, notifyPort: 0, version: 't36b', recordPath: join(process.env.HOME, 'rec36b.json'), idleMs: 40, firstConnectGraceMs: 40, tickMs: 80, onIdle: () => { reaped36b = true } })
+  await waitUntil(c36b, (s) => s && s.relayBound === true, 60)
+  await sleep(400)   // relay-bound + empty + past idleGrace → must reap (#37 orphan-reaping intact)
+  check('36b relay-bound empty daemon still reaps (#37 preserved)', reaped36b === true)
+  try { d36b.stop() } catch {}
 
   console.log(`\n${'='.repeat(40)}\n  ${pass} passed, ${fail} failed\n${'='.repeat(40)}`)
   d.stop(); ;[S, V, W, A, B, P, C, Dd, E, F, Pe, H, I, J, K, L, M, N, O, Q, R, T, U, A2, B2, A3, B3, rogue, X, Y, Z, A4, B4, P4, SS, Pr, AG, VIEW, TB, TC, TP, z1, z2, z3, I1, I2, I3, I4, I5, L1, L2, L3, L4, m1, m2, m3, s1, s2, advX, W1, W2, wadv, Y1, Y2, yadv, ynorm, yunk, IMP0, VIC, ATT, VW, VIC2, NM, Adv49, Sum49, Str49, AW1, AW2, HB].forEach((c) => { try { c.close() } catch {} })

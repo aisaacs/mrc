@@ -126,8 +126,12 @@ echo "Host network detected as: $HOST_NETWORK"
 
 # Allow host network communication — only specific proxy ports, not full access.
 # This prevents the container from reaching services like Postgres on the host.
-CLIP_PORT="${MRC_CLIPBOARD_PORT:-7722}"
-NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}"
+# #50: portBase (default 7722) is RESERVED for the room relay; per-session proxies scan from portBase+1.
+# These fallbacks track that layout (clip=portBase+1, notify=portBase+2) for the rare path that runs the
+# firewall without the env set — the normal launch passes the real ports via -e, so these don't bite then.
+# (Fallback values only; NOT a firewall-policy change — HOST_PORTS membership below is unchanged.)
+CLIP_PORT="${MRC_CLIPBOARD_PORT:-7723}"
+NOTIFY_PORT="${MRC_NOTIFY_PORT:-7724}"
 ROOM_PORT="${MRC_ROOM_PORT:-}"
 SNI_PROXY_PORT="${MRC_SNI_PROXY_PORT:-}"
 # F/#41 + A/#40: a caged adversary reaches ONLY the room relay port + the SNI-pinning egress proxy port —

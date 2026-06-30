@@ -202,7 +202,11 @@ const outQ = []
 // down so the close handler reconnects. VERIFY is the generous connect-time gate (err loose = a benign
 // flap against the real daemon, never the wedge); STALE ≈ 3 missed pings.
 const PING_MS = 5000, VERIFY_MS = 4000, STALE_MS = 16000
+// #6 (#50 (d) session-plane): OUTAGE_NOTICE_MS is deliberately well above STALE_MS and the routine ~1-2s
+// version-refresh window, so only a SUSTAINED outage (daemon down / relay squatted) surfaces an in-session notice.
+const OUTAGE_NOTICE_MS = 45000
 let lastPong = 0, heartbeat = null, verifyTimer = null
+let lastHealthyAt = Date.now(), outageNotified = false
 function clearHeartbeat() { if (heartbeat) clearInterval(heartbeat); if (verifyTimer) clearTimeout(verifyTimer); heartbeat = verifyTimer = null }
 function send(frame) {
   const line = JSON.stringify(frame) + '\n'
@@ -260,6 +264,8 @@ function sendAwaitAck(frame) {
 function onFrame(f) {
   if (f.type === 'pong') {                             // #51: daemon liveness — proves the listener IS the daemon, and keeps the socket proven-live
     lastPong = Date.now()
+    lastHealthyAt = Date.now()
+    if (outageNotified) { outageNotified = false; pushIn('[Rooms reconnected — the room daemon is reachable again.]') }   // #6: close the loop in-session after a sustained outage
     if (!connected) {
       connected = true
       if (verifyTimer) { clearTimeout(verifyTimer); verifyTimer = null }
@@ -307,3 +313,16 @@ function connect() {
 await mcp.connect(new StdioServerTransport())
 log(`channel up (session=${SESSION_ID} label=${LABEL} repo=${REPO} room=${ROOM || '(ambient)'} port=${PORT})`)
 connect()
+// #6 (#50 (d), session plane): the heartbeat above tears down + reconnects SILENTLY on a stale/wrong listener,
+// and list_peers just times out to empty — so in-session a squatted/down relay is indistinguishable from
+// "nobody's online". This independent ticker (runs regardless of socket state, even during the reconnect loop)
+// surfaces a SUSTAINED outage once; lastHealthyAt resets on every pong, so a routine refresh stays silent.
+if (PORT) {
+  const outageTicker = setInterval(() => {
+    if (!outageNotified && Date.now() - lastHealthyAt > OUTAGE_NOTICE_MS) {
+      outageNotified = true
+      pushIn(`[Rooms unavailable — can't reach the room daemon (relay :${PORT}) for ${Math.round((Date.now() - lastHealthyAt) / 1000)}s. It may be down, restarting, or its port is squatted; other sessions are unreachable until it recovers. This clears on its own when the daemon returns, or run \`mrc rooms status\` on the host / relaunch this session.]`)
+    }
+  }, PING_MS)
+  outageTicker.unref?.()
+}

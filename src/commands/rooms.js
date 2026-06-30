@@ -88,8 +88,8 @@ export async function roomsCommand(args) {
     console.log(r.ok
       ? (r.coldStarted
         ? `  ◎ no room daemon was running — cold-started one on :${r.port}.`
-        : r.moved
-          ? `  ↻ room daemon restarted on :${r.port} — its previous port was taken, so it MOVED; relaunch any sessions that dropped off list_peers (the firewall pins them to the old port).`
+        : r.degraded
+          ? `  ↻ room daemon restarted, but its relay port :${r.port} is blocked by another listener — peers can't connect yet. It keeps retrying that exact port (it never moves), so once the squatter clears everything reconnects on its own; check \`mrc rooms status\`.`
           : `  ↻ room daemon restarted on :${r.port} — connected sessions will reconnect.`)
       : `  ! ${r.error}`)
     return
@@ -105,7 +105,7 @@ export async function roomsCommand(args) {
     // daemon keeps serving, and an open dashboard keeps it alive, so there's no tab to babysit.
     const { ensureRoomDaemon } = await import('./pair.js')
     const { openBrowser } = await import('../rooms-dashboard.js')
-    try { await ensureRoomDaemon({ portBase: Number(process.env.MRC_PORT_BASE) || 7722, notifyPort: 0 }) }
+    try { await ensureRoomDaemon({ relayPort: Number(process.env.MRC_PORT_BASE) || 7722, notifyPort: 0 }) }
     catch (e) { console.error(`  ! could not start the room daemon: ${e.message}`); process.exit(1) }
     // The daemon records its dashboard port a beat after its control port answers; poll briefly.
     let dashboardPort = readMeta()?.dashboardPort
@@ -125,6 +125,7 @@ export async function roomsCommand(args) {
     if (sub === 'status' || sub === 'ls') {
       const s = await ctrl(port, 'status')
       console.log(`  Daemon:   v${s.version || '(unknown — stale code; run: mrc rooms restart)'}`)
+      if (s.relayBound === false) console.log('  ⚠ Relay port BLOCKED — the daemon is up but its relay port is squatted by another listener, so sessions can\'t connect. It retries that exact port (never moves); clear the squatter or relaunch.')
       console.log('  Sessions:')
       for (const x of s.sessions) console.log(`    ${x.name}${x.name !== x.repo ? `  (${x.repo})` : ''}  [${x.id}]`)
       console.log('  Pairings:')

@@ -28,8 +28,8 @@ if [ "$(id -u)" = "0" ]; then
   # into a root-owned file, so it's immutable for the rest of the container's life.
   ALLOW_WEB="${ALLOW_WEB:-}" \
     MRC_ADVERSARY_FW="${MRC_ADVERSARY_FW:-}" \
-    MRC_CLIPBOARD_PORT="${MRC_CLIPBOARD_PORT:-7722}" \
-    MRC_NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}" \
+    MRC_CLIPBOARD_PORT="${MRC_CLIPBOARD_PORT:-7723}" \
+    MRC_NOTIFY_PORT="${MRC_NOTIFY_PORT:-7724}" \
     MRC_ROOM_PORT="${MRC_ROOM_PORT:-}" \
     MRC_SNI_PROXY_PORT="${MRC_SNI_PROXY_PORT:-}" \
     /usr/local/bin/init-firewall.sh
