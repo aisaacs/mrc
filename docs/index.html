@@ -8,7 +8,7 @@
 <meta property="og:title" content="Mister Claude — Sandboxed Claude Code">
 <meta property="og:description" content="Full-permission Claude Code in a box. The container is the sandbox; the firewall is the lock on the door.">
 <meta property="og:type" content="website">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎩</text></svg>">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -20,6 +20,7 @@
     <button class="nav-toggle" aria-label="Menu">≡</button>
     <div class="nav-links">
       <a href="index.html">Home</a>
+      <a href="index.html#teams">Teams</a>
       <a href="docs.html">Docs</a>
       <a href="examples.html">Examples</a>
       <a href="docs.html#security">Security</a>
@@ -290,6 +291,60 @@
         <span class="tag">performance</span>
       </div>
 
+    </div>
+  </div>
+</section>
+
+<!-- ─── TEAMS (act two) ─── -->
+<section id="teams">
+  <div class="container">
+    <div class="section-label reveal">Now with a crew</div>
+    <h2 class="reveal"><svg class="hatmark" viewBox="0 0 32 32" aria-hidden="true"><ellipse cx="16" cy="23.4" rx="12.8" ry="3.05"/><path d="M10.5 9 Q10.75 6.3 16 6.1 Q21.25 6.3 21.5 9 L22 22.6 L10 22.6 Z"/></svg>Don't run one agent. Command a team.</h2>
+    <p class="lede reveal">Mister Claude can run a whole team of agents — an architect, engineers, a critic, an adversary — each sealed in its own container behind the same firewall, addressing each other by @mention. You steer from a web dashboard or your phone. They propose; you steer; you commit. The crew works; you stay in command.</p>
+
+    <div class="grid grid-3" style="margin-top:28px">
+      <div class="card reveal">
+        <span class="icon">🤝</span>
+        <h3>Agent teams</h3>
+        <p>Declare a roster (or pick a preset) and <code>mrc team up</code>. Each member boots in its own sandbox with its own write territory, so they never clobber each other's files. They collaborate by @mention; a critic reviews risky work; you commit.</p>
+        <span class="tag">orchestration</span>
+      </div>
+      <div class="card reveal">
+        <span class="icon">🖥️</span>
+        <h3>Live dashboard</h3>
+        <p>One local web app for the whole org: every team room, the @you inbox, live transcripts. Watch, steer or pause any member, suspend a project and resume it later — each member picks up its own conversation. Built in, no extra service.</p>
+        <span class="tag">built-in</span>
+      </div>
+      <div class="card reveal">
+        <span class="icon">📱</span>
+        <h3>Telegram to your phone</h3>
+        <p>Link a bot and the team's questions and updates push to your phone with stable #ids. Reply from Telegram and it routes back to the right agent. A quick BotFather&nbsp;+&nbsp;Confirm to link, then you're set.</p>
+        <span class="tag">remote</span>
+      </div>
+    </div>
+
+    <div class="steps" style="margin-top:42px">
+      <div class="step reveal">
+        <div class="step-num">1</div>
+        <div class="step-body"><h3>Declare the crew</h3><p>A <code>team.json</code> roster, a ready-made preset, or build one in the dashboard.</p></div>
+      </div>
+      <div class="step reveal">
+        <div class="step-num">2</div>
+        <div class="step-body"><h3><code>mrc team up</code></h3><p>Every member boots in its own sealed container — you accept each one in.</p></div>
+      </div>
+      <div class="step reveal">
+        <div class="step-num">3</div>
+        <div class="step-body"><h3>Steer &amp; ship</h3><p>They collaborate by @mention; you direct from the leads room and commit the work. Close a tab to suspend; reopen to resume.</p></div>
+      </div>
+    </div>
+
+    <div class="callout reveal" style="margin-top:34px">
+      <span class="callout-title">You stay in command</span>
+      <p>You're always in the loop — by design. Members can't overwrite each other's files or reach the open internet, a critic reviews the work, and you commit every change. That's not friction; it's how a team moves fast without you waking up to a dropped table.</p>
+    </div>
+
+    <div class="reveal" style="margin-top:28px">
+      <a href="docs.html#teams" class="btn btn-ghost">Read the teams guide →</a>
     </div>
   </div>
 </section>

@@ -38,7 +38,7 @@ The system has two layers: a **Node.js host launcher** (`mrc.js` + `src/`) and a
 
 ### Container-side (runs inside Docker)
 
-12. **`Dockerfile`** — Builds on `node:24-slim`. Installs Claude Code via native binary download, installs plugins from the official marketplace, installs Codex CLI (OpenAI), creates a non-root `coder` user, and grants passwordless sudo only for the firewall script.
+12. **`Dockerfile`** — Builds on `node:22-slim`. Installs Claude Code via native binary download, installs plugins from the official marketplace, installs Codex CLI (OpenAI), installs Playwright + Chromium (the `mrc-browse` headless-browser helper for in-team testing), creates a non-root `coder` user, and grants passwordless sudo only for the firewall script.
 
 13. **`entrypoint.sh`** — Container startup. Waits for DNS (up to 30s), runs the firewall via sudo, runs `container-setup.js` for config merging, optionally logs in Codex, then starts the selected agent (`claude` or `codex`).
 
@@ -58,8 +58,28 @@ Lets two running `mrc` sessions consult each other through a host-mediated relay
 - **`src/commands/pair.js`** — `ensureRoomDaemon()` (version-checked reuse / in-place refresh / fresh boot), `restartRoomDaemon()`, `stopRoomDaemon()`, and `roomSessionEnv()` (per-session env).
 - **`src/commands/rooms.js`** — the `mrc rooms` CLI (`status` / `brake` / `resume` / `steer` / `end` / `restart` / `stop` / `dashboard`) over the daemon's control socket.
 - **`src/rooms.js`** — room-dir manager for `~/.local/share/mrc/rooms/<roomId>/`: `ensureRoom`, `appendThread`, `writeConsensus`, `listRooms`.
-- **`src/rooms-dashboard.js`** + **`src/rooms-dashboard.html`** — a dependency-free localhost web dashboard (served from inside the daemon) showing every room's full `thread.log` + summary (live & historical), paginated per-pause **catch-up panes** (agent-written handoffs captured when a room pauses, with explicit mark-reviewed), and pause/resume/steer/end controls.
-- **`container/mrc-channel-server.js`** — container-side MCP "channel" server (loaded via `--dangerously-load-development-channels server:room`). Connects to the daemon and exposes `list_peers`/`ask_peer`/`reply`/`update_notes`/`pause_room`/`resume_room`, pushing peer messages into the session as `<channel>` tags.
+- **`src/rooms-dashboard.js`** + **`src/dashboard.html`** — a dependency-free localhost web app served from inside the daemon: the unified, **teams-first** dashboard (see "Agent teams" below). `rooms-dashboard.js` is the HTTP layer (serves the app + the `/api/*` endpoints); `dashboard.html` is the single-page UI. It shows every room's full `thread.log` + summary (live & historical), per-pause **catch-up panes** (agent-written handoffs, with explicit mark-reviewed), the `@user` inbox, and pause/resume/steer/end controls.
+- **`container/mrc-channel-server.js`** — container-side MCP "channel" server (loaded via `--dangerously-load-development-channels server:room`). Connects to the daemon and exposes `list_peers`/`ask_peer`/`reply`/`update_notes`/`pause_room`/`resume_room`, pushing peer messages into the session as `<channel>` tags. In **team mode** (`MRC_MEMBER_HANDLE` set) it instead exposes `send_message`/`list_team`/`ask_user`.
+
+### Agent teams (multi-agent orchestration)
+
+Builds **on top of negotiation rooms**: generalizes the 2-party pairing into N-party **teams** of agent **members**, each in its own container, addressing each other by **@mention** and steered by the human from a web UI or any member's console. Declared in a `team.json` roster, launched with `mrc team up`. **Deep dive, topology, and the test/rebuild recipe live in `docs/agent-teams.md`.**
+
+- **`src/teams/names.js`** — French first-name pool (with Spaceballs easter eggs) + unique `first/backend` handles + @mention parsing.
+- **`src/teams/personas.js`** — role registry (architect/engineer/critic/adversary/ultracritical/user-defender/researcher/tester, plus media makers designer/sound-designer/composer) + `buildPersona()`, the team protocol injected via `--append-system-prompt`. The **tester** uses the in-container headless browser (`container/mrc-browse.js` → Playwright/Chromium) to verify web/game output.
+- **`src/teams/media.js`** — media-maker members: a designer (Gemini image), sound-designer / composer (ElevenLabs) generate an asset FILE into their territory on @mention. Keys resolve per-repo (`repoEnvKey`).
+- **`src/teams/presets.js`** — ready-made team rosters (game / web / mobile / backend) for `mrc team up --preset` and the builder's preset dropdown.
+- **`src/teams/roster.js`** — parse/normalize `team.json` → members (unique handles, resolved territory/mount/tier, one lead per team) + derived rooms (one team room per team + a leads room with `@user`). Deterministic naming so members rebind across runs.
+- **`src/teams/room-engine.js`** — the generalized relay engine (transport-agnostic, injected I/O): member-set rooms, **directed @routing**, multi-room membership, room-tagged delivery, the **`@user` inbox** (questions vs notifications/FYIs, reply/dismiss/reopen, stable `#N` ids + per-message structured transcript for jump-to-original, `answeredVia` for cross-surface resolve), brake/resume/turn-cap/steer for N members, the worker queue, and redefine-with-prune.
+- **`src/teams/worker-runner.js`** — drives non-Claude (task-worker) members: drains the worker queue, batches a burst into one invocation, runs the worker's CLI, posts the reply back.
+- **`src/teams/session-id.js`** — shared `memberSessionId` (sha1 of `org\0handle`) so a registering session binds to the right org (cross-org disambiguation).
+- **`src/teams/trust.js`** — trust-boundary hygiene: `defangTrustMarkers` neutralizes forged `[Human directive]`/`[Human reply]` look-alikes in untrusted peer/worker text (run at delivery + worker-prompt build); `snippetForTrustedLine` sanitizes a member-authored quote embedded in a trusted reply line.
+- **`src/teams/telegram.js`** — Telegram Bot API client + `createTelegramBridge`: getUpdates long-poll, advance-offset-only-after-success, `update_id` dedup, 409-conflict backoff.
+- **`src/teams/telegram-auth.js`** — per-org pairing/auth state: dashboard-**Confirm** pairing (no auto-bind/TOFU), strict `from.id`+`chat.id` allowlist, reject non-private chats, `.env` pre-pin, unpair, the dashboard `tgView`.
+- **`src/commands/team.js`** — the `mrc team` CLI (`up`/`status`/`console`/`down`/`define`/`exec`), member launch wiring (territorial volumes, persona files, per-member session ids/volumes), and the worker container exec.
+- **`src/dashboard.html`** — the **unified, teams-first** web app (one SPA: **Teams / Rooms / Inbox / Build**), served by the room daemon. 3-pane workspace: nav rail → contextual list → detail. Surfaces the org roster + topology, all rooms (team + leads + legacy consult) with live state + catch-up panes, the `@user` **inbox** as a first-class destination, the in-app **team-builder**, and per-room steer/controls. Adds **per-project tabs** (per-org context, ❓ needs-you badge, off-screen `‹N/N›` hint; **close = suspend** — stop the members but keep the team/transcripts/history, resume later — vs **🗑 Delete project** = forget the org from Mister Claude, **files kept**), the inbox model (questions vs reply-optional 🔔 FYIs, dismiss/reopen, `[#N]`/`(re #N)` jump-to-original, "answered via Telegram"), **Telegram pairing** Confirm, and a semantic CSS-var **design system** (the Mr. Claude purple-brand palette, WCAG-AA, keyboard a11y). Builder endpoints (`/api/team-preview|save|define`) + `/api/teams` + `/api/state` + `/api/room` + `/api/tg` + `/api/action` are in `rooms-dashboard.js`. All state-changing `/api/*` are **CSRF-token-guarded** (persisted token + Origin + Host) and the SPA **confirms a 2xx before closing** any panel (no optimistic-close).
+
+The daemon (`room-daemon.js`) runs the team engine + worker runner + **per-org Telegram bridges** **alongside** legacy pairings, persists orgs/inbox/Telegram state, and reconciles launch records against each member's live dtach session (#34: every live member runs in its own `dtach` master + `ttyd` viewer, no tmux); `mrc.js`/`config.js` gain a `team` subcommand and `--member`/`--roster` launch mode; `entrypoint.sh` injects the persona and has a one-shot worker-exec branch; `docker.js` adds `runWorkerExec`. **`mrc rooms restart`** is version-stamp-verified (escalates to SIGKILL, fails loudly rather than silently serving stale code) — host-side `src/` changes ride the daemon reload; container-side changes (`container/`, Dockerfile, `entrypoint.sh`) still need `docker rmi mister-claude` + relaunch.
 
 ### Legacy (deprecated — do not modify)
 
@@ -90,7 +110,17 @@ Lets two running `mrc` sessions consult each other through a host-mediated relay
 - **Colima resource detection** — CPU and memory for the Colima VM default to all host cores and half host RAM (8GB floor). Overridable via `--colima-cpu` and `--colima-memory` flags or `.mrcrc`.
 - **Docker context resolution** — `mrc.js` searches for the Dockerfile in three locations: `<scriptDir>`, `~/.local/share/mrc/`, and `$MRC_HOME/`. This enables standalone binary installs separate from the Docker context.
 - **Negotiation rooms are host-mediated and sandbox-safe** — cross-session consultation flows session → host daemon → session over one sanctioned host port (no container-to-container network, no new firewall egress). Peer messages are always framed as untrusted data (`Peer (<name>) says: …`); only the human's steers are trusted (`[Human directive]: …`). Rooms are a host-controlled bind mount (`/rooms`), not network. Room ids hash the two sessions' conversation UUIDs, so resuming both conversations deterministically rejoins the same room (history preserved); closing a room is human-only.
-- **Rooms daemon + dashboard lifecycle** — one self-managing daemon serves all sessions (version-stamped, so it auto-refreshes when `room-daemon.js` changes; idle auto-shutdown). It also hosts the `mrc rooms dashboard` web UI, so the dashboard persists without a foreground tab and an open dashboard keeps the daemon alive. `consensus.md` is a *living shared summary* refreshed by either agent via `update_notes` (not a signed gate); the turn cap (default 100, `MRC_ROOM_TURN_CAP`) is a periodic check-in that grants another window on resume.
+- **Rooms daemon + dashboard lifecycle** — one self-managing daemon serves all sessions (version-stamped, so it auto-refreshes when `room-daemon.js` changes; idle auto-shutdown). It also hosts the `mrc rooms dashboard` web UI, so the dashboard persists without a foreground tab and an open dashboard keeps the daemon alive. `consensus.md` is a _living shared summary_ refreshed by either agent via `update_notes` (not a signed gate); the turn cap (default 200, `MRC_ROOM_TURN_CAP`) is a periodic check-in that grants another window on resume.
+
+- **Agent teams generalize rooms, federated and directed** — a team is N members in N containers on one host daemon. The anti-tangle design is three invariants: **containment** (members only reach their own rooms; cross-team only via the leads room, lead-to-lead), **scoped resolution** (`@role`/`@name` resolve within the originating room; `@user` is global), and **room-tagging** (so a lead in two rooms never confuses contexts). **Directed delivery** (a member only receives messages it's @mentioned in) is the floor control that prevents the N-way autonomous-volley explosion. **Territorial write isolation** avoids file contention (read-only `/workspace` except a member's own sub-tree, mounted rw on top) and **the human commits**. **Heterogeneity tiers by transport**: Claude members are live `/channels` participants; non-Claude (Codex/Qwen) members are forced to **task-workers** — a directed @mention invokes their CLI for one turn (the channel transport is Claude-only). A teammate's message — even the architect's — is **untrusted peer data**; only `[Human directive]`/`[Human reply]` is authoritative.
+
+- **The `@user` inbox is a typed, persistent queue** — a member reaching the human creates an item that is a **question** (from `ask_user`) or a **notification/FYI** (from a plain `@user`). Both are **replyable** (a reply routes a `[Human reply]` back to the member); they differ only in framing — a question says "reply to answer", an FYI says "reply optional" — and **only questions badge** (push ≠ nag). Items can be **dismissed** (recoverable via show-dismissed → re-open) and **persist across daemon restarts** (`room-inbox.json`). Each carries a stable **`#N`** id stamped on its thread line; the human's reply is stamped `(re #N)`. The dashboard renders the transcript from a **structured per-message store** (`transcript.jsonl`) carrying the daemon-assigned `qid`/`reqid`, so the `[#N]` chip / `(re #N)` jump anchor from a trusted field — a member can't forge or hijack an anchor by putting `[#N]` in their own text (incl. a newline-injected fake line).
+
+- **Telegram is an optional per-project bridge to the `@user` inbox** — each project supplies its **own** bot token via its repo `.env` (`MRC_TELEGRAM_BOT_TOKEN`, read **strictly per-repo**, no global fallback, so one project's bot never bleeds to another). Linking is **human-gated, not automatic**: you DM the bot `/start`, then **Confirm** the pending chat in the dashboard (strict `from.id`+`chat.id` allowlist, private chats only; an `.env` `MRC_TELEGRAM_CHAT_ID` pre-pins). Once linked, `@user` questions (❓ "reply to answer") and FYIs (🔔 "reply optional") **push** to Telegram with the same `#N`; replying there routes a `[Human reply]`; resolving on **either** surface edits the pushed message in place (H4 both ways). One bot serves one project — a token shared by two orgs is refused with a surfaced warning, not a silent 409 storm. Telegram inbound is untrusted and runs through the trust-marker defang.
+
+- **Suspend vs delete are distinct and non-destructive** — closing a project tab **suspends** it (stops the member containers; the team, transcripts, and history stay; ▶ Resume relaunches). **Delete project** forgets the org from Mister Claude (stops sessions, removes the tab) but **deletes nothing on disk** — the repo, `team.json`, and transcripts remain, so it can be re-added with `mrc team up`.
+
+- **Layered security, fail-loud** — the container/firewall is the primary boundary; on top: the dashboard's state-changing `/api/*` are guarded by a **persisted CSRF token** + Origin + Host checks (persisting the token survives a restart without weakening it — cross-origin still can't read it); the SPA **confirms a 2xx before closing** a panel and surfaces a 403/error instead of optimistic-closing; Telegram inbound is allowlisted; and forged `[Human directive]`/`[Human reply]` look-alikes in untrusted text are **defanged** at the injection sites. `mrc rooms restart` **verifies the new daemon's version stamp** (and SIGKILL-escalates the old process) so it never silently keeps serving stale code.
 
 ## CLI Reference
 
@@ -125,6 +155,14 @@ Commands:
   mrc rooms brake|resume|end [room-id]    Pause / resume / close a room
   mrc rooms steer [--target a|b] <text>   Inject a trusted [Human directive] into a room
   mrc rooms restart|stop                  Refresh / stop the room daemon
+  mrc team up [path] [--preset name]      Define + launch a team (per-member dtach session + embeddable ttyd terminal)
+  mrc team status [path]                  Show the org, rooms, and the @user inbox
+  mrc team console <handle> [path]        Attach to a running member's terminal
+  mrc team exec <handle> "prompt"         Run a task-worker (codex/qwen) turn manually
+  mrc team presets                        List ready-made team presets (game/web/mobile/backend)
+  mrc team new --preset <name> [path]     Write a team.json from a preset
+  mrc team down|define [path]             Close the org's rooms / define without launching
+  (Or do it all in the GUI: mrc rooms dashboard → Build → 🚀 Launch → Console.)
 
 Config files (~/.mrcrc or <repo>/.mrcrc, one flag per line):
   # Example ~/.mrcrc
@@ -139,14 +177,19 @@ Environment:
                        (Legacy ANTHROPIC_API_KEY still works as a deprecated fallback.)
   OPENAI_API_KEY       OpenAI key (required for --agent codex)
   MRC_PORT_BASE        Starting port for proxy allocation (default: 7722)
-  MRC_ROOM_TURN_CAP    Room turn-cap window before a check-in pause (default: 100; 0 disables)
+  MRC_ROOM_TURN_CAP    Room turn-cap window before a check-in pause (default: 200; 0 disables)
   MRC_DASHBOARD_PORT   Room dashboard port (default: 8787; 0 disables the daemon-hosted dashboard)
+  MRC_TELEGRAM_BOT_TOKEN  Per-PROJECT Telegram bot token, read STRICTLY from the repo's own .env
+                       (.env / .mrc/.env; no process.env or global fallback). Enables the Telegram
+                       bridge for that project — then DM the bot /start and Confirm the pending chat
+                       in the dashboard to link it.
+  MRC_TELEGRAM_CHAT_ID Optional per-repo .env pre-pin (skips the dashboard Confirm for that chat id).
   MRC_HOME             Override Docker context directory (advanced)
 ```
 
 ## Development Workflow
 
-There is no build system, test suite, or linter. The project is Node.js modules (`mrc.js` + `src/`), a Dockerfile, shell scripts for the container entrypoint and firewall, and Node.js container scripts (`container/`).
+There is no build system or linter. The host-side logic has a **Node.js test suite** (`node --test test/*.test.mjs` — 150 tests covering the room engine + `@user` inbox, the daemon round-trips, Telegram transport/auth, the trust-marker defang, CSRF, org isolation, and the worker runner); the container-launch and worker-exec paths still need a Docker rebuild to validate (see `docs/agent-teams.md`). Otherwise the project is Node.js modules (`mrc.js` + `src/`), a Dockerfile, shell scripts for the container entrypoint and firewall, and Node.js container scripts (`container/`).
 
 **To test changes:** run `mrc.js` against a target repo and verify behavior. Force an image rebuild after Dockerfile, entrypoint.sh, init-firewall.sh, or container script changes:
 

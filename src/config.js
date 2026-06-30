@@ -88,6 +88,42 @@ function loadOpEnv(envFile) {
   return process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || null
 }
 
+/** Resolve an API key for a member's REPO: prefer the repo's own .env (or .mrc/.env), then fall back
+ *  to the process env (the global mrc .env the daemon loaded). So a project's character keys
+ *  (GEMINI_API_KEY, ELEVEN_LABS_API_KEY, OPENAI_API_KEY) live with the repo when present. op://
+ *  references are skipped here (the global loadEnv resolves those into process.env). */
+export function repoEnvKey(repo, name) {
+  if (repo) {
+    for (const f of [join(repo, '.env'), join(repo, '.mrc', '.env')]) {
+      try {
+        for (const line of readFileSync(f, 'utf8').split('\n')) {
+          const m = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*"?([^"\n]*)"?\s*$/)
+          if (m && m[1] === name) { const v = m[2].trim(); if (v && !v.includes('op://')) return v }
+        }
+      } catch {}
+    }
+  }
+  return process.env[name] || ''
+}
+
+/** Like repoEnvKey but STRICT: reads ONLY the repo's own .env / .mrc/.env — NO process.env fallback.
+ *  For PER-PROJECT secrets that must never bleed from the daemon's global env. Critically the Telegram
+ *  bot token: the daemon may run inside an mrc that loaded mrc's .env into process.env, and the
+ *  fallback would then hand that one bot to EVERY token-less project (misattributing /start to the
+ *  wrong project). A global bot token is meaningless for per-project bots, so there is no fallback. */
+export function repoEnvKeyStrict(repo, name) {
+  if (!repo) return ''
+  for (const f of [join(repo, '.env'), join(repo, '.mrc', '.env')]) {
+    try {
+      for (const line of readFileSync(f, 'utf8').split('\n')) {
+        const m = line.match(/^\s*([A-Za-z0-9_]+)\s*=\s*"?([^"\n]*)"?\s*$/)
+        if (m && m[1] === name) { const v = m[2].trim(); if (v && !v.includes('op://')) return v }
+      }
+    } catch {}
+  }
+  return ''
+}
+
 /** Parse CLI args into a config object. Returns { config, repoArgs, claudeArgs }. */
 export function parseArgs(argv) {
   const config = {
@@ -107,6 +143,8 @@ export function parseArgs(argv) {
     agent: 'claude',
     room: '',
     rooms: true,   // cross-session negotiation rooms are ON by default (disable with --no-rooms)
+    member: '',    // team-member launch: this session is @member from the roster
+    roster: '',    // path to team.json (for --member launches)
   }
   const remaining = []
   const claudeArgs = []
@@ -145,6 +183,12 @@ export function parseArgs(argv) {
         break
       case '--rooms': config.rooms = true; break
       case '--no-rooms': config.rooms = false; break
+      case '--member':
+        if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.member = argv[++i]
+        break
+      case '--roster':
+        if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.roster = argv[++i]
+        break
       default: remaining.push(arg)
     }
   }

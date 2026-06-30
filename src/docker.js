@@ -73,7 +73,11 @@ export function volumeName(repoPath, instanceId) {
 /** Run the Docker container. Returns a promise that resolves to the exit code.
  *  Uses spawn (not execFileSync) so the event loop stays free for the
  *  clipboard and notification proxy servers running in the same process. */
-export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb, json, labels = [] }) {
+export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb, json, labels = [], member = null }) {
+  // A team member (#34) runs as its own ttyd-hosted PTY (no tmux). Force TERM=xterm-256color so Claude
+  // sees a real xterm — that's what makes the mouse wheel scroll the transcript natively — and label the
+  // container with the member handle so the daemon can reconcile/console/stop it by `docker ps` label.
+  const memberFlags = member ? ['-e', 'TERM=xterm-256color', '--label', `mrc.member=${member}`] : []
   const args = [
     'run', '--rm', ...(json ? [] : ['-it']), '--init',
     '--cap-add=NET_ADMIN',
@@ -83,6 +87,7 @@ export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb
     '--label', `mrc.repo=${repoPath}`,
     '--label', `mrc.repo.name=${basename(repoPath)}`,
     '--label', `mrc.web=${!!allowWeb}`,
+    ...memberFlags,
     ...labels,
     ...envFlags,
     ...volumes,
@@ -101,6 +106,30 @@ export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb
     child.on('close', code => resolve(code ?? 1))
     child.on('error', () => resolve(1))
   })
+}
+
+/** Run a one-shot worker turn (non-interactive): a task-worker member's CLI executes inside the
+ *  sandbox scoped to its territory, and its stdout is the reply. Same security flags as a normal
+ *  run; the entrypoint takes its exec branch when MRC_EXEC_PROMPT_FILE is set. Returns stdout. */
+export function runWorkerExec({ repoPath, envFlags, volumes, allowWeb }) {
+  const args = [
+    'run', '--rm', '--init',
+    '--cap-add=NET_ADMIN', '--cap-add=NET_RAW',
+    '--add-host=host.docker.internal:host-gateway',
+    '--label', 'mrc=1',
+    '--label', `mrc.repo=${repoPath}`,
+    '--label', `mrc.repo.name=${basename(repoPath)}`,
+    '--label', `mrc.web=${!!allowWeb}`,
+    '--label', 'mrc.worker=1',
+    ...envFlags, ...volumes, IMAGE_NAME,
+  ]
+  try {
+    return { text: execFileSync('docker', args, { encoding: 'utf8', maxBuffer: 32 * 1024 * 1024 }), ok: true }
+  } catch (e) {
+    // #48: a non-zero docker/codex exit — KEEP the output for the user, but PRESERVE the failure signal
+    // (ok:false) instead of flattening the exit away into text (which made a failed codex call read ✓).
+    return { text: (e.stdout || '') + (e.stderr ? `\n[worker stderr] ${e.stderr}` : `\n[worker failed: ${e.message}]`), ok: false }
+  }
 }
 
 /** Start a daemon container (detached). Returns the container ID. */

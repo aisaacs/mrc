@@ -27,6 +27,20 @@ sudo ALLOW_WEB="${ALLOW_WEB:-}" \
 # All config setup is now in Node
 node /usr/local/bin/container-setup.js
 
+# One-shot worker turn (task-worker member): run the backend non-interactively on the prompt file and
+# print its output (captured by the host runWorkerExec). No interactive TTY, no channel. The prompt is
+# read from a file so backticks/$ in it are not re-evaluated by the shell.
+if [ -n "${MRC_EXEC_PROMPT_FILE:-}" ] && [ -f "${MRC_EXEC_PROMPT_FILE}" ]; then
+  echo "===MRC-WORKER-OUTPUT-START==="
+  case "${MRC_AGENT:-codex}" in
+    codex)  codex exec --dangerously-bypass-approvals-and-sandbox "$(cat "${MRC_EXEC_PROMPT_FILE}")" 2>&1 || true ;;
+    claude) claude --dangerously-skip-permissions -p "$(cat "${MRC_EXEC_PROMPT_FILE}")" 2>&1 || true ;;
+    *)      echo "[worker backend '${MRC_AGENT:-}' is not installed in this image]" ;;
+  esac
+  echo "===MRC-WORKER-OUTPUT-END==="
+  exit 0
+fi
+
 # Read the resume flag computed by container-setup.js
 RESUME_FLAG=""
 if [ -f /tmp/mrc-resume-flag ]; then
@@ -58,9 +72,18 @@ case "$AGENT" in
       if [ -z "$RESUME_FLAG" ] && [ -n "${MRC_SESSION_ID:-}" ]; then
         SESSION_FLAG="--session-id ${MRC_SESSION_ID}"
       fi
-      claude --dangerously-skip-permissions \
-        --dangerously-load-development-channels server:room \
-        --mcp-config /tmp/mrc-room-mcp.json $SESSION_FLAG "$@"
+      # Team members carry a persona (role + protocol) injected via --append-system-prompt. Read from
+      # a file so backticks/$ in the prompt are not re-evaluated by the shell ($(cat …) is not rescanned).
+      if [ -n "${MRC_PERSONA_FILE:-}" ] && [ -f "${MRC_PERSONA_FILE}" ]; then
+        claude --dangerously-skip-permissions \
+          --dangerously-load-development-channels server:room \
+          --mcp-config /tmp/mrc-room-mcp.json \
+          --append-system-prompt "$(cat "${MRC_PERSONA_FILE}")" $SESSION_FLAG "$@"
+      else
+        claude --dangerously-skip-permissions \
+          --dangerously-load-development-channels server:room \
+          --mcp-config /tmp/mrc-room-mcp.json $SESSION_FLAG "$@"
+      fi
     else
       claude --dangerously-skip-permissions $RESUME_FLAG "$@"
     fi

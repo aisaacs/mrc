@@ -5,7 +5,7 @@
 // Claude Code pipes a JSON blob to stdin on each refresh. We render:
 //   [█████████░░░░░░░░░░░] 49% context · 5h 12% │ 7d 7% · my-session
 //
-import { readFileSync } from 'node:fs'
+import { readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const BAR_WIDTH = 20
@@ -77,6 +77,15 @@ process.stdin.on('end', () => {
   // Session name
   const projectDir = (data.workspace || {}).project_dir || ''
   const name = lookupSessionName(projectDir, data.session_id || '')
+
+  // #64: tee the parsed ints to a container-local file. The channel server forwards them to the host daemon
+  // (transport B') for the dashboard's per-agent context bar + lead-only rate-limit rail. Numbers, not strings
+  // (the daemon strict-validates). Best-effort — a write failure never affects the rendered statusline.
+  try {
+    const ratePct = (k) => { const b = limits[k]; return b ? Math.floor(b.used_percentage || 0) : null }
+    writeFileSync(process.env.MRC_STATUS_FILE || '/tmp/mrc-status.json',
+      JSON.stringify({ context: pct, fiveHour: ratePct('five_hour'), sevenDay: ratePct('seven_day'), name, at: Date.now() }))
+  } catch {}
 
   // Assemble
   const parts = [`${barColor}[${bar}] ${pct}% context${RESET}`]

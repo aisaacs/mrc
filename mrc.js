@@ -69,9 +69,11 @@ Options:
   --colima-memory N    Memory (GB) for Colima VM (default: half host RAM, min 8)
 
 Commands:
+  mrc gui [path]                          Open the standalone GUI: build, launch & control a team
   mrc status                              Show active containers across repos
   mrc pick [path]                         Interactive session picker (arrow keys)
   mrc rooms [...]                         Watch/steer negotiation rooms (mrc rooms --help)
+  mrc team [...]                          Assemble/launch a team of agents (mrc team help)
 
 Session management:
   mrc sessions ls [path]                  List saved sessions
@@ -126,6 +128,32 @@ if (remaining[0] === 'status') {
 if (remaining[0] === 'rooms' || remaining[0] === 'room') {
   const { roomsCommand } = await import('./src/commands/rooms.js')
   await roomsCommand(remaining.slice(1))
+  process.exit(0)
+}
+
+// --- Subcommand: mrc team (assemble/launch a team of agents from a roster; no API key) ---
+if (remaining[0] === 'team') {
+  const { teamCommand } = await import('./src/commands/team.js')
+  await teamCommand(remaining.slice(1))
+  process.exit(0)
+}
+
+// --- Subcommand: mrc gui [repo] — the standalone GUI. Boots the daemon + opens the dashboard scoped
+// to a repo, ready to build & launch a team. No API key, no other setup. ---
+if (remaining[0] === 'gui' || remaining[0] === 'studio') {
+  const repo = resolve(remaining[1] || '.')
+  const { ensureRoomDaemon } = await import('./src/commands/pair.js')
+  const { openBrowser } = await import('./src/rooms-dashboard.js')
+  const metaPath = resolve(process.env.HOME, '.local/share/mrc/room-daemon.json')
+  const readMeta = () => { try { return JSON.parse(readFileSync(metaPath, 'utf8')) } catch { return null } }
+  process.stdout.write('  🎩 Starting Mister Claude…')
+  try { await ensureRoomDaemon({ portBase: Number(process.env.MRC_PORT_BASE) || 7722, notifyPort: 0 }) } catch {}
+  let dp = readMeta()?.dashboardPort
+  for (let i = 0; !dp && i < 30; i++) { await new Promise((r) => setTimeout(r, 100)); dp = readMeta()?.dashboardPort }
+  if (!dp) { console.error('\n  ! the daemon is not serving a dashboard (MRC_DASHBOARD_PORT=0?).'); process.exit(1) }
+  const url = `http://127.0.0.1:${dp}/${encodeURIComponent(basename(repo))}?repo=${encodeURIComponent(repo)}`
+  console.log(` ready.\n  ◎ ${url}\n    Build → pick a preset → 🚀 Launch. The dashboard stays up while it's open.`)
+  openBrowser(url)
   process.exit(0)
 }
 
@@ -255,6 +283,24 @@ if (config.agent === 'claude' && legacyKeyVar) {
 // --- Main launch flow ---
 const repoPath = resolve(remaining[0] || '.')
 
+// --- Team-member mode: this session IS @member from the roster (launched by `mrc team up`) ---
+let memberCtx = null
+if (config.member) {
+  const { loadRoster, memberLaunch } = await import('./src/commands/team.js')
+  const { norm, path: rosterPath } = loadRoster(repoPath, config.roster)
+  const q = config.member.toLowerCase()
+  const member = norm.members.find((m) => m.handle === q || m.first.toLowerCase() === q)
+  if (!member) { console.error(`  ✗ No member "${config.member}" in the roster (${rosterPath}).`); process.exit(1) }
+  if (member.tier !== 'live') { console.error(`  ✗ @${member.handle} is a ${member.backend} worker — workers are invoked on demand, not launched as a session.`); process.exit(1) }
+  const launch = memberLaunch(norm, member, repoPath)
+  memberCtx = { norm, member, rosterPath, ...launch }
+  config.rooms = true   // a member is always a room participant
+  // Resume this member's OWN conversation if it exists; else start fresh (pinned to its stable id),
+  // so the shared /workspace/.mrc never makes one member resume another's transcript.
+  if (existsSync(resolve(repoPath, '.mrc', `${launch.sessionId}.jsonl`))) config.resumeSession = launch.sessionId
+  else config.newSession = true
+}
+
 // Ensure Docker / Colima
 const startedColima = await ensureDocker(config.verbose, { colimaCpu: config.colimaCpu, colimaMemory: config.colimaMemory })
 
@@ -316,23 +362,29 @@ const gid = process.getgid?.() ?? 1000
 buildImage(CONTEXT_DIR, { rebuild: config.rebuild, verbose: config.verbose, uid, gid })
 checkImageAge(repoPath)
 
-// Volumes
-const volumes = ['-v', `${repoPath}:/workspace`]
+// Volumes. A team member gets territorial mounts (read-only /workspace + its writable lane); a normal
+// session gets the whole repo read-write.
+const volumes = memberCtx ? [...memberCtx.workspaceVolumes] : ['-v', `${repoPath}:/workspace`]
 volumes.push(...processSandboxignores(repoPath))
 
-// Config volume (per-repo, with multi-instance support)
-const existingCount = getExistingCount(repoPath)
-if (existingCount > 0) {
-  console.log('')
-  console.log(`  ⚠ There's already ${existingCount} Mr. Claude running in this repo.`)
-  console.log('    They\'ll share the workspace but get separate config volumes.')
-  console.log('    Watch out for edit conflicts — two Claudes, one codebase, no good.')
-  console.log('')
-  if (!config.newSession && !config.resumeSession) config.newSession = true
+// Config volume. A member gets its OWN stable volume keyed by handle (each member is its own
+// persistent identity); a normal session uses per-repo multi-instance numbering.
+let volName
+if (memberCtx) {
+  volName = volumeName(`${repoPath}#${memberCtx.member.handle}`, 1)
+} else {
+  const existingCount = getExistingCount(repoPath)
+  if (existingCount > 0) {
+    console.log('')
+    console.log(`  ⚠ There's already ${existingCount} Mr. Claude running in this repo.`)
+    console.log('    They\'ll share the workspace but get separate config volumes.')
+    console.log('    Watch out for edit conflicts — two Claudes, one codebase, no good.')
+    console.log('')
+    if (!config.newSession && !config.resumeSession) config.newSession = true
+  }
+  const instanceId = existingCount > 0 ? existingCount + 1 : 1
+  volName = volumeName(repoPath, instanceId)
 }
-
-const instanceId = existingCount > 0 ? existingCount + 1 : 1
-const volName = volumeName(repoPath, instanceId)
 volumes.push('-v', `${volName}:/home/coder/.claude`)
 volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)
 
@@ -398,17 +450,29 @@ if (roomsActive) {
   const { roomSessionEnv } = await import('./src/commands/pair.js')
   const { roomsRoot } = await import('./src/rooms.js')
   const daemon = roomDaemon
-  // Stable session identity = the Claude conversation UUID, so a resumed conversation keeps its id
-  // (rooms between the same two conversations resume) while a new conversation gets a fresh id —
-  // pinned via `claude --session-id` in the entrypoint when RESUME_FLAG is empty.
-  const sessionId = resolveSessionId(resolve(repoPath, '.mrc'), { resumeSession: config.resumeSession, newSession: config.newSession })
-  // Human-readable label (alias) for `mrc rooms` + ask_peer matching: the session's name if it has
-  // one, else the repo basename.
-  let label = basename(repoPath)
-  try { const nm = loadNames(resolve(repoPath, '.mrc'))[sessionId]; if (nm) label = nm } catch {}
-  envFlags.push(...roomSessionEnv({ daemonPort: daemon.port, sessionId, repoName: basename(repoPath), roomName: config.room, label }))
-  volumes.push('-v', `${roomsRoot()}:/rooms`)
-  roomInfo = { sessionId, roomName: config.room || '', label }
+  if (memberCtx) {
+    // Team member: ensure the daemon knows the org (so it can bind this member to its rooms when the
+    // channel registers), pin the member's own conversation id, and inject the persona + member env.
+    const { pushOrg } = await import('./src/commands/team.js')
+    await pushOrg(memberCtx.norm)
+    const sessionId = memberCtx.sessionId
+    envFlags.push('-e', `MRC_ROOM_PORT=${daemon.port}`, '-e', `MRC_SESSION_ID=${sessionId}`, '-e', `MRC_REPO_NAME=${basename(repoPath)}`, '-e', `MRC_ROOM_LABEL=${memberCtx.member.first}`)
+    envFlags.push(...memberCtx.envFlags)   // MRC_MEMBER_HANDLE, MRC_TEAM, MRC_ROLE, MRC_PERSONA_FILE
+    volumes.push('-v', `${roomsRoot()}:/rooms`)
+    roomInfo = { sessionId, roomName: '', label: `${memberCtx.member.first} (@${memberCtx.member.handle})`, member: true }
+  } else {
+    // Stable session identity = the Claude conversation UUID, so a resumed conversation keeps its id
+    // (rooms between the same two conversations resume) while a new conversation gets a fresh id —
+    // pinned via `claude --session-id` in the entrypoint when RESUME_FLAG is empty.
+    const sessionId = resolveSessionId(resolve(repoPath, '.mrc'), { resumeSession: config.resumeSession, newSession: config.newSession })
+    // Human-readable label (alias) for `mrc rooms` + ask_peer matching: the session's name if it has
+    // one, else the repo basename.
+    let label = basename(repoPath)
+    try { const nm = loadNames(resolve(repoPath, '.mrc'))[sessionId]; if (nm) label = nm } catch {}
+    envFlags.push(...roomSessionEnv({ daemonPort: daemon.port, sessionId, repoName: basename(repoPath), roomName: config.room, label }))
+    volumes.push('-v', `${roomsRoot()}:/rooms`)
+    roomInfo = { sessionId, roomName: config.room || '', label }
+  }
 }
 
 // Banner
@@ -421,7 +485,8 @@ if (!config.json) {
   console.log(`  → Clipboard: ${clipboardServer ? 'the Schwartz can see your clipboard' : 'disabled'}`)
   console.log(`  → Notify:    ${notifyServer ? 'the Schwartz will alert you when ready' : 'disabled'}`)
   console.log(`  → Firewall:  ${config.allowWeb ? 'jammed, but he can see the web (--web)' : 'jammed (just like their radar)'}`)
-  if (roomInfo) console.log(`  → Rooms:     "${roomInfo.label}" · ${roomInfo.roomName ? `explicit pair "${roomInfo.roomName}"` : 'ambient (say "ask <peer>: …")'}`)
+  if (roomInfo?.member) console.log(`  → Member:    ${roomInfo.label} — ${memberCtx.member.roleLabel} on team "${memberCtx.member.team}" · writes: ${memberCtx.member.mount === 'rw' ? memberCtx.member.territory : 'read-only'}`)
+  else if (roomInfo) console.log(`  → Rooms:     "${roomInfo.label}" · ${roomInfo.roomName ? `explicit pair "${roomInfo.roomName}"` : 'ambient (say "ask <peer>: …")'}`)
   console.log('')
 }
 
@@ -472,7 +537,8 @@ if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && 
 
 // Run container
 const roomLabels = roomInfo
-  ? ['--label', 'mrc.room=1', '--label', `mrc.room.session=${roomInfo.sessionId}`]
+  ? ['--label', 'mrc.room=1', '--label', `mrc.room.session=${roomInfo.sessionId}`,
+     ...(memberCtx ? ['--label', `mrc.member=${memberCtx.member.handle}`, '--label', `mrc.team=${memberCtx.member.team}`, '--label', `mrc.project=${memberCtx.norm.org}`] : [])]
   : []
 const exitCode = await runContainer({
   repoPath,
@@ -482,6 +548,7 @@ const exitCode = await runContainer({
   allowWeb: config.allowWeb,
   json: config.json,
   labels: roomLabels,
+  member: memberCtx?.member?.handle || null,   // #34: TERM=xterm-256color + mrc.member label for ttyd-hosted members
 })
 
 // --- Post-session processing (Claude only) ---

@@ -1,0 +1,41 @@
+{
+  "project": "MRC",
+  "teams": [
+    {
+      "name": "Eng",
+      "members": [
+        {
+          "name": "Apolline",
+          "role": "architect",
+          "backend": "claude",
+          "lead": true
+        },
+        {
+          "name": "Brigitte",
+          "role": "engineer",
+          "backend": "claude"
+        },
+        {
+          "name": "Roland",
+          "role": "critic",
+          "backend": "claude"
+        },
+        {
+          "name": "Côme",
+          "role": "designer",
+          "backend": "claude"
+        },
+        {
+          "name": "Ghislaine",
+          "role": "adversary",
+          "backend": "claude"
+        },
+        {
+          "name": "Sandrine",
+          "role": "user-defender",
+          "backend": "claude"
+        }
+      ]
+    }
+  ]
+}

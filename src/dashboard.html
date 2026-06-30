@@ -1,0 +1,1765 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAzMiAzMiI+CjxzdHlsZT4uaHtmaWxsOiMxNTE3MWN9QG1lZGlhKHByZWZlcnMtY29sb3Itc2NoZW1lOmRhcmspey5oe2ZpbGw6I2VlZjFmNn19PC9zdHlsZT4KPGVsbGlwc2UgY2xhc3M9ImgiIGN4PSIxNiIgY3k9IjIzLjQiIHJ4PSIxMi44IiByeT0iMy4wNSIvPgo8cGF0aCBjbGFzcz0iaCIgZD0iTTEwLjUgOSBRMTAuNzUgNi4zIDE2IDYuMSBRMjEuMjUgNi4zIDIxLjUgOSBMMjIgMjIuNiBMMTAgMjIuNiBaIi8+Cjwvc3ZnPg==">
+  <link rel="icon" type="image/png" sizes="32x32" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAACAAAAAgCAYAAABzenr0AAABsklEQVR4nOxXsUoDQRB9c1FRIRJMSMCclYgWgpZBsBArg62dhb8gFvo9YmcrWqWwsVYQRMRGkyISQUihqHfr22AgwTOZLY5DuAfJhdm3s+9m3rDEQ8LwkDBSAamAEbhhvFDyd2CwBTELYuDboBHU+XUHwWmrWT9m6F2bUKDHWKFYPhORjUEkY0yt9dyo8ucHFFC3IF+cqQ473MJyLBdKqAWQWImJq0MoMh4HVy2AhlMndeGqp4Bu1Qtw4KorwFFTJ3XhOrRAcnFw/08FmFad1IWb+BToW+DgbBeuyxjqTejAVVTAn5gulSt8qykoYbl2j907jBt1G2YKhfKmeNjm8qqBmeMFI7zl7EUDlYAfLp8cCHlg5NKEOGm1GudcDv4UwIPXWZMjbvZ/J4UTorRST52Kdl+ajVo31t+CDPajDu8mdPlE5xCfS3u9sT4BAb4OrUrEBLbzMfwMDnpjUVpH86XyGmd5hVsWId4yu7lE6iTc8Mau3fB5zdrfsvRXLP0FBnlgAIT+mDcZzNJWOToy60Gy8Ey2sxpKO4RpG5E27foqAZ5ouPvOSw9LjISR/i9IBXwDAAD//5nrkiYAAAAGSURBVAMAAAyEVmKfO4QAAAAASUVORK5CYII=">
+  <link rel="apple-touch-icon" sizes="180x180" href="data:image/png;base64,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">
+  <!-- Silkscreen (pixel) for the title only — same CDN approach as the marketing site (docs/style.css).
+       The dashboard is served to the user's normal browser (not firewalled), so the CDN load works;
+       falls back to mono if offline. Recolored to brand purple in `header h1` below. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Silkscreen&display=swap">
+<title>Mister Claude</title>
+<style>
+  /* #2a — ONE source of truth. Tokens are named by MEANING, not appearance: several are the same hue
+     today but kept SEPARATE so Côme's 2b palette can diverge any one without re-blurring a distinction
+     (per Sandrine's semantic contract + Roland's no-op gate — every value here equals today's). */
+  :root {
+    /* surfaces */
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --line:#262b36; --inset:#0b0d12; --field:#11141b;
+    /* text */
+    --fg:#e6e9ef; --dim:#8b93a3;
+    /* #2b — Mr. Claude palette (derived from Côme's swatches by INTENT, WCAG-AA on the dark base).
+       Two learnable hue families: PURPLE = brand / attention (the top-hat), BLUE = navigate / info. */
+    --accent:#a78bfa;   /* brand / active selection — the top-hat purple */
+    --link:#6aa0f5;     /* hyperlinks (navigate) */
+    --info:#5b9cf6;     /* 🔗 Telegram-pending / informational (blue — NOT the purple needs-you) */
+    --worker:#6aa0f5;   /* worker (on-demand) state */
+    /* status — perceptually distinct AND semantically mapped (green≈good, amber≈attention, red≈bad) */
+    --online:#5ec878;   /* ready / running / online */
+    --starting:#e6a23c; /* starting / attention */
+    --warning:#e6a23c;  /* warning / paused */
+    --danger:#f2607a;   /* offline / error / destructive */
+    /* needs-you family — purple (brand-attention); three DISTINCT meanings */
+    --needs-you:#c4a6ff; /* ❓ needs-you / @you — the brightest "ping" */
+    --lead:#b39ddb;      /* lead member */
+    --ref:#b8a4f0;       /* [#N] reference chip */
+    /* A11Y GUARDRAIL (Sandrine's contract pt 3): purple↔blue compresses under red-green colorblindness,
+       so 🔗-info(blue) vs ❓-needs-you(purple), and the three close purples (needs-you/lead/ref), are NOT
+       reliably separable by COLOR alone — the GLYPH/context channel (🔗 ❓ ● ✓ ✕, position) is load-bearing.
+       Never drop those glyphs for a "cleaner" color-only treatment in a polish pass. */
+    /* legacy aliases so existing .good/.warn/.bad/.state/pills keep their exact look */
+    --good:var(--online); --warn:var(--warning); --bad:var(--danger);
+    /* semantic surfaces (bg / border / fg) for buttons, badges, flashes — unifies the ad-hoc accents */
+    --info-bg:#23314d; --info-border:#33507e; --info-fg:#cfe0ff;
+    --danger-bg:#2a1b21; --danger-border:#5a3540; --danger-fg:#f4a6b4;
+    --success-bg:#1f3a26; --success-border:#2f6b3f; --success-fg:#bfe6c8;
+    --needs-bg:#3a2f4f; --needs-fg:#d7c5f5;          /* soft needs-you badge */
+    --needs-edge:#5a4a7a; --needs-edge-fg:#e7dcff;   /* brighter needs-you: tab badge + needs-you panel borders */
+    --unread:#f56565;    /* #63-F unread divider — a RED read-position marker, deliberately distinct from the PURPLE needs-you action accent (two cues, not one) */
+    /* rhythm (8px scale) + radius — defined now for 2b; adopted value-preserving where it matches */
+    --sp1:4px; --sp2:8px; --sp3:12px; --sp4:16px; --sp5:24px; --sp6:32px;
+    --radius:10px; --radius-sm:7px; --radius-pill:999px;
+  }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif; height:100vh; overflow:hidden }
+  code,pre,.mono { font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace }
+  a { color:var(--link); text-decoration:none }
+  .tgunpair:hover { text-decoration:underline }   /* subtle at rest (dim, no underline), discoverable on hover for a state-changing action */
+  /* layout */
+  .app { display:grid; grid-template-rows:50px 1fr; height:100vh }
+  header { display:flex; align-items:center; gap:12px; padding:0 16px; border-bottom:1px solid var(--line); background:var(--panel) }
+  /* Title in Silkscreen (pixel) recolored to brand purple — @user's wordmark option-2. Pixel fonts
+     read larger/wider than mono, so a slightly smaller size + tighter line. Falls back to mono offline. */
+  header h1 { font-family:'Silkscreen', ui-monospace, SFMono-Regular, monospace; font-size:13px; margin:0; font-weight:400; letter-spacing:.3px; color:var(--accent); display:flex; align-items:center; gap:8px }
+  .hatmark { fill:var(--accent); flex:0 0 auto; filter:drop-shadow(0 1px 2px rgba(0,0,0,.4)) }   /* the Mr. Claude top-hat (favicon, brand purple) */
+  /* 🔔 notification toggle — 3-state (off / on / blocked); on = brand accent, blocked = warning */
+  button.pill { background:transparent; cursor:pointer; font-family:inherit; line-height:1.6 }
+  .pill.notif.on { color:var(--accent); border-color:var(--accent) }
+  .pill.notif.blocked { color:var(--warning); border-color:#4a3a22 }
+  header .spacer { flex:1 }
+  .main { display:grid; grid-template-columns:340px 1fr; min-height:0 }
+  .list { border-right:1px solid var(--line); overflow:auto; padding:10px }
+  .detail { display:flex; flex-direction:column; overflow:auto; padding:16px 20px; min-width:0; min-height:0 }
+  /* #40: persistent terminal host — overlays the detail cell (col 2) so member iframes survive a
+     re-render / member-switch (no remount = no blank/reconnect). One keep-alive iframe per org+handle. */
+  #termhost { grid-column:2; grid-row:1; display:none; flex-direction:column; overflow:hidden; padding:16px 20px; min-width:0; min-height:0; background:var(--bg) }
+  /* #62 new-project full-view takeover: a FRESH build (not Edit-teams) fills the width — hide the contextual
+     list + collapse the grid to one column, and hide the project tabs (visibility:hidden keeps the header's
+     flex:1 spacer so the alerts/daemon/gear pills stay right-aligned). The app header itself stays. Editing an
+     existing team carries no .build-takeover class → it remains the in-place subpanel. ✕ Cancel clears
+     S.building → paint() drops the class → the layout restores. */
+  .app.build-takeover .main { grid-template-columns:1fr }
+  .app.build-takeover .list { display:none }
+  /* #detail is pinned to grid-column:2 by an ID rule (below) — match that ID specificity to span it full-width,
+     else the hidden list's column 1 leaves an empty gutter beside the builder. */
+  .app.build-takeover #detail { grid-column:1 / -1 }
+  .app.build-takeover .tabwrap { visibility:hidden }
+  #detail { grid-column:2; grid-row:1 }
+  .termblock { display:none; flex-direction:column; flex:1 1 0; min-height:0 }
+  .termhdr { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px }
+  .termframe { width:100%; flex:1 1 0; min-height:0; border:1px solid var(--line); border-radius:8px; background:#000 }
+  .termfoot { margin-top:6px }
+  /* #4a never-blank terminal: history-not-replayed banner + first-mount placeholder over the iframe */
+  .termbanner { display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--dim); background:var(--inset); border:1px solid var(--line); border-radius:6px; padding:4px 9px; margin-bottom:6px }
+  .termbanner .bx { margin-left:auto; cursor:pointer; opacity:.55; flex:0 0 auto } .termbanner .bx:hover { opacity:1 }
+  .termwrap { position:relative; flex:1 1 0; min-height:0; display:flex }
+  .termwrap .termframe { flex:1 1 0 }
+  .termplaceholder { position:absolute; inset:0; z-index:2; pointer-events:none; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:8px; text-align:center; padding:24px; background:var(--bg); border:1px solid var(--line); border-radius:8px; transition:opacity .5s }
+  .termplaceholder.hide { opacity:0 }
+  .termplaceholder .tp-main { font-size:14px; color:var(--fg); font-weight:600 }
+  .termplaceholder .tp-sub { font-size:12px; color:var(--dim); max-width:440px; line-height:1.5 }
+  .detail > * { flex-shrink:0 }   /* flowing views keep natural height + the pane scrolls; fill children (#tabbody / the iframe) override below */
+  #tabbody { flex:1 1 0; min-height:0; display:flex; flex-direction:column; overflow:auto }   /* transcript/summary fill the remaining height; catch-up cards scroll */
+  /* pills / badges */
+  .pill { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--dim) }
+  .pill.on { color:var(--good); border-color:#2c4533 } .pill.off { color:var(--bad); border-color:#4a2a31 }
+  /* #46: header gear → Settings modal */
+  .pill.gear { font-size:13px; padding:1px 7px; line-height:1.3 }
+  .pill.gear:hover, .pill.gear[aria-expanded="true"] { color:var(--accent); border-color:var(--accent) }
+  #modal:empty { display:none }
+  .scrim { position:fixed; inset:0; z-index:900; background:rgba(0,0,0,.55); display:flex; align-items:flex-start; justify-content:center; padding:48px 16px; overflow:auto }
+  .modalcard { background:var(--panel); border:1px solid var(--line); border-radius:12px; max-width:520px; width:calc(100% - 32px); max-height:calc(100vh - 96px); display:flex; flex-direction:column; box-shadow:0 12px 40px rgba(0,0,0,.5) }
+  .modalcard:focus { outline:none }
+  .modalhead { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--line) }
+  .modalbody { padding:14px 16px; overflow:auto }
+  .sgrouph { font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); margin:0 0 8px }
+  .sblk.danger { border-color:var(--danger) }
+  .badge { font-size:10px; background:var(--needs-bg); color:var(--needs-fg); border-radius:var(--radius-pill); padding:0 6px; margin-left:auto }
+  .state { font-size:10px; padding:1px 7px; border-radius:6px; border:1px solid var(--line); color:var(--dim) }
+  .state.Running { color:var(--good) } .state.Paused { color:var(--warn) } .state.History { color:var(--dim) }
+  h2 { font-size:11px; text-transform:uppercase; letter-spacing:.6px; color:var(--dim); margin:16px 0 8px } h2:first-child { margin-top:4px }
+  h2.you { color:var(--needs-you); font-size:12px; display:flex; align-items:center; gap:8px } h2.you .badge { margin-left:0 }
+  .dim { color:var(--dim) } .muted { color:var(--dim); font-size:12px } .good{color:var(--good)} .bad{color:var(--bad)} .warn{color:var(--warn)}
+  .h { font-family:ui-monospace,monospace; font-size:12.5px }
+  .dot { width:8px; height:8px; border-radius:50%; background:#3a4150; display:inline-block; flex:0 0 auto }
+  .dot.online, .dot.ready { background:var(--good); box-shadow:0 0 6px #7bd88f88 }
+  .dot.starting { background:var(--warn); box-shadow:0 0 7px #e0af68aa; animation:pulse 1.2s ease-in-out infinite }
+  .dot.worker { background:var(--worker) } .dot.off { background:#3a4150 }
+  @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
+  .mstate { font-size:10.5px; margin-left:6px; white-space:nowrap }
+  .mstate.ready{color:var(--good)} .mstate.starting{color:var(--warn)} .mstate.worker{color:var(--worker)} .mstate.off{color:var(--dim)}
+  /* cards */
+  .team { background:var(--panel); border:1px solid var(--line); border-radius:11px; padding:12px 12px 10px; margin-bottom:12px }
+  /* settings tab (#42c) */
+  .sblk { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:11px 13px; margin-bottom:12px }
+  .sblk .srow { display:flex; align-items:center; gap:7px; flex-wrap:wrap }
+  .sblk .srow b { font-size:14px }
+  .sblk .shelp { color:var(--dim); font-size:12px; margin:4px 0 8px; line-height:1.45 }
+  .setck { display:flex; align-items:center; gap:7px; font-size:13px; color:var(--fg); margin:3px 0 } .setck input { width:auto }
+  /* #61: project HOME pane */
+  .home { padding:18px 20px; max-width:680px }
+  .homehd { display:flex; align-items:center; gap:12px; margin-bottom:14px }
+  .homestat { font-size:11.5px; font-weight:700; padding:2px 9px; border-radius:11px; border:1px solid var(--line) }
+  .homestat.on { color:var(--online); border-color:#2f6b3f } .homestat.off { color:var(--dim) }
+  .homeov { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:6px }
+  .ovchip { font-size:12.5px; color:var(--dim); background:var(--inset); border:1px solid var(--line); border-radius:8px; padding:5px 10px } .ovchip b { color:var(--fg) }
+  .stag { font-size:9.5px; font-weight:700; letter-spacing:.04em; padding:2px 6px; border-radius:4px; border:1px solid var(--line); white-space:nowrap }
+  .stag.g { color:var(--accent); border-color:var(--accent) } .stag.p { color:var(--info); border-color:var(--info) }
+  .stag.r { color:var(--online); border-color:var(--online) } .stag.l { color:var(--warning); border-color:var(--warning) }
+  .team .tn { font-weight:650; font-size:13px; margin-bottom:8px; padding:0 2px; display:flex; gap:8px; align-items:center }
+  /* member cards (Côme's mockup): dot · name (bold, line 1, no truncation) / role (dim, line 2) · status,
+     with a reserved slim slot on the right for the future per-member bar (not populated yet). */
+  .mem { display:flex; align-items:center; gap:11px; padding:9px 11px; cursor:pointer; border:1px solid var(--line); border-radius:9px; background:var(--panel); position:relative }   /* #68: anchor the bottom-spanning context bar */
+  .mem + .mem { margin-top:6px }
+  .mem:hover { background:var(--panel2); border-color:#3a4150 } .mem.sel { background:var(--panel2); border-color:var(--accent) }
+  .mem .dot { width:10px; height:10px }
+  .mem .who { flex:1; min-width:0; display:flex; flex-direction:column; gap:1px }
+  .mem .who .nm { font-size:14px; font-weight:650; text-transform:capitalize; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.25 }   /* full name (nowrap); ellipsis only catches a pathological long CUSTOM name, never the curated pool */
+  .mem .who .role { font-size:11.5px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.25 }
+  .mem .who .role .bk { opacity:.8 }
+  .mem.lead .who .nm { color:var(--lead) } .mem .leadstar { color:var(--lead); font-size:11px }
+  .mem .mstate { flex:0 0 auto; font-size:10.5px; text-align:right; margin-left:0 }
+  .mem .membar { position:absolute; left:8px; right:8px; bottom:1px; height:3px; border-radius:2px; background:transparent }   /* #64/#68: per-member context gauge — a bottom-spanning horizontal bar; fill-WIDTH (left→right) = % of context window used; empty until a status arrives */
+  .mem .membar.g { color:var(--online) } .mem .membar.y { color:var(--warning) } .mem .membar.r { color:var(--danger) }   /* fill color (currentColor) by threshold: green <60 · amber <77 · red ≥77 */
+  .ovchip.rl { color:var(--dim) } .ovchip.rl b { color:var(--fg) }
+  .ovchip.rl.y b { color:var(--warning) } .ovchip.rl.r b { color:var(--danger) }   /* #64: lead-only rate-limit gauge (5h/7d), color by threshold */
+  .rm { display:flex; align-items:center; gap:8px; padding:7px 9px; border:1px solid var(--line); border-radius:8px; margin:6px 0; cursor:pointer; background:var(--panel) }
+  .rm:hover { border-color:#37506e } .rm.sel { border-color:var(--accent); background:var(--panel2) }
+  .rm .nm { font-weight:600; font-size:13px } .rm .meta { color:var(--dim); font-size:11px; margin-left:auto }
+  .ib { border:1px solid #3a2f4f; background:#1a1622; border-radius:9px; padding:9px 11px; margin-bottom:7px; cursor:pointer }
+  .ib.slim { padding:6px 10px; font-size:13px; display:flex; align-items:center; gap:5px } .ib.slim:hover { border-color:#6a5a8a }
+  .ib.q { border-color:var(--needs-edge) } .ib.fyi { background:#12161d; border-color:#2a3344; opacity:.82 }
+  .ib.dism { opacity:.45; border-style:dashed } .ib.dism b { text-decoration:line-through }
+  .ib .qicon { font-size:11px; flex:0 0 auto } .ib .dismx { margin-left:auto; color:var(--dim); font-size:12px; opacity:.45; flex:0 0 auto } .ib:hover .dismx { opacity:1 } .ib .dismx:hover { color:#f4a6b4 }
+  .pane.fyi { border-color:#2a3344; background:#12161d }
+  #orgSel { width:auto; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:5px 10px; font-size:13px; cursor:pointer }
+  #orgSel:hover { border-color:#3a4150 }
+  header .plabel { font-size:11px; color:var(--dim); margin-left:4px }
+  .ib:hover { border-color:var(--needs-edge) } .ib.sel { border-color:var(--needs-you) } .ib .who{ font-size:12px; color:var(--dim) } .ib .who b{ color:var(--fg) }
+  .ib .q { margin-top:3px } .ib.done { opacity:.5 }
+  /* #47: @you inbox channel (col3 transcript-style feed) */
+  .rm.you-row .nm { font-weight:650 } .rm.you-row .badge { margin-left:6px }
+  .ich-wrap { display:flex; flex-direction:column; height:100%; min-height:0; position:relative }
+  .ich-triage { position:absolute; top:6px; left:50%; transform:translateX(-50%); z-index:4; background:var(--needs-bg); color:var(--needs-fg); border:1px solid var(--needs-edge); border-radius:999px; font-size:11px; font-weight:700; padding:3px 11px; cursor:pointer; box-shadow:0 2px 8px rgba(0,0,0,.4) }
+  .ich-scroll { flex:1 1 0; min-height:0; overflow:auto; padding:6px 4px 14px }
+  .ich-scroll .ib { cursor:default; margin-bottom:6px }
+  .ich-sender { font-size:12px; margin:12px 0 4px; padding:0 2px } .ich-sender b { color:var(--fg) }
+  .ich-line { display:flex; align-items:baseline; gap:8px }
+  .ich-body { flex:1 1 auto; white-space:pre-wrap; word-break:break-word; font-size:13px }
+  .ich-meta { flex:0 0 auto; font-size:11px; white-space:nowrap }
+  .ich-ans { margin-top:5px; font-size:12px; border-top:1px solid var(--line); padding-top:5px }
+  .ich-reply { margin-top:6px } .ich-reply textarea { width:100%; min-height:54px; box-sizing:border-box }
+  .ich-acts { margin-top:5px }
+  .ib.qhi { box-shadow:0 0 0 2px var(--needs-you); transition:box-shadow .3s }
+  /* #48: worker call-history */
+  .wlog { flex:1 1 0; min-height:0; overflow:auto; padding:2px 2px 12px }
+  .wcard { border:1px solid var(--line); border-radius:9px; padding:9px 11px; margin-bottom:8px; background:var(--panel) }
+  .wcard.fail { border-color:var(--danger); background:#23161b }
+  .wcard-h { display:flex; align-items:center; gap:7px; font-size:12px; margin-bottom:5px }
+  .wstat { margin-left:auto; font-size:11px; font-weight:700 } .wstat.ok { color:var(--online) } .wstat.fail { color:var(--danger) }
+  .wreq { font-size:12px; margin-bottom:5px } .wask { padding:1px 0; word-break:break-word } .wask b { color:var(--link) }
+  .wask.directive { color:var(--ref); font-weight:600 }
+  .wmono { margin:0; white-space:pre-wrap; word-break:break-word; font-size:12px; background:var(--inset); border-radius:6px; padding:7px 9px }
+  .wfail { white-space:pre-wrap; word-break:break-word; font-size:12px; color:#f4b9c4; background:#2a1a1f; border:1px solid var(--danger); border-radius:6px; padding:7px 9px }
+  .wasset .wchip { display:inline-flex; align-items:center; gap:5px; font-size:12px; border:1px solid var(--line); border-radius:6px; padding:3px 8px; background:var(--inset) }
+  .wthumb { display:block; max-width:180px; max-height:140px; border-radius:6px; border:1px solid var(--line); cursor:pointer; margin-bottom:6px; background:var(--inset) }
+  .waudio { display:block; width:240px; max-width:100%; height:34px; margin-bottom:6px }
+  .wlegacy { margin-bottom:10px; padding-bottom:8px; border-bottom:1px dashed var(--line) }
+  /* controls */
+  textarea,input,select { background:var(--field); color:var(--fg); border:1px solid var(--line); border-radius:var(--radius-sm); padding:7px 9px; font:13px/1.4 inherit; width:100% }
+  textarea { resize:vertical; min-height:38px }
+  button.btn { background:var(--panel2); color:var(--fg); border:1px solid var(--line); border-radius:7px; padding:6px 12px; cursor:pointer; font-size:12.5px }
+  button.btn.launch { background:var(--success-bg); border-color:var(--success-border); color:var(--success-fg) }
+  button.btn:hover { border-color:#3a4150 } button.primary { background:var(--info-bg); border-color:var(--info-border); color:var(--info-fg) } button.danger { background:var(--danger-bg); border-color:var(--danger-border); color:var(--danger-fg) }
+  button.tiny { padding:3px 8px; font-size:11px }
+  .row { display:flex; gap:8px; align-items:center } .row.wrap{ flex-wrap:wrap } .grid2{ display:grid; grid-template-columns:1fr 1fr; gap:10px }
+  .tabs { display:flex; gap:6px; margin:14px 0 10px } .tabs button { background:transparent; border:1px solid transparent; color:var(--dim); border-radius:7px; padding:5px 10px; cursor:pointer; font-size:12.5px }
+  .tabs button.on { background:var(--panel2); color:var(--fg); border-color:var(--line) }
+  .thread { background:var(--inset); border:1px solid var(--line); border-radius:var(--radius); padding:14px; white-space:pre-wrap; word-break:break-word; font-size:12.5px; flex:1 1 0; min-height:0; overflow:auto; margin:0 }
+  /* #63-C: bottom-anchored room composer (the steer box) — header+tabs fixed, transcript flexes+scrolls, composer sticks at the bottom */
+  .roomview { display:flex; flex-direction:column; height:100%; min-height:0 }
+  .roombody { flex:1 1 0; min-height:0; display:flex; flex-direction:column }
+  .composer { flex:0 0 auto; display:flex; gap:7px; align-items:flex-end; padding:9px 2px 2px; border-top:1px solid var(--line) }
+  .composer select { max-width:170px; flex:0 0 auto } .composer .btn { flex:0 0 auto }
+  .composer textarea { flex:1 1 auto; min-height:38px; max-height:160px; box-sizing:border-box; resize:none }
+  .thread:focus-visible, .focusable:focus-visible { outline:2px solid var(--accent); outline-offset:-2px }   /* keyboard-scroll a11y (#2a E) */
+  .tline { word-break:break-word; margin:1px 0 }
+  .tline .body { display:inline-block; vertical-align:top; max-width:100%; white-space:pre-wrap }   /* #63-A: member text rendered as safe MD; chrome is a sibling, not inside */
+  .qnum { color:var(--ref); font-weight:600 }   /* the question's [#N] anchor target — reference, not a link */
+  .qjump { color:var(--link); cursor:pointer; text-decoration:underline dotted }   /* the re #N jump — clickable */
+  .tline.qhi { background:#2a2440; border-radius:5px; transition:background .3s }   /* jump highlight */
+  /* #63-A safe-markdown body subset */
+  .md-pre { background:var(--inset); border:1px solid var(--line); border-radius:6px; padding:7px 9px; margin:3px 0; overflow:auto; white-space:pre; font-size:12px }
+  .md-code { background:var(--inset); border:1px solid var(--line); border-radius:4px; padding:0 4px; font-size:12.5px }
+  .md-link { color:var(--link) }
+  .md-list { margin:3px 0 3px 20px } .md-list li { margin:1px 0 }
+  /* #63-B Slack-style message rows (shared by the room transcript + the @you channel) */
+  .msg { margin:1px 0 }
+  .msg-author { display:flex; align-items:baseline; gap:6px; margin:8px 0 1px; font-size:12.5px }
+  .msg-author b { color:var(--fg) }
+  .msg-author .qicon { font-size:12px }
+  .msg-role { font-size:10px; text-transform:uppercase; letter-spacing:.04em; opacity:.65 }
+  .msg-room { font-size:11px } .msg-time { font-size:11px; margin-left:auto }
+  .msg.qhi { background:#2a2440; border-radius:5px; transition:background .3s }   /* #63-B jump highlight (anchor on the .msg wrap) */
+  .msg-fyi { opacity:.82 }   /* @you FYIs read dimmer than questions (the ❓/🔔 icon is the primary distinction) */
+  .msg-needs { border-left:2px solid var(--needs-edge); padding-left:7px }   /* #63-B2: an OPEN question still needing your reply */
+  .msg-needs .qicon { color:var(--needs-you) }   /* the ❓ glows for an open question (glyph already distinguishes) */
+  /* #63-F unread: a RED full-width divider marking the read-position (where new-since-last-visit begins), and a
+     jump pill when that divider has scrolled off the top. Red ≠ the purple needs-you accent → two distinct cues. */
+  .unread-div { display:flex; align-items:center; gap:8px; margin:8px 2px; color:var(--unread); font-size:11px; font-weight:600; letter-spacing:.02em }
+  .unread-div::before, .unread-div::after { content:''; flex:1 1 0; height:1px; background:var(--unread); opacity:.5 }
+  .unread-pill { position:absolute; top:7px; left:50%; transform:translateX(-50%); z-index:6; background:var(--unread); color:#1a0c0c; border:none; border-radius:11px; padding:3px 11px; font-size:11px; font-weight:700; cursor:pointer; box-shadow:0 1px 7px rgba(0,0,0,.35) }
+  .unread-pill:hover { filter:brightness(1.08) }
+  /* #63-F de-collision: on @you the triage pill ("N unanswered", top-center) and the unread pill share the
+     top-center anchor. When the triage IS present (it precedes the pill in .ich-wrap), drop the secondary unread
+     pill below it so BOTH stay visible — triage keeps the stable spot. Sibling-gated, so a transcript room (no
+     triage) and an @you with no unanswered questions keep the unread pill top-center. */
+  .ich-triage ~ .unread-pill { top:34px }
+  .ra-arch b { color:#a78bfa } .ra-eng b { color:#5ec878 } .ra-crit b { color:#f2a65a } .ra-adv b { color:#f2607a } .ra-human b { color:#6aa0f5 } .ra-media b { color:#e29bd8 } .ra-sys b { color:var(--dim) }
+  .pane { background:var(--panel); border:1px solid var(--line); border-radius:9px; padding:10px 12px; margin-bottom:8px; flex-shrink:0 }
+  .pane.unrev { border-color:var(--needs-edge) }
+  .card { background:var(--inset); border:1px solid var(--line); border-radius:8px; padding:9px 11px; margin:6px 0; white-space:pre-wrap; font-size:12.5px }
+  .empty { color:var(--dim); padding:40px 20px; text-align:center } label{ display:block; font-size:12px; color:var(--dim); margin:8px 0 3px }
+  .empty .hatwm { fill:var(--line); opacity:.8; margin-bottom:16px }   /* faint top-hat watermark on the idle canvas */
+  .empty .flavor { margin-top:12px; font-style:italic; opacity:.5; font-size:12px }   /* Spaceballs flavor — never load-bearing */
+  .memrow { display:grid; grid-template-columns:1.3fr 1fr auto 1.1fr auto; gap:8px; align-items:center; padding:5px 0; border-top:1px solid var(--line) }
+  /* #44: member name line above each member row */
+  .bmem { border-top:1px solid var(--line); padding-top:6px; margin-top:4px }
+  .bmem .memrow { border-top:none; padding-top:2px; margin-top:0 }
+  .bmemname { display:flex; align-items:center; gap:6px }
+  .bmemname .bnm { flex:0 0 170px; font-weight:600 }
+  .memrow .lead { display:flex; align-items:center; gap:5px; font-size:12px; color:var(--dim); white-space:nowrap } .memrow input[type=checkbox]{ width:auto }
+  /* locked, role-derived backend for media makers (no generic select) */
+  .bklock { font-size:12px; padding:5px 7px; border:1px dashed var(--line); border-radius:6px; color:var(--dim); background:var(--inset); white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  .roomtag { display:inline-block; font-size:11px; border:1px solid var(--line); border-radius:6px; padding:1px 7px; margin:2px 4px 2px 0; color:var(--dim) }
+  .amf { background:var(--inset); border:1px solid var(--info-border); border-radius:8px; padding:8px; margin-top:6px }
+  .amf select, .amf input { font-size:12px; padding:5px 7px }
+  /* project tabs (one per org) */
+  .tabstrip { display:flex; gap:4px; align-items:flex-end; overflow-x:auto; flex:1; min-width:0; margin:0 10px; scrollbar-width:thin }
+  .tabstrip::-webkit-scrollbar { height:5px } .tabstrip::-webkit-scrollbar-thumb { background:#2a3550; border-radius:3px }
+  .ptab { display:flex; align-items:center; gap:6px; flex:0 0 auto; max-width:180px; padding:5px 10px; border:1px solid var(--line); border-radius:8px; background:var(--panel); color:var(--dim); cursor:pointer; font-size:12.5px }
+  .ptab:hover { color:var(--fg); border-color:#37506e }
+  .ptab.active { background:var(--panel2); color:var(--fg); border-color:var(--accent) }
+  .ptab.closed:not(.active) { opacity:.5 }
+  .ptab .pdot { width:6px; height:6px; border-radius:50%; flex:0 0 auto }
+  .ptab.running .pdot { background:#3f9d54 } .ptab.closed .pdot { background:#555c6b } .ptab.active .pdot { background:var(--accent) }
+  .ptab .pname { white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+  .ptab .pbadge { background:var(--needs-edge); color:var(--needs-edge-fg); border-radius:10px; padding:0 6px; font-size:10.5px; font-weight:700; flex:0 0 auto }
+  .ptab .plink { color:var(--info); font-size:11px; font-weight:700; flex:0 0 auto }   /* 🔗 Telegram link awaiting confirm — --info, distinct from the ❓ needs-you badge */
+  .ptab .pclose { opacity:0; color:var(--dim); font-size:14px; line-height:.8; flex:0 0 auto; padding:0 1px } .ptab:hover .pclose { opacity:.65 } .ptab .pclose:hover { color:#f4a6b4; opacity:1 }
+  .ptab.add { color:var(--dim); font-size:15px; padding:4px 11px } .ptab.add:hover { color:#bfe6c8; border-color:#2f6b3f }
+  .tabovf { flex:0 0 auto; background:var(--panel); border:1px solid var(--line); border-radius:8px; color:var(--dim); cursor:pointer; padding:5px 8px; font-size:12.5px; position:relative }
+  .tabovf:hover { color:var(--fg) }
+  /* #2a E: when a tab carrying ❓ needs-you scrolls out of the strip, surface a clickable "‹N"/"N›" edge
+     hint so the count is never hidden off-screen. Uses the needs-you tokens (same meaning as the badge). */
+  .tabwrap { position:relative; flex:1; min-width:0; display:flex; align-items:flex-end }
+  .tabhint { position:absolute; top:50%; transform:translateY(-50%); z-index:5; border:1px solid var(--needs-edge); background:var(--needs-bg); color:var(--needs-fg); border-radius:var(--radius-pill); font-size:10.5px; font-weight:700; padding:2px 8px; cursor:pointer; box-shadow:0 1px 6px rgba(0,0,0,.4) }
+  .tabhint.l { left:0 } .tabhint.r { right:0 }
+  .tabhint[hidden] { display:none }
+  .tabhint:focus-visible { outline:2px solid var(--accent); outline-offset:1px }
+  .tabmenu { position:absolute; top:100%; right:0; margin-top:4px; background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:4px; z-index:20; min-width:160px; box-shadow:0 6px 20px rgba(0,0,0,.4) }
+  .tabmenu div { padding:5px 9px; border-radius:6px; cursor:pointer; font-size:12.5px; white-space:nowrap; display:flex; gap:8px; align-items:center }
+  .tabmenu div:hover { background:var(--panel) }
+  .resume { background:#0b0d12; border:1px solid #33507e; border-radius:10px; padding:14px 16px; margin:8px 0 14px }
+  .resume h3 { margin:0 0 6px; font-size:14px } .resume .step { font-size:12px; color:var(--dim); margin:3px 0 }
+  /* #20: a failed state-change surfaces here instead of silently swallowing (stale token → reload). */
+  #flash { position:fixed; top:0; left:0; right:0; z-index:1000; display:flex; flex-direction:column; align-items:center; pointer-events:none }
+  #flash .fl { pointer-events:auto; margin-top:9px; max-width:680px; padding:9px 14px; border-radius:9px; font-size:13px; box-shadow:0 5px 20px rgba(0,0,0,.5); display:flex; gap:12px; align-items:center }
+  #flash .fl.err { background:#3a1518; border:1px solid #7a2630; color:#ffd9dc }
+  #flash .fl.stale { background:#1d2740; border:1px solid #3f5d97; color:#dbe6ff }
+  #flash .fl.note { background:#13263a; border:1px solid #2f5d8f; color:#cfe3ff }
+  #flash .fl .x { cursor:pointer; opacity:.7; margin-left:2px } #flash .fl .x:hover { opacity:1 }
+  #flash .fl .btn { padding:3px 11px; font-size:12px }
+  /* #2b.3 micro-polish: smooth state transitions, active feedback, keyboard focus rings. Hover bgs stay
+     within the panel→panel2 range already verified AA, so text contrast does NOT regress on hover/active.
+     The focus-visible rings extend 2a's a11y to buttons/fields; every glyph + the existing rings stay. */
+  button.btn, .tabs button, .ptab, .mem, .rm, .ib, .tabhint, .pclose, .dismx, textarea, input, select, a { transition: background-color .14s ease, border-color .14s ease, color .14s ease, opacity .14s ease, transform .06s ease }
+  button.btn:active { transform: translateY(1px) }
+  button:focus-visible, textarea:focus-visible, input:focus-visible, select:focus-visible, .tabhint:focus-visible, [role=button]:focus-visible { outline:2px solid var(--accent); outline-offset:2px }
+</style>
+</head>
+<body>
+<div id="flash"></div>
+<div class="app">
+  <header>
+    <h1><svg class="hatmark" viewBox="0 0 32 32" width="20" height="20" aria-hidden="true"><ellipse cx="16" cy="23.4" rx="12.8" ry="3.05"/><path d="M10.5 9 Q10.75 6.3 16 6.1 Q21.25 6.3 21.5 9 L22 22.6 L10 22.6 Z"/></svg>Mister Claude</h1>
+    <div class="tabwrap">
+      <button class="tabhint l" id="tabHintL" onclick="scrollTabs(-1)" title="needs-you on a tab scrolled off the left — click to reveal" hidden></button>
+      <div class="tabstrip" id="tabs"></div>
+      <button class="tabhint r" id="tabHintR" onclick="scrollTabs(1)" title="needs-you on a tab scrolled off the right — click to reveal" hidden></button>
+    </div>
+    <button class="pill notif" id="notifyBtn" onclick="toggleNotify()" aria-pressed="false" title="Browser notifications + chime for new @you messages">🔕 alerts</button>
+    <span class="pill off" id="daemonPill">daemon ?</span>
+    <button class="pill gear" id="gearBtn" onclick="openSettings()" aria-label="Settings" title="Settings" aria-haspopup="dialog" aria-expanded="false">⚙</button>
+  </header>
+  <div class="main">
+    <div class="list" id="mid"></div>
+    <div class="detail" id="detail"></div>
+    <div id="termhost"></div>
+  </div>
+  <div id="modal"></div>
+</div>
+<script>
+const $ = (s, r=document) => r.querySelector(s)
+// Escapes & < > " AND ' (→ &#39;). Including the apostrophe closes the latent class where a future
+// edit puts an attacker-controllable string into a single-quoted JS context (onclick="f('${esc(x)}')"):
+// &#39; HTML-decodes correctly in text, double- AND single-quoted attributes, so esc() is safe in every
+// context the dashboard uses — no caller has to remember which quote style it's in.
+// #63-A: esc + safeMD are the ONE audited renderer in src/safe-md.js, injected as a <head> <script> by
+// rooms-dashboard.js (so the browser runs the same module the node tests import). No inline copy here.
+const MRC_TOKEN = (document.querySelector('meta[name=mrc-token]')||{}).content || ''
+// Attach the CSRF token to every non-GET request (POST state-changers). A cross-origin page can't read
+// MRC_TOKEN (same-origin policy), so it can't forge these. The token is now persisted across daemon
+// restarts (#20) so an open tab keeps validating; if it ever still mismatches (HTTP 403), api() stamps
+// `_status` so callers can surface a "reload to continue" banner instead of silently swallowing.
+const api = (p, o) => {
+  if (o && String(o.method||'GET').toUpperCase() !== 'GET') o = { ...o, headers: { ...(o.headers||{}), 'X-MRC-Token': MRC_TOKEN } }
+  return fetch(p, o).then(async r => {
+    let j; try { j = await r.json() } catch { j = {} }
+    if (!r.ok) { if (j.ok===undefined) j.ok = false; j._status = r.status }   // surface HTTP-level failure (403/5xx)
+    return j
+  })
+}
+const post = (action, extra={}) => api('/api/action', { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify({ action, ...extra }) })
+const postJSON = (path, obj={}) => api(path, { method:'POST', headers:{'content-type':'application/json'}, body: JSON.stringify(obj) })
+
+// State-changing actions MUST confirm success before the UI clears/closes — no optimistic-close (#20).
+// act()/actJSON() never throw: a network reject (daemon mid-restart) and a non-2xx both resolve to
+// {ok:false,...}. Callers check .ok and only close on success; on failure they keep the item and call
+// flashFail(), which surfaces the error — a rotated/again-mismatched token (403) shows a persistent
+// "reload to continue" banner; anything else a dismissable error. This is the no-silent-failure floor:
+// even with the token persisted, a network blip / 500 / mid-restart must never be swallowed.
+const normResult = (r) => (r && r.ok) ? { ok:true } : { ok:false, status: r && r._status, error: (r && r.error) || 'action failed' }
+async function act(action, extra={}) { try { return normResult(await post(action, extra)) } catch { return { ok:false, error:'network error — the daemon may be restarting' } } }
+async function actJSON(path, obj={}) { try { return normResult(await postJSON(path, obj)) } catch { return { ok:false, error:'network error — the daemon may be restarting' } } }
+const isStale = (r) => r && (r.status===403 || /forbidden|x-mrc-token|reload the dashboard/i.test(r.error||''))
+function flashFail(r) { S.flash = isStale(r) ? { kind:'stale' } : { kind:'err', text:(r&&r.error)||'action failed' }; renderFlash() }
+function renderFlash() {
+  const el = $('#flash'); if (!el) return
+  if (!S.flash) { el.innerHTML=''; return }
+  el.innerHTML = S.flash.kind==='stale'
+    ? `<div class="fl stale">⟳ Session refreshed — the daemon restarted. Reload to continue.<button class="btn primary" onclick="location.reload()">Reload</button></div>`
+    : S.flash.kind==='note'
+    ? `<div class="fl note">ℹ ${esc(S.flash.text)}<span class="x" title="dismiss" onclick="dismissFlash()">✕</span></div>`
+    : `<div class="fl err">⚠ ${esc(S.flash.text)}<span class="x" title="dismiss" onclick="dismissFlash()">✕</span></div>`
+}
+window.dismissFlash = () => { S.flash=null; renderFlash() }
+const setOrgUrl = (org) => { try { history.replaceState(null, '', '/'+encodeURIComponent(org||'')) } catch {} }   // /anigame
+
+const ROLES = ['architect','engineer','critic','adversary','ultracritical','user-defender','researcher','tester','designer','sound-designer','composer']
+const BACKENDS = ['claude','codex']   // agent backends only — media roles DERIVE their backend (below)
+// #42: the role chooser lists built-in roles PLUS this project's custom personas (so a member can pick
+// @advertiser). Custom keys that shadow a built-in are de-duped (the parser already forbids alias/media
+// shadows, so the only real overlap is an agent-role override, which we show once).
+const customRoleKeys = () => Object.keys((S.builder&&S.builder.personas)||{})
+const roleOptions = () => ROLES.concat(customRoleKeys().filter(k=>!ROLES.includes(k)))
+const aliasRole = (r) => r==='writer'?'engineer':(r==='qa'?'tester':r)
+// #44: member-naming. SAFE_NAME mirrors roster.js assertSafeName (#36) for the inline field error — the
+// server boundary (parseRoster/team-preview) still enforces it; this is defense-in-depth + fast feedback.
+const SAFE_NAME_RE = /^[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?$/u
+const allBuilderNames = ()=>{ const s=new Set(); for(const t of (S.builder.teams||[])) for(const m of (t.members||[])) if(m.name) s.add(String(m.name).toLowerCase()); return s }
+function suggestName(style, taken){ const pool=S.namePools&&S.namePools.pools&&S.namePools.pools[style]; if(!pool||!pool.length) return ''
+  const free=pool.filter(n=>!taken.has(n.toLowerCase())); if(free.length) return free[Math.floor(Math.random()*free.length)]
+  for(let i=2;;i++){ const c=pool[Math.floor(Math.random()*pool.length)]+i; if(!taken.has(c.toLowerCase())) return c } }
+// Fill suggested names for AUTO members (those not hand-typed). Idempotent by default: only fills EMPTY
+// auto names (so a re-render never re-rolls a stable name). force=true (style change) clears auto names
+// first for a full re-roll. 'custom' style = free-type → leave auto names blank.
+function autofillNames(force){ const style=S.builder.nameStyle||'french'
+  if(force) for(const t of (S.builder.teams||[])) for(const m of (t.members||[])) if(m._nameAuto!==false) m.name=''
+  if(style==='custom' || !S.namePools) return
+  for(const t of (S.builder.teams||[])) for(const m of (t.members||[])) if(m._nameAuto!==false && !m.name) m.name=suggestName(style, allBuilderNames()) }
+// Which builder members currently resolve to a custom persona key (honoring writer/qa aliases) — the
+// local mirror of the server's removal refusal, so the UI warns before the round-trip.
+const membersUsingPersona = (k)=>{const out=[];for(const t of ((S.builder&&S.builder.teams)||[]))for(const m of (t.members||[]))if(aliasRole(m.role)===k)out.push((m.role||'engineer')+'@'+(t.name||'?'));return out}
+// A media role's backend is fixed by the role (mirrors roster.js/media.js), not a free pick.
+const MEDIA_ROLE_BACKEND = { designer:'gemini', 'sound-designer':'elevenlabs', composer:'elevenlabs' }
+const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
+
+const S = {
+  building: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, replyTo: null, jumpTarget: null, flash: null, roomDrafts: {},
+  _wmCur: null, _wmLatest: 0, _openWm: {},   // #63-F unread watermark: the room/channel currently open + its latest position + the per-key captured-at-open boundary
+  notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
+  notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
+  teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null,
+  namePools: null,   // #44: {styles, pools} from /api/names, loaded once when the builder opens
+  builder: { org:'shop', repo:'', personas:{}, _pEdit:null, nameStyle:'french', teams:[ { name:'client', territory:'client', members:[
+    {role:'architect',backend:'claude',lead:true,territory:''},{role:'engineer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
+}
+let paintedKey = null
+let _landed = false   // #61: one-time initial-landing guard (land on the active project's home on first load)
+
+// ---- data ----
+let _prefsLoaded = false
+async function tick() {
+  if (!_prefsLoaded) { _prefsLoaded = true; api('/api/settings').then(r=>{ if (r && r.ok && r.notify && r.notify.value) S.notifyPrefs = r.notify.value }).catch(()=>{}) }   // #42c: load notify prefs once for the OS-notify gate
+  const [t, st] = await Promise.all([ api('/api/teams').catch(()=>S.teams), api('/api/state').catch(()=>S.state) ])
+  S.teams = t && t.members ? t : { members:[], rooms:[], userInbox:[], orgs:[] }
+  S.state = st && st.rooms ? st : { rooms:[], daemon:{} }
+  if (!S.org) S.org = (S.teams.orgs && S.teams.orgs[0] && S.teams.orgs[0].org) || null
+  if (_scopedNav) { _scopedNav=false; const has=(S.teams.members||[]).some(m=>!_proj||m.org===_proj); S.building = !has; if (has && _proj) S.org=_proj; if (S.building) { S.builder._fresh = true; markBuilderClean() } }   // #55: baseline the scoped-launch builder entry too; #62: a scoped launch with no existing team is a FRESH build → takeover
+  // #61-C: first load with a project active and nothing selected → land on its HOME (not the bare welcome,
+  // which now shows only when NO project is active). One-time, so it doesn't fight later navigation.
+  if (!_landed && S.org && !S.building && !S.selRoom && !S.selMember && S.selInbox==null) { _landed=true; S.selHome=true; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }) }
+  if (S.selRoom && needRoomFetch()) S.room = await api('/api/room?id='+encodeURIComponent(S.selRoom)).catch(()=>null)
+  if (S.selMember) {
+    const m = memberByHandle(S.selMember)
+    if (m && m.tier==='worker') {
+      // #48: /api/worker-log returns parsed call-history { records, legacy }. Keep the transcript-scrape
+      // fallback as legacy text (a pre-restart daemon returns no records).
+      const r = await api('/api/worker-log?handle='+encodeURIComponent(m.handle)+'&org='+encodeURIComponent(m.org||S.org||'')).catch(()=>null)
+      const wl = (r && r.ok) ? { records: Array.isArray(r.records)?r.records:[], legacy: r.legacy||'' } : { records:[], legacy:'' }
+      if (!wl.records.length && !wl.legacy) {   // fallback: scrape the team transcript (works on any daemon)
+        const room = mergedRooms().find(rr=>rr.team===m.team && rr.kind==='team')
+        const rd = room ? await api('/api/room?id='+encodeURIComponent(room.roomId)).catch(()=>null) : null
+        if (rd) wl.legacy = (rd.thread||'').split('\n').filter(l=>l.toLowerCase().includes(m.first.toLowerCase())).join('\n')
+      }
+      S.workerLog = wl
+    }
+  }
+  notifyNewInbox(S.teams.userInbox || [])   // fire OS notifications for @you items that arrived since the last tick
+  paint()
+}
+const needRoomFetch = () => !S.building
+
+// merge live engine team rooms with all room dirs (consult pairings + history)
+function mergedRooms() {
+  const eng = new Map((S.teams.rooms||[]).map(r => [r.roomId, { ...r, live:true, source:'team' }]))
+  const out = []
+  for (const r of (S.state.rooms||[])) {
+    const e = eng.get(r.roomId)
+    if (e) { out.push({ ...e, unreviewed:r.unreviewed, updatedAt:r.updatedAt }); eng.delete(r.roomId) }
+    else out.push({ roomId:r.roomId, team:null, kind:(r.a&&r.b?'consult':'room'), state:r.state, live:!!r.live, turn:r.turn, members:[], unreviewed:r.unreviewed||0, updatedAt:r.updatedAt||0, a:r.a, b:r.b, source:'room' })
+  }
+  for (const e of eng.values()) out.push({ ...e, unreviewed:0, updatedAt:Date.now() })
+  return out.sort((x,y)=>(Number((y.unreviewed||0)>0)-Number((x.unreviewed||0)>0))||(Number(!!y.live)-Number(!!x.live))||((y.updatedAt||0)-(x.updatedAt||0)))
+}
+const inOrg = (r) => !S.org || r.org===S.org   // team rooms carry org; org-less consults are NOT in any org
+const orgMembers = () => (S.teams.members||[]).filter(m => !S.org || !m.org || m.org===S.org)
+function inbox() {
+  // Scope the @you queue to the ACTIVE project — items carry their org (#8). An item is OPEN until
+  // answered or dismissed (#11). Questions (ask_user) are actionable; notifications (plain @user) are
+  // FYI — split so they render + count differently. Legacy/undefined type → notification (safe default).
+  const all = (S.teams.userInbox||[]).filter(q => q.org===S.org)
+  const open = all.filter(q => !q.answered && !q.dismissed)
+  const questions = open.filter(q => q.type==='question')
+  const notifications = open.filter(q => q.type!=='question')
+  const dismissed = all.filter(q => q.dismissed && !q.answered)   // recoverable via the show-dismissed toggle
+  const cu = mergedRooms().filter(r => (r.unreviewed||0)>0 && inOrg(r))
+  return { all, open, questions, notifications, dismissed, cu, need: questions.length + cu.reduce((a,c)=>a+(c.unreviewed||0),0) }
+}
+// Per-project needs-you count (drives each tab's badge): open QUESTIONS only + unreviewed catch-ups in
+// that org — notifications never nag. Strict org match (harmonized with inbox()). Derived, not stored.
+function orgNeed(org) {
+  const qs = (S.teams.userInbox||[]).filter(q => q.org===org && q.type==='question' && !q.answered && !q.dismissed).length
+  const cu = mergedRooms().filter(r => (r.unreviewed||0)>0 && r.org===org).reduce((a,c)=>a+(c.unreviewed||0),0)
+  return qs + cu
+}
+// A project is "running" if it has a launch record or any live member up (online/launched).
+// A launch record only counts as "running" if the daemon reconciled it as live (≥1 member session up,
+// or still building) — a stale record from a crash reports running:false, so ▶ Resume/🚀 Launch comes back.
+const orgRunning = (org) => (S.teams.launch||[]).some(l=>l.org===org && l.running) || (S.teams.members||[]).some(m=>m.org===org && m.tier==='live' && (m.online||m.launched))
+function switchOrg(org) { if (org===S.org) return; if (!confirmLeaveBuilder()) return; leaveUnread(); S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; S.selHome=true; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }); setOrgUrl(org); paint() }   // #55-1: guard a dirty build; #61: entering a project lands on its home
+window.switchOrg = switchOrg
+
+// Browser-style project tabs: one per defined org. Chrome-stable — tabs keep a FIXED position
+// (definition order); SELECTING a tab only changes which is highlighted, it never reorders the strip
+// (a tab jumping to the front on click was the instability @user flagged). Many tabs → the strip
+// scrolls horizontally and the active one is scrolled into view (no truncation/overflow menu, so the
+// active tab is always reachable without moving anything). Each tab: state dot, needs-you badge, an ✕
+// that SUSPENDS (stop + preserve), and a trailing ＋ → Build.
+function renderTabs() {
+  const el = $('#tabs'); if (!el) return
+  const orgs = (S.teams.orgs||[]).map(o=>o.org)   // STABLE order — never re-sorted by active/running state
+  const tab = (o) => {
+    const need = orgNeed(o), cls = o===S.org ? 'active' : orgRunning(o) ? 'running' : 'closed'
+    // A pending Telegram link is a "verify me" event — surfaced on the OWNING tab regardless of which
+    // tab is active (#14 B), and visually DISTINCT from the ❓ needs-you badge (a 🔗, not an answer count).
+    const link = (S.teams.telegram||{})[o]?.pending?.length || 0
+    // #65: the org rides a data-attr (esc IS correct for attr-VALUE context); the onclick is a FIXED string
+    // reading this.dataset.org — never interpolates the value into a JS-string-in-attribute (the XSS class).
+    return `<div class="ptab ${cls}" data-org="${esc(o)}" onclick="${o===S.org?'openProjectHome()':'switchOrg(this.dataset.org)'}" title="${esc(o)} · ${orgRunning(o)?'running':'stopped'} — ${o===S.org?'open project home':'switch'}">`
+      + `<span class="pdot"></span><span class="pname">${esc(o)}</span>`
+      + (link?`<span class="plink" title="Telegram link awaiting your confirmation${link>1?` (${link})`:''}">🔗${link>1?link:''}</span>`:'')
+      + (need?`<span class="pbadge" title="${need} need you">${need}</span>`:'')
+      + `<span class="pclose" title="Close (stop members, keep the team)" onclick="event.stopPropagation();closeTab(this.closest('.ptab').dataset.org)">✕</span></div>`
+  }
+  el.innerHTML = orgs.map(tab).join('') + `<div class="ptab add" title="New project (Build)" onclick="newProject()">＋</div>`
+  const act = el.querySelector('.ptab.active')
+  if (act && act.scrollIntoView) { try { act.scrollIntoView({ inline:'nearest', block:'nearest' }) } catch {} }
+  requestAnimationFrame(updateTabHints)   // #2a E: after layout, surface off-screen needs-you counts
+}
+// #2a E: sum the ❓ needs-you on tabs scrolled fully out of the strip, on each side, into a clickable
+// "‹N" / "N›" edge hint — so a needy project is never silently hidden off-screen. Keyboard-operable
+// (the hints are <button>s). Recomputed after render, on strip scroll, and on resize.
+function updateTabHints() {
+  const el = $('#tabs'), L = $('#tabHintL'), R = $('#tabHintR'); if (!el || !L || !R) return
+  let needL = 0, needR = 0
+  for (const t of el.querySelectorAll('.ptab')) {
+    const badge = t.querySelector('.pbadge'); if (!badge) continue
+    const n = parseInt(badge.textContent, 10) || 0; if (!n) continue
+    const left = t.offsetLeft - el.scrollLeft, right = left + t.offsetWidth
+    if (right < 24) needL += n                       // fully off the left edge
+    else if (left > el.clientWidth - 24) needR += n  // fully off the right edge
+  }
+  L.hidden = !needL; R.hidden = !needR
+  if (needL) L.textContent = '‹' + needL
+  if (needR) R.textContent = needR + '›'
+}
+window.scrollTabs = (dir) => { const el = $('#tabs'); if (!el) return; el.scrollBy({ left: dir * Math.max(120, el.clientWidth * 0.7), behavior: 'smooth' }); setTimeout(updateTabHints, 360) }
+// Close a tab = SUSPEND: stop the member containers but keep the team defined, transcripts, and
+// history — the tab stays as closed-dormant and ▶ Resume brings it back. (Delete is deferred.)
+window.closeTab = async (org) => {
+  if (!confirm(`Close "${org}"? Members stop; the team, transcripts, and history stay — reopen to resume.`)) return
+  if (org === S.org) leaveUnread()   // #63-F: closing the active project leaves its open room — flush its watermark
+  const r = await actJSON('/api/team-stop', { org }); if(!r.ok)return flashFail(r); S.flash=null
+  tick()
+}
+// Resume = relaunch the saved roster (deterministic members rebind, each --continues its own convo).
+window.resumeTeam = async (org) => { const r=await actJSON('/api/team-launch', { org: org||S.org }); if(!r.ok)return flashFail(r); S.flash=null; tick() }
+// Readiness: workers are on-demand; a live member is 'ready' once its channel registers, 'starting'
+// while its terminal is up but not connected yet (loading / awaiting login + the Channels prompt).
+function memberState(m) {
+  if (m.tier==='worker') return { cls:'worker', label:'on-demand' }
+  if (m.online) return { cls:'ready', label:'ready' }
+  if (m.launched) return { cls:'starting', label:'starting — open Console' }
+  return { cls:'off', label:'offline' }
+}
+const memberByHandle = (h) => orgMembers().find(m => m.handle===h)
+const roomMembers = (id) => { const r=(S.teams.rooms||[]).find(x=>x.roomId===id); return r ? r.members.filter(x=>x!=='@user') : [] }
+
+// ---- painting ----
+const launchFor = () => (S.teams.launch||[]).find(x=>x.org===S.org && x.running)   // a stale (crashed) launch is not a terminal
+// #47: the @you channel's detailKey uses channelSig() (folds every item's RESOLUTION into the key, so a
+// REMOTE resolve — e.g. answered via Telegram — re-renders the channel) and FREEZES while composing.
+const detailKey = () => S.building ? 'build'
+  : S.selHome ? 'home:'+(S.org||'')+':'+(S.settings?'s':'-')   // #61: rebuild once settings load (for the --web note)
+  : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+S.selMember+':'+(launchFor()?.members?.[S.selMember]?.state||'none'))
+  : S.selInbox!=null ? 'channel:'+(S.org||'')+':'+channelSig()
+  : S.selRoom ? 'room:'+S.selRoom+':'+S.tab
+  : 'empty'
+
+function paint() {
+  // topbar
+  const ib = inbox()
+  const dp = $('#daemonPill'); const up = (S.state.daemon&&S.state.daemon.running) || (S.teams.members||[]).length>0
+  dp.className = 'pill '+(up?'on':'off'); dp.textContent = up?'daemon up':'daemon down'
+  updateNotifyBtn()
+  renderTabs()   // project tabs replace the old org dropdown + global needs-you pill (per-tab badges)
+  // #62: a FRESH new-project build takes over the full view (CSS hides the tabs + contextual list, builder
+  // fills width); editing an existing team stays the in-place subpanel. Re-evaluated every paint; ✕ Cancel
+  // (S.building=false) drops the class and restores the layout.
+  $('.app').classList.toggle('build-takeover', S.building && builderIsFresh())
+  if (!S.addingTo) renderMain()   // freeze the list while the add-member form is open (don't clobber inputs)
+  const key = detailKey()
+  if (key!==paintedKey) { renderDetail(); paintedKey=key } else patchDetail()
+  syncTermHost()   // #40: keep-alive terminal overlay (shows the selected member's persistent iframe)
+  renderFlash()   // keep a surfaced failure (#20) visible across re-renders until reload/dismiss
+}
+
+const label2 = (r) => r.a&&r.b ? `${r.a} ⇄ ${r.b}` : r.roomId
+// Friendly label for a room's pauseReason, so a Paused badge says WHY (turn-cap check-in vs a deliberate
+// brake vs a stall) — a routine check-in reads very differently from a real hold.
+const pauseLabel = (x) => ({ turnCap:'turn-cap', brake:'brake', stall:'stall' }[x] || x)
+// #31 a11y: keyboard-activate a whole-row-click `role="button"` row on Enter/Space → fire the element's OWN
+// onclick (reuses the action, no duplicated/interpolated logic → #65-clean). Space MUST preventDefault or a
+// focused row scroll-jumps the page. Enter+Space both on keydown (the keyup-cancel nuance is for destructive
+// buttons, not nav rows). ONLY applied to rows with NO inner interactive control (else it's nested-interactive).
+function kbd(e, el) { if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') { e.preventDefault(); el.click() } }
+const roomRow = (r) => `<div class="rm ${r.roomId===S.selRoom?'sel':''}" data-room="${esc(r.roomId)}" role="button" tabindex="0" aria-label="Open room ${esc(r.team||label2(r))}" onclick="selRoom(this.dataset.room)" onkeydown="kbd(event,this)" title="${r.turn!=null?`${r.turn} messages exchanged${r.turnCap?` — checks in with you at ${r.turnCap}`:''}`:''}"><span class="nm">${esc(r.team||label2(r))}</span><span class="state ${r.state}">${esc(r.state)}${r.state==='Paused'&&r.pauseReason?` · ${esc(pauseLabel(r.pauseReason))}`:''}</span><span class="meta">${esc(r.kind||'')}${r.turn?` · ${r.turn} msgs`:''}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>`
+const teamRunning = (ms) => { const live=ms.filter(m=>m.tier==='live'); return !live.length || live.some(m=>m.online||m.launched) }
+// #64: per-member context gauge — a thin vertical fill (% of the context window used), color by threshold, with
+// the exact % + the session NAME in the tooltip. The name is UNTRUSTED text → esc()'d; it renders only in an
+// HTML-attribute (title/aria-label) TEXT context, never a JS-string/handler, so esc is the right tool (not the
+// #65 data-attr case). c is a daemon-clamped number (0–100). No status yet → the empty reserved strip ("—").
+function ctxBar(m) {
+  const st = m.status, c = st && typeof st.context === 'number' ? st.context : null
+  const nm = st && st.name ? st.name + ' · ' : ''
+  if (c == null) return `<span class="membar" aria-hidden="true" title="${esc(nm)}context —"></span>`
+  // thresholds MIRROR the container statusline (WARN 60 / COMPACT 77 — Claude reserves ~15% for compaction),
+  // so the dashboard gauge and the in-terminal statusline agree on green/amber/red for the same metric.
+  const cls = c >= 77 ? 'r' : c >= 60 ? 'y' : 'g'
+  return `<span class="membar ${cls}" role="meter" aria-valuenow="${c}" aria-valuemin="0" aria-valuemax="100" style="background:linear-gradient(to right, currentColor ${c}%, var(--line) ${c}%)" title="${esc(nm)}${c}% context used" aria-label="${c}% context used"></span>`
+}
+// #64: the active org's rate-limit (5h/7d) — set ONLY from the lead's session (the engine drops a non-lead's
+// rail report), so it's the shared team gauge. null until the lead reports.
+const orgRateLimit = () => { const o = (S.teams.orgs||[]).find(x=>x.org===S.org); return (o && o.rateLimit) || null }
+
+// One scrolling overview: @you (your messages) on top, then Teams, then Rooms.
+function renderMain() {
+  const mid = $('#mid')
+  const ib = inbox()
+  const byTeam = {}; for (const m of orgMembers()) (byTeam[m.team] ||= []).push(m)
+  const teams = Object.keys(byTeam)
+  const memberRow = (m) => { const s=memberState(m); const c=m.status&&typeof m.status.context==='number'?m.status.context:null; const ctxNote=(c!=null&&c>=60)?` — context ${c}%`:''   /* #31: surface the gauge level to SR on row focus (the row aria-label suppresses the inner meter's name) — only when amber/red (c≥60, the gauge's own threshold); the exact % self-conveys high-vs-elevated. Green rows stay clean. */
+    return `<div class="mem ${m.lead?'lead':''} ${m.handle===S.selMember?'sel':''}" data-h="${esc(m.handle)}" role="button" tabindex="0" aria-label="Open ${esc(m.first)}, ${esc(m.role)}${m.lead?', lead':''}${ctxNote}" onclick="selMember(this.dataset.h)" onkeydown="kbd(event,this)" title="${m.tier==='worker'?'on-demand — click for activity':'click for terminal'}"><span class="dot ${s.cls}"></span><div class="who"><div class="nm">${esc(m.first)}${m.lead?' <span class="leadstar" title="lead">★</span>':''}</div><div class="role">${esc(m.role)} <span class="bk">· ${esc(m.backend)}</span></div></div><span class="mstate ${s.cls}">${esc(s.label)}</span>${ctxBar(m)}</div>` }
+  const teamCard = (t) => { const ms=byTeam[t]; const running=teamRunning(ms)
+    return `<div class="team"><div class="tn">${esc(t)}${running?'':' <span class="state Paused" style="font-size:10px;padding:1px 6px">not running</span>'}</div>${ms.map(memberRow).join('')}
+      ${S.addingTo===t ? amForm(t) : `<div class="row" style="margin-top:8px;gap:6px"><button class="btn tiny" data-team="${esc(t)}" onclick="startAddMember(this.dataset.team)">＋ add member</button></div>`}</div>` }
+
+  // @you: open QUESTIONS (actionable, badged) first, then notifications (FYI, muted, dismiss-only),
+  // then catch-ups. The header badge counts questions only — notifications never inflate it (#11).
+  // #47: @you collapses to ONE selectable row → opens the inbox CHANNEL in col3 (the per-item stack +
+  // dismissed toggle moved into the channel). Badge counts open QUESTIONS only; the FYI count is muted.
+  let html = `<h2 class="you">@you</h2>`
+    + `<div class="rm you-row ${S.selInbox!=null?'sel':''}" role="button" tabindex="0" aria-label="Open your @you channel${ib.questions.length?`, ${ib.questions.length} need you`:''}" onclick="selInbox('channel')" onkeydown="kbd(event,this)" title="Open your @you channel"><span class="nm">@you${ib.questions.length?` <span class="badge">${ib.questions.length}</span>`:''}</span><span class="meta">${ib.open.length?`${ib.open.length} message${ib.open.length===1?'':'s'}${ib.notifications.length?` · ${ib.notifications.length} FYI`:''}`:'all clear'}</span></div>`
+  if (ib.cu.length) html += ib.cu.map(r=>`<div class="rm" data-room="${esc(r.roomId)}" role="button" tabindex="0" aria-label="Open catch-ups for ${esc(r.team||r.roomId)}" onclick="selRoom(this.dataset.room,true)" onkeydown="kbd(event,this)"><span class="nm">${esc(r.team||r.roomId)}</span><span class="meta">${r.unreviewed} catch-up${r.unreviewed>1?'s':''}</span></div>`).join('')
+
+  // Reopen panel (T7): the active project is defined but not running → explicit ▶ Resume, with the
+  // honest cold-image + per-live-member Channels-accept expectation (no surprise multi-minute spin-up).
+  if (S.org && teams.length && !orgRunning(S.org)) {
+    const live = orgMembers().filter(m=>m.tier==='live')
+    html += `<div class="resume"><h3>⏸ "${esc(S.org)}" is stopped</h3>`
+      + `<div class="step">Resume relaunches the saved team — each live member <b>--continues its own conversation</b> from where it left off.</div>`
+      + `<div class="step">First run rebuilds the image (~minutes). Each live member must re-accept its one-time <b>Channels prompt in its Console</b> before it's active${live.length?`: ${live.map(m=>'@'+esc(m.first)).join(', ')}`:''}. Workers are on-demand (no accept).</div>`
+      + `<div style="margin-top:10px"><button class="btn launch" data-org="${esc(S.org)}" onclick="resumeTeam(this.dataset.org)">▶ Resume team</button></div></div>`
+  }
+
+  if (teams.length) html += `<h2>Teams</h2>` + teams.map(teamCard).join('')
+  // `others` = genuinely org-LESS rooms (legacy 2-party consults / history) — and only when a project
+  // is active. NOT `!inOrg` (= every room of a DIFFERENT org), which would mislabel another active
+  // project's live team rooms as "Consults & history" on this tab; those belong on their OWN tab via
+  // `inOrg`. The `&& S.org` guard preserves the zero-org case (consult-only user, S.org null): such
+  // rooms are in `mine` (inOrg is true when S.org is null), so excluding them from `others` avoids a
+  // double-render and doesn't hide a consult-only user's only content under a collapsed disclosure.
+  const rs = mergedRooms(); const mine = rs.filter(inOrg)
+  if (mine.length) html += `<h2>Rooms</h2>` + mine.map(roomRow).join('')
+  // #46: the left panel leads with @you / Teams / Rooms and ends here. Consults & history, the
+  // all-containers kill-list, ⚙ Settings (now the header gear → modal), and Delete project (now the
+  // modal's Danger zone) all moved OUT of the rail.
+  html += `<div style="margin:14px 0 8px;display:flex;gap:8px">${teams.length?`<button class="btn" style="flex:1" onclick="openBuilder()">✎ Edit teams</button>`:''}<button class="btn ${teams.length?'':'primary'}" style="flex:1" onclick="newProject()">＋ New project</button></div>`
+  html += `<div style="height:18px"></div>`
+  mid.innerHTML = html
+}
+// The add-member backend control: a generic claude/codex select for agent roles, or a locked,
+// role-derived backend for media roles (kept in a hidden #amBackend so submitAddMember reads it the same).
+function amBackendControl(role) {
+  const mb = mediaBackend(role)
+  if (mb) return `<span class="bklock" style="flex:1" aria-label="backend ${esc(mb)} — set by the media role, not editable" title="media role — backend is set by the role (not editable)">${esc(mb)}</span><input type="hidden" id="amBackend" value="${esc(mb)}">`
+  // Preserve a prior agent pick across role changes (mirror bSet): read the current control's value
+  // BEFORE it's replaced; only reset to claude when it isn't a valid agent backend (e.g. coming from a media role).
+  const prev = $('#amBackend') && $('#amBackend').value
+  const cur = BACKENDS.includes(prev) ? prev : 'claude'
+  return `<select id="amBackend" style="width:100%">${BACKENDS.map(b=>`<option ${b===cur?'selected':''}>${b}</option>`).join('')}</select>`
+}
+window.amSyncBackend = ()=>{ const w=$('#amBackendWrap'); if(w) w.innerHTML = amBackendControl($('#amRole').value) }
+function amForm(t) {
+  return `<div class="amf">
+    <div class="muted" style="margin-bottom:5px">Add a member to <b>${esc(t)}</b>:</div>
+    <div class="row"><select id="amRole" style="flex:1.2" onchange="amSyncBackend()">${ROLES.concat((S.addCustomRoles||[]).filter(k=>!ROLES.includes(k))).map(r=>`<option ${r==='engineer'?'selected':''}>${esc(r)}</option>`).join('')}</select>
+      <span id="amBackendWrap" style="flex:1;display:flex">${amBackendControl('engineer')}</span></div>
+    <input id="amTerr" placeholder="territory (e.g. server) — optional" style="margin-top:6px">
+    <div class="row" style="margin-top:6px"><button class="btn tiny primary" data-team="${esc(t)}" onclick="submitAddMember(this.dataset.team)">Add</button><button class="btn tiny" onclick="cancelAddMember()">Cancel</button> <span id="amMsg" class="muted"></span></div>
+  </div>`
+}
+
+// ---- detail renderers ----
+function renderDetail() {
+  const d = $('#detail')
+  if (S.building) return renderBuilder(d)
+  if (S.selHome) return renderProjectHome(d)
+  if (S.selMember) return renderMember(d)
+  if (S.selInbox!=null) return renderInboxChannel(d)
+  if (S.selRoom) return renderRoom(d)
+  d.innerHTML = `<div class="empty"><svg class="hatwm" viewBox="0 0 32 32" width="60" height="60" aria-hidden="true"><ellipse cx="16" cy="23.4" rx="12.8" ry="3.05"/><path d="M10.5 9 Q10.75 6.3 16 6.1 Q21.25 6.3 21.5 9 L22 22.6 L10 22.6 Z"/></svg><div>Pick a member (terminal / log), a room (transcript &amp; steer), or an @you message — or ＋ New project.</div><div class="flavor">May the Schwartz be with you.</div></div>`
+}
+// #61: the at-a-glance counts — kept LIGHT (members ready/total, on-demand workers, rooms) so home reads as
+// "home," not a settings dump. Split out so patchDetail can refresh it on a poll without rebuilding the pane.
+function homeOverviewHTML() {
+  const live = orgMembers().filter(m=>m.tier==='live'); const ready = live.filter(m=>m.online).length
+  const workers = orgMembers().filter(m=>m.tier==='worker').length
+  const rooms = mergedRooms().filter(inOrg).length
+  // #64: lead-only rate-limit gauges (5h/7d) ride the same overview rail. v is a daemon-clamped number or null.
+  const rl = orgRateLimit()
+  const rlChip = (label, v) => `<span class="ovchip rl ${v==null?'':v>=90?'r':v>=70?'y':''}"${v!=null?` role="meter" aria-valuenow="${v}" aria-valuemin="0" aria-valuemax="100" aria-label="${label} rate-limit ${v}% used"`:''} title="team ${label} rate-limit — ${v==null?'no report from the lead yet':v+'% used'}"><b>${label}</b> ${v==null?'—':v+'%'}</span>`   /* #31: role=meter parity with the context gauge */
+  return `<span class="ovchip"><b>${ready}/${live.length}</b> member${live.length===1?'':'s'} ready</span>`
+    + (workers?`<span class="ovchip"><b>${workers}</b> on-demand</span>`:'')
+    + `<span class="ovchip"><b>${rooms}</b> room${rooms===1?'':'s'}</span>`
+    + (rl ? rlChip('5h', rl.fiveHour) + rlChip('7d', rl.sevenDay) : '')
+}
+// #61: the project home pane — light overview + the per-project settings (Telegram / --web / Delete) moved
+// out of the gear modal. The live bits (#homeOverview counts + #tgSection) are poll-patched in patchDetail
+// (no rebuild → a focused Telegram Confirm/Reject isn't stolen — the #46 focus lesson).
+function renderProjectHome(d) {
+  const org = S.org
+  if (!org) { d.innerHTML = `<div class="empty"><div>No project open.</div></div>`; return }
+  const running = orgRunning(org)
+  const web = (S.settings && S.settings.web) || {}
+  d.innerHTML = `<div class="home">
+    <div class="homehd"><h2 style="margin:0;font-size:17px">${esc(org)}</h2>
+      <span class="homestat ${running?'on':'off'}">${running?'● running':'○ suspended'}</span></div>
+    <div id="homeOverview" class="homeov">${homeOverviewHTML()}</div>
+    <div class="sgrouph" style="margin-top:18px">Project settings</div>
+    <div class="sblk"><div class="srow"><b>Telegram</b> ${sBadge('project','runtime')}</div><span id="tgSection">${tgSectionHtml()}</span></div>
+    <div class="sblk"><div class="srow"><b>Outbound egress (--web)</b> ${sBadge('project','launch')}</div>
+      <div class="shelp">${S.settings ? esc(web.note||'Not enabled — this project reaches only the sanctioned proxy + whitelisted domains.') : '<span class="muted">loading…</span>'}</div></div>
+    <div class="sblk danger"><div class="srow"><b>Danger zone</b></div>
+      <div class="shelp">Forget this project from Mister Claude — stops its sessions and removes the tab. <b>Nothing on disk is deleted</b> (team.json + transcripts stay; re-add with <code>mrc team up</code>).</div>
+      <div class="row" style="margin-top:6px"><button class="btn danger tiny" onclick="deleteProject()">🗑 Delete project</button></div></div>
+  </div>`
+}
+function renderMember(d) {
+  const m = memberByHandle(S.selMember)
+  if (!m) { d.innerHTML = `<div class="empty">Member gone.</div>`; return }
+  return m.tier==='worker' ? renderWorkerLog(d, m) : renderTerminal(d, m)
+}
+// #4a never-blank-terminal state (per org|handle, per session): which members' placeholders have already
+// shown (fire once, never on a switch-back) + which "history not replayed" banners the user dismissed.
+const _termPlaceholderShown = new Set(); const _termBannerDismissed = new Set()
+window.dismissTermBanner = (key)=>{ _termBannerDismissed.add(key); syncTermHost() }
+// Live member -> its OWN embedded ttyd. #40: the live terminal lives in the PERSISTENT #termhost overlay
+// (managed by syncTermHost) so switching members never remounts the iframe (no blank/reconnect). Here we
+// only render the #detail fallback when there's no live ttyd yet; when there IS one, #detail is emptied
+// and syncTermHost shows the keep-alive iframe over it.
+function renderTerminal(d, m) {
+  // #41: render the daemon's per-member terminal `state` as a PURE pass-through (no client recompute — the
+  // daemon's classifyTerminal is the one source of truth). serve → the keep-alive overlay shows it (here we
+  // just clear #detail); the other 4 states get honest copy. orphaned is reassurance-FIRST + a per-member
+  // Relaunch.
+  const L = launchFor()
+  const state = L && L.members && L.members[m.handle] && L.members[m.handle].state
+  if (state === 'serve') { d.innerHTML = ''; return }   // the persistent overlay shows the live terminal
+  const removeBtn = `<div class="row" style="justify-content:flex-end;margin-bottom:8px"><button class="btn tiny" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="removeMember(this.dataset.h,this.dataset.f)">✕ remove @${esc(m.first)}</button></div>`
+  let body
+  if (state === 'orphaned') {
+    body = `<div class="empty"><b>@${esc(m.first)} is still running</b> — its agent is alive and working in the room; only the terminal <i>view</i> was lost (its host-side plumbing died). Relaunch to restore the terminal — the conversation resumes where it left off (an in-flight turn may restart).
+      <div style="margin-top:12px"><button class="btn primary" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="relaunchMember(this.dataset.h,this.dataset.f)">↻ Relaunch terminal</button></div></div>`
+  } else if (state === 'building') {
+    body = `<div class="empty">Building @${esc(m.first)}'s image — first run takes a few minutes. The terminal appears here once it's up.</div>`
+  } else if (state === 'starting') {
+    body = `<div class="empty">@${esc(m.first)} is starting — its terminal appears here in a moment.</div>`
+  } else {   // dead / no live launch
+    body = `<div class="empty">@${esc(m.first)} isn't launched. Build + <b>🚀 Launch</b> the team (or <code>mrc team up</code>).</div>`
+  }
+  d.innerHTML = removeBtn + body
+}
+// #40 keep-alive terminal overlay. Called every paint: shows the selected live member's iframe (lazily
+// created once, src never changed), hides all others + on any non-terminal view, and tears down iframes
+// for members no longer launched (stop/remove/suspend/cross-org). Keyed by org|handle so org-A's
+// terminal never shows under org-B.
+function termHeaderHTML(m, url) {
+  const live = orgMembers().filter(x=>x.tier==='live'); const ready=live.filter(x=>x.online).length; const starting=live.filter(x=>!x.online && x.launched).length
+  return `<b>@${esc(m.first)} <span class="muted">· terminal</span></b>
+    <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(url)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny" style="margin-left:8px" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="removeMember(this.dataset.h,this.dataset.f)">✕ remove</button> <button class="btn tiny danger" onclick="stopTeam()">■ Stop team</button>`
+}
+function syncTermHost() {
+  const host = $('#termhost'), detail = $('#detail')
+  if (!host || !detail) return
+  // the active terminal target: a selected LIVE member with a live ttyd in the CURRENT org
+  let target = null
+  if (!S.building && S.selMember) {
+    const m = memberByHandle(S.selMember), L = launchFor()
+    const info = m && m.tier!=='worker' && L && L.members && L.members[m.handle]
+    // #41: only embed the iframe when the daemon says state==='serve' — never for orphaned (its ttydPort is
+    // stale → a blank iframe = silent-broken). #detail shows the orphaned/Relaunch copy instead.
+    if (info && info.state === 'serve' && info.ttydUrl) target = { key: S.org+'|'+m.handle, url: info.ttydUrl, m }
+  }
+  // teardown: any block whose member is no longer SERVING (stopped/removed/suspended/org gone, OR it just
+  // transitioned serve→orphaned) — removes the iframe → closes its ws, no stale blank embed.
+  const liveKeys = new Set()
+  for (const l of (S.teams.launch||[])) if (l.running && l.members) for (const h of Object.keys(l.members)) if (l.members[h] && l.members[h].state === 'serve') liveKeys.add(l.org+'|'+h)
+  // #4a-1: on teardown, clear placeholder-shown for the removed key so a RELAUNCH (orphan-recovery / stop→
+  // relaunch / suspend→resume) — whose iframe genuinely re-mounts blank — re-shows the "Connecting…" cover.
+  // A member-SWITCH only hides blocks (display:none, below) and never teardown (still in liveKeys), so the
+  // placeholder correctly stays once-per-session there. Banner-dismiss is intentionally NOT cleared: "earlier
+  // output isn't replayed" is a one-time FYI (re-nagging it every relaunch is annoying), and the re-shown
+  // placeholder's own sub-copy re-carries that line transiently, so the relaunch blank stays explained.
+  for (const b of [...host.children]) if (!liveKeys.has(b.dataset.key)) { _termPlaceholderShown.delete(b.dataset.key); b.remove() }   // removes the iframe → closes its ws
+  if (!target) { host.style.display='none'; detail.style.display=''; return }
+  let block = [...host.children].find(b => b.dataset.key===target.key)
+  const online = !!target.m.online   // recomputed every paint → the banner appears once the member registers
+  if (!block) {
+    // #4a: FIRST mount of this member's keep-alive iframe — the only time it can read bare-blank (a member-
+    // switch reuses the existing block). dtach relays only bytes emitted AFTER attach, so an idle agent's
+    // screen stays blank until new output; we can't read inside the iframe or get a byte-signal (Q2). So a
+    // placeholder over the iframe (shown once per member per session, time-revealed ~1.7s, pointer-events:none
+    // so it never blocks a fast typer), with copy branched on m.online — the one signal we have.
+    block = document.createElement('div'); block.className='termblock'; block.dataset.key=target.key
+    const f = esc(target.m.first)
+    const showPh = !_termPlaceholderShown.has(target.key)
+    const phCopy = online
+      ? `<div class="tp-main">Connecting to @${f}'s terminal…</div><div class="tp-sub muted">You're attached to the live session — @${f}'s <b>live screen from here</b>; earlier output isn't replayed.</div>`
+      : `<div class="tp-main">First launch — activate @${f}</div><div class="tp-sub muted">Log in and accept the <b>Channels</b> prompt in this terminal to put @${f} to work.</div>`
+    block.innerHTML = `<div class="termhdr"></div>`
+      + `<div class="termbanner">↑ You're seeing @${f}'s <b>live screen from here</b> — earlier output before you opened this isn't replayed.<span class="bx" role="button" tabindex="0" title="dismiss" data-key="${esc(target.key)}" onclick="dismissTermBanner(this.dataset.key)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();dismissTermBanner(this.dataset.key)}">✕</span></div>`
+      + `<div class="termwrap"><iframe class="termframe" title="@${f} terminal" src="${esc(target.url)}"></iframe>`
+      + (showPh ? `<div class="termplaceholder">${phCopy}</div>` : '')
+      + `</div><div class="termfoot muted">First launch: log in + accept the Channels prompt in this terminal.</div>`
+    host.appendChild(block)   // lazily created once; src is never changed after this
+    if (showPh) { _termPlaceholderShown.add(target.key); const ph=block.querySelector('.termplaceholder'); if(ph) setTimeout(()=>{ if(document.contains(ph)) ph.classList.add('hide') }, 1700) }   // time-reveal; guard a torn-down block
+  }
+  block.querySelector('.termhdr').innerHTML = termHeaderHTML(target.m, target.url)   // header patch is cheap; iframe sibling untouched
+  // banner: only for ONLINE members (history-not-replayed is the active-agent issue; a not-yet-online member
+  // shows the login placeholder instead), and not dismissed for this org|handle this session.
+  const banner = block.querySelector('.termbanner'); if (banner) banner.style.display = (online && !_termBannerDismissed.has(target.key)) ? 'flex' : 'none'
+  // Reload the iframe ONLY when the member's ttyd URL actually changed (its viewer respawned on a new
+  // port) — a member-switch keeps the same URL, so this is a no-op then (keep-alive preserved).
+  const frame = block.querySelector('.termframe')
+  if (frame && frame.getAttribute('src') !== target.url) frame.setAttribute('src', target.url)
+  for (const b of host.children) b.style.display = (b===block) ? 'flex' : 'none'
+  host.style.display='flex'; detail.style.display='none'
+}
+// #48: an on-demand worker has no terminal — show its CALL HISTORY (one card per invocation: request
+// lines, ✓/✕ status, codex→mono / media→asset chip; failures error-styled — the real win, surfacing a
+// throttle/couldn't-generate/read-as-feedback that was an indistinct line in the old <pre> blob).
+const relTime = (at)=>{ try{ const s=Math.round((Date.now()-new Date(at).getTime())/1000); if(s<5)return 'just now'; if(s<60)return s+'s ago'; const mn=Math.round(s/60); if(mn<60)return mn+'m ago'; const h=Math.round(mn/60); if(h<24)return h+'h ago'; return Math.round(h/24)+'d ago' }catch{ return '' } }
+const WFAIL_RE = /^\[@.*(couldn't|could not|throttled|read as feedback)/
+const workerLogSig = (wl)=> (wl.records.length)+':'+((wl.records[wl.records.length-1]||{}).at||'')+':'+(wl.legacy?wl.legacy.length:0)+':'+(wl.total||0)   /* #53: total in the sig so a new call (even at a full window) re-renders */
+const ASSET_GLYPH = (k)=> k==='sfx'?'🔊':k==='music'?'🎵':'🖼'
+function workerCardHTML(rec, k) {
+  // #48 LOW-1: trust the backend's authoritative `ok` when present; the regex is only a legacy fallback
+  // for pre-JSONL records that lack the field — so a SUCCESSFUL call whose text merely starts with
+  // "[@x couldn't find Y, but…]" isn't mislabelled failed.
+  const fail = (typeof rec.ok === 'boolean') ? !rec.ok : WFAIL_RE.test(String(rec.result||''))
+  const req = (rec.askers||[]).map(a=> a.directive
+    ? `<div class="wask directive" title="trusted [Human directive]/[Human reply]">⦉ ${esc(a.text)} ⦊</div>`
+    : `<div class="wask"><b>${esc(a.from||'@?')}</b> <span class="muted">→</span> ${esc(a.text)}</div>`).join('')
+  let result
+  if (fail) result = `<div class="wfail">${esc(rec.result||'(failed)')}</div>`
+  else if (rec.asset) { const a=rec.asset; const fn=String(a.path||'').split('/').pop(); const kb=a.bytes?` · ${(a.bytes/1024).toFixed(0)} KB`:''
+    // #48b image → lazy thumbnail from the path-guarded /api/asset, wrapped in a real <a> so it's keyboard-
+    // focusable + Enter-opens full-size (noopener; served nosniff → renders as an image). #48c mp3 → an inline
+    // <audio controls> behind the SAME guard, preload=none so bytes load only on play. alt/title = the
+    // generation prompt (descriptive for a screen reader) else the filename. onerror fails closed to the
+    // filename chip — image removes its anchor, audio removes itself — no broken/empty control left behind.
+    const ext = String(a.ext||'').toLowerCase()
+    const isImg = ['png','jpg','jpeg','gif','webp'].includes(ext)
+    const isAudio = ext === 'mp3'
+    const src = (isImg||isAudio) ? '/api/asset?org='+encodeURIComponent(S.org||'')+'&path='+encodeURIComponent(a.path||'') : ''
+    const media = isImg
+      ? `<a href="${esc(src)}" target="_blank" rel="noopener" title="open full size"><img class="wthumb" loading="lazy" src="${esc(src)}" alt="${esc(a.prompt||fn)}" onerror="this.closest('a')?.remove()"></a>`
+      : (isAudio ? `<audio class="waudio" controls preload="none" src="${esc(src)}" title="${esc(a.prompt||fn)}" onerror="this.remove()"></audio>` : '')
+    result = `<div class="wasset">${media}<span class="wchip">${ASSET_GLYPH(rec.kind)} ${esc(fn)}${kb}</span>${a.prompt?`<div class="muted" style="font-size:11px;margin-top:3px">from "${esc(a.prompt)}"</div>`:''}</div>` }
+  else result = `<pre class="wmono">${esc(rec.result||'')}</pre>`
+  return `<div class="wcard ${fail?'fail':'ok'}"><div class="wcard-h"><b>⚡ Call #${k}</b> <span class="muted">· ${relTime(rec.at)}</span> <span class="wstat ${fail?'fail':'ok'}" title="${esc(rec.at||'')}">${fail?'✕ failed':'✓ ok'}</span></div><div class="wreq">${req}</div>${result}</div>`
+}
+function workerHistoryHTML(wl) {
+  let html = ''
+  const n = wl.records.length, total = (wl.total!=null) ? wl.total : n, dropped = Math.max(0, total - n)
+  if (wl.legacy) html += `<div class="wlegacy"><div class="muted" style="font-size:11px;margin-bottom:3px">— earlier activity (legacy log) —</div><pre style="margin:0;white-space:pre-wrap;font-size:11.5px;opacity:.65">${esc(wl.legacy)}</pre></div>`
+  // #53: when the window dropped older calls, SAY so — the list is the recent slice, not the full history (no
+  // silent truncation reading as a total). Cards are numbered by their TRUE call index, not 1-based-in-window.
+  if (dropped>0) html += `<div class="muted" style="font-size:11px;margin-bottom:6px;padding:4px 0;border-bottom:1px dashed var(--line)">↑ ${dropped} earlier call${dropped===1?'':'s'} not shown — recent ${n} of ${total}</div>`
+  html += wl.records.map((rec,i)=>workerCardHTML(rec,dropped+i+1)).join('')
+  return html || `<div class="muted" style="padding:14px">(no activity yet)</div>`
+}
+function renderWorkerLog(d, m) {
+  const wl = S.workerLog || { records:[], legacy:'' }
+  const n = wl.records.length, total = (wl.total!=null) ? wl.total : n, last = n ? wl.records[n-1] : null
+  d.innerHTML = `<div class="row" style="justify-content:space-between;margin-bottom:4px">
+      <b>@${esc(m.first)} <span class="muted">/${esc(m.backend)} · ${esc(m.role)}</span></b>
+      <span><span class="mstate worker">on-demand</span> <button class="btn tiny" style="margin-left:8px" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="removeMember(this.dataset.h,this.dataset.f)">✕ remove</button></span></div>
+    <div class="muted" style="margin-bottom:8px;font-size:12px">${n?`On-demand worker — runs only when @mentioned. ${total>n?`<b>${n}</b> of <b>${total}</b> calls <span style="opacity:.8">(showing recent ${n})</span>`:`<b>${n}</b> call${n===1?'':'s'}`}${last?` · last run ${relTime(last.at)}`:''}.`:`@${esc(m.first)} hasn't run yet — @mention @${esc(m.first)} in a room to put them to work.`}</div>
+    <div class="wlog" id="wlog" tabindex="0">${workerHistoryHTML(wl)}</div>`
+  const w=$('#wlog'); if(w){ w.dataset.sig = workerLogSig(wl); w.scrollTop = w.scrollHeight }
+}
+function patchDetail() {
+  if (S.selHome) {
+    // #61-F: refresh ONLY the live bits — the overview counts and the Telegram section — never a full
+    // rebuild, so a poll can't steal focus from a Telegram Confirm/Reject the way #46's modal would.
+    const ov = $('#homeOverview'); if (ov) { const h=homeOverviewHTML(); if (ov.innerHTML!==h) ov.innerHTML=h }
+    const tg = $('#tgSection'); if (tg) { const h=tgSectionHtml(); if (tg.innerHTML!==h && !tg.contains(document.activeElement)) tg.innerHTML=h }
+    return
+  }
+  if (S.selMember) {
+    const m = memberByHandle(S.selMember)
+    if (m && m.tier==='worker') { const w=$('#wlog'); const wl=S.workerLog||{records:[],legacy:''}; const sig=workerLogSig(wl); if (w && w.dataset.sig!==sig) followScroll(w, () => { w.innerHTML = workerHistoryHTML(wl); w.dataset.sig=sig }) }
+    return
+  }
+  if (S.selRoom && S.room) {
+    const t = $('#thread'); if (t && S.tab==='thread' && t.dataset.raw!==(S.room.thread||'')) followScroll(t, () => { const raw=S.room.thread||''; t.dataset.raw=raw; fillThread(t, S.room) })
+    const sm = $('#summary'); if (sm && S.tab==='summary') sm.textContent = S.room.consensus||''
+  }
+}
+// Stick-to-bottom ONLY when the user is already near the bottom (chat/log pattern). If they've scrolled
+// UP to read history, a 1.5s live update must NOT yank their viewport — to the bottom OR to the top.
+// We capture before the mutation and follow-or-restore after (restore is a no-op when textContent is
+// mutated in place, and corrects an innerHTML-style reset — so it's safe either way).
+function followScroll(el, mutate) {
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40
+  const keepTop = el.scrollTop
+  mutate()
+  el.scrollTop = atBottom ? el.scrollHeight : keepTop
+}
+
+function renderRoom(d) {
+  const r = mergedRooms().find(x=>x.roomId===S.selRoom) || { roomId:S.selRoom, state:'History', kind:'room' }
+  const isTeam = !!(S.teams.rooms||[]).find(x=>x.roomId===S.selRoom)
+  const mem = roomMembers(S.selRoom)
+  const steerOpts = isTeam
+    ? ['<option value="all">everyone</option>'].concat(mem.map(h=>{const m=memberByHandle(h);return `<option value="${esc(h)}">${m?'@'+m.first+' ('+m.role+')':esc(h)}</option>`})).join('')
+    : ['both','a','b'].map(x=>`<option value="${x}">${x==='both'?'both sides':'side '+x}</option>`).join('')
+  const cu = (S.room&&S.room.catchups)||[]; const unrev = cu.filter(c=>c.status==='ready'&&!c.reviewedAt).length
+  // #63-C: bottom-anchored Slack composer — the room view is a flex column (header + tabs fixed, the
+  // tabbody/transcript flexes + scrolls, the composer sticks at the bottom). The composer IS the steer box;
+  // its trusted-[Human directive] send semantics are unchanged (doSteer → act('steer')), just the UX.
+  d.innerHTML = `<div class="roomview">
+    <div class="row wrap" style="justify-content:space-between;align-items:flex-start">
+      <div><b>${esc(r.team||label2(r))}</b> <span class="muted">[${esc(r.kind||'room')}]</span> <span class="state ${r.state}">${esc(r.state)}${r.state==='Paused'&&r.pauseReason?(' · '+esc(pauseLabel(r.pauseReason))):''}</span></div>
+      <div class="row">${r.state==='Paused'
+        ? `<button class="btn primary" onclick="roomAct('resume')" title="${esc(r.pauseReason==='turnCap'?'turn-cap check-in — resume to grant another window':r.pauseReason==='stall'?'looked idle — resume to continue':'you paused this — resume to continue')}">▶ Resume</button>`
+        : r.state==='Running' ? `<button class="btn" onclick="roomAct('brake')">⏸ Pause</button>` : ''
+      }<button class="btn danger" onclick="roomAct('end')">✕ Close</button></div>
+    </div>
+    <div class="tabs">
+      <button class="${S.tab==='thread'?'on':''}" onclick="setTab('thread')">Transcript</button>
+      <button class="${S.tab==='summary'?'on':''}" onclick="setTab('summary')">Summary</button>
+      <button class="${S.tab==='catchups'?'on':''}" onclick="setTab('catchups')">Catch-ups${unrev?` · ${unrev}`:''}</button>
+    </div>
+    <div id="tabbody" class="roombody"></div>
+    <div class="composer">
+      <select id="steerT" title="who to steer">${steerOpts}</select>
+      <textarea id="steerTx" rows="1" placeholder="Message the team — sends as a trusted [Human directive] · Enter to send, Shift+Enter for a newline"></textarea>
+      <button class="btn primary" onclick="doSteer()">Send</button>
+    </div>
+  </div>`
+  renderTab()
+  // #63-D: restore this room's in-memory draft; #63-E: Enter submits / Shift+Enter newline + IME guard.
+  const stx = $('#steerTx')
+  if (stx) {
+    if (S.roomDrafts && S.roomDrafts[S.selRoom]) stx.value = S.roomDrafts[S.selRoom]
+    const grow = () => { stx.style.height = 'auto'; stx.style.height = Math.min(stx.scrollHeight, 160) + 'px' }
+    stx.addEventListener('keydown', (e) => {
+      // #63-E: Enter submits, Shift+Enter newline; the isComposing/229 guard so a CJK/IME commit-Enter
+      // (which fires keydown Enter while composing) doesn't send a half-composed message.
+      if (e.key === 'Enter' && !e.shiftKey && !e.isComposing && e.keyCode !== 229) { e.preventDefault(); doSteer() }
+    })
+    stx.addEventListener('input', () => { (S.roomDrafts ||= {})[S.selRoom] = stx.value; grow() })   // #63-D draft + auto-grow
+    grow()
+  }
+}
+// Render the STRUCTURED transcript (#18) by DOM construction (#63-A). Each record is one logical message
+// {t: line text, q: question id|null, r: reply-to id|null}. The body renders as safe Markdown into its OWN
+// `<div class="body">` (innerHTML = safeMD(t) — member text, escaped-first + allowlisted), and the trusted
+// CHROME (the id="q<N>" jump anchor, the `[#N]` chip, the `re #N` jump link) is **DOM-APPENDED as sibling
+// nodes**, derived ONLY from the daemon-authored q/r fields — NEVER string-concatenated into the body's
+// innerHTML and never scanned from the line text. So even if safeMD ever emitted unbalanced or raw-text
+// HTML, a chrome node (a separate DOM-API node) cannot be captured by the body string: chip/jump can't be
+// forged by body content (`[#7]`/`(re #7)`/`**Human directive**` in a member's text is just inert MD/text).
+// #63-B: role → a fixed color class for the author label. The author NAME itself is member-INFLUENCED
+// display text (the roster first-name), so it is ALWAYS rendered via textContent (esc) regardless of the
+// #36 name-constraint — Ghislaine's Layer-2: don't lean on the coupling.
+const ROLE_CLASS = { architect:'ra-arch', engineer:'ra-eng', critic:'ra-crit', adversary:'ra-adv', ultracritical:'ra-adv', human:'ra-human', user:'ra-human', 'sound-designer':'ra-media', composer:'ra-media', designer:'ra-media', system:'ra-sys' }
+// The shared Slack message row (#63-B), used by the room transcript AND the @you channel. Builds a DOM row:
+// an optional AUTHOR HEADER (rendered only when the author group changes — consecutive-same-author grouping),
+// then the BODY rendered as safe Markdown into its OWN <div class="body">, then the trusted CHROME
+// DOM-APPENDED as sibling nodes (hhmm, the [#N] chip / re-#N jump) from STRUCTURED daemon fields ONLY. Both
+// #63 invariants by construction: (1) author/role/chip from msg fields, NEVER parsed from the body text; (2)
+// author name via textContent + the jump handler JS-wired — never an inline onclick string interpolation.
+// msg: { from, role, at, text, qid, rid, newGroup, icon(header), rowIcon(per-msg), roomTag, cls(wrap), anchorId, extra(DOM|null) }
+function slackRow(msg) {
+  const wrap = document.createElement('div'); wrap.className = 'msg' + (msg.cls ? ' ' + msg.cls : '')   // cls → @you's `ib q`/`ib fyi` card
+  if (msg.anchorId != null) wrap.id = 'q' + msg.anchorId          // jump target for a question
+  if (msg.newGroup) {
+    const hdr = document.createElement('div'); hdr.className = 'msg-author ' + (ROLE_CLASS[msg.role] || 'ra-other')
+    if (msg.icon) { const ic = document.createElement('span'); ic.className = 'qicon'; ic.textContent = msg.icon; hdr.appendChild(ic) }
+    const who = document.createElement('b'); who.textContent = msg.from || '@?'   // textContent = esc'd display
+    hdr.appendChild(who)
+    if (msg.role) { const rl = document.createElement('span'); rl.className = 'msg-role'; rl.textContent = msg.role; hdr.appendChild(rl) }
+    if (msg.roomTag) { const rt = document.createElement('span'); rt.className = 'msg-room muted'; rt.textContent = '· ' + msg.roomTag; hdr.appendChild(rt) }   // @you cross-room context (omitted in a single-room transcript)
+    if (msg.at) { const tm = document.createElement('span'); tm.className = 'msg-time muted'; tm.textContent = hhmm(msg.at); hdr.appendChild(tm) }
+    wrap.appendChild(hdr)
+  }
+  const row = document.createElement('div'); row.className = 'tline'
+  if (msg.rowIcon) { const ri = document.createElement('span'); ri.className = 'qicon'; ri.textContent = msg.rowIcon; row.appendChild(ri); row.appendChild(document.createTextNode(' ')) }   // @you's per-message ❓/🔔
+  const body = document.createElement('div'); body.className = 'body'
+  body.innerHTML = safeMD(msg.text || ''); if (!body.innerHTML) body.textContent = ' '
+  row.appendChild(body)
+  if (msg.qid != null) {
+    row.appendChild(document.createTextNode(' '))
+    const chip = document.createElement('span'); chip.className = 'qnum'; chip.textContent = `[#${msg.qid}]`; row.appendChild(chip)
+  } else if (msg.rid != null) {
+    row.appendChild(document.createTextNode(' '))
+    const jump = document.createElement('a'); jump.className = 'qjump'; jump.title = `jump to question #${msg.rid}`
+    jump.textContent = `re #${msg.rid}`; const rid = msg.rid; jump.onclick = () => jumpToQ(rid)   // JS-wired
+    row.appendChild(jump)
+  }
+  wrap.appendChild(row)
+  if (msg.extra) wrap.appendChild(msg.extra)
+  return wrap
+}
+// #63-B2: consecutive-same-author grouping with a >7-min time-gap BREAK (so a slow-room burst hours apart
+// gets a fresh header+time rather than collapsing under one misleading timestamp). Shared by the transcript
+// AND @you. A null author key (legacy/system) → header-less, never a group.
+const GROUP_GAP_MS = 7 * 60 * 1000
+const tsMs = (at) => { const m = new Date(at).getTime(); return isFinite(m) ? m : 0 }
+function startsNewGroup(prevKey, prevAt, key, at) {
+  if (key == null) return false                          // no author → header-less
+  if (key !== prevKey) return true                       // author (or author+room, for @you) changed
+  const a = tsMs(at), p = tsMs(prevAt)
+  return !!(a && p && (a - p) > GROUP_GAP_MS)             // same author, big time gap → new header+time
+}
+// #63-F: per-room unread watermark — the last message-position the human has SEEN in this room/channel,
+// persisted in localStorage (HUMAN-LOCAL; no untrusted surface, no server state). The "position" is a
+// number that is monotonic PER KEY: a room transcript uses the message timestamp (ms), the @you channel
+// uses the item #id. The boundary is captured AT OPEN (S._openWm) so the red divider stays put as you read
+// and as new messages stream in; the persisted watermark advances to the latest only when you LEAVE.
+function wmKey(k) { return 'mrc-unread-' + k }
+function getWm(k) { try { return Number(localStorage.getItem(wmKey(k))) || 0 } catch { return 0 } }
+function setWm(k, v) { try { if (v > getWm(k)) localStorage.setItem(wmKey(k), String(v)) } catch {} }
+// Mark this key the open one and capture its boundary on a FRESH open (key changed). Re-renders/polls of the
+// SAME key keep the captured boundary (stable divider) and only refresh the latest position. Returns the
+// boundary: messages whose position exceeds it are "new". Boundary 0 = never-before-seen → no divider.
+function enterUnread(key, latestPos) {
+  S._openWm = S._openWm || {}
+  if (S._wmCur !== key) {
+    if (S._wmCur) setWm(S._wmCur, S._wmLatest)   // switching room→room/channel: flush the one we just left to its last-seen latest
+    S._wmCur = key; S._openWm[key] = getWm(key)
+  }
+  S._wmLatest = latestPos || 0
+  return S._openWm[key] || 0
+}
+// Leaving a room/channel for a non-room view: persist "seen up to the latest" so the next open reflects it.
+// (selRoom/selInbox switches advance the prior key implicitly via enterUnread's key-change capture.)
+function leaveUnread() { if (S._wmCur) { setWm(S._wmCur, S._wmLatest); S._wmCur = null; S._wmLatest = 0 } }
+function unreadDivider(n) {
+  const d = document.createElement('div'); d.className = 'unread-div'; d.dataset.n = String(n)
+  const s = document.createElement('span'); s.textContent = `${n} new message${n===1?'':'s'}`; d.appendChild(s)
+  return d
+}
+// Show/refresh a "↑ N new — jump to unread" pill over the scroll container when its red divider has scrolled
+// above the viewport top; clicking scrolls the divider back into view. No divider → no pill. Re-wires its
+// scroll listener idempotently (renders rebuild the DOM, so a stale listener on an orphaned node is harmless,
+// but we still de-dup on the live element).
+function wireUnreadPill(scrollEl) {
+  if (!scrollEl) return
+  const host = scrollEl.parentElement; if (!host) return
+  const div = scrollEl.querySelector('.unread-div')
+  let pill = host.querySelector(':scope > .unread-pill')
+  if (!div) { if (pill) pill.remove(); return }
+  if (!pill) {
+    pill = document.createElement('button'); pill.className = 'unread-pill'
+    if (getComputedStyle(host).position === 'static') host.style.position = 'relative'
+    pill.onclick = () => div.scrollIntoView({ block:'center', behavior:'smooth' })
+    host.appendChild(pill)
+  }
+  pill.textContent = `↑ ${div.dataset.n} new — jump to unread`
+  const upd = () => {
+    const dr = div.getBoundingClientRect(), sr = scrollEl.getBoundingClientRect()
+    pill.style.display = (dr.bottom < sr.top + 4) ? '' : 'none'   // divider scrolled above the viewport top
+  }
+  if (scrollEl._unreadUpd) scrollEl.removeEventListener('scroll', scrollEl._unreadUpd)
+  scrollEl._unreadUpd = upd; scrollEl.addEventListener('scroll', upd, { passive:true }); upd()
+}
+function fillTranscript(host, records, key) {
+  host.textContent = ''
+  const recs = records || []
+  // #63-F: the unread boundary for THIS room (timestamp positions). Legacy records (no `at`) → pos 0 → never
+  // exceed a >0 boundary, so they never anchor a divider — the same graceful degrade as the author header.
+  const latest = recs.reduce((m, r) => Math.max(m, tsMs(r.at)), 0)
+  const boundary = key ? enterUnread(key, latest) : 0
+  const unread = boundary > 0 ? recs.filter(r => tsMs(r.at) > boundary).length : 0
+  const frag = document.createDocumentFragment(); let prevKey = null, prevAt = null, placed = false
+  for (const rec of recs) {
+    // #63-B: a B1-enriched record carries trusted from/role/at + the clean `text` → Slack row (author header
+    // gated on `from`). A legacy { t, q, r } record (pre-B1, no from) → header-less, body = the whole `t` with
+    // only the daemon's own trailing [#N]/(re #N) stripped; NEVER parse `t` for an author.
+    const from = rec.from ?? null
+    const text = rec.text != null ? String(rec.text) : String(rec.t || '').replace(/\s*\[#\d+\]\s*$/, '').replace(/\s*\(re #\d+\)\s*$/, '')
+    if (unread && !placed && tsMs(rec.at) > boundary) { frag.appendChild(unreadDivider(unread)); placed = true }   // #63-F divider before the first unread
+    const newGroup = startsNewGroup(prevKey, prevAt, from, rec.at)
+    prevKey = from; prevAt = rec.at
+    frag.appendChild(slackRow({ from, role: rec.role, at: rec.at, text, qid: rec.q, rid: rec.r, newGroup, anchorId: rec.q }))
+  }
+  host.appendChild(frag)
+  wireUnreadPill(host)
+}
+// Fill a #thread host: the structured transcript (DOM-append) when present, else inert thread.log lines
+// (textContent → auto-escaped, no anchors — we never re-derive trust from raw text), else the empty notice.
+function fillThread(host, room) {
+  const tx = (room&&room.transcript)||[]; const raw = (room&&room.thread)||''
+  if (tx.length) return fillTranscript(host, tx, S.selRoom)   // #63-F: key the unread watermark on the open room
+  host.textContent = ''
+  wireUnreadPill(host)   // legacy raw-line thread has no positions → no divider; clear any stale pill
+  if (raw) {
+    for (const l of raw.split('\n')) {
+      const line = document.createElement('div'); line.className = 'tline'
+      const body = document.createElement('div'); body.className = 'body'; body.textContent = l || ' '
+      line.appendChild(body); host.appendChild(line)
+    }
+  } else { const e = document.createElement('div'); e.className = 'muted'; e.textContent = '(no messages yet)'; host.appendChild(e) }
+}
+window.jumpToQ = (id)=>{ const el=$('#q'+id); if(!el)return false; el.scrollIntoView({block:'center',behavior:'smooth'}); el.classList.add('qhi'); setTimeout(()=>el.classList.remove('qhi'),1400); return true }
+// #47 jump-to-original: open the room, then scroll its transcript to the question's #q<N> anchor. The
+// room thread renders async (selRoom→tick→fetch→paint), so retry jumpToQ until the anchor exists (or give up).
+window.openRoomAt = (roomId, n)=>{ openRoom(roomId); let tries=0; const t=setInterval(()=>{ if(jumpToQ(n)||++tries>25) clearInterval(t) }, 120) }
+function renderTab() {
+  const b = $('#tabbody'); if (!b) return
+  if (S.tab==='thread') { const raw=(S.room&&S.room.thread)||''; b.innerHTML = `<div class="thread" id="thread" tabindex="0"></div>`; const t=$('#thread'); if(t){ fillThread(t, S.room); t.dataset.raw=raw; t.scrollTop=t.scrollHeight; requestAnimationFrame(() => { const e=$('#thread'); if (e && e.dataset.raw===raw) e.scrollTop=e.scrollHeight }) } }   /* #68: defer the first-open bottom past layout (stale scrollHeight pins ~top); guard dataset.raw so a poll's followScroll isn't overridden */
+  else if (S.tab==='summary') b.innerHTML = `<pre class="thread" id="summary" tabindex="0">${esc((S.room&&S.room.consensus)||'(no summary)')}</pre>`   // #2a E: focusable → arrow-scroll
+  else {
+    const cu = (S.room&&S.room.catchups)||[]
+    b.innerHTML = cu.length ? [...cu].reverse().map(c=>`<div class="pane ${(c.status==='ready'&&!c.reviewedAt)?'unrev':''}">
+      <div class="row" style="justify-content:space-between"><b>Catch-up #${c.seq}</b> <span class="muted">${esc(c.pauseReason||'')} · ${c.status}${c.reviewedAt?' · reviewed':''}</span></div>
+      ${Object.values(c.handoffs||{}).map(h=>`<div class="card"><b>${esc(h.name||'')}</b>\n${esc(h.text||'')}</div>`).join('')||'<div class="muted">waiting for handoffs…</div>'}
+      ${(c.status==='ready'&&!c.reviewedAt)?`<button class="btn tiny" onclick="reviewCu(${c.seq})">Mark reviewed</button>`:''}</div>`).join('')
+      : `<div class="muted">No catch-ups. (Auto handoffs fire when a room pauses; mainly used by 2-party consults today.)</div>`
+  }
+}
+const hhmm = (at) => { try { return new Date(at).toLocaleTimeString([], { hour:'2-digit', minute:'2-digit' }) } catch { return '' } }
+// #47: detailKey signature for the @you CHANNEL — re-render on any inbox change / showDismissed toggle.
+// While a reply composer is OPEN (S.replyTo), FREEZE the content sig so a poll-tick inbox refresh can't
+// rebuild the channel and clobber the textarea mid-type (mirrors `if(!S.addingTo)renderMain()`).
+function channelSig() {
+  if (S.replyTo != null) return 'compose:' + S.replyTo
+  const ib = inbox()
+  return ib.all.length + (S.showDismissed?'|d':'') + '|' + ib.all.map(q => q.id + (q.answered?'a':q.dismissed?'x':'o')).join(',')
+}
+// The @you inbox rendered as a CHANNEL (replaces the single-item detail): a scrolling, room-transcript-
+// style feed of every @you item for the active org (oldest→newest), grouped by sender, with the
+// answered/resolved state inline and a PER-ROW reply composer (each reply routes a [Human reply] to a
+// DIFFERENT member). Dismissed hide under a toggle. View-only — reuses answer/dismissInbox/reopenInbox/
+// openRoom/jumpToQ + the existing .ib/.qnum styles, no model/endpoint change.
+function renderInboxChannel(d) {
+  // #47 MED-1: capture the OLD scroll position BEFORE the rebuild (the element is replaced by d.innerHTML),
+  // so a re-render (new item / resolution / toggle) keeps a mid-read user where they were instead of yanking
+  // them to the bottom — the followScroll discipline, across a full rebuild. First open (no prev) → bottom.
+  const prevSc = $('#ichScroll')
+  const wasAtBottom = prevSc ? (prevSc.scrollHeight - prevSc.scrollTop - prevSc.clientHeight < 40) : true
+  const prevTop = prevSc ? prevSc.scrollTop : 0
+  const ib = inbox()
+  const live = ib.all.filter(q => !q.dismissed).slice().sort((a,b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id - b.id))
+  const unanswered = live.filter(q => !q.answered && q.type==='question')
+  // #63-B2-inbox: build the LIVE feed as DOM nodes via the shared slackRow — body → safeMD, the [#N] chip
+  // DOM-appended (the #5 property), author header (role-color) grouped by from+room with the 7-min gap-break,
+  // ❓/🔔 as the per-message rowIcon. The per-item reply/answered/acts STATE rides as the row's `extra` node
+  // (its buttons are numeric-id / data-* — #65-clean — reused verbatim). Dismissed/triage/scroll unchanged.
+  // #63-F: unread boundary for the @you channel (positions = item #id; always present — @you is clean from day one).
+  const latestId = live.reduce((m, q) => Math.max(m, q.id || 0), 0)
+  const boundary = enterUnread('inbox:' + (S.org || ''), latestId)
+  const unread = boundary > 0 ? live.filter(q => (q.id || 0) > boundary).length : 0
+  const feedFrag = document.createDocumentFragment(); let prevKey = null, prevAt = null, placed = false
+  for (const q of live) {
+    const isQ = q.type==='question'
+    const viaTg = q.answeredVia==='telegram'
+    const steered = q.pauseRoom && q.answer && q.answer !== '(resumed)'
+    const openRoomBtn = `<button class="btn tiny" data-room="${esc(q.roomId)}" onclick="openRoomAt(this.dataset.room,${q.id})">↗ Open room</button>`
+    let state
+    if (q.answered) {
+      state = q.pauseRoom
+        ? `<div class="ich-ans"><span class="good">✓ Resumed${viaTg?' via Telegram':''}</span>${steered?` <span class="muted">↳ ${esc(q.answer)}</span>`:''} ${openRoomBtn}</div>`
+        : `<div class="ich-ans"><span class="muted">↳ you · re #${q.id} · ${esc(q.answer||'')}</span> <span class="good">✓ Answered${viaTg?' via Telegram':''}</span> ${openRoomBtn}</div>`
+    } else if (S.replyTo===q.id) {
+      state = `<div class="ich-reply"><textarea id="ansTx" placeholder="Your reply — routes back as a [Human reply] to @${esc(q.fromName||q.from)}…"></textarea><div class="row" style="margin-top:6px;gap:6px"><button class="btn primary tiny" onclick="answer(${q.id})">Send</button> <button class="btn tiny" onclick="dismissInbox(${q.id})">✕ Dismiss</button> ${openRoomBtn} <button class="btn tiny" onclick="cancelReply()">cancel</button></div></div>`
+    } else {
+      state = `<div class="row ich-acts" style="gap:6px"><button class="btn tiny" onclick="openReply(${q.id})">↩ Reply</button>${isQ?'':`<button class="btn tiny" onclick="dismissInbox(${q.id})">✕ Dismiss</button>`}${openRoomBtn}</div>`
+    }
+    const extra = document.createElement('div'); extra.innerHTML = state
+    const groupKey = q.from + '\x00' + q.room   // #47 LOW: from+room (two rooms from one sender don't collapse)
+    const newGroup = startsNewGroup(prevKey, prevAt, groupKey, q.at)
+    prevKey = groupKey; prevAt = q.at
+    // #63-B2-inbox: ONLY an open QUESTION gets a needs-you accent (left rail + glowing ❓) — recovers the
+    // at-a-glance "which still needs my reply" cue the old .ib.q rail gave (glyph+color, color not load-bearing).
+    // FYIs are reply-OPTIONAL → always `.msg-fyi`-dim (never needs-you, even unanswered — no crying wolf);
+    // an answered question → plain. So only the actionable rows pop.
+    const cls = isQ ? (q.answered ? '' : 'msg-needs') : 'msg-fyi'
+    if (unread && !placed && (q.id || 0) > boundary) { feedFrag.appendChild(unreadDivider(unread)); placed = true }   // #63-F divider before first unread
+    feedFrag.appendChild(slackRow({ from: q.fromName || ('@'+q.from), role: q.role, at: q.at, text: q.text,
+      qid: q.id, anchorId: q.id, rowIcon: isQ?'❓':'🔔', roomTag: q.room, cls, newGroup, extra }))
+  }
+  const emptyMsg = !live.length ? `<div class="muted" style="padding:24px 12px;text-align:center">No messages. Your team will reach you here.<div style="opacity:.5;font-style:italic;margin-top:2px">All quiet on Spaceball One.</div></div>` : ''
+  let dism = ''
+  if (ib.dismissed.length) {
+    dism = `<div class="muted focusable" role="button" tabindex="0" aria-expanded="${S.showDismissed}" style="padding:6px;cursor:pointer;font-size:12px;user-select:none;border-radius:5px;margin-top:8px" onclick="toggleDismissed()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleDismissed()}else if(event.key==='Escape'&&S.showDismissed){toggleDismissed()}">${S.showDismissed?'▾':'▸'} ${ib.dismissed.length} dismissed</div>`
+    if (S.showDismissed) dism += ib.dismissed.slice().sort((a,b)=>(a.at<b.at?-1:1)).map(q=>`<div class="ib dism" id="q${q.id}"><div class="ich-line"><span class="qicon">${q.type==='question'?'❓':'🔔'}</span><span class="ich-body">${esc(q.text)}</span><span class="ich-meta"><span class="muted">${esc(q.fromName||('@'+q.from))} · ${hhmm(q.at)}</span> <span class="qnum">#${q.id}</span></span></div><div class="row ich-acts"><button class="btn tiny primary" onclick="reopenInbox(${q.id})">↺ Re-open</button></div></div>`).join('')
+  }
+  const triage = unanswered.length ? `<div class="ich-triage focusable" role="button" tabindex="0" onclick="jumpToQ(${unanswered[0].id})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToQ(${unanswered[0].id})}" title="jump to the next open question">${unanswered.length} unanswered ⌄</div>` : ''
+  // triage floats over the top — pad the scroll content so it doesn't sit over row 1.
+  d.innerHTML = `<div class="ich-wrap">${triage}<div class="ich-scroll" id="ichScroll" tabindex="0"${triage?' style="padding-top:36px"':''}><div id="ichFeed"></div>${emptyMsg}${dism}</div></div>`
+  const feedHost = $('#ichFeed'); if (feedHost) feedHost.appendChild(feedFrag)   // #63-B2-inbox: the slackRow DOM feed
+  const sc = $('#ichScroll'); if (!sc) return
+  if (S.replyTo!=null) { const tx=$('#ansTx'); if(tx){ try{tx.focus()}catch{} } const row=$('#q'+S.replyTo); if(row)row.scrollIntoView({block:'center'}) }
+  // #47 MED-2: a numeric selInbox (OS-notification click) sets a one-shot jumpTarget → scroll to + highlight
+  // that item's #q<id>; falls back to the followScroll position if it's not in the live feed.
+  else if (S.jumpTarget!=null) { const did=jumpToQ(S.jumpTarget); S.jumpTarget=null; if(!did) sc.scrollTop = wasAtBottom ? sc.scrollHeight : prevTop }
+  // #47 MED-1: stick to the bottom only if the user was already there; otherwise keep their position.
+  // #68: a FIRST open (no retained #ichScroll) → bottom, DEFERRED past layout — reading scrollHeight synchronously
+  // right after the innerHTML/append can be stale if the flex:1 scroll container isn't sized yet, pinning ~top
+  // (the open-at-top bug). A re-render/poll keeps the no-yank retention (synchronous wasAtBottom?bottom:prevTop).
+  else if (!prevSc) { sc.scrollTop = sc.scrollHeight; requestAnimationFrame(() => { const e = $('#ichScroll'); if (e) e.scrollTop = e.scrollHeight }) }
+  else sc.scrollTop = wasAtBottom ? sc.scrollHeight : prevTop
+  wireUnreadPill(sc)   // #63-F: jump-to-unread pill when the divider is above the viewport
+}
+
+// ---- builder ----
+// #62: fresh-create vs edit is an INTENT fixed at ENTRY — S.builder._fresh, set on every fresh-build entry
+// (newProject→openBuilder(true)→freshBuilder, and the scoped-launch new-project boot) and cleared on the edit
+// path. The full-view takeover AND the builder title both derive from this flag — NOT from a name-match on the
+// live, mutable org input (#55's builderEditing heuristic), which could flip true mid-type if you typed a name
+// colliding with an existing org, reflowing the whole layout. Stable by intent. (Closes the deferred #55 title nit.)
+function builderIsFresh() { return !!(S.builder && S.builder._fresh) }
+function renderBuilder(d) {
+  const B = S.builder
+  const editing = !builderIsFresh()
+  d.innerHTML = `<div class="modalhead" style="margin-bottom:14px">
+      <h2 style="margin:0;font-size:15px">${editing ? 'Editing '+esc(B.org) : 'New project'}</h2>
+      <button class="btn tiny" aria-label="Cancel — discard unsaved changes and close the builder" onclick="closeBuilder()">✕ Cancel</button></div>
+    <div style="display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start">
+    <div>
+      <div class="grid2"><div><label>Project</label><input id="bOrg" value="${esc(B.org)}" placeholder="my-project"></div><div><label>Repo path (host)</label><input id="bRepo" value="${esc(B.repo)}" placeholder="/Users/you/code/app"></div></div>
+      <div class="grid2" style="margin-top:8px"><div><label>Start from a preset (optional)</label><select id="bPreset"><option value="">— preset —</option></select></div>
+        <div><label>Name style</label><select id="bNameStyle" onchange="bSetStyle(this.value)">${((S.namePools&&S.namePools.styles)||['french']).map(st=>`<option value="${esc(st)}" ${st===(B.nameStyle||'french')?'selected':''}>${esc(st)}</option>`).join('')}</select>${(B.teams||[]).some(t=>(t.members||[]).some(m=>m._nameAuto===false && m.name))?`<div class="muted" style="font-size:11px;margin-top:3px">existing names are kept on a style change — 🎲 a member to restyle it</div>`:''}</div></div>
+      <h2>Teams</h2><div id="bTeams"></div><button class="btn" onclick="bAddTeam()">＋ Add team</button>
+      <h2 style="margin-top:18px">Custom roles <span class="muted" style="font-size:12px;font-weight:400">— project-specific experts, pickable as @mentions</span></h2><div id="bPersonas"></div>
+      <div class="row" style="margin-top:14px"><button class="btn primary" onclick="bSave()">💾 Save team.json</button><button class="btn" onclick="bDefine()">◎ Define rooms</button><button class="btn" style="background:#1f3a26;border-color:#2f6b3f;color:#bfe6c8" onclick="bLaunch()">🚀 Launch</button><span id="bMsg" class="muted"></span></div>
+      <div class="muted" style="margin-top:8px">Then launch live members: <code id="bCmd">mrc team up</code></div>
+    </div>
+    <div><h2>Preview</h2><div id="bPrev" class="muted">…</div></div></div>`
+  $('#bOrg').oninput = e=>{B.org=e.target.value;bPreview()}
+  $('#bRepo').oninput = e=>{B.repo=e.target.value;$('#bCmd').textContent='cd '+(B.repo||'<repo>')+' && mrc team up';bPreview()}
+  fetch('/api/team-presets').then(r=>r.json()).then(d=>{ const sel=$('#bPreset'); if(!sel)return
+    sel.innerHTML='<option value="">— preset —</option>'+(d.presets||[]).map(p=>`<option value="${esc(p.name)}">${esc(p.title)}</option>`).join('')
+    sel.onchange=()=>{ const p=(d.presets||[]).find(x=>x.name===sel.value); if(!p)return; S.builder.teams=JSON.parse(JSON.stringify(p.roster.teams)); autofillNames(); renderBuilder($('#detail')) } }).catch(()=>{})
+  // #44: load the name-style pools once, then auto-name members (idempotent — keeps any already-set names).
+  if(!S.namePools){ fetch('/api/names').then(r=>r.json()).then(d=>{ if(d&&d.ok){ S.namePools={styles:d.styles,pools:d.pools}; autofillNames(); if(S.building)renderBuilder($('#detail')) } }).catch(()=>{}) }
+  else autofillNames()
+  bRenderTeams(); bRenderPersonas(); bPreview()
+}
+// ---- custom personas (#42) ----
+// The editor edits S.builder.personas (the working copy that the role-chooser + bRoster read). A save
+// also persists the single persona to the project's team.json via POST /api/personas — server-validated
+// by editPersona's parse-gate, 2xx-confirmed. The form stays OPEN on a real rejection (no optimistic
+// close); it collapses only on success or the expected "new project not on disk yet" case.
+function bRenderPersonas() {
+  const el = $('#bPersonas'); if (!el) return
+  const cps = S.builder.personas || {}; const keys = Object.keys(cps); const f = S.builder._pEdit
+  const list = keys.length ? keys.map(k=>{ const p=cps[k]||{}; const used=membersUsingPersona(k)
+    return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)"><code style="flex:0 0 auto">@${esc(k)}</code>
+      <span class="muted" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.label||k)} · ${p.mount==='rw'?'rw':'ro'}${p.leadByDefault?' · lead':''}${used.length?' · '+used.length+' member'+(used.length>1?'s':''):''}</span>
+      <button class="btn tiny" style="flex:0 0 auto" data-k="${esc(k)}" onclick="bEditPersona(this.dataset.k)">edit</button>
+      <button class="btn tiny" style="flex:0 0 auto" ${used.length?`title="in use by ${esc(used.join(', '))}"`:''} data-k="${esc(k)}" onclick="bRemovePersona(this.dataset.k)">✕</button></div>` }).join('')
+    : `<div class="muted" style="font-size:12px">No custom roles yet — add one to define a project-specific expert (e.g. <code>@advertiser</code>).</div>`
+  el.innerHTML = list + `<div style="margin-top:8px">${f ? personaForm(f) : `<button class="btn tiny" onclick="bNewPersona()">＋ custom role</button>`}</div><div id="bPMsg" class="muted" style="font-size:12px;margin-top:4px"></div>`
+}
+function personaForm(f) {
+  const note = (f.mount==='rw' && f.backend==='codex')
+    ? `<div class="warn" style="font-size:11.5px;margin-top:5px">⚠ rw + codex worker — edits apply per directed invocation, not continuously.</div>` : ''
+  return `<div class="team" style="margin-top:6px">
+    <div class="grid2"><div><label for="pfKey">Key → @mention</label><input id="pfKey" value="${esc(f.key)}" ${f.editing?'disabled':''} placeholder="advertiser" oninput="bPF('key',this.value)"></div>
+      <div><label for="pfLabel">Label</label><input id="pfLabel" value="${esc(f.label)}" placeholder="Ad Strategist" oninput="bPF('label',this.value)"></div></div>
+    <div style="margin-top:6px"><label for="pfMandate">Charter (mandate)</label><textarea id="pfMandate" rows="4" placeholder="What this role owns and how it works on the team…" oninput="bPF('mandate',this.value)">${esc(f.mandate)}</textarea></div>
+    <div class="row" style="margin-top:6px;align-items:flex-end">
+      <div><label for="pfBackend">Backend <span class="muted" style="font-weight:400">(per member)</span></label><select id="pfBackend" onchange="bPF('backend',this.value)">${BACKENDS.map(b=>`<option ${b===f.backend?'selected':''}>${b}</option>`).join('')}</select></div>
+      <div><label for="pfMount">Write access</label><select id="pfMount" onchange="bPF('mount',this.value)"><option value="ro" ${f.mount!=='rw'?'selected':''}>read-only</option><option value="rw" ${f.mount==='rw'?'selected':''}>read-write</option></select></div>
+      <label class="lead"><input type="checkbox" ${f.leadByDefault?'checked':''} onchange="bPF('leadByDefault',this.checked)"> lead by default</label></div>${note}
+    <div class="row" style="margin-top:8px"><button class="btn primary tiny" onclick="bSavePersona()">Save role</button><button class="btn tiny" onclick="bCancelPersona()">cancel</button></div></div>`
+}
+window.bNewPersona=()=>{ S.builder._pEdit={ key:'', label:'', mandate:'', backend:'claude', mount:'ro', leadByDefault:false, editing:false }; bRenderPersonas() }
+window.bEditPersona=(k)=>{ const p=(S.builder.personas||{})[k]||{}; S.builder._pEdit={ key:k, label:p.label||'', mandate:p.mandate||'', backend:'claude', mount:p.mount==='rw'?'rw':'ro', leadByDefault:!!p.leadByDefault, editing:true }; bRenderPersonas() }
+window.bCancelPersona=()=>{ S.builder._pEdit=null; bRenderPersonas() }
+// Re-render only on the SELECT/checkbox fields (to refresh the rw+codex note) — never on the text inputs,
+// which would steal focus mid-type. Key validity is enforced server-side on save (the parse-gate).
+window.bPF=(k,v)=>{ const f=S.builder._pEdit; if(!f)return; f[k]=v; if(k==='mount'||k==='backend')bRenderPersonas() }
+window.bSavePersona=async()=>{ const f=S.builder._pEdit; if(!f)return; const key=String(f.key||'').trim()
+  const setMsg=(h)=>{ const m=$('#bPMsg'); if(m)m.innerHTML=h }
+  if(!key){ setMsg('<span class="bad">key required</span>'); return }
+  if(!String(f.mandate||'').trim()){ setMsg('<span class="bad">charter (mandate) required — it defines the role</span>'); return }
+  const persona={ label:(f.label||'').trim()||key, mandate:f.mandate||'', mount:f.mount==='rw'?'rw':'ro', leadByDefault:!!f.leadByDefault }
+  setMsg('<span class="muted">saving…</span>')
+  const r=await api('/api/personas',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({org:S.builder.org,op:'save',key,persona})}).catch(()=>({ok:false,error:'network error'}))
+  const localOnly = !r.ok && /unknown org/.test(r.error||'')   // new project not yet on disk — stage locally, team-save persists
+  if(r.ok || localOnly){ S.builder.personas=S.builder.personas||{}; S.builder.personas[key]=persona; S.builder._pEdit=null
+    bRenderPersonas(); bRenderTeams(); bPreview(); setMsg(r.ok?`<span class="good">✓ saved @${esc(key)} to project</span>`:`<span class="muted">added @${esc(key)} — 💾 Save team.json to persist</span>`) }
+  else setMsg(`<span class="bad">✗ ${esc(r.error)}</span>`)   // parse/reference rejection → keep the form open to fix
+}
+window.bRemovePersona=async(k)=>{ const setMsg=(h)=>{ const m=$('#bPMsg'); if(m)m.innerHTML=h }
+  const used=membersUsingPersona(k); if(used.length){ setMsg(`<span class="bad">@${esc(k)} is used by ${esc(used.join(', '))} — reassign first</span>`); return }
+  // Removing deletes the role from the project's team.json (when on disk) — confirm, matching the other
+  // disk-mutating actions (stopTeam/deleteProject). Recoverable by re-creating, so a plain confirm is enough.
+  if(!confirm(`Remove custom role @${k}? It will be deleted from this project's team.json. You can re-create it later.`))return
+  const r=await api('/api/personas',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({org:S.builder.org,op:'remove',key:k})}).catch(()=>({ok:false,error:'network error'}))
+  const localOnly = !r.ok && /unknown org/.test(r.error||'')
+  if(r.ok || localOnly){ delete S.builder.personas[k]; if(S.builder._pEdit&&S.builder._pEdit.key===k)S.builder._pEdit=null; bRenderPersonas(); bRenderTeams(); bPreview(); setMsg(`<span class="muted">removed @${esc(k)}</span>`) }
+  else setMsg(`<span class="bad">✗ ${esc(r.error)}</span>`)
+}
+function bRenderTeams() {
+  const B = S.builder
+  $('#bTeams').innerHTML = B.teams.map((t,ti)=>`<div class="team">
+    <div class="row" style="align-items:flex-end;gap:8px"><div style="flex:2"><label>Team</label><input value="${esc(t.name)}" oninput="bSet(${ti},null,'name',this.value)"></div>
+      <div style="flex:2"><label>Territory</label><input value="${esc(t.territory)}" placeholder="." oninput="bSet(${ti},null,'territory',this.value)"></div>
+      <button class="btn tiny" onclick="bDelTeam(${ti})">✕</button></div>
+    ${t.members.map((m,mi)=>{ const style=B.nameStyle||'french'; const nmErr=(m.name && !SAFE_NAME_RE.test(m.name))?'<span class="bad" style="font-size:11px">letters, digits, internal hyphens only</span>':''; return `<div class="bmem">
+      <div class="bmemname"><input class="bnm" value="${esc(m.name||'')}" placeholder="${style==='custom'?'name (free-type)':'(auto)'}" aria-label="member name" oninput="bSetName(${ti},${mi},this.value)">${style!=='custom'?`<button class="btn tiny" title="suggest another name" onclick="bRerollName(${ti},${mi})">🎲</button>`:''}<span id="nmerr-${ti}-${mi}">${nmErr}</span></div>
+      <div class="memrow">
+        <select onchange="bSet(${ti},${mi},'role',this.value)">${roleOptions().map(o=>`<option ${o===m.role?'selected':''}>${o}</option>`).join('')}</select>
+        ${mediaBackend(m.role)
+          ? `<span class="bklock" aria-label="backend ${esc(mediaBackend(m.role))} — set by the media role, not editable" title="media role — backend is set by the role (not editable)">${esc(mediaBackend(m.role))}</span>`
+          : `<select onchange="bSet(${ti},${mi},'backend',this.value)">${BACKENDS.map(o=>`<option ${o===m.backend?'selected':''}>${o}</option>`).join('')}</select>`}
+        <label class="lead"><input type="checkbox" ${m.lead?'checked':''} onchange="bSet(${ti},${mi},'lead',this.checked)"> lead</label>
+        <input value="${esc(m.territory)}" placeholder="territory" oninput="bSet(${ti},${mi},'territory',this.value)">
+        <button class="btn tiny" onclick="bDelMem(${ti},${mi})">✕</button></div></div>`}).join('')}
+    <div style="margin-top:8px"><button class="btn tiny" onclick="bAddMem(${ti})">＋ member</button></div></div>`).join('')
+}
+window.bSet=(ti,mi,k,v)=>{const B=S.builder; if(mi==null)B.teams[ti][k]=v; else if(k==='lead'&&v)B.teams[ti].members.forEach((mm,j)=>mm.lead=(j===mi)); else B.teams[ti].members[mi][k]=v;
+  // Role drives the backend: a media role pins it (gemini/elevenlabs); switching back to an agent role
+  // restores a valid agent backend (claude/codex) if it was a media one. Re-render so the control swaps.
+  if(mi!=null && k==='role'){const m=B.teams[ti].members[mi]; const mb=mediaBackend(v); m.backend = mb || (BACKENDS.includes(m.backend)?m.backend:'claude')}
+  if(k==='lead'||k==='role'){bRenderTeams()} bPreview()}
+// #44: a new member/team gets a suggested free name in the current style (blank for free-type 'custom').
+const bSuggest=()=>{ const style=S.builder.nameStyle||'french'; return style==='custom'?'':suggestName(style,allBuilderNames()) }
+window.bAddTeam=()=>{S.builder.teams.push({name:'team'+(S.builder.teams.length+1),territory:'.',members:[{role:'architect',backend:'claude',lead:true,territory:'',name:bSuggest(),_nameAuto:true}]});bRenderTeams();bPreview()}
+window.bDelTeam=(ti)=>{S.builder.teams.splice(ti,1);bRenderTeams();bPreview()}
+window.bAddMem=(ti)=>{S.builder.teams[ti].members.push({role:'engineer',backend:'claude',lead:false,territory:'',name:bSuggest(),_nameAuto:true});bRenderTeams();bPreview()}
+window.bDelMem=(ti,mi)=>{S.builder.teams[ti].members.splice(mi,1);bRenderTeams();bPreview()}
+// Hand-typing a name clears _nameAuto so a style change / 🎲 never clobbers it. No re-render (focus) —
+// update the inline #36 error span directly.
+window.bSetName=(ti,mi,v)=>{ const m=S.builder.teams[ti].members[mi]; m.name=v; m._nameAuto=false
+  const err=$('#nmerr-'+ti+'-'+mi); if(err) err.innerHTML=(v && !SAFE_NAME_RE.test(v))?'<span class="bad" style="font-size:11px">letters, digits, internal hyphens only</span>':''
+  bPreview() }
+window.bRerollName=(ti,mi)=>{ const m=S.builder.teams[ti].members[mi]; const taken=allBuilderNames(); if(m.name)taken.delete(String(m.name).toLowerCase()); m.name=suggestName(S.builder.nameStyle||'french',taken); m._nameAuto=true; bRenderTeams(); bPreview() }
+window.bSetStyle=(v)=>{ S.builder.nameStyle=v; autofillNames(true); bRenderTeams(); bPreview() }   // re-roll AUTO names only; hand-typed stay
+function bRoster(){const B=S.builder;const r={org:B.org||'org',repo:B.repo||undefined,teams:B.teams.map(t=>({name:t.name,territory:t.territory||'.',members:t.members.map(m=>{const o={role:m.role,backend:m.backend};if(m.lead)o.lead=true;if(m.territory)o.territory=m.territory;if(m.name&&String(m.name).trim())o.name=String(m.name).trim();return o})}))};if(B.personas&&Object.keys(B.personas).length)r.personas=B.personas;return r}
+let bTimer=null
+function bPreview(){clearTimeout(bTimer);bTimer=setTimeout(async()=>{
+  const r=await api('/api/team-preview',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})})
+  const el=$('#bPrev'); if(!el)return
+  if(!r.ok){el.innerHTML=`<div class="bad">⚠ ${esc(r.error)}</div>`;return}
+  const v=r.validation||{warnings:[],errors:[]}
+  el.innerHTML = r.members.map(m=>`<div class="pane" style="padding:7px 10px;margin-bottom:6px"><span class="h">@${esc(m.handle)}</span> <span class="muted">${esc(m.roleLabel)}${m.lead?' ★':''} · ${esc(m.team)} · ${m.tier==='worker'?'worker':'live'}</span></div>`).join('')
+    +`<h2>Rooms</h2>`+r.rooms.map(rm=>`<span class="roomtag">${esc(rm.team||rm.kind)}</span>`).join('')
+    +(v.warnings.length?`<h2>Warnings</h2>`+v.warnings.map(w=>`<div class="warn" style="font-size:12px">⚠ ${esc(w)}</div>`).join(''):'')
+},250)}
+window.bSave=async()=>{const B=S.builder;const msg=$('#bMsg');if(!B.repo){msg.innerHTML='<span class="bad">set a repo path</span>';return}
+  const r=await api('/api/team-save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({repo:B.repo,roster:bRoster()})});msg.innerHTML=r.ok?`<span class="good">✓ ${esc(r.path)}</span>`:`<span class="bad">✗ ${esc(r.error)}</span>`; if(r.ok)markBuilderClean()}
+window.bDefine=async()=>{const r=await api('/api/team-define',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})});$('#bMsg').innerHTML=r.ok?`<span class="good">◎ defined ${(r.rooms||[]).length} room(s)</span> <a href="#" onclick="closeBuilder();return false">view</a>`:`<span class="bad">✗ ${esc(r.error||'daemon down')}</span>`; if(r.ok){markBuilderClean(); S._builderReturn=null; S.org=bRoster().org||null; setOrgUrl(S.org); tick()}}   // #55: defining switches S.org to the new org → drop the now-stale pre-builder return so the "view" link (closeBuilder) lands on what was just defined, not the entry view
+
+// ---- actions ----
+// #55: a content signature of the builder for the discard-on-cancel guard. Covers what represents real
+// work (org/repo/name-style/teams/members/personas + USER-typed member names) and EXCLUDES auto-filled
+// names (m._nameAuto!==false) so the async name autofill never reads as an unsaved edit. The baseline
+// (B._sig) is captured on builder entry (openBuilder / scoped-nav) and refreshed after a save/define;
+// dirty = the current sig diverges from it. No baseline (an entry path that didn't set one) → treat as
+// dirty so a misclick can't silently discard.
+function builderSig(){ const B=S.builder||{}; return JSON.stringify({
+  org:B.org||'', repo:B.repo||'', nameStyle:B.nameStyle||'french', personas:B.personas||{},
+  teams:(B.teams||[]).map(t=>({ name:t.name||'', territory:t.territory||'', members:(t.members||[]).map(m=>({
+    role:m.role||'', backend:m.backend||'', lead:!!m.lead, territory:m.territory||'',
+    name:(m._nameAuto===false)?(m.name||''):'' })) })) }) }
+function builderDirty(){ const B=S.builder; if(!B) return false; return (B._sig!=null) ? (builderSig()!==B._sig) : true }
+const markBuilderClean = ()=>{ if(S.builder) S.builder._sig = builderSig() }
+// #55-1: the discard-guard must cover EVERY exit from a dirty build, not just ✕ Cancel — col2 (rooms/
+// members/inbox) and the project tabs stay clickable during the pane-takeover, and their handlers set
+// S.building=false directly. Every such exit (and a re-entry that would replace the build) routes through
+// this. It's a no-op (returns true) unless you're actually in a dirty builder, so non-builder nav is free.
+function confirmLeaveBuilder(){ return !(S.building && builderDirty()) || confirm('Discard unsaved team changes?') }
+const freshBuilder = () => ({ _fresh:true, org:'', repo:'', personas:{}, _pEdit:null, nameStyle:'french', teams:[{ name:'team', territory:'.', members:[
+  {role:'architect',backend:'claude',lead:true,territory:''},
+  {role:'engineer',backend:'claude',lead:false,territory:''},
+  {role:'critic',backend:'claude',lead:false,territory:''} ] }] })
+window.newProject = ()=>openBuilder(true)
+// fresh=true -> a blank new project; otherwise load the CURRENT project's roster so editing EXTENDS it.
+window.openBuilder = async (fresh)=>{
+  // #55-1: re-entering the builder (＋ New project / ✎ Edit teams) from a DIRTY build replaces S.builder →
+  // also a silent discard; guard it. No-op on a first entry (not building) so the normal open is unaffected.
+  if (!confirmLeaveBuilder()) return
+  // #55: capture the prior view ONCE (don't clobber it on a re-entry while already building) so ✕ Cancel
+  // returns to exactly where you were — the builder is a pane-takeover, so we capture+restore (vs #46's
+  // modal which just avoided nulling).
+  if (!S.building) S._builderReturn = { selRoom:S.selRoom, selMember:S.selMember, selInbox:S.selInbox, selHome:S.selHome, tab:S.tab }
+  leaveUnread()   // #63-F: opening the builder leaves any open room — flush its watermark
+  S.building=true; S.selMember=null; S.selRoom=null; S.selInbox=null; S.selHome=false
+  if (fresh) { S.builder = freshBuilder(); markBuilderClean() }   // #55: baseline the empty build
+  paint()
+  if (!fresh && S.org && (S.teams.members||[]).some(m=>m.org===S.org)) {
+    const r = await api('/api/team-roster?org='+encodeURIComponent(S.org)).catch(()=>null)
+    if (r && r.ok && r.roster && (r.roster.teams||[]).length) {
+      S.builder = { _fresh:false, org: r.roster.org||S.org, repo: r.roster.repo||S.builder.repo||'', personas:{}, _pEdit:null, nameStyle:'french', teams: r.roster.teams }   // #62: editing an existing team is NOT a fresh build → no takeover
+      // #44: members loaded with a pinned name are NOT auto — never re-roll a name the roster already has.
+      for (const t of (S.builder.teams||[])) for (const m of (t.members||[])) m._nameAuto = !m.name
+      // getroster drops personas (orgDefs/rosterFromDef don't carry them) — load them from team.json (#42).
+      const pr = await api('/api/personas?org='+encodeURIComponent(S.org)).catch(()=>null)
+      if (pr && pr.ok && pr.custom) S.builder.personas = pr.custom
+      markBuilderClean()   // #55: baseline AFTER the roster + personas load, so editing starts clean
+      if (S.building) renderBuilder($('#detail'))
+    }
+  } }
+// #55: ✕ Cancel — confirm before discarding unsaved edits (the builder doesn't auto-save, unlike Settings),
+// then restore the exact prior view (room/member/inbox/tab) captured at entry. Save/Define/Launch keep
+// their own post-action nav and mark the builder clean; only Cancel uses this restore.
+window.closeBuilder = ()=>{
+  if (!confirmLeaveBuilder()) return
+  const r = S._builderReturn || {}
+  S.selRoom = r.selRoom||null; S.selMember = r.selMember||null; S.selInbox = r.selInbox||null; S.selHome = !!r.selHome; if (r.tab) S.tab = r.tab
+  S._builderReturn = null; S.building=false; paint() }
+
+// ---- settings (#42 chunk C) ----
+// #46: Settings is a MODAL (not a detail-pane render) — opening it must NOT touch selRoom/selMember/
+// selInbox, so closing returns to the exact room / thread / member you were on.
+// Fetch the settings payload into S.settings. 404/null = the endpoint isn't live on the CURRENT daemon yet
+// (served fresh per-request, but /api/settings only exists after a daemon reload) — flag it so the surface
+// SAYS so (restart notice), not a stuck "Loading…". Shared by the gear modal (#46) and the project home (#61).
+async function loadSettings() {
+  const r = await api('/api/settings').catch(()=>null)
+  if (r && r.ok) { S.settings=r; if (r.notify && r.notify.value) S.notifyPrefs=r.notify.value }
+  else S.settings = { _failed: true }
+}
+window.openSettings = async ()=>{ S.settingsOpen=true; S.settings=null; renderModal(); await loadSettings(); if (S.settingsOpen) renderModal() }
+window.closeSettings = ()=>{ S.settingsOpen=false; renderModal() }
+// #61: the project HOME — entering a project lands here (overview + the per-project settings moved out of
+// the gear). Clears the other selections; lazy-loads settings for the --web note (detailKey's settings flag
+// rebuilds the pane once it arrives). Guarded by confirmLeaveBuilder so it can't silently discard a build.
+window.openProjectHome = ()=>{ if (!confirmLeaveBuilder()) return; leaveUnread(); S.selHome=true; S.selRoom=S.selInbox=S.selMember=null; S.building=false; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }); paint() }
+const sBadge = (scope,mut)=>`<span class="stag ${scope==='global'?'g':'p'}">${scope==='global'?'GLOBAL':'PER-PROJECT'}</span><span class="stag ${mut==='runtime'?'r':'l'}">${mut==='runtime'?'RUNTIME':'LAUNCH-TIME'}</span>`
+
+// Render the Settings modal — centered card + scrim over the whole app. EVENT-DRIVEN (openSettings /
+// closeSettings / the tg handlers / enableNotifyPerm) — deliberately NOT called from paint()/tick(), so
+// it never runs on the 1.5s poll. The `_modalShown` transition-guard makes repeated calls safe regardless:
+// build the shell + focus the card ONLY on the open transition; clear + return focus to the gear ONLY on
+// the close transition; an already-open call patches JUST the live Telegram bits (never rebuilds the inputs,
+// never touches focus). (An earlier version was wired into paint() and stole focus every tick — fixed.)
+let _modalShown = false, _modalSig = null
+function renderModal() {
+  const host = $('#modal'); if (!host) return
+  const gear = $('#gearBtn')
+  if (!S.settingsOpen) {
+    if (_modalShown) {   // CLOSE transition only — never focus the gear on an unchanged-closed tick
+      host.innerHTML=''; _modalShown=false; _modalSig=null
+      if (gear) gear.setAttribute('aria-expanded','false')
+      try { gear && gear.focus() } catch {}
+    }
+    return
+  }
+  if (!_modalShown) {   // OPEN transition — build the shell once, focus the CARD (not the ✕ → no hair-trigger Enter-close), trap Tab
+    _modalShown=true; _modalSig=null
+    if (gear) gear.setAttribute('aria-expanded','true')
+    host.innerHTML = `<div class="scrim" onclick="if(event.target===this)closeSettings()">
+      <div class="modalcard" role="dialog" aria-modal="true" aria-label="Settings" tabindex="-1">
+        <div class="modalhead"><h2 style="margin:0;font-size:14px">⚙ Settings</h2><button class="btn tiny" aria-label="Close settings" onclick="closeSettings()">✕</button></div>
+        <div class="modalbody" id="modalBody"></div>
+      </div></div>`
+    const card = host.querySelector('.modalcard')
+    if (card) {
+      try { card.focus() } catch {}
+      card.addEventListener('keydown', (e)=>{
+        if (e.key==='Escape') { e.preventDefault(); closeSettings(); return }
+        if (e.key!=='Tab') return
+        const f = [...card.querySelectorAll('button,a[href],input,select,textarea,[tabindex]:not([tabindex="-1"])')].filter(el=>!el.disabled && el.offsetParent!==null)
+        if (!f.length) return
+        const a=f[0], b=f[f.length-1]
+        if (e.shiftKey && document.activeElement===a) { e.preventDefault(); b.focus() }
+        else if (!e.shiftKey && document.activeElement===b) { e.preventDefault(); a.focus() }
+      })
+    }
+  }
+  // Body: the gear modal is GLOBAL-only now (#61) — turn-cap / notifications / port. No live Telegram
+  // section here anymore (moved to the project home), so a full rebuild only on a SIGNATURE change
+  // (open / loading→content / failed→ok) is enough; the inputs aren't clobbered on a poll because
+  // renderModal is event-driven, not called from paint().
+  const body = $('#modalBody'); if (!body) return
+  const sig = S.settings ? (S.settings._failed?'failed':'ok') : 'loading'
+  if (sig !== _modalSig) { body.innerHTML = settingsBody(); _modalSig = sig }
+}
+// The modal's contents: Global runtime knobs (every project), then this project's settings. Reuses the
+// .sblk/.srow/.shelp/.stag system + the _failed restart notice verbatim.
+function settingsBody() {
+  const s = S.settings
+  if (!s) return `<div class="muted">Loading…</div>`
+  if (s._failed) return `<div class="sblk"><div class="shelp" style="margin:0">⚠ Settings need a daemon restart to take effect — run <code>mrc rooms restart</code>. The <code>/api/settings</code> endpoint isn't live on the current daemon yet; settings will work once it reloads.</div></div>`
+  const tc=s.turnCap||{}, nf=(s.notify&&s.notify.value)||{}, dp=s.dashboardPort||{}   // #61: web/Telegram/delete moved to the project home
+  const perm = ('Notification' in window) ? Notification.permission : 'denied'
+  let html = `<div class="sgrouph">Global <span class="muted" style="font-weight:400">— applies to every project</span></div>
+    <div class="sblk"><div class="srow"><b>Team turn-cap</b> ${sBadge('global','runtime')}</div>
+      <div class="shelp">Pause a room for a check-in after this many messages, so a long autonomous run doesn't drift unattended. <b>0 disables</b> the pause.${tc.env!==''&&tc.env!=null?` Env default: <code>${esc(String(tc.env))}</code>.`:''}</div>
+      <div class="row"><input id="setTurnCap" type="number" min="0" step="1" aria-label="turn-cap" value="${tc.value==null?'':esc(String(tc.value))}" style="max-width:120px"><button class="btn primary tiny" onclick="saveTurnCap()">Apply</button><span id="setTurnCapMsg" class="muted" style="font-size:12px"></span></div></div>
+    <div class="sblk"><div class="srow"><b>Notifications</b> ${sBadge('global','runtime')}</div>
+      <div class="shelp">Browser alerts + chime for new @you messages. Permission: <b>${perm}</b>${perm!=='granted'?` — <a href="#" onclick="enableNotifyPerm();return false">enable</a>`:''}.</div>
+      <label class="setck"><input type="checkbox" id="nfChime" ${nf.chime!==false?'checked':''} onchange="saveNotify()"> Play chime on questions</label>
+      <label class="setck"><input type="checkbox" id="nfQ" ${nf.questions!==false?'checked':''} onchange="saveNotify()"> Notify on questions (❓)</label>
+      <label class="setck"><input type="checkbox" id="nfF" ${nf.fyis!==false?'checked':''} onchange="saveNotify()"> Notify on FYIs (🔔)</label>
+      <span id="setNotifyMsg" class="muted" style="font-size:12px"></span></div>
+    <div class="sblk"><div class="srow"><b>Dashboard port</b> ${sBadge('global','launch')}</div>
+      <div class="shelp">Currently <code>${esc(String(dp.value))}</code>. Set <code>MRC_DASHBOARD_PORT</code> in your environment — applies next daemon restart.</div></div>`
+  // #61: the gear modal is GLOBAL-only now (turn-cap / notifications / port — always relevant). Per-project
+  // settings (Telegram / --web / Delete) moved to the project HOME pane, so no dead "open a project" section.
+  return html
+}
+// #22: a push failure surfaces by KIND — re-link ONLY on an auth failure (the bot token / bot-blocked); a
+// rate-limit or transient hiccup is retrying (no re-pair); anything else shows Telegram's accurate cause. The
+// generic "re-link if stale" used to fire on every failure (a 429 or oversize) and mislead @user into re-pairing.
+// Accepts the new classified object OR a legacy string. The `error` text is esc()'d (Telegram-supplied).
+function tgPushErrHtml(e) {
+  const o = (typeof e === 'string') ? { error: e, kind: 'other' } : (e || {})
+  const msg = esc(String(o.error || 'error'))
+  const amber = 'color:var(--warning);font-size:11px;margin-top:4px'
+  if (o.kind === 'auth') return `<div class="bad" style="font-size:11px;margin-top:4px">⚠ Telegram delivery failed (bot auth): ${msg}. Re-link the bot below.</div>`
+  if (o.kind === 'rate-limit') return `<div style="${amber}">⏳ Telegram rate-limited: ${msg}. Retrying automatically — no action needed.</div>`
+  if (o.kind === 'transient') return `<div style="${amber}">⚠ Telegram delivery hiccup (transient): ${msg}. Retrying.</div>`
+  return `<div class="bad" style="font-size:11px;margin-top:4px">⚠ Telegram delivery failed: ${msg}.</div>`   // accurate cause (e.g. "chat not found"), no misleading re-link
+}
+// Per-project Telegram pairing (#12), inside the modal. Trust-gate markup (Confirm/Reject a pending chat,
+// the linked line + Unpair); every Telegram-supplied field is esc()'d (an unauthorized /start lands an
+// attacker-controlled name here). Handlers (tgConfirm/Reject/Unpair) are CSRF-guarded via actJSON→/api/tg.
+function tgSectionHtml() {
+  const tg = (S.teams.telegram||{})[S.org]
+  if (tg && tg.warning) return `<div class="bad" style="font-size:12px;margin-top:5px">⚠ ${esc(tg.warning)}</div>`
+  if (!tg || !tg.configured) return `<div class="shelp">DM the project's bot <code>/start</code>, then Confirm here. Enable it by setting <code>MRC_TELEGRAM_BOT_TOKEN</code> in the repo's <code>.env</code>.</div>`
+  const tgName = (x) => x.username ? `@${esc(x.username)}`
+    : ([x.firstName, x.lastName].filter(Boolean).join(' ') ? esc([x.firstName, x.lastName].filter(Boolean).join(' '))
+    : `chat ${esc(x.chatId || x.fromId)}`)
+  if (tg.pending && tg.pending.length) {
+    return `<div class="shelp" style="margin-top:5px">📱 Confirm to link a chat to <b>${esc(S.org)}</b> — confirm only YOUR account; an unexpected entry is someone else who messaged the bot — Reject it.</div>`
+      + tg.pending.map(p=>{
+          const realName = [p.firstName, p.lastName].filter(Boolean).join(' ')
+          const detail = (p.username || realName) ? ` <span class="muted">(${[p.username && realName, `id ${esc(p.fromId)}`].filter(Boolean).join(', ')})</span>` : ''
+          return `<div style="margin:6px 0"><div style="margin-bottom:5px"><b>${tgName(p)}</b>${detail} <span class="muted">→ link to</span> <b>${esc(S.org)}</b></div><div class="row" style="gap:6px"><button class="btn tiny primary" data-fid="${esc(p.fromId)}" onclick="tgConfirm(this.dataset.fid)">Confirm</button> <button class="btn tiny" data-fid="${esc(p.fromId)}" onclick="tgReject(this.dataset.fid)">Reject</button></div></div>`
+        }).join('')
+  }
+  if (tg.pinned) {
+    const p = tg.pinned
+    const envChip = p.prePinned ? ` <span title="pinned via this repo's .env (MRC_TELEGRAM_CHAT_ID)" style="opacity:.7;font-size:10px;border:1px solid var(--line);border-radius:4px;padding:1px 4px">.env</span>` : ''
+    return `<div style="display:flex;align-items:center;gap:6px;font-size:12px;margin-top:5px"><span aria-hidden="true">📱</span><span class="muted">linked to</span><b style="font-weight:600">${tgName(p)}</b>${envChip}<a href="#" style="margin-left:auto;color:var(--link)" onclick="tgUnpair();return false">unpair</a></div>`
+      + (tg.lastPushError ? tgPushErrHtml(tg.lastPushError) : '')
+  }
+  return `<div class="shelp" style="margin-top:5px">📱 DM the bot <code>/start</code>, then Confirm here.</div>`
+}
+window.saveTurnCap = async ()=>{ const el=$('#setTurnCap'); const set=(h)=>{const m=$('#setTurnCapMsg'); if(m)m.innerHTML=h}; if(!el)return
+  const v=el.value.trim(); if(v===''||!Number.isFinite(Number(v))||Number(v)<0){ set('<span class="bad">enter a number ≥ 0</span>'); return }
+  set('<span class="muted">saving…</span>')
+  const r=await api('/api/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({turnCap:Math.floor(Number(v))})}).catch(()=>({ok:false,error:'network error'}))
+  if(r.ok){ if(S.settings&&S.settings.turnCap)S.settings.turnCap.value=r.turnCap; set(`<span class="good">✓ ${r.turnCap===0?'pause disabled':'cap set to '+r.turnCap}</span>`) }
+  else set(`<span class="bad">✗ ${esc(r.error)}</span>`) }
+window.saveNotify = async ()=>{ const set=(h)=>{const m=$('#setNotifyMsg'); if(m)m.innerHTML=h}
+  const notify={ chime:!!$('#nfChime')?.checked, questions:!!$('#nfQ')?.checked, fyis:!!$('#nfF')?.checked }
+  set('<span class="muted">saving…</span>')
+  const r=await api('/api/settings',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({notify})}).catch(()=>({ok:false,error:'network error'}))
+  if(r.ok){ const v=(r.prefs&&r.prefs.notify)||notify; S.notifyPrefs=v; if(S.settings&&S.settings.notify)S.settings.notify.value=v; set('<span class="good">✓ saved</span>') }
+  else set(`<span class="bad">✗ ${esc(r.error)}</span>`) }
+window.enableNotifyPerm = async ()=>{ if(!('Notification' in window))return; let p=Notification.permission
+  if(p==='default'){ try{ p=await Notification.requestPermission() }catch{ p='denied' } }
+  if(p==='granted'){ S.notifyEnabled=true; try{ localStorage.setItem('mrc-notify','1') }catch{}; updateNotifyBtn() }
+  if(S.settingsOpen){ _modalSig=null; renderModal() } }   // force a body rebuild so the permission line refreshes (deliberate action → focus jump OK)
+window.launchTeam = async ()=>{ const r=await postJSON('/api/team-launch',{org:S.org}); if(!(r&&r.ok)) alert('Launch failed: '+((r&&r.error)||'unknown')); tick() }
+// #43: a project-defined role is addable from EVERY surface — load this org's custom personas so the
+// live add-member chooser lists built-in + custom (mirrors the builder's roleOptions). Fetched on open
+// (the persona set is per-org and small); re-renders the open form once they arrive.
+window.startAddMember = async (t)=>{ S.addingTo=t; S.addCustomRoles=[]; renderMain()
+  if (S.org) { const r = await api('/api/personas?org='+encodeURIComponent(S.org)).catch(()=>null)
+    if (r && r.ok && r.custom && S.addingTo===t) { S.addCustomRoles = Object.keys(r.custom); renderMain() } } }
+window.cancelAddMember = ()=>{ S.addingTo=null; S.addCustomRoles=[]; renderMain() }
+window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('#amBackend').value, territory=$('#amTerr').value.trim()
+  const msg=$('#amMsg'); if(msg)msg.textContent='adding…'
+  const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role,backend,territory})
+  if(r&&r.ok){ S.addingTo=null; tick() } else { const m=$('#amMsg'); if(m)m.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
+window.selRoom = (id, openCu)=>{ if(!confirmLeaveBuilder())return; S.selRoom=id; S.selInbox=null; S.selMember=null; S.selHome=false; S.building=false; if(openCu)S.tab='catchups'; else S.tab='thread'; S.room=null; tick() }
+window.openRoom = (id)=>{ selRoom(id) }
+// #47: open the @you CHANNEL. `i` is 'channel' (the nav row) or a numeric item id (an OS-notification
+// click) — a numeric id sets a one-shot jumpTarget so the channel scrolls to + highlights that item.
+// paintedKey=null forces renderDetail (the content sig may be unchanged, but we still need the jump).
+window.selInbox = (i)=>{ if(!confirmLeaveBuilder())return; S.selInbox = (i==='channel') ? 'channel' : i; S.jumpTarget = (typeof i==='number') ? i : null; S.selRoom=null; S.selMember=null; S.selHome=false; S.building=false; S.replyTo=null; paintedKey=null; paint() }
+window.selMember = (h)=>{ if(!confirmLeaveBuilder())return; leaveUnread(); S.selRoom=null; S.selInbox=null; S.selHome=false; S.building=false; S.selMember=h
+  const m = memberByHandle(h)
+  // #34/B: each member has its OWN ttyd, so selecting one just swaps the embedded iframe (via detailKey);
+  // no server round-trip (the old /api/team-select → tmux select-window is gone).
+  if (m && m.tier==='worker') { S.workerLog=null; tick() }
+  else paint() }
+window.setTab = (t)=>{ S.tab=t; paintedKey=null; paint() }
+window.roomAct = async (a)=>{ if(a==='end'&&!confirm('Close this room?'))return; const r=await act(a,{roomId:S.selRoom}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
+window.doSteer = async ()=>{ const tx=$('#steerTx'); const t=$('#steerT'); if(!tx||!tx.value.trim())return; const r=await act('steer',{roomId:S.selRoom,target:t.value,text:tx.value.trim()}); if(!r.ok)return flashFail(r); tx.value=''; if(S.roomDrafts)delete S.roomDrafts[S.selRoom]   // #63-D: sent → clear the draft
+  // #63-C: autoscroll the transcript to bottom to reveal the sent steer — only if already near bottom (no yank).
+  const th=$('#thread'); if(th && th.scrollHeight-th.scrollTop-th.clientHeight<120) th.scrollTop=th.scrollHeight
+  S.flash=null; tick() }
+window.reviewCu = async (seq)=>{ const r=await act('review',{roomId:S.selRoom,seq}); if(!r.ok)return flashFail(r); S.flash=null; S.room=await api('/api/room?id='+encodeURIComponent(S.selRoom)); paintedKey=null; paint() }
+// #20: confirm the reply landed (2xx) BEFORE closing the panel. A 403 (stale token) / network / 500 keeps
+// the item open and surfaces the error — never optimistic-close (that was the silent-swallow @user hit).
+window.answer = async (i)=>{ const tx=$('#ansTx'); if(!tx||!tx.value.trim())return; const r=await act('answer',{i,text:tx.value.trim()})
+  // #24 stale-guard: it was resolved elsewhere (answered via Telegram / another window) between opening
+  // the box and hitting Send. Do NOT swallow — tell the user their reply didn't go, and let the panel
+  // re-render to the answered view (selInbox kept; detailKey now reflects the resolution).
+  if(!r.ok){ if(/already (answered|dismissed)/i.test(r.error||'')){ S.flash={kind:'note',text:'Already resolved (answered via Telegram or another window) — your reply was not sent.'}; S.replyTo=null; renderFlash(); tick(); return } return flashFail(r) }
+  S.flash=null; S.replyTo=null; tick() }   // #47: stay in the channel (don't close it); the item re-renders to its answered state inline
+// #47: per-row reply composer — open/close which item's inline textarea is expanded (one at a time).
+window.openReply = (id)=>{ S.replyTo=id; paint() }
+window.cancelReply = ()=>{ S.replyTo=null; paint() }
+// Dismiss without replying (#11). A QUESTION is a permanent-loss-on-misclick path → confirm first
+// (the ✕ sits next to Send reply); a NOTIFICATION is fast FYI triage → instant, no confirm.
+window.dismissInbox = async (id)=>{
+  const it = (S.teams.userInbox||[]).find(x=>x.id===id)
+  if (it && it.type==='question' && !confirm(`Dismiss without replying? ${it.fromName||('@'+it.from)} won't get an answer. (You can re-open it later from "show dismissed".)`)) return
+  const r = await act('dismiss',{i:id}); if(!r.ok)return flashFail(r)   // keep it if the dismiss didn't land (#20)
+  S.flash=null; if(S.replyTo===id)S.replyTo=null; tick()   // #47: stay in the channel; just close this item's composer
+}
+window.reopenInbox = async (i)=>{ const r=await act('reopen',{i}); if(!r.ok)return flashFail(r); S.flash=null; tick() }   // undo a dismiss → actionable again
+// Telegram pairing (#12): Confirm is the trust gate (on the localhost dashboard); Reject/Unpair too.
+// #46: these now live in the Settings modal, which is OFF the poll — so after the action, refresh the
+// data (await tick → fresh S.teams.telegram) and explicitly re-render the modal's live Telegram bits.
+// #61: Telegram now lives in the project HOME — a deliberate Confirm/Reject/unpair re-renders the home
+// (a rebuild on a user action is fine; the #46 focus discipline is for the 1.5s POLL, handled in patchDetail).
+const _tgAfter = ()=>{ S.flash=null; tick().then(()=>{ if(S.selHome) renderProjectHome($('#detail')) }) }
+window.tgConfirm = async (fromId)=>{ const r=await actJSON('/api/tg',{action:'tgconfirm',org:S.org,fromId:Number(fromId)}); if(!r.ok)return flashFail(r); _tgAfter() }
+window.tgReject = async (fromId)=>{ const r=await actJSON('/api/tg',{action:'tgreject',org:S.org,fromId:Number(fromId)}); if(!r.ok)return flashFail(r); _tgAfter() }
+window.tgUnpair = async ()=>{ if(!confirm('Unpair Telegram? The linked chat stops receiving questions until you re-link.'))return; const r=await actJSON('/api/tg',{action:'tgunpair',org:S.org}); if(!r.ok)return flashFail(r); _tgAfter() }
+// Delete project (#13): forget it from the daemon + stop sessions; nothing on disk is deleted.
+window.deleteProject = async ()=>{ const org=S.org; if(!org||!confirm(`Delete "${org}" from Mister Claude? Its sessions stop and the tab is removed. Nothing on disk is deleted — your transcripts and team.json stay, so you can re-add it any time with \`mrc team up\`.`))return; const r=await actJSON('/api/team-delete',{org}); if(!r.ok)return flashFail(r); S.flash=null; S.org=null; S.selRoom=S.selInbox=S.selMember=null; S.selHome=false; if (S.building && S.builder?.org === org) S.building=false; tick() }   // #55-2: only drop the build if it's the org being deleted — deleting project X must not discard an unrelated in-progress build of Y (the builder pane runs off S.builder, independent of S.org)
+window.toggleDismissed = ()=>{ S.showDismissed=!S.showDismissed; paint() }
+
+// ---- Browser notifications + chime for new @you messages (Notification API, behind the explicit 🔔 toggle) ----
+// Branded chime, inlined as a data-URI (swappable — @user auditions vs the inbox-ping). Self-contained,
+// no daemon route. data:audio/mpeg;base64,...
+const CHIME = 'data:audio/mpeg;base64,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'
+function playChime() { try { const a = new Audio(CHIME); a.volume = 0.5; a.play().catch(()=>{}) } catch {} }
+
+// Dedup: a set of seen @you item keys. SEEDED on first load (notifyNewInbox below) so the existing
+// backlog never fires — only items arriving AFTER the dashboard opens notify. Keyed by org+id so an
+// item in any org dedups once (no cross-org double-fire).
+const _seenInbox = new Set(); let _inboxSeeded = false
+const inboxKey = (q)=> (q.org||'')+'#'+q.id
+function notifyNewInbox(items) {
+  const open = (items||[]).filter(q => !q.answered && !q.dismissed)   // open @you items, ALL orgs
+  if (!_inboxSeeded) { open.forEach(q => _seenInbox.add(inboxKey(q))); _inboxSeeded = true; return }
+  let fresh = open.filter(q => !_seenInbox.has(inboxKey(q)))
+  fresh.forEach(q => _seenInbox.add(inboxKey(q)))
+  if (!fresh.length || !S.notifyEnabled) return
+  if (!('Notification' in window) || Notification.permission !== 'granted') return
+  // Server-persisted prefs (#42c) decide WHICH events notify (question vs FYI) + whether the chime sounds.
+  const pr = S.notifyPrefs || { chime:true, questions:true, fyis:true }
+  fresh = fresh.filter(q => q.type==='question' ? pr.questions!==false : pr.fyis!==false)
+  if (!fresh.length) return
+  fresh.forEach(fireNotification)
+  if (pr.chime!==false && fresh.some(q => q.type==='question')) playChime()   // chime only for needs-you questions; FYIs notify silently (push≠nag in the OS layer)
+}
+function fireNotification(q) {
+  const isQ = q.type==='question'
+  const who = q.fromName || ('@'+(q.from||'a teammate'))
+  const org = q.org ? ' · '+q.org : ''
+  // question = needs-you (sticky until dismissed); FYI = reply-optional push (transient, no OS nag),
+  // mirroring the inbox's badge-questions-only philosophy. The body is member-authored (untrusted) —
+  // the Notification API renders the `body` option as PLAIN TEXT (no HTML parse), so it's inert.
+  try {
+    const n = new Notification((isQ ? '❓ '+who+' needs you' : '🔔 '+who)+org, {
+      body: (q.text||'').slice(0,180),
+      tag: 'mrc-'+inboxKey(q),
+      requireInteraction: isQ,
+    })
+    n.onclick = ()=>{ try { window.focus() } catch {} ; if (q.org) switchOrg(q.org); selInbox(q.id); n.close() }
+  } catch {}
+}
+function updateNotifyBtn() {
+  const b = $('#notifyBtn'); if (!b) return
+  const perm = ('Notification' in window) ? Notification.permission : 'denied'
+  if (perm === 'denied') { b.className='pill notif blocked'; b.textContent='🔕 blocked'; b.setAttribute('aria-pressed','false'); b.title='Notifications blocked — enable them in your browser’s site settings'; return }
+  if (S.notifyEnabled && perm === 'granted') { b.className='pill notif on'; b.textContent='🔔 alerts'; b.setAttribute('aria-pressed','true'); b.title='New-@you notifications + chime ON — click to mute' }
+  else { b.className='pill notif'; b.textContent='🔕 alerts'; b.setAttribute('aria-pressed','false'); b.title='Click to enable browser notifications + chime for new @you messages' }
+}
+window.toggleNotify = async ()=>{
+  if (!('Notification' in window)) { S.flash={kind:'note',text:'This browser does not support notifications.'}; renderFlash(); return }
+  if (S.notifyEnabled) { S.notifyEnabled=false; try{ localStorage.removeItem('mrc-notify') }catch{}; updateNotifyBtn(); return }
+  // turning ON — request permission here (gesture-gated: this runs from the 🔔 click, never on load)
+  let perm = Notification.permission
+  if (perm === 'default') { try { perm = await Notification.requestPermission() } catch { perm='denied' } }
+  if (perm !== 'granted') {   // blocked/denied — do NOT silently show as on-but-dead (Florent's 3-state)
+    S.notifyEnabled=false; try{ localStorage.removeItem('mrc-notify') }catch{}
+    S.flash={kind:'note',text:'Notifications are blocked for this page — enable them in your browser’s site settings, then click 🔔 again.'}; renderFlash(); updateNotifyBtn(); return
+  }
+  S.notifyEnabled=true; try{ localStorage.setItem('mrc-notify','1') }catch{}
+  updateNotifyBtn(); playChime()   // audible confirmation + satisfies the autoplay-needs-gesture rule
+}
+window.stopTeam = async ()=>{ if(!confirm('Stop the team? This closes all member terminals.'))return; const r=await actJSON('/api/team-stop',{org:S.org}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
+window.removeMember = async (h, first)=>{ if(!confirm('Remove @'+first+' from the team? (updates team.json)'))return; const r=await actJSON('/api/team-remove-member',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; S.selMember=null; tick() }
+// #41: recover an orphaned terminal — stops the lost session (master+container) FIRST, then a fresh spawn.
+// The agent's conversation resumes (--continue). Goes through actJSON → CSRF-guarded + confirms a 2xx
+// before clearing (no optimistic success; a 403/error surfaces via flashFail).
+window.relaunchMember = async (h, first)=>{ if(!confirm(`Relaunch @${first}'s terminal? Its agent keeps running — this restores the terminal view (the conversation resumes; an in-flight turn may restart).`))return; const r=await actJSON('/api/team-relaunch-member',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
+window.bLaunch = async ()=>{ const msg=$('#bMsg'); if(!msg)return; msg.innerHTML='<span class="muted">launching… first run builds the image (~minutes)</span>'
+  const r=await postJSON('/api/team-launch',{roster:bRoster()})
+  if(r&&r.ok){ markBuilderClean(); msg.innerHTML='<span class="good">🚀 launching — pick each member to open its terminal and log in</span>'; S.org=bRoster().org||null; setOrgUrl(S.org); setTimeout(()=>{S.building=false;tick()},700) }
+  else msg.innerHTML=`<span class="bad">✗ ${esc((r&&r.error)||'failed')}</span>` }
+
+// Scoped launch (mrc gui [repo]): pre-fill the builder from ?repo=&org=, then land on Build (or Teams
+// if a team for that org already exists — decided after the first data load).
+const _q = new URLSearchParams(location.search)
+const _qRepo = _q.get('repo')
+const _proj = decodeURIComponent(location.pathname.replace(/^\/+/, '').split('/')[0] || '')   // /anigame -> anigame
+if (_proj) { S.org = _proj; S.builder.org = _proj }       // path is the project -> jump straight to it
+if (_qRepo) { S.builder.repo = _qRepo }
+let _scopedNav = !!_qRepo
+// #69-B: live delta stream replaces the 1.5s full-payload poll (which re-sent the ~277 KB /api/teams every tick).
+// Fetch full state ONCE on load, then apply pushed deltas IN PLACE + re-render through the EXISTING gated
+// renderers — the handlers MUTATE S and call paint()/fillThread (→ renderInboxChannel/slackRow, renderMain/ctxBar),
+// they NEVER innerHTML a pushed record, so the #63 display-safety rides the push path by reuse, not a new sink.
+let _paintQ = false
+function schedulePaint() { if (_paintQ) return; _paintQ = true; setTimeout(() => { _paintQ = false; paint() }, 80) }   // coalesce a delta burst into one paint
+function upsertInbox(item) {   // the engine emits the FULL updated item → upsert-by-id covers new / resolved / reopened
+  if (!item || item.id == null) return
+  S.teams.userInbox ||= []
+  const i = S.teams.userInbox.findIndex(x => x.id === item.id)
+  if (i >= 0) S.teams.userInbox[i] = item; else S.teams.userInbox.push(item)
+}
+function applyDelta(ev) {
+  if (!ev || !ev.type) return
+  switch (ev.type) {
+    case 'msg':
+      // append the one new line to the OPEN room's transcript + re-render via the gated fillThread (no innerHTML,
+      // no room re-fetch); a non-open room is re-fetched on its next open. followScroll keeps the no-yank discipline.
+      if (ev.roomId === S.selRoom && S.room) {
+        (S.room.transcript ||= []).push(ev.record)
+        const t = $('#thread'); if (t && S.tab === 'thread') followScroll(t, () => fillThread(t, S.room))
+      }
+      break
+    case 'inbox': upsertInbox(ev.item); schedulePaint(); break
+    case 'status': {
+      const m = (S.teams.members || []).find(x => x.org === ev.org && x.handle === ev.handle); if (m) m.status = ev.status
+      const o = (S.teams.orgs || []).find(x => x.org === ev.org); if (o && ev.rateLimit) o.rateLimit = ev.rateLimit
+      schedulePaint(); break
+    }
+    case 'presence': { const m = (S.teams.members || []).find(x => x.org === ev.org && x.handle === ev.handle); if (m) m.online = ev.online; schedulePaint(); break }
+    case 'roster': tick(); break   // structure changed → re-fetch the heavy /api/teams (rare; ETag/304 keeps it cheap)
+  }
+}
+let _esOpened = false
+function openEventStream() {
+  let es; try { es = new EventSource('/api/events') } catch { return setInterval(tick, 1500) }   // no SSE support → fall back to polling
+  es.onmessage = (e) => { let ev; try { ev = JSON.parse(e.data) } catch { return } applyDelta(ev) }
+  es.onopen = () => { if (_esOpened) tick(); _esOpened = true }   // RE-connect → re-sync full state once (catches deltas missed while down); boot already did the first. ETag/304-cheap
+  // es.onerror: EventSource auto-reconnects with the server's `retry` backoff; the next onopen re-syncs.
+}
+tick()   // initial full state
+if (window.EventSource) openEventStream(); else setInterval(tick, 1500)   // #69-B: SSE deltas, or poll if unsupported
+$('#tabs')?.addEventListener('scroll', updateTabHints, { passive: true })   // #2a E: keep the off-screen hints live
+addEventListener('resize', updateTabHints)
+addEventListener('pagehide', leaveUnread)   // #63-F: closing/navigating away from the dashboard flushes the open room's unread watermark (pagehide fires on bfcache too, unlike beforeunload)
+</script>
+</body>
+</html>

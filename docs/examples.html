@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Examples &amp; Recipes — Mister Claude</title>
 <meta name="description" content="Real-world recipes for Mister Claude: locking down secrets, running two Claudes on one repo, headless CI runs, big parallel workflows, Codex second opinions, and more.">
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🎩</text></svg>">
+<link rel="icon" type="image/svg+xml" href="favicon.svg">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
@@ -17,6 +17,7 @@
     <button class="nav-toggle" aria-label="Menu">≡</button>
     <div class="nav-links">
       <a href="index.html">Home</a>
+      <a href="index.html#teams">Teams</a>
       <a href="docs.html">Docs</a>
       <a href="examples.html">Examples</a>
       <a href="docs.html#security">Security</a>
@@ -104,6 +105,28 @@ terraform/
 <div class="terminal-body"><span class="t-prompt">$</span> <span class="t-cmd">export OPENAI_API_KEY=<span class="t-str">"sk-..."</span></span>   <span class="t-com"># or in .env / 1Password</span>
 <span class="t-prompt">$</span> <span class="t-cmd">mrc <span class="t-flag">--agent</span> codex ~/projects/myapp</span></div>
     </div>
+  </div>
+
+  <!-- teams -->
+  <div class="recipe reveal" id="team-up">
+    <div class="recipe-head"><span class="icon">🎩</span><h3>Run a team of agents</h3><span class="tag">teams</span></div>
+    <p>Don't run one agent — command a team. Declare a roster (or grab a preset), <code>mrc team up</code>, and steer the crew from the dashboard or your phone. Each member is sandboxed with its own write territory; they propose, you steer, <strong>you commit</strong>.</p>
+    <div class="terminal">
+      <div class="terminal-bar"><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-dot"></span><span class="terminal-title">mrc team</span></div>
+<div class="terminal-body"><span class="t-com"># 1 · write a team.json from a preset (game / web / mobile / backend) — or hand-write one</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc team new <span class="t-flag">--preset</span> web ~/projects/myapp</span>
+
+<span class="t-com"># 2 · launch — each live member boots in its own sandbox (accept its one-time Channels prompt)</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc team up ~/projects/myapp</span>
+
+<span class="t-com"># 3 · steer from the web app — every room, the @you inbox, live transcripts</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc rooms dashboard</span>
+
+<span class="t-com"># drop into a member's terminal, or check the org + your inbox</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc team console roland</span>
+<span class="t-prompt">$</span> <span class="t-cmd">mrc team status</span></div>
+    </div>
+    <div class="callout note"><p>They collaborate by <code>@mention</code>; a critic reviews risky work when called; you direct from the leads room and <strong>commit the work</strong>. Close a tab to suspend (reopen to resume); link a Telegram bot to answer from your phone. Full walkthrough → <a href="docs.html#teams">the teams guide</a>.</p></div>
   </div>
 
   <!-- 6 -->
