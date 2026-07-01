@@ -254,6 +254,15 @@ function renderTeam(view) {
 // --- persistent daemon socket -----------------------------------------------
 let sock = null, connected = false, buf = ''
 const outQ = []
+// #51: heartbeat — NEVER trust a bare TCP connect. A reused port could be a clipboard/notify proxy that
+// ACCEPTS the socket but never speaks the room protocol (a silent false-healthy wedge), or a post-sleep
+// half-open socket. So we send a ping on connect + every PING_MS; the daemon replies {type:'pong',version};
+// connected=true ONLY after a pong (the wrong-listener guard). A stale pong tears the socket down so the
+// close handler reconnects. VERIFY is the generous connect-time gate; STALE ≈ 3 missed pings.
+const PING_MS = 5000, VERIFY_MS = 4000, STALE_MS = 16000, OUTAGE_NOTICE_MS = 45000
+let lastPong = 0, heartbeat = null, verifyTimer = null
+let lastHealthyAt = Date.now(), outageNotified = false
+function clearHeartbeat() { if (heartbeat) clearInterval(heartbeat); if (verifyTimer) clearTimeout(verifyTimer); heartbeat = verifyTimer = null }
 function send(frame) {
   const line = JSON.stringify(frame) + '\n'
   if (connected && sock) sock.write(line); else outQ.push(line)
@@ -303,6 +312,17 @@ function sendAwaitAck(frame) {
   })
 }
 function onFrame(f) {
+  if (f.type === 'pong') {                              // #51: proves this listener IS the daemon; go connected ONLY after a pong
+    lastPong = Date.now(); lastHealthyAt = Date.now()
+    if (outageNotified) { outageNotified = false; pushIn('[Rooms reconnected — the room daemon is reachable again.]') }   // #6: close the loop in-session after a sustained outage
+    if (!connected) {
+      connected = true
+      if (verifyTimer) { clearTimeout(verifyTimer); verifyTimer = null }
+      log(`daemon verified (pong${f.version ? ` v${f.version}` : ''}) — connected`)
+      while (outQ.length && sock) sock.write(outQ.shift())
+    }
+    return
+  }
   if (f.type === 'peerlist') {                         // response to list_peers (tool result)
     if (pendingList) { pendingList(f.peers || []); pendingList = null }
     return
@@ -334,20 +354,41 @@ function connect() {
   if (!PORT) { log('MRC_ROOM_PORT unset — dormant (no daemon)'); return }
   sock = net.connect(PORT, HOST)
   sock.on('connect', () => {
-    connected = true
-    log(`connected to daemon ${HOST}:${PORT}`)
-    sock.write(JSON.stringify({ type: 'register', sessionId: SESSION_ID, repo: REPO, label: LABEL, room: ROOM || undefined, notifyPort: NOTIFY || undefined, memberHandle: MEMBER || undefined }) + '\n')
-    while (outQ.length) sock.write(outQ.shift())
+    // #51: TCP is open, but DON'T go connected=true yet — wait for a pong to prove this listener is the
+    // daemon (a reused port could be a clip/notify proxy that accepts but never pongs). register + the first
+    // ping go out now (direct writes, bypassing the connected gate); user frames stay queued in outQ until
+    // the pong arrives, so a stray frame can't leak to a wrong listener.
+    log(`tcp open ${HOST}:${PORT} — verifying daemon (awaiting pong)`)
+    lastPong = 0
+    try {
+      sock.write(JSON.stringify({ type: 'register', sessionId: SESSION_ID, repo: REPO, label: LABEL, room: ROOM || undefined, notifyPort: NOTIFY || undefined, memberHandle: MEMBER || undefined }) + '\n')
+      sock.write(JSON.stringify({ type: 'ping' }) + '\n')
+    } catch {}
+    verifyTimer = setTimeout(() => { log(`no pong in ${VERIFY_MS}ms — wrong listener (not the daemon), tearing down to retry`); try { sock.destroy() } catch {} }, VERIFY_MS)
+    heartbeat = setInterval(() => {
+      try { sock.write(JSON.stringify({ type: 'ping' }) + '\n') } catch {}
+      if (lastPong && Date.now() - lastPong > STALE_MS) { log('pong stale — daemon gone / half-open socket, tearing down to reconnect'); try { sock.destroy() } catch {} }
+    }, PING_MS)
   })
   sock.on('data', (d) => {
     buf += d.toString(); let i
     while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (l.trim()) { try { onFrame(JSON.parse(l)) } catch {} } }
   })
   sock.on('error', (e) => log(`daemon socket error: ${e.message}`))
-  sock.on('close', () => { connected = false; sock = null; setTimeout(connect, 1500) })
+  sock.on('close', () => { connected = false; sock = null; clearHeartbeat(); setTimeout(connect, 1500) })
 }
 
 await mcp.connect(new StdioServerTransport())
 log(`channel up (session=${SESSION_ID} label=${LABEL} repo=${REPO} ${TEAM_MODE ? `member=${MEMBER} team=${TEAM} role=${ROLE}` : `room=${ROOM || '(ambient)'}`} port=${PORT})`)
 connect()
 if (TEAM_MODE) setInterval(forwardStatus, 4000)   // #64: poll the statusline tee + forward changes to the daemon
+// #6/#50 (d) session plane: the heartbeat tears down + reconnects SILENTLY on a stale/wrong listener, and
+// list_peers just times out to empty — so in-session a squatted/down relay looks like "nobody's online".
+// This independent ticker (runs regardless of socket state, even during the reconnect loop) surfaces a
+// SUSTAINED outage once; lastHealthyAt resets on every pong, so a routine restart/refresh stays silent.
+if (PORT) setInterval(() => {
+  if (!outageNotified && Date.now() - lastHealthyAt > OUTAGE_NOTICE_MS) {
+    outageNotified = true
+    pushIn(`[Rooms unavailable — can't reach the room daemon (relay :${PORT}) for ${Math.round((Date.now() - lastHealthyAt) / 1000)}s. It may be down, restarting, or its port is squatted; other sessions are unreachable until it recovers. This clears on its own when the daemon returns, or run \`mrc rooms status\` on the host.]`)
+  }
+}, PING_MS)

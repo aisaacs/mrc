@@ -612,7 +612,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue
         let f; try { f = JSON.parse(line) } catch { continue }
-        if (f.type === 'register' && f.sessionId) {
+        if (f.type === 'ping') { try { sock.write(JSON.stringify({ type: 'pong', version }) + '\n') } catch {} }   // #51: liveness echo — proves to the channel that THIS listener is the daemon (not a reused clip/notify port)
+        else if (f.type === 'register' && f.sessionId) {
           sessionId = f.sessionId
           sessions.set(sessionId, { sock, repo: f.repo || '?', label: f.label || f.repo || '?', room: f.room || null, notifyPort: Number(f.notifyPort) || 0, memberHandle: f.memberHandle || null })
           // B/#39: classify containment from the TAMPER-PROOF host-only record, NOT this register frame.

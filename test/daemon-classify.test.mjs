@@ -75,3 +75,20 @@ test('daemon classifies from the host record, not the register frame; surfaces o
   daemon?.stop?.()
   for (const c of [a, n, u]) try { c.sock.destroy() } catch {}
 })
+
+test('#51: daemon answers a ping with a versioned pong (channel liveness gate)', async () => {
+  const port = await findFreePort(19200)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'v-test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+
+  const c = client(port); await c.ready
+  c.send({ type: 'ping' })   // BEFORE any register — the pong must not require a bound session
+  const t0 = Date.now()
+  let pong
+  while (Date.now() - t0 < 1000) { pong = c.frames.find((f) => f.type === 'pong'); if (pong) break; await sleep(15) }
+  assert.ok(pong, 'daemon replied with a pong')
+  assert.equal(pong.version, 'v-test', 'pong carries the daemon version (channel logs/verifies it)')
+
+  daemon?.stop?.()
+  try { c.sock.destroy() } catch {}
+})
