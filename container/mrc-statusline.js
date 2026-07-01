@@ -51,12 +51,15 @@ process.stdin.on('end', () => {
 
   // Context bar
   const ctx = data.context_window || {}
+  const u = ctx.current_usage || {}
+  // #caffeine: a FINE, monotonic token count (input + cache) for the daemon's liveness signal — per-turn
+  // resolution. The floored integer percent below only moves every ~2000 tokens (1% of a 200k window), so it's
+  // blind to a normal small turn; the raw token total grows on every turn and never masquerades an idle window.
+  const totalTokens = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0)
   let pct = ctx.used_percentage
   if (pct == null) {
-    const u = ctx.current_usage || {}
-    const total = (u.input_tokens || 0) + (u.cache_read_input_tokens || 0) + (u.cache_creation_input_tokens || 0)
     const size = ctx.context_window_size || 200_000
-    pct = size ? Math.min(100, Math.floor(total * 100 / size)) : 0
+    pct = size ? Math.min(100, Math.floor(totalTokens * 100 / size)) : 0
   }
   pct = Math.min(100, Math.floor(pct))
   const filled = Math.floor(pct * BAR_WIDTH / 100)
@@ -84,7 +87,7 @@ process.stdin.on('end', () => {
   try {
     const ratePct = (k) => { const b = limits[k]; return b ? Math.floor(b.used_percentage || 0) : null }
     writeFileSync(process.env.MRC_STATUS_FILE || '/tmp/mrc-status.json',
-      JSON.stringify({ context: pct, fiveHour: ratePct('five_hour'), sevenDay: ratePct('seven_day'), name, at: Date.now() }))
+      JSON.stringify({ context: pct, tokens: totalTokens, fiveHour: ratePct('five_hour'), sevenDay: ratePct('seven_day'), name, at: Date.now() }))
   } catch {}
 
   // Assemble

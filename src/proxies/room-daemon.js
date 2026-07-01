@@ -162,26 +162,36 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
   function pairingFor(id) { for (const p of pairings.values()) if (p.a === id || p.b === id) return p; return null }
 
   // #caffeine: keep the host Mac awake while any session is actively WORKING, so unattended agent runs (e.g. an
-  // overnight consult) don't freeze when macOS naps the VM. Signal = the statusline liveness (a session's context
-  // value grows ONLY as it generates tokens = real work; static when idle → an idle statusline re-render bumps the
-  // `at` timestamp but NOT `context`, so we key on context CHANGE). The daemon is the container-independent
-  // aggregator (every rooms-enabled session forwards status to it). macOS-only; fail-OPEN everywhere (a missing/
-  // broken caffeinate must never crash or stall the daemon). HONEST CONTAINMENT (owner-accepted): authentication
-  // proves WHICH session signals, never that it is REALLY thinking — so an authenticated session, INCLUDING a
-  // summoned adversary the owner chose to include, CAN hold caffeine (forge its own context bumps); no in-container
-  // signal is tamper-proof. We only exclude an unauthenticated 'unknown' phantom (a session the owner never
-  // summoned). There is deliberately NO max-hold cap: the owner accepts a session HE summoned keeping HIS OWN Mac
-  // awake (endable by closing its tab).
-  const caffeineIdleMs = Number(process.env.MRC_CAFFEINE_IDLE_MS) || 1_800_000   // 30min with no session working → release
-  const lastActivityAt = new Map()   // sessionId → ts of last real work (a context change)
-  const lastContext = new Map()      // sessionId → last reported context (detects token GROWTH vs an idle re-render)
+  // overnight consult) don't freeze when macOS naps the VM. PRIMARY signal = the channel turns themselves: every
+  // autonomous turn's outbound action (ask/msg/say/note/handoff/summon) arrives at the daemon directly, per-turn —
+  // bumpActivity is called from those switch branches (reconnect-proof, no proxy latency). SUPPLEMENT = the
+  // statusline token count, the ONLY liveness for a session grinding SOLO that emits no room frames (noteActivity,
+  // strict-increase). The daemon is the container-independent aggregator. macOS-only; fail-OPEN everywhere (a
+  // missing/broken caffeinate must never crash or stall the daemon).
+  // HONEST CONTAINMENT — the ACCURATE, broader surface (owner-accepted EXPLICITLY): authentication proves WHICH
+  // session is signalling, NEVER that it is really thinking. So an authenticated session — including a summoned
+  // adversary the owner chose to include — CAN hold caffeine by emitting ANY frame it is authenticated to send: a
+  // BARE channel frame (a `note` every few minutes, zero tokens) OR a forged token bump. NO real generation is
+  // required, and since a caged session holds the secret, no in-container signal is tamper-proof — the hold costs
+  // the adversary nothing. The owner has explicitly accepted this (a session HE summoned keeping HIS OWN Mac awake,
+  // endable by closing its tab), so there is deliberately NO max-hold cap and NO require-real-generation gate on the
+  // release path. We only exclude an unauthenticated 'unknown' phantom (a session the owner never summoned).
+  const caffeineIdleMs = Number(process.env.MRC_CAFFEINE_IDLE_MS) || 1_800_000   // 30min with no session's activity → release
+  const lastActivityAt = new Map()   // sessionId → ts of its last real turn (a channel frame or a token increase)
+  const lastTokens = new Map()       // sessionId → last reported cumulative token count (FINE, per-turn; strict increase = work)
   let caffeine = null                // the caffeinate child (null = not currently holding)
   let caffeineOff = process.platform !== 'darwin'   // true = don't spawn (non-macOS, or a prior spawn failed — leak-B debounce)
   const anyWorking = () => { const now = Date.now(); for (const t of lastActivityAt.values()) if (now - t < caffeineIdleMs) return true; return false }
   function ensureCaffeine() {
     if (caffeineOff || caffeine) return
     try {
-      const child = spawn('caffeinate', ['-s', '-w', String(process.pid)], { stdio: 'ignore' })   // -w <pid>: self-releases if the daemon dies by ANY means (crash/SIGKILL/exit) → no orphan pinning the Mac
+      // -i prevents IDLE system sleep and holds ON BATTERY; -s (prevent system sleep) is AC-POWER-ONLY per
+      // `man caffeinate` — a silent no-op unplugged, i.e. the exact overnight-on-battery freeze this feature exists
+      // to prevent, while the log would still print `holding`. -w <pid>: self-releases when the daemon dies by ANY
+      // means (crash/SIGKILL/exit) → no orphan. CEILING we can't clear: a lid-CLOSED (clamshell) Mac idle-sleeps
+      // regardless of any assertion unless it's on AC with an external display — so a reliable overnight unattended
+      // run needs the lid OPEN or the charger IN. (Documented; not detectable from the daemon to correct in code.)
+      const child = spawn('caffeinate', ['-i', '-w', String(process.pid)], { stdio: 'ignore' })
       caffeine = child
       child.on('error', () => { if (caffeine === child) caffeine = null; caffeineOff = true; daemonLog('caffeine: spawn error — disabling (fail-open)') })
       child.on('exit', () => { if (caffeine === child) caffeine = null })   // leak-A: null on the CHILD's OWN exit (OOM/external-kill), so the next activity RE-spawns — the guard keys on a LIVE handle, not an ever-set one
@@ -189,18 +199,25 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
     } catch (e) { caffeineOff = true; daemonLog(`caffeine: unavailable (${e.message}) — fail-open, no hold`) }   // leak-B: debounce — one failure disables for the process lifetime, no fork-and-fail per activity bump
   }
   function releaseCaffeine() { if (!caffeine) return; try { caffeine.kill() } catch {} caffeine = null; daemonLog('caffeine: released (all sessions idle)') }
-  function noteActivity(sessionId, context) {
+  // PRIMARY liveness: a real turn arrives at the daemon DIRECTLY as its outbound action (ask/msg/say/note/handoff/
+  // summon/sendphoto — an autonomous turn's channel frame lands on the switch above). Per-turn, reconnect-proof, no
+  // proxy latency, no token noise. bumpActivity is called from those branches. It's the clean signal for the
+  // consult/team scenario this feature exists for.
+  function bumpActivity(sessionId) {
     if (classifySession(sessionId) === 'unknown') return   // phantom: owner accepted SUMMONED adversaries holding caffeine, not an unauthenticated no-record session
-    if (typeof context !== 'number') return
-    const prev = lastContext.get(sessionId); lastContext.set(sessionId, context)
-    // First frame from a (re)connected session = SEED the baseline, NOT activity — else, because the close handler
-    // deletes lastContext, every reconnect's first frame would bump even with unchanged context, and on the
-    // sleep-blip machines this feature exists for (reconnect every ~15min < the 30min window) an IDLE session
-    // would re-arm caffeine via reconnect-churn, not real work. Only a SUBSEQUENT context CHANGE (token growth) is
-    // work; a genuinely-working session is detected on its next frame (~4s later, negligible).
-    if (prev === undefined || context === prev) return   // seed baseline (first frame) OR idle re-render (unchanged) → not work
     lastActivityAt.set(sessionId, Date.now())
-    ensureCaffeine()   // spawn strictly on ACTIVITY (a real context change), never on connect/reconnect; no-op if caffeineOff
+    ensureCaffeine()   // spawn strictly on real activity; no-op if caffeineOff
+  }
+  // SUPPLEMENT: a session grinding SOLO emits NO room frames, so its statusline token growth is the only liveness
+  // available. Noisier than the channel signal (4s poll; `total` is the LIVE context size, not a cumulative counter,
+  // so a compaction-equilibrium can net-flat) — hence supplement, not primary. STRICT INCREASE only: first frame
+  // seeds a baseline (the close handler deletes lastTokens, so a reconnect's first frame would else bump on churn);
+  // unchanged = idle re-render; a DECREASE = compaction (a context reset), NOT new work.
+  function noteActivity(sessionId, tokens) {
+    if (typeof tokens !== 'number') return
+    const prev = lastTokens.get(sessionId); lastTokens.set(sessionId, tokens)
+    if (prev === undefined || tokens <= prev) return
+    bumpActivity(sessionId)
   }
 
   // #69-B: in-process DELTA event bus → the SSE layer (startDashboard subscribes). Events are DAEMON-AUTHORED
@@ -883,21 +900,21 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
           if (recSummonedBy && sessions.has(recSummonedBy) && !pairingFor(sessionId)) onAdversaryUp(recSummonedBy, sessionId, f.room)
         } else if (f.type === 'list' && sessionId) {
           send(sessionId, { type: 'peerlist', peers: peerList(sessionId) })
-        } else if (f.type === 'ask' && sessionId) onAsk(sessionId, String(f.question ?? ''), f.peer)
-        else if (f.type === 'msg' && sessionId) onMsg(sessionId, String(f.text ?? ''), f.id)
-        else if (f.type === 'note' && sessionId) onNote(sessionId, String(f.text ?? ''), f.id)
-        else if (f.type === 'handoff' && sessionId) onHandoff(sessionId, String(f.text ?? ''), f.id)
+        } else if (f.type === 'ask' && sessionId) { bumpActivity(sessionId); onAsk(sessionId, String(f.question ?? ''), f.peer) }   // #caffeine PRIMARY: a channel action IS an autonomous turn arriving directly — per-turn, reconnect-proof, no proxy latency
+        else if (f.type === 'msg' && sessionId) { bumpActivity(sessionId); onMsg(sessionId, String(f.text ?? ''), f.id) }
+        else if (f.type === 'note' && sessionId) { bumpActivity(sessionId); onNote(sessionId, String(f.text ?? ''), f.id) }
+        else if (f.type === 'handoff' && sessionId) { bumpActivity(sessionId); onHandoff(sessionId, String(f.text ?? ''), f.id) }
         else if (f.type === 'pause' && sessionId) onAgentPause(sessionId)
         else if (f.type === 'resume' && sessionId) onAgentResume(sessionId)
-        else if (f.type === 'summon' && sessionId) onSummon(sessionId, String(f.brief ?? ''), f.id)   // #S4: reflex-summon a red-team adversary (Pierre)
-        else if (f.type === 'say' && sessionId) onSay(sessionId, f)        // team room directed message
-        else if (f.type === 'sendphoto' && sessionId) onSendPhoto(sessionId, f)   // #56: member → its human's Telegram
-        else if (f.type === 'status' && sessionId) { noteActivity(sessionId, f.context); const r = engine.setStatus(sessionId, f); if (r) broadcastEvent({ type: 'status', org: r.org, handle: r.handle, status: r.status, rateLimit: r.rateLimit }) }   // #64 statusline ints (identity from the bound session); #69-B push the delta to the rail/gauge; #caffeine bump liveness from context growth
+        else if (f.type === 'summon' && sessionId) { bumpActivity(sessionId); onSummon(sessionId, String(f.brief ?? ''), f.id) }   // #S4: reflex-summon a red-team adversary (Pierre)
+        else if (f.type === 'say' && sessionId) { bumpActivity(sessionId); onSay(sessionId, f) }        // team room directed message
+        else if (f.type === 'sendphoto' && sessionId) { bumpActivity(sessionId); onSendPhoto(sessionId, f) }   // #56: member → its human's Telegram
+        else if (f.type === 'status' && sessionId) { noteActivity(sessionId, f.tokens); const r = engine.setStatus(sessionId, f); if (r) broadcastEvent({ type: 'status', org: r.org, handle: r.handle, status: r.status, rateLimit: r.rateLimit }) }   // #64 statusline ints + #caffeine OFF-CHANNEL token supplement (a solo grind emits no room frames)
         else if (f.type === 'whoami' && sessionId) send(sessionId, { type: 'teaminfo', view: engine.viewForSession(sessionId) })
       }
     })
     sock.on('error', () => {})
-    sock.on('close', () => { if (sessionId) { const v = engine.viewForSession(sessionId); sessions.delete(sessionId); engine.unbindSession(sessionId); adversaries.delete(sessionId); unverified.delete(sessionId); lastActivityAt.delete(sessionId); lastContext.delete(sessionId); noteSessions(); if (v) broadcastEvent({ type: 'presence', org: v.org, handle: v.handle, online: false }) } })   // #69-B: resolve the member BEFORE unbinding, then push offline · #39/3.A: clear containment flags (re-derived from the host record on reconnect) · #caffeine: a departed session stops counting toward "working" immediately
+    sock.on('close', () => { if (sessionId) { const v = engine.viewForSession(sessionId); sessions.delete(sessionId); engine.unbindSession(sessionId); adversaries.delete(sessionId); unverified.delete(sessionId); lastActivityAt.delete(sessionId); lastTokens.delete(sessionId); noteSessions(); if (v) broadcastEvent({ type: 'presence', org: v.org, handle: v.handle, online: false }) } })   // #69-B: resolve the member BEFORE unbinding, then push offline · #39/3.A: clear containment flags (re-derived from the host record on reconnect) · #caffeine: a departed session stops counting toward "working" immediately
   })
   server.listen(port, '127.0.0.1')
   server.on('error', () => process.exit(1))   // e.g. EADDRINUSE on an in-place restart → let the caller fall back

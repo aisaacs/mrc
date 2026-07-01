@@ -366,7 +366,7 @@ function forwardStatus() {
   if (raw === lastStatusRaw) return                                          // unchanged — don't spam the daemon
   lastStatusRaw = raw
   let s; try { s = JSON.parse(raw) } catch { return }
-  send({ type: 'status', context: s.context, fiveHour: s.fiveHour, sevenDay: s.sevenDay, name: s.name })
+  send({ type: 'status', context: s.context, tokens: s.tokens, fiveHour: s.fiveHour, sevenDay: s.sevenDay, name: s.name })   // #caffeine: `tokens` (fine, monotonic) is the daemon's liveness key; `context` (%) stays for the dashboard rail
 }
 
 function connect() {
