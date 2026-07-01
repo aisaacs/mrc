@@ -270,7 +270,12 @@ const outQ = []
 // close handler reconnects. VERIFY is the generous connect-time gate; STALE ≈ 3 missed pings.
 const PING_MS = 5000, VERIFY_MS = 4000, STALE_MS = 16000, OUTAGE_NOTICE_MS = 45000
 let lastPong = 0, heartbeat = null, verifyTimer = null
-let lastHealthyAt = Date.now(), outageNotified = false
+// #6b: the OUTAGE notice fires on genuine RECONNECT-FAILURE duration, not on time-since-last-pong. A VM freeze
+// (host sleep) inflates last-pong age to the freeze length WITHOUT any real reconnect failure, so the old
+// lastHealthyAt-based notice cried wolf on every self-healing sleep-blip. `disconnectedSince` measures how long
+// we've actually been disconnected-and-failing-to-redial. INVARIANT: connected ⟹ disconnectedSince===null (both
+// are set together in the pong handler), which is what keeps the wake-ordering race silent.
+let disconnectedSince = Date.now(), outageNotified = false
 function clearHeartbeat() { if (heartbeat) clearInterval(heartbeat); if (verifyTimer) clearTimeout(verifyTimer); heartbeat = verifyTimer = null }
 function send(frame) {
   const line = JSON.stringify(frame) + '\n'
@@ -325,8 +330,8 @@ function sendAwaitAck(frame) {
 }
 function onFrame(f) {
   if (f.type === 'pong') {                              // #51: proves this listener IS the daemon; go connected ONLY after a pong
-    lastPong = Date.now(); lastHealthyAt = Date.now()
-    if (outageNotified) { outageNotified = false; pushIn('[Rooms reconnected — the room daemon is reachable again.]') }   // #6: close the loop in-session after a sustained outage
+    lastPong = Date.now(); disconnectedSince = null   // #6b: clear ONLY on a pong — the proof of a real daemon. A squatter that ACCEPTS the TCP connect but never pongs must NOT clear it (else it masks a dead channel).
+    if (outageNotified) { outageNotified = false; pushIn('[Rooms reconnected — the room daemon is reachable again.]') }   // #6: close the loop in-session after a sustained outage (only fired if we'd actually announced one)
     if (!connected) {
       connected = true
       if (verifyTimer) { clearTimeout(verifyTimer); verifyTimer = null }
@@ -348,13 +353,15 @@ function onFrame(f) {
   if ((f.type === 'deliver' || f.type === 'directive' || f.type === 'notice' || f.type === 'peers' || f.type === 'catchup_request') && f.text) pushIn(f.text)
 }
 // #64: forward this session's statusline ints (context %, 5h/7d rate-limit %, session name) to the daemon —
-// transport B' (statusline tees to STATUS_FILE → here we forward over the session-bound socket). Team mode only.
-// The frame carries ONLY the values (no identity): the daemon resolves WHICH member from the bound session and
-// strict-validates the numbers, so a member can't report another's status or spoof the org rail. send() (no ack).
+// transport B' (statusline tees to STATUS_FILE → here we forward over the session-bound socket). Runs for ALL
+// rooms-enabled sessions (not just team): teams use it for the dashboard rail; #caffeine uses the CONTEXT value
+// as a liveness signal (context grows only as tokens generate → real work; static when idle → no bump).
+// The frame carries ONLY the values (no identity): the daemon resolves WHICH session from the bound socket and
+// strict-validates the numbers, so a session can't report another's status or spoof the org rail. send() (no ack).
 const STATUS_FILE = process.env.MRC_STATUS_FILE || '/tmp/mrc-status.json'
 let lastStatusRaw = ''
 function forwardStatus() {
-  if (!TEAM_MODE || !connected) return
+  if (!connected) return
   let raw; try { raw = readFileSync(STATUS_FILE, 'utf8') } catch { return }   // statusline hasn't written yet — skip
   if (raw === lastStatusRaw) return                                          // unchanged — don't spam the daemon
   lastStatusRaw = raw
@@ -387,20 +394,26 @@ function connect() {
     while ((i = buf.indexOf('\n')) >= 0) { const l = buf.slice(0, i); buf = buf.slice(i + 1); if (l.trim()) { try { onFrame(JSON.parse(l)) } catch {} } }
   })
   sock.on('error', (e) => log(`daemon socket error: ${e.message}`))
-  sock.on('close', () => { connected = false; sock = null; clearHeartbeat(); setTimeout(connect, 1500) })
+  sock.on('close', () => { connected = false; if (!disconnectedSince) disconnectedSince = Date.now(); sock = null; clearHeartbeat(); setTimeout(connect, 1500) })   // #6b: GUARDED set — the 1.5s retry loop re-fires 'close' every cycle; an UNCONDITIONAL set would reset the clock each retry and the real-outage notice would NEVER fire (false-silence, strictly worse than the crying-wolf it replaces).
 }
 
 await mcp.connect(new StdioServerTransport())
 log(`channel up (session=${SESSION_ID} label=${LABEL} repo=${REPO} ${TEAM_MODE ? `member=${MEMBER} team=${TEAM} role=${ROLE}` : `room=${ROOM || '(ambient)'}`} port=${PORT})`)
 connect()
-if (TEAM_MODE) setInterval(forwardStatus, 4000)   // #64: poll the statusline tee + forward changes to the daemon
+if (PORT) setInterval(forwardStatus, 4000)   // #64/#caffeine: poll the statusline tee + forward changes to the daemon (team rail + liveness signal, all rooms-enabled sessions)
 // #6/#50 (d) session plane: the heartbeat tears down + reconnects SILENTLY on a stale/wrong listener, and
 // list_peers just times out to empty — so in-session a squatted/down relay looks like "nobody's online".
 // This independent ticker (runs regardless of socket state, even during the reconnect loop) surfaces a
-// SUSTAINED outage once; lastHealthyAt resets on every pong, so a routine restart/refresh stays silent.
+// SUSTAINED outage once. #6b: it fires ONLY while we're currently disconnected AND have been failing to
+// reconnect for > OUTAGE_NOTICE_MS — NOT on time-since-last-pong. So a self-healing sleep-thaw (redials in
+// ~1.5s) and a routine `mrc rooms restart` both stay SILENT, and only a genuinely-down daemon (45s+ of failed
+// redials) cries out. Trade-off (honest): ~STALE_MS(16s) slower to fire on a pure half-open where `connected`
+// stays true until the heartbeat detects staleness — so a real sustained half-open notifies at ~61s vs ~45s.
+// Worth it: 16s later on a real outage buys total silence on every VM-sleep blip. Duration reported from
+// disconnectedSince so the "for Ns" number is honest, not the inflated freeze time.
 if (PORT) setInterval(() => {
-  if (!outageNotified && Date.now() - lastHealthyAt > OUTAGE_NOTICE_MS) {
+  if (!outageNotified && !connected && disconnectedSince && Date.now() - disconnectedSince > OUTAGE_NOTICE_MS) {
     outageNotified = true
-    pushIn(`[Rooms unavailable — can't reach the room daemon (relay :${PORT}) for ${Math.round((Date.now() - lastHealthyAt) / 1000)}s. It may be down, restarting, or its port is squatted; other sessions are unreachable until it recovers. This clears on its own when the daemon returns, or run \`mrc rooms status\` on the host.]`)
+    pushIn(`[Rooms unavailable — can't reach the room daemon (relay :${PORT}) for ${Math.round((Date.now() - disconnectedSince) / 1000)}s. It may be down, restarting, or its port is squatted; other sessions are unreachable until it recovers. This clears on its own when the daemon returns, or run \`mrc rooms status\` on the host.]`)
   }
 }, PING_MS)

@@ -349,6 +349,45 @@ test('F3b: a normal session WITHOUT a secret on record cannot summon (secret-pre
   try { s.sock.destroy() } catch {}
 })
 
+test('#caffeine: bumps only on context GROWTH — not first frame, idle re-render, phantom, or a reconnect', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-caf-`)
+  process.env.MRC_CAFFEINE_IDLE_MS = '250'   // short idle window so the test observes release fast
+  const NORM = 'caf-normal-uuid'
+  saveSessionRecord(NORM, { repoPath: process.env.HOME, adversary: false })   // 'normal'
+  const port = await findFreePort(20100)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+
+  const n = client(port); await n.ready; n.send({ type: 'register', sessionId: NORM, repo: 'p', label: 'p' })
+  const p = client(port); await p.ready; p.send({ type: 'register', sessionId: 'caf-phantom-uuid', repo: 'e', label: 'e' })
+  await sleep(120)
+
+  // FIRST frame seeds a baseline, NOT activity — a mere (re)connect must not caffeinate.
+  n.send({ type: 'status', context: 5 }); await sleep(50)
+  assert.equal(daemon._caffeine().working, false, "a session's FIRST status frame seeds a baseline, not work")
+
+  // A context CHANGE (token growth) → working.
+  n.send({ type: 'status', context: 12 }); await sleep(50)
+  const c = daemon._caffeine()
+  assert.equal(c.working, true, 'a context increase marks the session working')
+  assert.equal(c.off, true, 'caffeinate OFF on the non-macOS test host (fail-open, no real spawn)')
+
+  // PHANTOM status (even a change) → excluded ('unknown'), never tracked.
+  p.send({ type: 'status', context: 3 }); p.send({ type: 'status', context: 9 }); await sleep(50)
+  assert.equal(daemon._caffeine().tracked, 1, 'a phantom (unknown) never bumps caffeine, even on a change')
+
+  // RECONNECT with unchanged context must NOT re-arm (the reconnect-churn bug): close deletes the session's
+  // lastActivityAt+lastContext; the first post-reconnect frame re-seeds, no bump — checked IMMEDIATELY (< idle window).
+  try { n.sock.destroy() } catch {}; await sleep(60)
+  const n2 = client(port); await n2.ready; n2.send({ type: 'register', sessionId: NORM, repo: 'p', label: 'p' }); await sleep(60)
+  n2.send({ type: 'status', context: 12 }); await sleep(50)   // same value it last reported — a genuine idle reconnect
+  assert.equal(daemon._caffeine().working, false, 'an idle reconnect (unchanged context) does NOT re-caffeinate — spawn on activity, not reconnect')
+
+  delete process.env.MRC_CAFFEINE_IDLE_MS
+  daemon?.stop?.()
+  for (const cl of [n, n2, p]) try { cl.sock.destroy() } catch {}
+})
+
 test('F2/F4: deliver tags the sender from the DURABLE record — a vanished record → UNVERIFIED tag', async () => {
   process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-f4-`)
   saveSessionRecord('a2-uuid', { repoPath: process.env.HOME, adversary: false })

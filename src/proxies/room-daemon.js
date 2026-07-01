@@ -161,6 +161,48 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
   const nameOf = (id) => { const s = sessions.get(id); return s ? (s.label || s.repo) : '?' }  // display / match
   function pairingFor(id) { for (const p of pairings.values()) if (p.a === id || p.b === id) return p; return null }
 
+  // #caffeine: keep the host Mac awake while any session is actively WORKING, so unattended agent runs (e.g. an
+  // overnight consult) don't freeze when macOS naps the VM. Signal = the statusline liveness (a session's context
+  // value grows ONLY as it generates tokens = real work; static when idle → an idle statusline re-render bumps the
+  // `at` timestamp but NOT `context`, so we key on context CHANGE). The daemon is the container-independent
+  // aggregator (every rooms-enabled session forwards status to it). macOS-only; fail-OPEN everywhere (a missing/
+  // broken caffeinate must never crash or stall the daemon). HONEST CONTAINMENT (owner-accepted): authentication
+  // proves WHICH session signals, never that it is REALLY thinking — so an authenticated session, INCLUDING a
+  // summoned adversary the owner chose to include, CAN hold caffeine (forge its own context bumps); no in-container
+  // signal is tamper-proof. We only exclude an unauthenticated 'unknown' phantom (a session the owner never
+  // summoned). There is deliberately NO max-hold cap: the owner accepts a session HE summoned keeping HIS OWN Mac
+  // awake (endable by closing its tab).
+  const caffeineIdleMs = Number(process.env.MRC_CAFFEINE_IDLE_MS) || 1_800_000   // 30min with no session working → release
+  const lastActivityAt = new Map()   // sessionId → ts of last real work (a context change)
+  const lastContext = new Map()      // sessionId → last reported context (detects token GROWTH vs an idle re-render)
+  let caffeine = null                // the caffeinate child (null = not currently holding)
+  let caffeineOff = process.platform !== 'darwin'   // true = don't spawn (non-macOS, or a prior spawn failed — leak-B debounce)
+  const anyWorking = () => { const now = Date.now(); for (const t of lastActivityAt.values()) if (now - t < caffeineIdleMs) return true; return false }
+  function ensureCaffeine() {
+    if (caffeineOff || caffeine) return
+    try {
+      const child = spawn('caffeinate', ['-s', '-w', String(process.pid)], { stdio: 'ignore' })   // -w <pid>: self-releases if the daemon dies by ANY means (crash/SIGKILL/exit) → no orphan pinning the Mac
+      caffeine = child
+      child.on('error', () => { if (caffeine === child) caffeine = null; caffeineOff = true; daemonLog('caffeine: spawn error — disabling (fail-open)') })
+      child.on('exit', () => { if (caffeine === child) caffeine = null })   // leak-A: null on the CHILD's OWN exit (OOM/external-kill), so the next activity RE-spawns — the guard keys on a LIVE handle, not an ever-set one
+      daemonLog('caffeine: holding (a session is working)')
+    } catch (e) { caffeineOff = true; daemonLog(`caffeine: unavailable (${e.message}) — fail-open, no hold`) }   // leak-B: debounce — one failure disables for the process lifetime, no fork-and-fail per activity bump
+  }
+  function releaseCaffeine() { if (!caffeine) return; try { caffeine.kill() } catch {} caffeine = null; daemonLog('caffeine: released (all sessions idle)') }
+  function noteActivity(sessionId, context) {
+    if (classifySession(sessionId) === 'unknown') return   // phantom: owner accepted SUMMONED adversaries holding caffeine, not an unauthenticated no-record session
+    if (typeof context !== 'number') return
+    const prev = lastContext.get(sessionId); lastContext.set(sessionId, context)
+    // First frame from a (re)connected session = SEED the baseline, NOT activity — else, because the close handler
+    // deletes lastContext, every reconnect's first frame would bump even with unchanged context, and on the
+    // sleep-blip machines this feature exists for (reconnect every ~15min < the 30min window) an IDLE session
+    // would re-arm caffeine via reconnect-churn, not real work. Only a SUBSEQUENT context CHANGE (token growth) is
+    // work; a genuinely-working session is detected on its next frame (~4s later, negligible).
+    if (prev === undefined || context === prev) return   // seed baseline (first frame) OR idle re-render (unchanged) → not work
+    lastActivityAt.set(sessionId, Date.now())
+    ensureCaffeine()   // spawn strictly on ACTIVITY (a real context change), never on connect/reconnect; no-op if caffeineOff
+  }
+
   // #69-B: in-process DELTA event bus → the SSE layer (startDashboard subscribes). Events are DAEMON-AUTHORED
   // at the daemon's own write points (a member can't inject a forged event — its actions go through the channel,
   // the daemon processes them, then the daemon broadcasts), and carry the SAME trusted, session-resolved fields
@@ -850,12 +892,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
         else if (f.type === 'summon' && sessionId) onSummon(sessionId, String(f.brief ?? ''), f.id)   // #S4: reflex-summon a red-team adversary (Pierre)
         else if (f.type === 'say' && sessionId) onSay(sessionId, f)        // team room directed message
         else if (f.type === 'sendphoto' && sessionId) onSendPhoto(sessionId, f)   // #56: member → its human's Telegram
-        else if (f.type === 'status' && sessionId) { const r = engine.setStatus(sessionId, f); if (r) broadcastEvent({ type: 'status', org: r.org, handle: r.handle, status: r.status, rateLimit: r.rateLimit }) }   // #64 statusline ints (identity from the bound session); #69-B push the delta to the rail/gauge
+        else if (f.type === 'status' && sessionId) { noteActivity(sessionId, f.context); const r = engine.setStatus(sessionId, f); if (r) broadcastEvent({ type: 'status', org: r.org, handle: r.handle, status: r.status, rateLimit: r.rateLimit }) }   // #64 statusline ints (identity from the bound session); #69-B push the delta to the rail/gauge; #caffeine bump liveness from context growth
         else if (f.type === 'whoami' && sessionId) send(sessionId, { type: 'teaminfo', view: engine.viewForSession(sessionId) })
       }
     })
     sock.on('error', () => {})
-    sock.on('close', () => { if (sessionId) { const v = engine.viewForSession(sessionId); sessions.delete(sessionId); engine.unbindSession(sessionId); adversaries.delete(sessionId); unverified.delete(sessionId); noteSessions(); if (v) broadcastEvent({ type: 'presence', org: v.org, handle: v.handle, online: false }) } })   // #69-B: resolve the member BEFORE unbinding, then push offline · #39/3.A: clear containment flags (re-derived from the host record on reconnect)
+    sock.on('close', () => { if (sessionId) { const v = engine.viewForSession(sessionId); sessions.delete(sessionId); engine.unbindSession(sessionId); adversaries.delete(sessionId); unverified.delete(sessionId); lastActivityAt.delete(sessionId); lastContext.delete(sessionId); noteSessions(); if (v) broadcastEvent({ type: 'presence', org: v.org, handle: v.handle, online: false }) } })   // #69-B: resolve the member BEFORE unbinding, then push offline · #39/3.A: clear containment flags (re-derived from the host record on reconnect) · #caffeine: a departed session stops counting toward "working" immediately
   })
   server.listen(port, '127.0.0.1')
   server.on('error', () => process.exit(1))   // e.g. EADDRINUSE on an in-place restart → let the caller fall back
@@ -1134,6 +1176,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
   control.on('error', () => process.exit(1))
 
   const stallTimer = setInterval(() => {
+    // #caffeine: release the Mac when no session has worked within the idle window (spawn is activity-driven in
+    // noteActivity; this is the release half). Cheap: an O(sessions) scan every tickMs, no-op when caffeineOff.
+    if (!anyWorking()) releaseCaffeine()
     for (const p of pairings.values()) {
       if (p.state === 'Running' && sessions.has(p.a) && sessions.has(p.b) && Date.now() - p.lastActivityAt > stallMs) {
         // Soft, self-healing pause: flag a quiet room for the human, but the next real message
@@ -1156,7 +1201,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
   }, tickMs)
   stallTimer.unref?.()
 
-  return { server, control, sessions, pairings, engine, worker, subscribeEvents, broadcastEvent, noteDashboardActivity: () => { lastDashboardHit = Date.now() }, stop: () => { clearInterval(stallTimer); worker.stop(); stopAllTg(); try { server.close(); control.close() } catch {} } }
+  return { server, control, sessions, pairings, engine, worker, subscribeEvents, broadcastEvent, noteDashboardActivity: () => { lastDashboardHit = Date.now() }, _caffeine: () => ({ working: anyWorking(), tracked: lastActivityAt.size, holding: !!caffeine, off: caffeineOff }), stop: () => { clearInterval(stallTimer); releaseCaffeine(); worker.stop(); stopAllTg(); try { server.close(); control.close() } catch {} } }
 }
 
 // Direct invocation (mrc spawns this detached): node room-daemon.js <port> <controlPort> [notifyPort]
