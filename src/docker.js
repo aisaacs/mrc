@@ -1,8 +1,67 @@
 import { execFileSync, spawn } from 'node:child_process'
 import { createHash } from 'node:crypto'
 import { basename, join } from 'node:path'
+import { mkdirSync, readdirSync, statSync, rmSync, readFileSync, writeFileSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { dbg } from './output.js'
 import { IMAGE_NAME } from './constants.js'
+
+// --- summoned-adversary (Pierre) config-volume slot pool ---------------------------------------------
+// A caged adversary gets a DEDICATED per-repo config volume (mrc-config-<hash>-pierre-N) so it never mounts
+// the user's login/config and its transcript can't be auto-resumed by a normal launch. Slots are claimed
+// race-free (atomic O_EXCL create) + fail-closed, keyed by the mrc data dir (never a container mount).
+const ADV_CLAIM_BACKSTOP_MS = 172_800_000  // 48h: reclaim a PID-REUSE leak (a recycled PID reads alive forever)
+const ADV_DOCKER_TIMEOUT_MS = 8_000        // hard-bound `docker ps`; on timeout it throws → fail closed
+const ADV_MAX_SLOTS = 256                  // sanity cap so a persistent write error can't spin the claim loop
+const slotsDir = (sub, repoPath) => join(homedir(), '.local', 'share', 'mrc', sub, createHash('md5').update(repoPath).digest('hex').slice(0, 12))
+
+// Take the lowest free slot via an ATOMIC O_EXCL create — the create IS the pick, so two concurrent claimers
+// that both computed the same `used` set still can't land on the same slot. GC a dead claim first (PID-liveness
+// + a 48h backstop for PID-reuse); a claim body is `<pid>\n` (the trailing-newline SENTINEL proves the whole
+// PID landed, so a torn read never reaps a live claim). Returns {slot} or null (taken/fail-closed).
+export function claimLowestFree(dir, used, preferredStart = 0) {
+  try { mkdirSync(dir, { recursive: true }) } catch {}
+  const now = Date.now()
+  try {
+    for (const f of readdirSync(dir)) {
+      if (!/^\d+$/.test(f)) continue
+      const claim = join(dir, f)
+      try {
+        if (now - statSync(claim).mtimeMs >= ADV_CLAIM_BACKSTOP_MS) { rmSync(claim, { force: true }); continue }
+        const m = readFileSync(claim, 'utf8').match(/^(\d+)\n$/)
+        if (!m) continue   // torn/empty/partial (no sentinel) → KEEP, never reap
+        try { process.kill(parseInt(m[1], 10), 0) }                       // alive / EPERM → KEEP
+        catch (e) { if (e && e.code === 'ESRCH') rmSync(claim, { force: true }) }   // affirmatively dead → reap
+      } catch {}
+    }
+  } catch {}
+  const attempt = (n) => {
+    if (used.has(n)) return null
+    try { writeFileSync(join(dir, String(n)), `${process.pid}\n`, { flag: 'wx' }); return n }
+    catch (e) { if (e && e.code === 'EEXIST') return null; throw e }
+  }
+  try {
+    if (preferredStart > 0 && preferredStart <= ADV_MAX_SLOTS) { const got = attempt(preferredStart); if (got) return { slot: got } }
+    for (let n = 1; n <= ADV_MAX_SLOTS; n++) { const got = attempt(n); if (got) return { slot: got } }
+  } catch { return null }   // non-EEXIST write error → lost signal → fail closed
+  return null
+}
+
+/** Lowest free "Pierre" slot for a repo's summoned-adversary pool (volumes `mrc-config-<hash>-pierre-N`).
+ *  Race-free + fail-closed. "In use" = RUNNING adversaries (their mrc.adversary.slot label). Returns the slot
+ *  number, or null on a lost liveness oracle (docker down/timeout) / no safe slot → caller fails closed. */
+export function nextAdversarySlot(repoPath, preferredSlot = 0) {
+  const used = new Set()
+  try {
+    const out = execFileSync('docker', [
+      'ps', '--filter', 'label=mrc.adversary=1', '--filter', `label=mrc.repo=${repoPath}`,
+      '--format', '{{.Label "mrc.adversary.slot"}}',
+    ], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim()
+    for (const s of (out ? out.split('\n') : [])) { const n = parseInt(s, 10); if (n > 0) used.add(n) }
+  } catch { return null }   // lost liveness oracle → fail closed
+  const r = claimLowestFree(slotsDir('pierre-slots', repoPath), used, preferredSlot)
+  return r ? r.slot : null
+}
 
 /** Build the Docker image if needed. */
 export function buildImage(scriptDir, { rebuild, verbose, uid, gid }) {

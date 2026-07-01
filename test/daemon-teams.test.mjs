@@ -66,9 +66,11 @@ test('daemon team rooms: define org, directed delivery, @user round-trip, brake/
   // 2) Connect the three members and register them with their handles.
   const arch = client(port), engineer = client(port), critic = client(port)
   await Promise.all([arch.ready, engineer.ready, critic.ready])
-  arch.send({ type: 'register', sessionId: 's-arch', memberHandle: 'roland/claude', repo: 'shop', label: 'roland' })
-  engineer.send({ type: 'register', sessionId: 's-engineer', memberHandle: 'ludivine/claude', repo: 'shop', label: 'ludivine' })
-  critic.send({ type: 'register', sessionId: 's-critic', memberHandle: 'pierre/claude', repo: 'shop', label: 'pierre' })
+  // Register with the REAL pinned memberSessionId (what `mrc team up` uses) — R2 binds only a pinned id / a
+  // normal-classified session, not a bare-handle fallback on an arbitrary id.
+  arch.send({ type: 'register', sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop', label: 'roland' })
+  engineer.send({ type: 'register', sessionId: memberSessionId('shop', 'ludivine/claude'), memberHandle: 'ludivine/claude', repo: 'shop', label: 'ludivine' })
+  critic.send({ type: 'register', sessionId: memberSessionId('shop', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'shop', label: 'pierre' })
   // each gets a join notice listing its rooms
   const joined = await arch.waitFor((f) => f.type === 'notice' && /Joined as @roland/.test(f.text))
   assert.match(joined.text, new RegExp(teamRoomId('shop', 'client')))

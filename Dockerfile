@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ripgrep \
     jq \
     file \
-    sudo \
+    gosu \
     iptables \
     ipset \
     iproute2 \
@@ -98,11 +98,11 @@ RUN mkdir -p /etc/claude-code \
 RUN mkdir -p /workspace && \
     ln -sf /home/coder/.claude/claude.json /home/coder/.claude.json
 
-# Firewall script + sudoers so coder can run it without password
+# Firewall script. C/#38: NO sudoers — the container starts as root (USER root below), the entrypoint runs
+# the firewall as root then drops to the unprivileged `coder` via gosu, and coder has NO sudo (nor a password:
+# `useradd` leaves the account locked). So a sandboxed session cannot re-run or weaken the firewall.
 COPY init-firewall.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/init-firewall.sh \
-    && echo 'coder ALL=(root) NOPASSWD: SETENV: /usr/local/bin/init-firewall.sh' > /etc/sudoers.d/coder-firewall \
-    && chmod 0440 /etc/sudoers.d/coder-firewall
+RUN chmod +x /usr/local/bin/init-firewall.sh
 
 # Clipboard shim (stays bash — mimics xclip interface)
 COPY clipboard-shim.sh /usr/local/bin/xclip
@@ -135,7 +135,10 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 # and the firewall may block npm CDN hosts needed for updates.
 ENV DISABLE_AUTOUPDATER=1
 
-USER coder
+# C/#38: start as ROOT so the entrypoint can run the firewall (as root) and THEN drop to the unprivileged
+# `coder` via `gosu coder` for the agent. coder has no sudo and a locked account, so the agent can never
+# re-run the firewall or escalate — the cage is enforced from outside the sandboxed session.
+USER root
 WORKDIR /workspace
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

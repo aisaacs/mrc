@@ -17,8 +17,43 @@ export function readMrcrc(file) {
   return { flags, envs }
 }
 
-/** Load .env file, handling 1Password op:// references. Returns the API key or null. */
-export function loadEnv(scriptDir) {
+// Belt 0: a <repo>/.mrcrc is SANDBOX-WRITABLE (it lives in the bind-mounted repo), so a contained session
+// could write egress/containment flags into it to self-escalate its NEXT launch. Deny-by-default: only
+// local-UX flags are honored from the repo file; egress/containment/mode/CLI-hijack flags are dropped.
+// Per-TOKEN filter (readMrcrc tokenizes), so a value-flag's value token and a second flag on one line are
+// each checked — a repo file can't smuggle `--web` past an allowed leading flag.
+const REPO_ALLOWED_FLAGS = new Set([
+  '--no-sound', '--no-notify', '--no-summary', '--no-rooms', '--verbose', '-v', '--new', '-n',
+])
+// ENVS: mrc's own control surface is RESERVED from the repo file — ALLOW_WEB and any MRC_* env (host-set or
+// host-read; never legitimately repo-sourced). Everything else passes (a repo needs arbitrary app envs).
+// INVARIANT: every new containment/egress env MUST be MRC_-prefixed (auto-covered) or added here like ALLOW_WEB.
+const repoEnvForbidden = (key) => key === 'ALLOW_WEB' || key.startsWith('MRC_')
+
+/**
+ * Belt 0: filter a repo .mrcrc's parsed flags/envs down to the safe allowlist. PURE — `warn(msg)` is
+ * called once per dropped entry so the caller owns the notice. Returns { flags, envs }.
+ */
+export function sanitizeRepoConfig(repoFlags, repoEnvs, warn = () => {}) {
+  const flags = repoFlags.filter((f) => {
+    if (REPO_ALLOWED_FLAGS.has(f)) return true
+    // Warn only for a disallowed FLAG; silently drop an orphaned VALUE token (e.g. the name after a repo
+    // `--new`) so the notice stays about flags, not values.
+    if (f.startsWith('-')) warn(`flag "${f}" from <repo>/.mrcrc — only local-UX flags are honored there; egress/containment/mode flags come from the CLI or ~/.mrcrc`)
+    return false
+  })
+  const envs = repoEnvs.filter((e) => {
+    if (!repoEnvForbidden(e.split('=')[0])) return true
+    warn(`env "${e.split('=')[0]}" from <repo>/.mrcrc — MRC_* and ALLOW_WEB are reserved (host-only control surface); set them via the CLI or ~/.mrcrc`)
+    return false
+  })
+  return { flags, envs }
+}
+
+/** Load .env file, handling 1Password op:// references. Returns the API key or null.
+ *  skipOp: don't resolve op:// references (skips the 1Password CLI / Touch ID prompt). A summoned adversary
+ *  is deterministically named "Pierre" and needs no host naming key, so it must never trigger a biometric. */
+export function loadEnv(scriptDir, { skipOp = false } = {}) {
   const candidates = [
     join(scriptDir, '.env'),
     join(process.env.HOME || '/root', '.config', 'mrc', '.env'),
@@ -37,6 +72,7 @@ export function loadEnv(scriptDir) {
   }
 
   if (content.includes('op://')) {
+    if (skipOp) { dbg('skipping op:// resolution (summoned session is deterministically named — no naming key, no biometric prompt)'); return null }
     dbg('.env contains op:// references, using 1Password CLI')
     return loadOpEnv(envFile)
   }
@@ -145,6 +181,8 @@ export function parseArgs(argv) {
     rooms: true,   // cross-session negotiation rooms are ON by default (disable with --no-rooms)
     member: '',    // team-member launch: this session is @member from the roster
     roster: '',    // path to team.json (for --member launches)
+    summonedBy: '', // internal: stamped by the daemon's summon launcher so a spawned adversary auto-pairs with its summoner
+    openAdversaryUnsafe: false, // --open-adversary-unsafe: reopen a summoned adversary UNCAGED (full egress). Loud + deliberate; belt 0 keeps it argv/~/.mrcrc-only (never repo .mrcrc).
   }
   const remaining = []
   const claudeArgs = []
@@ -157,9 +195,11 @@ export function parseArgs(argv) {
     switch (arg) {
       case '--': seenSeparator = true; break
       case '-h': case '--help': help = true; break
+      // L2/#26: `!existsSync` so `mrc --new ~/repo` / `mrc --new .` doesn't eat the repo PATH as a session name
+      // (a truthy name also gates the auto-namer OFF → the #48 inherited-name regression).
       case '-n': case '--new':
         config.newSession = true
-        if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.newSessionName = argv[++i]
+        if (argv[i + 1] && !argv[i + 1].startsWith('-') && !existsSync(argv[i + 1])) config.newSessionName = argv[++i]
         break
       case '--no-notify': config.noNotify = true; break
       case '--no-sound': config.noSound = true; break
@@ -189,6 +229,10 @@ export function parseArgs(argv) {
       case '--roster':
         if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.roster = argv[++i]
         break
+      case '--summoned-by':   // internal (daemon-set): pair this session with the summoner once it registers
+        if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.summonedBy = argv[++i]
+        break
+      case '--open-adversary-unsafe': config.openAdversaryUnsafe = true; break   // reopen a summoned adversary WITHOUT its cage (full egress) — deliberate; belt 0 blocks it from repo .mrcrc
       default: remaining.push(arg)
     }
   }

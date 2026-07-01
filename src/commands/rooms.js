@@ -116,7 +116,7 @@ export async function roomsCommand(args) {
       const s = await ctrl(port, 'status')
       console.log(`  Daemon:   v${s.version || '(unknown — stale code; run: mrc rooms restart)'}`)
       console.log('  Sessions:')
-      for (const x of s.sessions) console.log(`    ${x.name}${x.name !== x.repo ? `  (${x.repo})` : ''}  [${x.id}]`)
+      for (const x of s.sessions) console.log(`    ${x.name}${x.name !== x.repo ? `  (${x.repo})` : ''}  [${x.id}]${x.adversary ? '  ·  \x1b[1;31m⚔ ADVERSARY (contained)\x1b[0m' : ''}${x.unverified ? '  ·  \x1b[0;33m⚠ unverified\x1b[0m' : ''}`)   // D9: surface the daemon's containment classification
       console.log('  Pairings:')
       if (!s.pairings.length) console.log('    (none)')
       for (const p of s.pairings) {

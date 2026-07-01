@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs'
+import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
@@ -29,11 +29,17 @@ export function getSessions(mrcDir) {
           if (content.length > 60) preview += '...'
         }
       }
-      if (lastTs) sessions.push({ uuid, lastUpdated: lastTs, preview })
+      // D5/#25: rank by FILE mtime (max'd with the in-transcript ts), because `claude --continue` resumes by
+      // file recency — so the host's "newest" agrees with what the container actually resumes. Metadata writes
+      // (ai-title / agent-name / snapshots) bump mtime with no in-transcript ts, so ts-only ranking drifts.
+      let mtimeMs = 0
+      try { mtimeMs = statSync(join(mrcDir, file)).mtimeMs } catch {}
+      const recencyMs = Math.max(mtimeMs, Date.parse(lastTs) || 0)
+      if (recencyMs > 0) sessions.push({ uuid, lastUpdated: new Date(recencyMs).toISOString(), recencyMs, preview })
     } catch {}
   }
 
-  sessions.sort((a, b) => b.lastUpdated.localeCompare(a.lastUpdated))
+  sessions.sort((a, b) => b.recencyMs - a.recencyMs)
   return sessions
 }
 

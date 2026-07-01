@@ -157,8 +157,13 @@ if (process.env.ANTHROPIC_API_KEY) {
   }
 }
 
+// A caged adversary (MRC_ADVERSARY_FW) has /workspace mounted READ-ONLY, so the .mrc symlink + .gitignore
+// writes below can't (and shouldn't) touch the repo. Skip them: its transcript stays in PROJECT_STORE inside
+// its own (dedicated) config volume, never written into the read-only repo tree.
+const CAGED = !!process.env.MRC_ADVERSARY_FW
+
 // 4. Symlink project store into /workspace/.mrc/
-try {
+if (!CAGED) try {
   let alreadyLinked = false
   try { alreadyLinked = lstatSync(PROJECT_STORE).isSymbolicLink() } catch {}
 
@@ -176,7 +181,7 @@ try {
 }
 
 // 5. Seed .gitignore entry for .mrc/
-if (existsSync('/workspace/.git')) {
+if (!CAGED && existsSync('/workspace/.git')) {
   const gitignore = '/workspace/.gitignore'
   try {
     const content = existsSync(gitignore) ? readFileSync(gitignore, 'utf8') : ''

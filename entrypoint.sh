@@ -2,27 +2,43 @@
 set -euo pipefail
 trap 'echo "FAILED at line $LINENO (exit code $?)" >&2' ERR
 
-# Wait for network to be ready (Colima can be slow to warm up)
-echo "Waiting for network..."
-for i in $(seq 1 30); do
-  if dig +short +timeout=1 api.anthropic.com >/dev/null 2>&1; then
-    echo "Network ready after ${i}s"
-    break
-  fi
-  if [ "$i" -eq 30 ]; then
-    echo "ERROR: Network not ready after 30 attempts"
-    dig api.anthropic.com 2>&1 || true
-    exit 1
-  fi
-  sleep 1
-done
+# ROOT PASS (C/#38): the container starts as root (Dockerfile `USER root`). Wait for the network, run the
+# firewall as root — NO sudo; coder has no sudo, so a sandboxed session can't re-run it to weaken its cage —
+# then re-exec this script as the unprivileged `coder` user for everything else. A caged adversary carries
+# MRC_ADVERSARY_FW / MRC_SNI_PROXY_PORT, which init-firewall.sh honors (empty allowlist + SNI-proxy egress).
+if [ "$(id -u)" = "0" ]; then
+  echo "Waiting for network..."
+  for i in $(seq 1 30); do
+    if dig +short +timeout=1 api.anthropic.com >/dev/null 2>&1; then
+      echo "Network ready after ${i}s"
+      break
+    fi
+    if [ "$i" -eq 30 ]; then
+      echo "ERROR: Network not ready after 30 attempts"
+      dig api.anthropic.com 2>&1 || true
+      exit 1
+    fi
+    sleep 1
+  done
 
-# Run firewall (must be bash + sudo — see init-firewall.sh)
-sudo ALLOW_WEB="${ALLOW_WEB:-}" \
-  MRC_CLIPBOARD_PORT="${MRC_CLIPBOARD_PORT:-7722}" \
-  MRC_NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}" \
-  MRC_ROOM_PORT="${MRC_ROOM_PORT:-}" \
-  /usr/local/bin/init-firewall.sh
+  ALLOW_WEB="${ALLOW_WEB:-}" \
+    MRC_ADVERSARY_FW="${MRC_ADVERSARY_FW:-}" \
+    MRC_CLIPBOARD_PORT="${MRC_CLIPBOARD_PORT:-7722}" \
+    MRC_NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}" \
+    MRC_ROOM_PORT="${MRC_ROOM_PORT:-}" \
+    MRC_SNI_PROXY_PORT="${MRC_SNI_PROXY_PORT:-}" \
+    /usr/local/bin/init-firewall.sh
+
+  export HOME=/home/coder USER=coder LOGNAME=coder
+  exec gosu coder "$0" "$@"
+fi
+
+# CODER PASS (unprivileged). Fail CLOSED if the firewall never ran — /etc/mrc-cage-profile is init-firewall's
+# first act, so its absence means we somehow reached here unprotected. Never start the agent without the cage.
+if [ ! -f /etc/mrc-cage-profile ]; then
+  echo "FATAL: firewall did not run (no /etc/mrc-cage-profile) — refusing to start the agent unprotected." >&2
+  exit 1
+fi
 
 # All config setup is now in Node
 node /usr/local/bin/container-setup.js
