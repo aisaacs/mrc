@@ -384,12 +384,15 @@ test('#caffeine: bumps only on a token INCREASE — not first frame, decrease (c
   n.send({ type: 'status', tokens: 4500 }); await sleep(50)   // INCREASE from 4000 → work again
   assert.equal(daemon._caffeine().working, true, 'a token increase after a compaction still registers as work')
 
-  // RECONNECT with the same token count must NOT re-arm: close deletes lastActivityAt+lastTokens, so the first
-  // post-reconnect frame re-seeds (no bump) — checked IMMEDIATELY (< idle window), so it catches the churn bug.
+  // RECONNECT after a full idle-out with an unchanged token count must NOT re-arm: lastTokens IS cleared on close
+  // (OBJ6 keeps lastActivityAt but still drops lastTokens), so the first post-reconnect frame re-seeds (no bump),
+  // AND lastActivityAt has aged past the window — so no spurious hold. Idle out FIRST, then reconnect.
+  await sleep(300)   // > idle window: lastActivityAt ages out, working=false
+  assert.equal(daemon._caffeine().working, false, 'aged out before the reconnect (natural idle-out, not a close-delete)')
   try { n.sock.destroy() } catch {}; await sleep(60)
   const n2 = client(port); await n2.ready; n2.send({ type: 'register', sessionId: NORM, repo: 'p', label: 'p' }); await sleep(60)
   n2.send({ type: 'status', tokens: 4500 }); await sleep(50)   // same value it last reported — an idle reconnect
-  assert.equal(daemon._caffeine().working, false, 'an idle reconnect (unchanged tokens) does NOT re-caffeinate — spawn on activity, not reconnect')
+  assert.equal(daemon._caffeine().working, false, 'an idle reconnect (unchanged tokens, aged out) does NOT re-caffeinate — spawn on activity, not reconnect')
 
   delete process.env.MRC_CAFFEINE_IDLE_MS
   daemon?.stop?.()
@@ -420,6 +423,41 @@ test('#caffeine: a channel turn (msg/ask/say) is the PRIMARY per-turn liveness b
   delete process.env.MRC_CAFFEINE_IDLE_MS
   daemon?.stop?.()
   for (const cl of [n, ph]) try { cl.sock.destroy() } catch {}
+})
+
+test('#caffeine OBJ6: a flap (socket close) within the idle window PRESERVES working; a genuine departure ages out + prunes', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-caf6-`)
+  process.env.MRC_CAFFEINE_IDLE_MS = '300'   // idle window; a real tick (below) drives the age-out prune
+  const NORM = 'caf6-normal-uuid'
+  saveSessionRecord(NORM, { repoPath: process.env.HOME, adversary: false })   // 'normal'
+  const port = await findFreePort(20300)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 80, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+
+  const n = client(port); await n.ready; n.send({ type: 'register', sessionId: NORM, repo: 'p', label: 'p' }); await sleep(120)
+  n.send({ type: 'msg', text: 'a real autonomous turn', id: 1 }); await sleep(50)
+  assert.equal(daemon._caffeine().working, true, 'working after a real turn')
+
+  // THE FLAP: the socket closes (the documented macOS-nap transport blip). Under the OLD code this deleted
+  // lastActivityAt → the next tick released the -i assertion mid-work. OBJ6: the entry is KEPT (aged, not deleted),
+  // so a close WITHIN the idle window leaves the hold intact — even though several stall ticks fire in between.
+  try { n.sock.destroy() } catch {}; await sleep(120)   // > 1 tick, still < the 300ms idle window
+  assert.equal(daemon._caffeine().working, true, 'OBJ6: a close within the idle window KEEPS working — caffeine survives the flap, the release path no longer keys on socket-presence')
+
+  // Reconnect within the window: still held, no spurious release from the blip.
+  const n2 = client(port); await n2.ready; n2.send({ type: 'register', sessionId: NORM, repo: 'p', label: 'p' }); await sleep(60)
+  assert.equal(daemon._caffeine().working, true, 'still held right after the reconnect (the flap caused no release)')
+
+  // A genuinely-departed session still ages out over the window — and the stall tick PRUNES the stale entry so
+  // "tracked" stays honest (it no longer counts sessions gone > idleMs).
+  try { n2.sock.destroy() } catch {}; await sleep(500)   // > window + several ticks → age out + prune
+  const c = daemon._caffeine()
+  assert.equal(c.working, false, 'a genuinely-departed session ages out over the idle window (safe side of the asymmetric bet)')
+  assert.equal(c.tracked, 0, 'the aged-out entry is pruned by the stall tick — "N tracked" stays honest')
+
+  delete process.env.MRC_CAFFEINE_IDLE_MS
+  daemon?.stop?.()
+  for (const cl of [n, n2]) try { cl.sock.destroy() } catch {}
 })
 
 test('F2/F4: deliver tags the sender from the DURABLE record — a vanished record → UNVERIFIED tag', async () => {

@@ -180,7 +180,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
   const lastActivityAt = new Map()   // sessionId → ts of its last real turn (a channel frame or a token increase)
   const lastTokens = new Map()       // sessionId → last reported cumulative token count (FINE, per-turn; strict increase = work)
   let caffeine = null                // the caffeinate child (null = not currently holding)
-  let caffeineOff = process.platform !== 'darwin'   // true = don't spawn (non-macOS, or a prior spawn failed — leak-B debounce)
+  // true = don't spawn: non-macOS, the caffeinate binary is genuinely absent (ENOENT only — a transient spawn error
+  // stays retryable), OR the operator set MRC_CAFFEINE_DISABLE=1. The disable flag is the CLEAN control lever for
+  // verifying OBJ4 (does `-i` actually stop the nap): it turns caffeine off with the SAME daemon + SAME rooms, so an
+  // overnight A/B varies only caffeine — vs killing the daemon (which also kills rooms = a dirty, two-systems control).
+  // MRC_CAFFEINE_IDLE_MS can't do this (0 is falsy → snaps to the 30min default; any value only moves the window).
+  let caffeineOff = process.platform !== 'darwin' || process.env.MRC_CAFFEINE_DISABLE === '1'
   const anyWorking = () => { const now = Date.now(); for (const t of lastActivityAt.values()) if (now - t < caffeineIdleMs) return true; return false }
   function ensureCaffeine() {
     if (caffeineOff || caffeine) return
@@ -193,10 +198,15 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
       // run needs the lid OPEN or the charger IN. (Documented; not detectable from the daemon to correct in code.)
       const child = spawn('caffeinate', ['-i', '-w', String(process.pid)], { stdio: 'ignore' })
       caffeine = child
-      child.on('error', () => { if (caffeine === child) caffeine = null; caffeineOff = true; daemonLog('caffeine: spawn error — disabling (fail-open)') })
+      // ENOENT = the binary is genuinely absent → retrying every turn is pointless fork-churn, so latch caffeineOff.
+      // ANY OTHER errno (EAGAIN fork-hiccup under memory pressure, etc.) is TRANSIENT → leave caffeineOff false so
+      // the next per-turn bumpActivity respawns. A permanent latch on a momentary blip would silently kill caffeine
+      // for the whole daemon lifetime (all night) — the exact overnight freeze this feature exists to prevent.
+      // Per-turn is seconds apart, not a busy loop, so retrying a transient failure can't fork-churn.
+      child.on('error', (e) => { if (caffeine === child) caffeine = null; if (e && e.code === 'ENOENT') { caffeineOff = true; daemonLog('caffeine: binary missing (ENOENT) — disabling') } else { daemonLog(`caffeine: spawn error (${e && e.code || e}) — transient, will retry on next activity`) } })
       child.on('exit', () => { if (caffeine === child) caffeine = null })   // leak-A: null on the CHILD's OWN exit (OOM/external-kill), so the next activity RE-spawns — the guard keys on a LIVE handle, not an ever-set one
       daemonLog('caffeine: holding (a session is working)')
-    } catch (e) { caffeineOff = true; daemonLog(`caffeine: unavailable (${e.message}) — fail-open, no hold`) }   // leak-B: debounce — one failure disables for the process lifetime, no fork-and-fail per activity bump
+    } catch (e) { if (e && e.code === 'ENOENT') { caffeineOff = true; daemonLog('caffeine: binary missing (ENOENT) — disabling') } else { daemonLog(`caffeine: spawn threw (${e && e.code || e.message}) — transient, will retry on next activity`) } }   // ENOENT latches (missing binary); a transient throw stays retryable — the next bumpActivity respawns
   }
   function releaseCaffeine() { if (!caffeine) return; try { caffeine.kill() } catch {} caffeine = null; daemonLog('caffeine: released (all sessions idle)') }
   // PRIMARY liveness: a real turn arrives at the daemon DIRECTLY as its outbound action (ask/msg/say/note/handoff/
@@ -914,7 +924,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
       }
     })
     sock.on('error', () => {})
-    sock.on('close', () => { if (sessionId) { const v = engine.viewForSession(sessionId); sessions.delete(sessionId); engine.unbindSession(sessionId); adversaries.delete(sessionId); unverified.delete(sessionId); lastActivityAt.delete(sessionId); lastTokens.delete(sessionId); noteSessions(); if (v) broadcastEvent({ type: 'presence', org: v.org, handle: v.handle, online: false }) } })   // #69-B: resolve the member BEFORE unbinding, then push offline · #39/3.A: clear containment flags (re-derived from the host record on reconnect) · #caffeine: a departed session stops counting toward "working" immediately
+    sock.on('close', () => { if (sessionId) { const v = engine.viewForSession(sessionId); sessions.delete(sessionId); engine.unbindSession(sessionId); adversaries.delete(sessionId); unverified.delete(sessionId); lastTokens.delete(sessionId); noteSessions(); if (v) broadcastEvent({ type: 'presence', org: v.org, handle: v.handle, online: false }) } })   // #69-B: resolve the member BEFORE unbinding, then push offline · #39/3.A: clear containment flags (re-derived from the host record on reconnect) · #caffeine OBJ6: do NOT delete lastActivityAt on close — let it AGE OUT over caffeineIdleMs (pruned in the stall tick). A transport blip in the documented macOS-nap FLAP used to delete the entry → next tick anyWorking()=false → releaseCaffeine() dropped the -i assertion in the exact scenario the feature prevents. Over-holding ~30min of caffeinate -i is trivial; under-holding freezes the overnight run — so age out on the SAFE side. lastTokens IS cleared (a reconnect's first frame reseeds a baseline, no spurious bump).
   })
   server.listen(port, '127.0.0.1')
   server.on('error', () => process.exit(1))   // e.g. EADDRINUSE on an in-place restart → let the caller fall back
@@ -1196,6 +1206,22 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
     // #caffeine: release the Mac when no session has worked within the idle window (spawn is activity-driven in
     // noteActivity; this is the release half). Cheap: an O(sessions) scan every tickMs, no-op when caffeineOff.
     if (!anyWorking()) releaseCaffeine()
+    // #caffeine OBJ6: close no longer deletes lastActivityAt (so a flap can't drop the hold) — instead prune entries
+    // that have aged past the idle window here. Keeps the Maps bounded across many short-lived sessions and keeps the
+    // "N tracked" needle honest (it counts sessions still relevant to the hold, not every session ever seen). Map
+    // deletion during iteration is safe. lastTokens is pruned in lockstep so an aged-out reconnect reseeds its baseline.
+    { const cutoff = Date.now() - caffeineIdleMs; for (const [sid, t] of lastActivityAt) if (t < cutoff) { lastActivityAt.delete(sid); lastTokens.delete(sid) } }
+    // #caffeine OBSERVABILITY: bumpActivity is SILENT, so the log's "holding" latch and the "released" edge are
+    // 30min apart — a tail can't tell a healthy per-turn beat from a signal that died 29min ago but hasn't hit the
+    // idle release yet. Emit a low-rate needle WHILE holding: the newest bump's age resets every real turn, so a
+    // beating signal shows a small "Xs ago" and a dead one climbs toward the idle window. Only logs while genuinely
+    // holding (i.e. while a session is working), so it's silent at idle — self-limiting, not overnight spam.
+    if (caffeine) {
+      let newest = 0, who = null
+      for (const [sid, t] of lastActivityAt) if (t > newest) { newest = t; who = sid }
+      const ago = newest ? Math.round((Date.now() - newest) / 1000) : -1
+      daemonLog(`caffeine: holding · ${lastActivityAt.size} tracked · last bump ${who ? who.slice(0, 8) : '—'} ${ago}s ago`)
+    }
     for (const p of pairings.values()) {
       if (p.state === 'Running' && sessions.has(p.a) && sessions.has(p.b) && Date.now() - p.lastActivityAt > stallMs) {
         // Soft, self-healing pause: flag a quiet room for the human, but the next real message
