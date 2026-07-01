@@ -22,6 +22,7 @@ import { summarize, generateName } from './src/sessions/api.js'
 import { pick, ensureNamesMigrated } from './src/sessions/picker.js'
 import { detectToolMisses } from './src/sessions/transcript.js'
 import { resolveContextDir } from './src/context.js'
+import { saveSessionRecord, pruneSessionRecords } from './src/session-record.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const SCRIPT_DIR = dirname(__filename)
@@ -473,6 +474,16 @@ if (roomsActive) {
     volumes.push('-v', `${roomsRoot()}:/rooms`)
     roomInfo = { sessionId, roomName: config.room || '', label }
   }
+  // 3.A/#39: write this session's TAMPER-PROOF host-only containment record BEFORE the container launches
+  // and its channel registers, so the daemon classifies from the record (never the forgeable wire frame).
+  // The record lives host-side (~/.local/share/mrc/session-meta/) and is NEVER mounted into any container.
+  // A normal session records `adversary:false`; a summoned adversary carries `--summoned-by` (Phase 3.B),
+  // which flips `adversary:true` here — the daemon then cages it even if it omits the marker from its frame.
+  // Prune first (touches only PRIOR sessions' records, and never an adversary's) to bound the dir.
+  try {
+    pruneSessionRecords()
+    saveSessionRecord(roomInfo.sessionId, { repoPath, summonedBy: config.summonedBy || undefined, adversary: !!config.summonedBy })
+  } catch (e) { dbg(`session-record write failed: ${e?.message || e}`) }
 }
 
 // Banner

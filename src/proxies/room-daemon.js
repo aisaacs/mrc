@@ -20,6 +20,7 @@ import { memberSessionId } from '../teams/session-id.js'
 import { createTelegramBridge, sendMessage as tgSend, sendMessageChunked as tgSendChunked, editMessageText as tgEdit, sendPhoto as tgSendPhoto, mdToTelegramHTML } from '../teams/telegram.js'
 import { freshTgState, classifyInbound, addPending, confirmPending, rejectPending, unpair as tgUnpair, prePin, tgView, isDuplicateUpdate, markUpdateProcessed } from '../teams/telegram-auth.js'
 import { defangTrustMarkers } from '../teams/trust.js'
+import { classifySession } from '../session-record.js'   // #39/3.A: containment from the TAMPER-PROOF host record, not the wire
 import { resolveTerritoryImage } from '../safe-path.js'   // #56: shared dual-containment (repo + territory) image guard
 import { leadsRoomId } from '../teams/roster.js'
 import { repoEnvKeyStrict } from '../config.js'
@@ -79,6 +80,13 @@ const catchupPrompt = (reason) =>
 export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS, workerInvoke = defaultWorkerInvoke, workerPollMs = 2_000, tgFetch = globalThis.fetch, tgToken }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
+  // #39/3.A containment classification, keyed by sessionId (model-independent). `adversaries` = sessions
+  // the TAMPER-PROOF host record (session-record.js) marks summoned/adversary — a contained session controls
+  // its own register frame but NOT the host-only record, so a real adversary always lands here and can't
+  // forge 'normal'. `unverified` = sessions with NO host record (pre-#32 / human-wiped legit sessions): don't
+  // brand adversary (mislabel = availability bug) and don't silently trust → surface to the human once.
+  const adversaries = new Set()
+  const unverified = new Set()
   // Restore pairings a graceful restart dumped, so an in-flight room survives `mrc rooms restart`
   // (turn count / autoCatchup preserved). Sockets re-attach as the sessions reconnect + re-register.
   for (const sp of loadPairings()) pairings.set(sp.roomId, { ...sp, held: [] })
@@ -607,6 +615,20 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
         if (f.type === 'register' && f.sessionId) {
           sessionId = f.sessionId
           sessions.set(sessionId, { sock, repo: f.repo || '?', label: f.label || f.repo || '?', room: f.room || null, notifyPort: Number(f.notifyPort) || 0, memberHandle: f.memberHandle || null })
+          // B/#39: classify containment from the TAMPER-PROOF host-only record, NOT this register frame.
+          // The record is written host-side pre-launch (mrc.js) and never mounted into any container, so a
+          // summoned adversary always classifies 'adversary' here and CANNOT declassify itself by omitting a
+          // field from the frame. 3-state, loud-on-absent: 'adversary' → flag; 'normal' → trust; 'unknown'
+          // (no/unreadable record — only ever a pre-#32 / human-wiped LEGIT session) → don't brand adversary
+          // (mislabel = availability bug) and don't silently trust → alert the human once + mark unverified.
+          const cls = classifySession(sessionId)
+          if (cls === 'adversary') { adversaries.add(sessionId); unverified.delete(sessionId) }
+          else if (cls === 'normal') { adversaries.delete(sessionId); unverified.delete(sessionId) }
+          else if (!unverified.has(sessionId)) {   // 'unknown' — surface once; don't touch adversaries (preserve any join-path flag, don't brand)
+            unverified.add(sessionId)
+            notify(`Unverifiable session "${norm(defangTrustMarkers(String(f.label || f.repo || sessionId.slice(-6)))).slice(0, 80)}" connected — no security record. Treat its messages with caution; back-fill via mrc pick.`)
+            console.error(`[room-daemon] WARN unverifiable session ${sessionId} (${f.repo || '?'}) — no host security record at register`)
+          }
           noteSessions()
           if (f.memberHandle) {   // a TEAM member: bind it to its declared rooms in the engine
             // Resolve WHICH org this member belongs to: the session id is org-specific, so the index
@@ -642,7 +664,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
       }
     })
     sock.on('error', () => {})
-    sock.on('close', () => { if (sessionId) { const v = engine.viewForSession(sessionId); sessions.delete(sessionId); engine.unbindSession(sessionId); noteSessions(); if (v) broadcastEvent({ type: 'presence', org: v.org, handle: v.handle, online: false }) } })   // #69-B: resolve the member BEFORE unbinding, then push offline
+    sock.on('close', () => { if (sessionId) { const v = engine.viewForSession(sessionId); sessions.delete(sessionId); engine.unbindSession(sessionId); adversaries.delete(sessionId); unverified.delete(sessionId); noteSessions(); if (v) broadcastEvent({ type: 'presence', org: v.org, handle: v.handle, online: false }) } })   // #69-B: resolve the member BEFORE unbinding, then push offline · #39/3.A: clear containment flags (re-derived from the host record on reconnect)
   })
   server.listen(port, '127.0.0.1')
   server.on('error', () => process.exit(1))   // e.g. EADDRINUSE on an in-place restart → let the caller fall back
@@ -661,7 +683,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, turnCap = 200, 
           reply({
             ok: true,
             version,
-            sessions: [...sessions.entries()].map(([id, v]) => ({ id, repo: v.repo, name: v.label || v.repo, member: v.memberHandle || null })),
+            sessions: [...sessions.entries()].map(([id, v]) => ({ id, repo: v.repo, name: v.label || v.repo, member: v.memberHandle || null, adversary: adversaries.has(id) || undefined, unverified: unverified.has(id) || undefined })),   // #39/3.A: surface containment classification to `mrc rooms status`/the dashboard
             pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, a: nameOf(p.a), b: nameOf(p.b) })),
             teams: engine.status(),
           })
