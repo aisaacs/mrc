@@ -10,6 +10,17 @@ import { startRoomDaemon } from '../src/proxies/room-daemon.js'
 import { findFreePort } from '../src/ports.js'
 import { parseRoster, teamRoomId } from '../src/teams/roster.js'
 import { memberSessionId } from '../src/teams/session-id.js'
+import { saveSessionRecord } from '../src/session-record.js'
+
+// A real member launched by `mrc team up` always has a TAMPER-PROOF host record with a secret (mrc.js
+// writes it pre-launch, keyed by memberSessionId). R2/F3b bind requires classifySession 'normal' AND a
+// secret on record, and R1 requires the register frame to carry the matching secret. So model production:
+// write the record (deterministic secret from the id) AND send that secret in the register frame.
+function registerMember(client, frame) {
+  const secret = 'sec-' + String(frame.sessionId).slice(-12)
+  saveSessionRecord(frame.sessionId, { repoPath: process.env.HOME, adversary: false, secret })
+  client.send({ ...frame, type: 'register', secret })
+}
 
 // Redirect room files to a throwaway HOME so the test never touches the real ~/.local/share/mrc.
 const TMP_HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-test-`)
@@ -68,9 +79,9 @@ test('daemon team rooms: define org, directed delivery, @user round-trip, brake/
   await Promise.all([arch.ready, engineer.ready, critic.ready])
   // Register with the REAL pinned memberSessionId (what `mrc team up` uses) — R2 binds only a pinned id / a
   // normal-classified session, not a bare-handle fallback on an arbitrary id.
-  arch.send({ type: 'register', sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop', label: 'roland' })
-  engineer.send({ type: 'register', sessionId: memberSessionId('shop', 'ludivine/claude'), memberHandle: 'ludivine/claude', repo: 'shop', label: 'ludivine' })
-  critic.send({ type: 'register', sessionId: memberSessionId('shop', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'shop', label: 'pierre' })
+  registerMember(arch, { sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop', label: 'roland' })
+  registerMember(engineer, { sessionId: memberSessionId('shop', 'ludivine/claude'), memberHandle: 'ludivine/claude', repo: 'shop', label: 'ludivine' })
+  registerMember(critic, { sessionId: memberSessionId('shop', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'shop', label: 'pierre' })
   // each gets a join notice listing its rooms
   const joined = await arch.waitFor((f) => f.type === 'notice' && /Joined as @roland/.test(f.text))
   assert.match(joined.text, new RegExp(teamRoomId('shop', 'client')))
@@ -161,9 +172,9 @@ test('daemon containment: two orgs sharing a handle bind to the RIGHT org via th
   // share the bare handle; only the org-specific session id tells them apart.
   const aRoland = client(port), aPierre = client(port), bPierre = client(port)
   await Promise.all([aRoland.ready, aPierre.ready, bPierre.ready])
-  aRoland.send({ type: 'register', sessionId: memberSessionId('alpha', 'roland/claude'), memberHandle: 'roland/claude', repo: 'alpha' })
-  aPierre.send({ type: 'register', sessionId: memberSessionId('alpha', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'alpha' })
-  bPierre.send({ type: 'register', sessionId: memberSessionId('beta', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'beta' })
+  registerMember(aRoland, { sessionId: memberSessionId('alpha', 'roland/claude'), memberHandle: 'roland/claude', repo: 'alpha' })
+  registerMember(aPierre, { sessionId: memberSessionId('alpha', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'alpha' })
+  registerMember(bPierre, { sessionId: memberSessionId('beta', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'beta' })
   // Each binds to its own org's room (proves the index disambiguated, not a bare-handle clobber).
   const aj = await aRoland.waitFor((f) => f.type === 'notice' && /Joined as @roland/.test(f.text))
   assert.match(aj.text, new RegExp(teamRoomId('alpha', 'core')))
@@ -196,7 +207,7 @@ test('daemon #11: the ask_user `kind` survives say→route→inbox so questions 
 
   const eng = client(port)
   await eng.ready
-  eng.send({ type: 'register', sessionId: memberSessionId('shop', 'ludivine/claude'), memberHandle: 'ludivine/claude', repo: 'shop' })
+  registerMember(eng, { sessionId: memberSessionId('shop', 'ludivine/claude'), memberHandle: 'ludivine/claude', repo: 'shop' })
   await eng.waitFor((f) => f.type === 'notice' && /Joined/.test(f.text))
 
   // ask_user → say frame WITH kind:'question'; plain @user → say frame WITHOUT kind.
@@ -239,7 +250,7 @@ test('daemon #16: the @user inbox survives a daemon restart (no loss, no resurre
   await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
 
   const lead = client(port); await lead.ready
-  lead.send({ type: 'register', sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop' })
+  registerMember(lead, { sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop' })
   await lead.waitFor((f) => f.type === 'notice' && /Joined/.test(f.text))
   lead.send({ type: 'say', id: 1, text: '@user q1?', kind: 'question', room: 'leads' })
   lead.send({ type: 'say', id: 2, text: '@user q2?', kind: 'question', room: 'leads' })
@@ -271,7 +282,7 @@ test('daemon #16: the @user inbox survives a daemon restart (no loss, no resurre
 
   // A NEW question post-restart gets a FRESH id past the max restored id (no collision → TG-reply mapping safe).
   const lead2 = client(port); await lead2.ready
-  lead2.send({ type: 'register', sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop' })
+  registerMember(lead2, { sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop' })
   await lead2.waitFor((f) => f.type === 'notice' && /Joined/.test(f.text))
   lead2.send({ type: 'say', id: 9, text: '@user q4 after restart?', kind: 'question', room: 'leads' })
   await sleep(200)

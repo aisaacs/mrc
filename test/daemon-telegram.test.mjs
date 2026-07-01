@@ -10,6 +10,16 @@ import { startRoomDaemon } from '../src/proxies/room-daemon.js'
 import { findFreePort } from '../src/ports.js'
 import { parseRoster, leadsRoomId } from '../src/teams/roster.js'
 import { memberSessionId } from '../src/teams/session-id.js'
+import { saveSessionRecord } from '../src/session-record.js'
+
+// Build a register frame for a member the way `mrc team up` launches it: a host record with a secret
+// (deterministic from the id) plus that secret on the wire, so R1 admits it and R2/F3b binds it 'normal'.
+function memberFrame(org, handle, extra = {}) {
+  const sessionId = memberSessionId(org, handle)
+  const secret = 'sec-' + String(sessionId).slice(-12)
+  saveSessionRecord(sessionId, { repoPath: process.env.HOME, adversary: false, secret })
+  return { type: 'register', sessionId, memberHandle: handle, secret, ...extra }
+}
 
 const TMP_HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-tg-`)
 process.env.HOME = TMP_HOME
@@ -137,7 +147,7 @@ test('daemon telegram step 4: question→push, reply→answer + H4 edit, stale r
   // register the lead and have it ask @user a QUESTION → pushed to Telegram.
   const sock = net.connect(port, '127.0.0.1'); await new Promise((r) => sock.on('connect', r))
   const send = (o) => sock.write(JSON.stringify(o) + '\n')
-  send({ type: 'register', sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop' })
+  send(memberFrame('shop', 'roland/claude', { repo: 'shop' }))
   await sleep(200)
   send({ type: 'say', id: 1, text: '@user should we ship the candy theme?', kind: 'question', room: 'leads' })
   await sleep(200)
@@ -281,7 +291,7 @@ test('daemon telegram: a failed outbound push is NOT silent — surfaced in the 
   await controlCall(controlPort, { action: 'tgconfirm', org: 'shop', fromId: 555 })   // welcome send also "fails", but pin still set
 
   const sock = net.connect(port, '127.0.0.1'); await new Promise((r) => sock.on('connect', r))
-  sock.write(JSON.stringify({ type: 'register', sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop' }) + '\n')
+  sock.write(JSON.stringify(memberFrame('shop', 'roland/claude', { repo: 'shop' })) + '\n')
   await sleep(150)
   sock.write(JSON.stringify({ type: 'say', id: 1, text: '@user should this push?', kind: 'question', room: 'leads' }) + '\n')
   await sleep(250)
@@ -305,7 +315,7 @@ test('daemon telegram (#24): the pushed question carries the SAME #N as the dash
   tg.queue.push([upd(1, 555, '/start')]); await sleep(150)
   await controlCall(controlPort, { action: 'tgconfirm', org: 'shop', fromId: 555 })
   const sock = net.connect(port, '127.0.0.1'); await new Promise((r) => sock.on('connect', r))
-  sock.write(JSON.stringify({ type: 'register', sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop' }) + '\n'); await sleep(150)
+  sock.write(JSON.stringify(memberFrame('shop', 'roland/claude', { repo: 'shop' })) + '\n'); await sleep(150)
   sock.write(JSON.stringify({ type: 'say', id: 9, text: '@user ship it?', kind: 'question', room: 'leads' }) + '\n'); await sleep(250)
 
   const item = (await controlCall(controlPort, { action: 'team' })).userInbox.find((x) => /ship it/.test(x.text))
@@ -378,7 +388,7 @@ test('#56 daemon send_photo: territory image → confirmed chat; no-pin / outsid
   const acks = []
   sock.on('data', (d) => { for (const l of d.toString().split('\n')) { if (l.trim()) { try { const fr = JSON.parse(l); if (fr.type === 'ack') acks.push(fr) } catch {} } } })
   const ssend = (o) => sock.write(JSON.stringify(o) + '\n')
-  ssend({ type: 'register', sessionId: memberSessionId('shop', 'brigitte/claude'), memberHandle: 'brigitte/claude', repo: 'shop' })
+  ssend(memberFrame('shop', 'brigitte/claude', { repo: 'shop' }))
   await sleep(200)
   ssend({ type: 'sendphoto', id: 77, path: 'client/shot.png', caption: 'from the bound session' })
   await sleep(200)
@@ -413,7 +423,7 @@ test('daemon telegram (#58): an HTML push rejected on formatting falls back to P
   await controlCall(controlPort, { action: 'tgconfirm', org: 'shop', fromId: 555 })
 
   const sock = net.connect(port, '127.0.0.1'); await new Promise((r) => sock.on('connect', r))
-  sock.write(JSON.stringify({ type: 'register', sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop' }) + '\n'); await sleep(200)
+  sock.write(JSON.stringify(memberFrame('shop', 'roland/claude', { repo: 'shop' })) + '\n'); await sleep(200)
   sock.write(JSON.stringify({ type: 'say', id: 1, text: '@user **ship** the candy theme?', kind: 'question', room: 'leads' }) + '\n'); await sleep(250)
 
   assert.ok(htmlSeen.length >= 1, 'tried the HTML (parse_mode) send first')
