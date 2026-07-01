@@ -66,17 +66,7 @@ function loadOpEnv(envFile) {
   // Scope to one account when possible (OP_ACCOUNT, from the shell or the .env) — this avoids
   // biometric-prompting (and erroring on) accounts that don't hold the referenced vault. Otherwise
   // try each configured account in turn and stop at the first that resolves a secret.
-  const opAccount = process.env.OP_ACCOUNT || ''
-  let candidates = [opAccount]
-  if (!opAccount) {
-    try {
-      const json = execFileSync('op', ['account', 'list', '--format=json'], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-      const accts = JSON.parse(json).map(a => a.url).filter(Boolean)
-      candidates = accts.length ? accts : ['']
-    } catch { candidates = [''] }
-  }
-
-  for (const acct of candidates) {
+  for (const acct of opAccountCandidates()) {
     const got = runFor(acct)
     if (Object.keys(got).length) {
       for (const [k, v] of Object.entries(got)) process.env[k] = v
@@ -86,6 +76,52 @@ function loadOpEnv(envFile) {
   }
 
   return process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || null
+}
+
+/** 1Password accounts to try, in order: an explicit OP_ACCOUNT, else every configured account
+ *  (so a secret in any of them resolves), else the default (''). Shared by the .env and .mrcrc
+ *  op:// resolvers. */
+function opAccountCandidates() {
+  const opAccount = process.env.OP_ACCOUNT || ''
+  if (opAccount) return [opAccount]
+  try {
+    const json = execFileSync('op', ['account', 'list', '--format=json'], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    const accts = JSON.parse(json).map(a => a.url).filter(Boolean)
+    return accts.length ? accts : ['']
+  } catch { return [''] }
+}
+
+/** Resolve a single op:// secret reference, trying each candidate account. Returns the secret or null. */
+function opRead(ref) {
+  for (const acct of opAccountCandidates()) {
+    try {
+      const args = ['read', '--no-newline']
+      if (acct) args.push('--account', acct)
+      args.push(ref)
+      const out = execFileSync('op', args, { timeout: 15000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+      if (out && out.trim()) return out.trim()
+    } catch {}
+  }
+  return null
+}
+
+/** If a .mrcrc env line's value is an op:// reference, resolve it via 1Password (host-side) and
+ *  return { key, value }; otherwise return null (the caller injects the line verbatim). Resolving
+ *  here — per project, from <repo>/.mrcrc — keeps the secret out of mrc's global config and out of
+ *  the container image; the sandbox has no op CLI and the firewall blocks 1Password anyway. */
+export function resolveOpEnv(entry) {
+  const eq = entry.indexOf('=')
+  if (eq < 0) return null
+  const key = entry.slice(0, eq)
+  const ref = entry.slice(eq + 1).trim().replace(/^"(.*)"$/, '$1')
+  if (!ref.startsWith('op://')) return null
+  const value = opRead(ref)
+  if (!value) {
+    console.error(`  ⚠ 1Password couldn't resolve ${key} (${ref}); injecting the reference unresolved.`)
+    return null
+  }
+  dbg(`resolved op:// reference for ${key}`)
+  return { key, value }
 }
 
 /** Parse CLI args into a config object. Returns { config, repoArgs, claudeArgs }. */

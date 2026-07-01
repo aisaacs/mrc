@@ -10,7 +10,7 @@ import { fileURLToPath } from 'node:url'
 
 import { BANNER } from './src/constants.js'
 import { setVerbose, dbg } from './src/output.js'
-import { readMrcrc, loadEnv, parseArgs } from './src/config.js'
+import { readMrcrc, loadEnv, parseArgs, resolveOpEnv } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
 import { buildImage, checkImageAge, getExistingCount, volumeName, runContainer, startDaemon, showStatus } from './src/docker.js'
 import { processSandboxignores } from './src/sandboxignore.js'
@@ -105,7 +105,11 @@ Environment:
                        naming/summaries (.env next to this script). NOT used by the
                        sandboxed session (it runs on Max/OAuth).
   OPENAI_API_KEY     — loaded from .env (required for --agent codex)
-  MRC_PORT_BASE      — starting port for proxy allocation (default: 7722)`)
+  MRC_PORT_BASE      — starting port for proxy allocation (default: 7722)
+
+Per-repo .mrcrc env lines (KEY=VALUE) are injected into the container; an op://
+value is resolved via 1Password on the host. Set MRC_EXTRA_DOMAINS there to allow
+extra firewall domains (e.g. mcp.linear.app) for one repo without --web.`)
   process.exit(0)
 }
 
@@ -348,7 +352,13 @@ if (config.resumeSession) envFlags.push('-e', `RESUME_SESSION=${config.resumeSes
 if (config.newSession) envFlags.push('-e', 'NEW_SESSION=1')
 envFlags.push('-e', `CLAUDE_CODE_MAX_OUTPUT_TOKENS=${process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '128000'}`)
 envFlags.push('-e', `MRC_REPO_NAME=${basename(repoPath)}`)
-for (const env of configEnvs) envFlags.push('-e', env)
+// Inject per-repo/global .mrcrc env vars. An op:// value is resolved host-side and passed by name
+// (keeping the secret out of the docker argv); everything else passes through verbatim.
+for (const env of configEnvs) {
+  const op = resolveOpEnv(env)
+  if (op) { process.env[op.key] = op.value; envFlags.push('-e', op.key) }
+  else envFlags.push('-e', env)
+}
 for (const key of Object.keys(process.env)) {
   if (key.startsWith('MRC_VIDEO_')) envFlags.push('-e', `${key}=${process.env[key]}`)
 }

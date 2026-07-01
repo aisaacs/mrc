@@ -82,7 +82,7 @@ Lets two running `mrc` sessions consult each other through a host-mediated relay
 - **Desktop notifications** — A Claude Code `Stop` hook fires on every response completion. The container-side hook script extracts a summary and sends it to the host-side notification proxy, which shows a native macOS/Linux notification.
 - **Default status line** — The entrypoint writes a `statusLine` entry pointing at the statusline script only if the user hasn't already set one, so a `/statusline` customization always wins.
 - **Container labeling** — Each container is labeled with `mrc=1`, `mrc.repo`, `mrc.repo.name`, and `mrc.web` for discovery by `mrc status`.
-- **Config files (`.mrcrc`)** — Global defaults in `~/.mrcrc`, per-repo overrides in `<repo>/.mrcrc`. Both use the same format: one CLI flag per line, comments with `#`. All sources are merged (global + repo + CLI), with CLI flags taking precedence.
+- **Config files (`.mrcrc`)** — Global defaults in `~/.mrcrc`, per-repo overrides in `<repo>/.mrcrc`. Both use the same format: one CLI flag per line, comments with `#`. All sources are merged (global + repo + CLI), with CLI flags taking precedence. A line of the form `KEY=VALUE` (uppercase key) is instead injected into the container as an env var (`docker run -e KEY=VALUE`); a `VALUE` of the form `op://…` is resolved host-side via the 1Password CLI and passed to the container by name (the secret never lands in the repo, mrc's global config, or the image). This is how a project gives the sandbox a project-scoped secret (e.g. `LINEAR_API_KEY=op://…`) without it ever becoming an mrc-wide setting.
 - **Multi-instance support** — Multiple `mrc` instances can run against the same repo. Each gets its own config volume (`mrc-config-<hash>-2`, `-3`, etc.) and dynamically allocated proxy ports.
 - **Dynamic port allocation** — Proxy ports are allocated by scanning for free ports starting from `MRC_PORT_BASE` (default 7722). The clipboard proxy takes the first free port, the notification proxy takes the next.
 - **In-process proxies** — The Node.js launcher runs clipboard and notification proxies as `net.createServer()` instances in the same process. No external `socat` dependency required.
@@ -141,6 +141,8 @@ Environment:
   MRC_PORT_BASE        Starting port for proxy allocation (default: 7722)
   MRC_ROOM_TURN_CAP    Room turn-cap window before a check-in pause (default: 100; 0 disables)
   MRC_DASHBOARD_PORT   Room dashboard port (default: 8787; 0 disables the daemon-hosted dashboard)
+  MRC_EXTRA_DOMAINS    Extra firewall-allowed domains (comma/space-separated). Set per-repo in
+                       <repo>/.mrcrc to reach e.g. mcp.linear.app without --web. Empty by default.
   MRC_HOME             Override Docker context directory (advanced)
 ```
 
@@ -157,7 +159,7 @@ node mrc.js ~/some/repo
 
 Changes to `mrc.js` and `src/` take effect immediately (they run on the host) — except `src/proxies/room-daemon.js`, which runs as a long-lived daemon: apply it with `mrc rooms restart` (or it auto-refreshes on the next launch via its version stamp).
 
-**To add allowed domains:** edit the `for domain in ...` loop in `init-firewall.sh`.
+**To add allowed domains:** for a global default, edit the always-on `for domain in ...` loop in `init-firewall.sh`. For a single repo, set `MRC_EXTRA_DOMAINS` (comma/space-separated) in that repo's `.mrcrc` — `init-firewall.sh` resolves and whitelists them on top of the always-on list, keeping the sandbox default-deny (no `--web` needed).
 
 **To add system packages:** add to the `apt-get install` line in the Dockerfile.
 

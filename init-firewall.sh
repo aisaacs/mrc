@@ -54,19 +54,16 @@ done
 # Create ipset with CIDR support
 ipset create allowed-domains hash:net
 
-# Resolve and add allowed domains. A resolution failure is a warning, not fatal —
-# a transient DNS hiccup on one domain shouldn't wedge container startup.
-for domain in \
-    "registry.npmjs.org" \
-    "api.anthropic.com" \
-    "api.openai.com" \
-    "sentry.io" \
-    "statsig.com"; do
+# Resolve a domain's A records and add them to the allowed-domains ipset. A resolution failure is a
+# warning, not fatal — a transient DNS hiccup on one domain shouldn't wedge container startup.
+add_domain() {
+    local domain="$1"
     echo "Resolving $domain..."
+    local ips
     ips=$(dig +noall +answer A "$domain" | awk '$4 == "A" {print $5}')
     if [ -z "$ips" ]; then
         echo "WARNING: Failed to resolve $domain — skipping"
-        continue
+        return
     fi
 
     while read -r ip; do
@@ -77,7 +74,28 @@ for domain in \
         echo "Adding $ip for $domain"
         ipset add allowed-domains "$ip" -exist
     done < <(echo "$ips")
+}
+
+# Always-on whitelist.
+for domain in \
+    "registry.npmjs.org" \
+    "api.anthropic.com" \
+    "api.openai.com" \
+    "sentry.io" \
+    "statsig.com"; do
+    add_domain "$domain"
 done
+
+# Per-project extra domains (MRC_EXTRA_DOMAINS, comma- or space-separated). Lets a repo opt in
+# additional allowed hosts via <repo>/.mrcrc without opening the whole web (--web). Empty by
+# default, so the sandbox stays default-deny.
+if [ -n "${MRC_EXTRA_DOMAINS:-}" ]; then
+    while read -r domain; do
+        [ -z "$domain" ] && continue
+        echo "Extra domain (MRC_EXTRA_DOMAINS): $domain"
+        add_domain "$domain"
+    done < <(echo "$MRC_EXTRA_DOMAINS" | tr ', ' '\n')
+fi
 
 # Get host IP from default route
 HOST_IP=$(ip route | grep default | cut -d" " -f3)

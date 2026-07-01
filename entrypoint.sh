@@ -22,6 +22,7 @@ sudo ALLOW_WEB="${ALLOW_WEB:-}" \
   MRC_CLIPBOARD_PORT="${MRC_CLIPBOARD_PORT:-7722}" \
   MRC_NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}" \
   MRC_ROOM_PORT="${MRC_ROOM_PORT:-}" \
+  MRC_EXTRA_DOMAINS="${MRC_EXTRA_DOMAINS:-}" \
   /usr/local/bin/init-firewall.sh
 
 # All config setup is now in Node
