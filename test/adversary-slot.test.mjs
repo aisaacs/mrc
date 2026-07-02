@@ -65,6 +65,28 @@ test('preferredStart is taken when free, else falls through to lowest-free', () 
   assert.equal(claimLowestFree(dir, new Set(), 5).slot, 1, 'taken preferred slot falls through to lowest-free')
 })
 
+// --- adversary RESUME: EXACT-slot-or-fail (never open in another Pierre's durable volume) ---
+test('exact: a FREE preferred slot is claimed', () => {
+  const dir = freshDir()
+  assert.equal(claimLowestFree(dir, new Set(), 3, { exact: true }).slot, 3, 'exact + free preferred → claimed')
+})
+
+test('exact: a TAKEN preferred slot FAILS with NO lowest-free fallback (the wrong-Pierre-volume bug)', () => {
+  const usedDir = freshDir()
+  assert.equal(claimLowestFree(usedDir, new Set([3]), 3, { exact: true }), null, 'exact + preferred in the live-mount used set → null (fail closed, no fall to slot 1)')
+
+  const claimedDir = freshDir()
+  fs.writeFileSync(join(claimedDir, '2'), `${process.pid}\n`)   // a live claim already holds slot 2
+  assert.equal(claimLowestFree(claimedDir, new Set(), 2, { exact: true }), null, 'exact + preferred claim EEXISTs → null (never falls to slot 1 = another summon\'s volume)')
+  // contrast: WITHOUT exact (a SUMMON), the same taken preferred still falls through to lowest-free
+  assert.equal(claimLowestFree(claimedDir, new Set(), 2).slot, 1, 'non-exact summon still falls back to lowest-free')
+})
+
+test('exact: preferredStart 0 (no recorded slot) FAILS — cannot reattach an adversary without its own slot', () => {
+  const dir = freshDir()
+  assert.equal(claimLowestFree(dir, new Set(), 0, { exact: true }), null, 'exact + no preferred → null, never lowest-free')
+})
+
 // --- D8: nextInstanceSlot — MOUNTED-slot SET oracle (running containers' config-volume mounts, injected here) ---
 const setHome = () => { process.env.HOME = freshDir() }
 const cfgBase = (repo) => `mrc-config-${createHash('md5').update(repo).digest('hex').slice(0, 12)}`

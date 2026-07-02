@@ -19,7 +19,10 @@ const slotsDir = (sub, repoPath) => join(homedir(), '.local', 'share', 'mrc', su
 // that both computed the same `used` set still can't land on the same slot. GC a dead claim first (PID-liveness
 // + a 48h backstop for PID-reuse); a claim body is `<pid>\n` (the trailing-newline SENTINEL proves the whole
 // PID landed, so a torn read never reaps a live claim). Returns {slot} or null (taken/fail-closed).
-export function claimLowestFree(dir, used, preferredStart = 0) {
+// `exact` (adversary RESUME): claim preferredStart OR FAIL — no lowest-free fallback. A resume MUST reattach its OWN
+// recorded slot; falling back into another slot mounts a DIFFERENT summon's durable -pierre-N volume (its ~/.claude +
+// transcript) = an isolation break + a silent wrong-identity resume (Pierre). Summon stays exact:false (lowest-free).
+export function claimLowestFree(dir, used, preferredStart = 0, { exact = false } = {}) {
   try { mkdirSync(dir, { recursive: true }) } catch {}
   const now = Date.now()
   try {
@@ -47,6 +50,7 @@ export function claimLowestFree(dir, used, preferredStart = 0) {
   }
   try {
     if (preferredStart > 0 && preferredStart <= ADV_MAX_SLOTS) { const got = attempt(preferredStart); if (got) return { slot: got, sawClaim } }
+    if (exact) return null   // resume: preferred slot unavailable → FAIL, never fall into another Pierre's volume
     for (let n = 1; n <= ADV_MAX_SLOTS; n++) { const got = attempt(n); if (got) return { slot: got, sawClaim } }
   } catch { return null }   // non-EEXIST write error → lost signal → fail closed
   return null
@@ -55,7 +59,10 @@ export function claimLowestFree(dir, used, preferredStart = 0) {
 /** Lowest free "Pierre" slot for a repo's summoned-adversary pool (volumes `mrc-config-<hash>-pierre-N`).
  *  Race-free + fail-closed. "In use" = RUNNING adversaries (their mrc.adversary.slot label). Returns the slot
  *  number, or null on a lost liveness oracle (docker down/timeout) / no safe slot → caller fails closed. */
-export function nextAdversarySlot(repoPath, preferredSlot = 0) {
+export function nextAdversarySlot(repoPath, preferredSlot = 0, { exact = false } = {}) {
+  // Adversary RESUME (exact): must reattach its OWN recorded slot. No recorded slot → can't safely reattach → fail
+  // closed (never lowest-free into a stranger's volume). Pass exact through so the claim itself is preferred-or-fail.
+  if (exact && !(preferredSlot > 0)) return null
   const used = new Set()
   try {
     const out = execFileSync('docker', [
@@ -64,7 +71,7 @@ export function nextAdversarySlot(repoPath, preferredSlot = 0) {
     ], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim()
     for (const s of (out ? out.split('\n') : [])) { const n = parseInt(s, 10); if (n > 0) used.add(n) }
   } catch { return null }   // lost liveness oracle → fail closed
-  const r = claimLowestFree(slotsDir('pierre-slots', repoPath), used, preferredSlot)
+  const r = claimLowestFree(slotsDir('pierre-slots', repoPath), used, preferredSlot, { exact })
   return r ? r.slot : null
 }
 

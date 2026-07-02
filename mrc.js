@@ -463,11 +463,23 @@ if (memberCtx) {
   // Login-reuse: a resume PREFERS its own stored slot (claimed through the same race-free gate — a stored slot
   // that's live/claimed just falls through to lowest-free). A fresh summon takes the lowest free slot.
   const preferredSlot = (config.resumeIsAdversary && config.resumeSession) ? (loadSessionRecord(config.resumeSession).slot || 0) : 0
-  adversarySlot = nextAdversarySlot(repoPath, preferredSlot)
+  // Adversary RESUME is EXACT-slot-or-fail: reattach its OWN recorded -pierre-N volume, or abort — NEVER fall back to
+  // the lowest-free slot, which would open it inside a DIFFERENT summon's durable volume (its ~/.claude + transcript)
+  // = an isolation break (#9) + a silent wrong-identity resume. Summon (resumeIsAdversary=false) stays lowest-free.
+  adversarySlot = nextAdversarySlot(repoPath, preferredSlot, { exact: config.resumeIsAdversary })
   if (!adversarySlot) {
-    console.error('  ✗ Could not safely claim a Pierre slot (docker unreachable, or the slot dir is busy). Nothing launched — try again in a moment.')
+    console.error(config.resumeIsAdversary
+      ? (preferredSlot
+        ? `  ✗ Can't reattach this adversary's dedicated volume — its recorded slot (${preferredSlot}) is held by a running adversary. If THIS adversary is still live, attach to the running session instead of resuming; otherwise close whatever holds slot ${preferredSlot}, then retry (or summon a fresh one). Refusing to reopen it in a DIFFERENT Pierre's volume.`
+        : `  ✗ Can't reattach this adversary — no config-volume slot is recorded for it. Summon a fresh one. Refusing to guess a slot and reopen it in a DIFFERENT Pierre's volume.`)
+      : '  ✗ Could not safely claim a Pierre slot (docker unreachable, or the slot dir is busy). Nothing launched — try again in a moment.')
     process.exit(1)
   }
+  // NB (Pierre): `-pierre-N` is per-SLOT, not per-ADVERSARY. Slots recycle (lowest-free) and the volume is durable
+  // (never `docker volume rm`'d), so one `-pierre-N` is shared SEQUENTIALLY across every adversary that held slot N —
+  // same ~/.claude/OAuth/settings/projects store. Transcripts stay correct because resume targets the exact
+  // `--resume <uuid>.jsonl` (container-setup), and O_EXCL blocks concurrent sharing; both are caged, so it's low-risk.
+  // But do NOT assume "`-pierre-N` = one Pierre" — it's "one live claimant at a time," a rolling identity.
   volName = `${volumeName(repoPath, 1)}-pierre-${adversarySlot}`
   console.log(`  ⓘ ${config.resumeIsAdversary ? 'Resuming' : 'Summoned'} adversary on Pierre slot ${adversarySlot} — its own config volume (no clone; it can't log you out).`)
 } else {

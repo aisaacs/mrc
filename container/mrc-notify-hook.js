@@ -6,7 +6,11 @@
 //
 import { createConnection } from 'node:net'
 
-const PORT = process.env.MRC_NOTIFY_PORT || '7723'
+// #22: no stale-literal fallback. #50 moved the notify proxy off 7723 (portBase+2 now), so `|| '7723'` would dial the
+// WRONG (clip/relay) port on a missing env. A missing MRC_NOTIFY_PORT means the notify proxy isn't up → no-op, don't
+// dial a stale port. The host always injects the real port when the proxy starts.
+const PORT = process.env.MRC_NOTIFY_PORT
+if (!PORT) process.exit(0)
 const REPO = process.env.MRC_REPO_NAME || 'workspace'
 
 function clean(s) {

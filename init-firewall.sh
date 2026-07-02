@@ -125,8 +125,13 @@ echo "Host network detected as: $HOST_NETWORK"
 
 # Allow host network communication — only specific proxy ports, not full access.
 # This prevents the container from reaching services like Postgres on the host.
-CLIP_PORT="${MRC_CLIPBOARD_PORT:-7722}"
-NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}"
+# #22: EMPTY defaults, mirroring MRC_ROOM_PORT below — do NOT hardcode 7722/7723. #50 reserved portBase (7722) for
+# the RELAY and moved the per-session clip/notify proxies to portBase+1/+2, so the old `:-7722`/`:-7723` literals now
+# name the WRONG (relay) port. The host always passes the real MRC_CLIPBOARD_PORT/MRC_NOTIFY_PORT when the proxies
+# start; a MISSING env means "that proxy isn't up" → allowlist NOTHING for it (presence-gated below), never fall back
+# to a stale literal. One source of truth (the host env), no frozen port that silently drifts from a custom PORT_BASE.
+CLIP_PORT="${MRC_CLIPBOARD_PORT:-}"
+NOTIFY_PORT="${MRC_NOTIFY_PORT:-}"
 ROOM_PORT="${MRC_ROOM_PORT:-}"
 SNI_PROXY_PORT="${MRC_SNI_PROXY_PORT:-}"
 # F/#41 + A/#40: a caged adversary reaches ONLY the room relay port + the SNI-pinning egress proxy port —
@@ -138,7 +143,7 @@ SNI_PROXY_PORT="${MRC_SNI_PROXY_PORT:-}"
 if [ "$CAGE" = "1" ]; then
     HOST_PORTS=(${ROOM_PORT:+$ROOM_PORT} ${SNI_PROXY_PORT:+$SNI_PROXY_PORT})
 else
-    HOST_PORTS=("$CLIP_PORT" "$NOTIFY_PORT" ${ROOM_PORT:+$ROOM_PORT})
+    HOST_PORTS=(${CLIP_PORT:+$CLIP_PORT} ${NOTIFY_PORT:+$NOTIFY_PORT} ${ROOM_PORT:+$ROOM_PORT})   # #22: presence-gate all three (a missing proxy env → allowlist nothing for it, not a stale-port entry)
 fi
 # INVARIANT (do NOT break): the daemon's CONTROL port is NEVER in HOST_PORTS — it must stay unreachable from
 # any container. The control-socket handlers trust frame fields (org/handle/steer→[Human directive]) precisely

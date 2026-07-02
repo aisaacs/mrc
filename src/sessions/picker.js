@@ -1,5 +1,5 @@
 import { createInterface } from 'node:readline'
-import { getSessions, loadNames, getSummaryPreview } from './manager.js'
+import { getSessions, getResumableSessions, loadNames, getSummaryPreview } from './manager.js'
 import { generateName } from './api.js'
 
 const ESC = '\x1b'
@@ -61,18 +61,25 @@ export async function ensureNamesMigrated(mrcDir) {
 export async function pick(mrcDir) {
   await ensureNamesMigrated(mrcDir)
 
-  const sessions = getSessions(mrcDir)
+  const sessions = getResumableSessions(mrcDir)   // D2: normal .mrc sessions + repoPath-filtered summoned adversaries (SAME order `resolve` uses → `sessions resume <#>` can't diverge)
   const names = loadNames(mrcDir)
 
-  // Build rows: { action, num, ts, name, preview }
+  // Build rows: { action, num, ts, name, adversary, selfName, issuer, preview }
   const rows = [{ action: 'NEW', num: '', ts: '', name: 'New session', preview: '' }]
   for (let i = 0; i < sessions.length; i++) {
-    const { uuid, lastUpdated, preview } = sessions[i]
+    const { uuid, lastUpdated, preview, adversary, summonedBy } = sessions[i]
+    const issuer = summonedBy ? (names[summonedBy] || summonedBy.slice(0, 8)) : ''
+    const selfName = names[uuid] || (adversary ? 'adversary' : '(unnamed)')
     rows.push({
       action: uuid,
       num: String(i + 1),
-      ts: formatTs(lastUpdated),
-      name: names[uuid] || '(unnamed)',
+      ts: lastUpdated ? formatTs(lastUpdated) : '',
+      // D2: an adversary row is labelled ⚔ from the durable record (summonedBy = the classifySession keystone) and,
+      // when SELECTED, triggers an inline re-sandbox confirm — the picker path has no confirmIfAdversary otherwise.
+      name: adversary ? `⚔ ${selfName} — red-team for ${issuer}` : selfName,
+      adversary: !!adversary,
+      selfName,
+      issuer,
       preview: getSummaryPreview(mrcDir, uuid) || preview,
     })
   }
@@ -91,10 +98,20 @@ export async function pick(mrcDir) {
   const write = s => ttyOut.write(s)
 
   let selected = 0
+  let confirming = false      // D2: an adversary row was selected → confirm re-sandbox INLINE (rendered on-screen, not a lone prompt after the screen-clear that scrolls off with the cursor hidden)
+  let confirmArmedAt = 0      // D2: ignore input until this ms — drains a buffered/held/pasted Enter (the key that SELECTED the row) so it can't auto-arm the confirm
   const cols = process.stdout.columns || 120
 
   function render() {
     write(CLEAR_SCREEN)
+    if (confirming) {
+      const row = rows[selected]
+      write(`\n  ${BOLD}⚔  Reopen a RED-TEAM (adversary) session?${RESET}\n\n`)
+      write(`  "${row.selfName}" — the adversary you summoned for "${row.issuer}".\n`)
+      write(`  ${DIM}It reopens RE-SANDBOXED (hardened firewall, no web) by default; pass --open-adversary-unsafe to open it uncaged.${RESET}\n\n`)
+      write(`  ${BOLD}y${RESET} reopen it   ·   ${BOLD}any other key${RESET} go back\n`)
+      return
+    }
     write(`  ${BOLD}Use the Schwartz to pick a session${RESET}\n`)
     write(`  ${DIM}↑/↓ navigate · Enter select · q quit${RESET}\n`)
     write(`  ${'━'.repeat(Math.min(cols - 4, 70))}\n\n`)
@@ -155,6 +172,14 @@ export async function pick(mrcDir) {
 
     input.on('data', key => {
       const k = key.toString()
+      if (confirming) {
+        // D2: drain buffered/held/pasted input for a beat so the Enter that SELECTED the ⚔ row can't auto-confirm;
+        // require an explicit `y` (default-No), never Enter — a double-tapped/pasted Enter must not reopen a cage.
+        if (Date.now() < confirmArmedAt) return
+        if (k === 'y' || k === 'Y') finish(rows[selected].action)
+        else { confirming = false; render() }   // n / Esc / any other key → back to the list
+        return
+      }
       if (k === '\x1b[A' || k === 'k') { // up
         selected = Math.max(0, selected - 1)
         render()
@@ -162,7 +187,9 @@ export async function pick(mrcDir) {
         selected = Math.min(rows.length - 1, selected + 1)
         render()
       } else if (k === '\r' || k === '\n' || k === '\x1b[C') { // enter / right
-        finish(rows[selected].action)
+        // D2: an adversary row → INLINE re-sandbox confirm (the picker path has no confirmIfAdversary otherwise); a normal row opens directly.
+        if (rows[selected].adversary) { confirming = true; confirmArmedAt = Date.now() + 250; render() }
+        else finish(rows[selected].action)
       } else if (k === 'q' || k === '\x1b' || k === '\x03') { // quit / Ctrl-C
         finish(null)
       }

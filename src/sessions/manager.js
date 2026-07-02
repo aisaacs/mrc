@@ -1,6 +1,7 @@
 import { readFileSync, writeFileSync, renameSync, readdirSync, existsSync, statSync } from 'node:fs'
-import { join, basename } from 'node:path'
+import { join, basename, dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { allSessionRecords } from '../session-record.js'
 
 /** Return sessions sorted newest-first as [{ uuid, lastUpdated, preview }, ...]. */
 export function getSessions(mrcDir) {
@@ -74,9 +75,34 @@ export function saveNames(mrcDir, names) {
   renameSync(tmp, file)
 }
 
+/**
+ * D2: the ONE ordered list of resumable sessions, shared by the picker AND `resolve` (so `sessions resume <#>`
+ * numbering matches what the picker shows and a raw adversary uuid resolves the same way). It merges the normal
+ * `.mrc` sessions (recency-ranked) with SUMMONED-ADVERSARY sessions from the machine-global host records —
+ * appended after the normal rows. Adversaries are surfaced from the records because a caged adversary's transcript
+ * lives in its dedicated `-pierre-N` config volume, NOT in `.mrc` (container-setup skips the /workspace/.mrc symlink
+ * under the cage), so getSessions('.mrc') is structurally blind to them. CONTAINMENT FLOOR: filter to
+ * `rec.repoPath === repoPath` — allSessionRecords is GLOBAL and the `-pierre-N` pool + volume are md5(repoPath)-keyed,
+ * so surfacing a foreign-repo adversary would resume it from THIS repo's (wrong/empty/co-resident) volume.
+ * Each row: { uuid, lastUpdated, preview, adversary, summonedBy }.
+ */
+export function getResumableSessions(mrcDir) {
+  const repoPath = dirname(mrcDir)
+  const sessions = getSessions(mrcDir).map((s) => ({ ...s, adversary: false, summonedBy: null }))
+  const seen = new Set(sessions.map((s) => s.uuid))
+  const advRows = []
+  for (const [uuid, rec] of Object.entries(allSessionRecords())) {
+    if (!(rec.adversary || rec.summonedBy)) continue        // adversaries only (keystone: same as classifySession)
+    if (rec.repoPath !== repoPath) continue                 // containment floor: only THIS repo's Pierre pool
+    if (seen.has(uuid)) continue                            // dedup (a normal .mrc session that also has a record)
+    advRows.push({ uuid, lastUpdated: 0, preview: '', adversary: true, summonedBy: rec.summonedBy || null })
+  }
+  return [...sessions, ...advRows]   // normal (recency-ranked) first, adversaries appended → stable order for picker + resolve
+}
+
 /** Resolve a name or list number to a UUID. Returns UUID or null. */
 export function resolve(mrcDir, query) {
-  const sessions = getSessions(mrcDir)
+  const sessions = getResumableSessions(mrcDir)   // D2: include adversaries so `sessions resume <#>` matches the picker + a raw adversary uuid resolves (D10 confirmIfAdversary still guards the resume path in mrc.js)
   const names = loadNames(mrcDir)
 
   // Try as a number
