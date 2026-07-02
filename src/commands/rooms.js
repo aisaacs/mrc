@@ -95,7 +95,7 @@ export async function roomsCommand(args) {
     // daemon keeps serving, and an open dashboard keeps it alive, so there's no tab to babysit.
     const { ensureRoomDaemon } = await import('./pair.js')
     const { openBrowser } = await import('../rooms-dashboard.js')
-    try { await ensureRoomDaemon({ portBase: Number(process.env.MRC_PORT_BASE) || 7722, notifyPort: 0 }) }
+    try { await ensureRoomDaemon({ relayPort: Number(process.env.MRC_PORT_BASE) || 7722, notifyPort: 0 }) }   // #50: relayPort (the fixed constant), not portBase
     catch (e) { console.error(`  ! could not start the room daemon: ${e.message}`); process.exit(1) }
     // The daemon records its dashboard port a beat after its control port answers; poll briefly.
     let dashboardPort = readMeta()?.dashboardPort

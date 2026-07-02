@@ -7,7 +7,8 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { claimLowestFree } from '../src/docker.js'
+import { claimLowestFree, nextInstanceSlot } from '../src/docker.js'
+import { createHash } from 'node:crypto'
 
 const freshDir = () => fs.mkdtempSync(join(os.tmpdir(), 'mrc-slot-'))
 
@@ -62,4 +63,48 @@ test('preferredStart is taken when free, else falls through to lowest-free', () 
   assert.equal(claimLowestFree(dir, new Set(), 5).slot, 5, 'free preferred slot is taken')
   // 5 now claimed; prefer 5 again → EEXIST → falls to lowest-free (1)
   assert.equal(claimLowestFree(dir, new Set(), 5).slot, 1, 'taken preferred slot falls through to lowest-free')
+})
+
+// --- D8: nextInstanceSlot — MOUNTED-slot SET oracle (running containers' config-volume mounts, injected here) ---
+const setHome = () => { process.env.HOME = freshDir() }
+const cfgBase = (repo) => `mrc-config-${createHash('md5').update(repo).digest('hex').slice(0, 12)}`
+
+test('nextInstanceSlot: NOTHING running → slot 1 → REUSES mrc-config-<hash> (auto-resume + login persist)', () => {
+  setHome()
+  const r = nextInstanceSlot('/repo/persist', { listMountedVolumes: () => [] })
+  assert.equal(r.slot, 1, 'a plain sequential relaunch with nothing running reuses slot 1 = the durable config volume (CLAUDE.md persistence/auto-resume)')
+  assert.equal(r.others, 0, 'no other running session')
+})
+
+test('nextInstanceSlot: stop-A/start-B/start-C — reuses A\'s STOPPED slot, no collision with B\'s live volume', () => {
+  setHome()
+  const repo = '/repo/stopstart'; const base = cfgBase(repo)
+  // B is running on slot 2 (mounts base-2); A is STOPPED (not mounted). C launches → used={2} → slot 1.
+  const r = nextInstanceSlot(repo, { listMountedVolumes: () => [`${base}-2`] })
+  assert.equal(r.slot, 1, 'C reuses A\'s stopped slot-1 volume (used={2}=B only) — the old count+1 picked 2 = B\'s LIVE volume (the contamination bug)')
+  assert.equal(r.others, 1, 'B is the one other running session')
+})
+
+test('nextInstanceSlot: two concurrent launches (same used-set) get different slots; sawClaim flags the sibling', () => {
+  setHome()
+  const repo = '/repo/concurrent'
+  const list = () => []   // both launching simultaneously — neither mount is up yet
+  const r1 = nextInstanceSlot(repo, { listMountedVolumes: list })
+  const r2 = nextInstanceSlot(repo, { listMountedVolumes: list })
+  assert.equal(r1.slot, 1, 'first concurrent claim → 1')
+  assert.equal(r1.others, 0, 'first sees no sibling claim')
+  assert.equal(r2.slot, 2, 'second concurrent claim → 2 (O_EXCL: slot 1 claim on disk though its mount is not up)')
+  assert.equal(r2.others, 1, 'sawClaim caught the on-disk sibling the mount-oracle is blind to → others=1 (so it won\'t --continue the shared transcript)')
+})
+
+test('nextInstanceSlot: ignores -pierre-<N> and mrc-codex-* mounts (separate slot spaces)', () => {
+  setHome()
+  const repo = '/repo/mixed'; const base = cfgBase(repo)
+  const r = nextInstanceSlot(repo, { listMountedVolumes: () => [`${base}-pierre-3`, `mrc-codex-${base.slice(11)}`] })
+  assert.equal(r.slot, 1, 'a running adversary/codex mount does not occupy a regular instance slot → slot 1 still free')
+})
+
+test('nextInstanceSlot: fail-CLOSED (null) when the mount oracle throws', () => {
+  setHome()
+  assert.equal(nextInstanceSlot('/repo/x', { listMountedVolumes: () => { throw new Error('docker down') } }), null, 'lost oracle → null → caller refuses to launch (never collide onto a live volume)')
 })

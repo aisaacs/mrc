@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync, readdirSync, existsSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, renameSync, readdirSync, existsSync, statSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
@@ -60,11 +60,18 @@ export function loadNames(mrcDir) {
   return names
 }
 
-/** Save session-names file. */
+/** Save session-names file. AUDIT: MERGE with the current on-disk state before writing, so two concurrent
+ *  name-watchers (same-repo sessions) don't lose each other's additions in a read-modify-write (the second
+ *  writer's stale `names` would otherwise clobber the first's just-added entry). Both callers are additive
+ *  (generateName / nameSession set a single uuid), so overlaying the caller's entries onto the disk state is
+ *  correct — it narrows the lost-update window to the reload→rename gap. Atomic write (tmp+rename) = no torn read. */
 export function saveNames(mrcDir, names) {
   const file = join(mrcDir, 'session-names')
-  const content = Object.entries(names).map(([uuid, name]) => `${uuid}=${name}`).join('\n') + '\n'
-  writeFileSync(file, content)
+  const merged = { ...loadNames(mrcDir), ...names }
+  const content = Object.entries(merged).map(([uuid, name]) => `${uuid}=${name}`).join('\n') + '\n'
+  const tmp = file + '.tmp'
+  writeFileSync(tmp, content)
+  renameSync(tmp, file)
 }
 
 /** Resolve a name or list number to a UUID. Returns UUID or null. */

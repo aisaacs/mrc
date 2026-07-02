@@ -73,7 +73,15 @@ export async function generateName(mrcDir, uuid) {
     return
   }
 
-  const transcript = extractTranscript(mrcDir, uuid, 2000)
+  // #48: excludeMeta strips room/channel peer messages AND the assistant replies to them (OBJ-4) so a session a
+  // peer consulted is named from its OWN input — not the peer's topic.
+  const transcript = extractTranscript(mrcDir, uuid, 2000, { excludeMeta: true })
+  // #48/OBJ-4 FLOOR: don't name a session with too little of its OWN content. A pure-consultation session (only
+  // peer asks + replies-to-the-peer, all stripped above) falls below this and stays UNNAMED rather than mis-named
+  // from the peer's topic. Also guards the namer from an empty transcript (it replies "no transcript provided",
+  // which then fails the kebab-case check as a confusing "bad format"). (#52's version had this floor; it was
+  // deferred, so the comment promised a floor that didn't exist — a talkative consultation got named anyway.)
+  if (!transcript || transcript.trim().length < 200) return
 
   const text = await callHaiku(apiKey, [{
     role: 'user',

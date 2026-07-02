@@ -4,6 +4,15 @@ import { join } from 'node:path'
 import { dbg } from './output.js'
 
 /** Parse a .mrcrc file into flags and env vars (KEY=VALUE lines). */
+// #34: quote-aware whitespace tokenizer so a multi-token .mrcrc flag LINE parses as separate argv tokens.
+export function tokenizeArgs(line) {
+  const out = []
+  const re = /"([^"]*)"|'([^']*)'|(\S+)/g
+  let m
+  while ((m = re.exec(line))) out.push(m[1] ?? m[2] ?? m[3])
+  return out
+}
+
 export function readMrcrc(file) {
   if (!existsSync(file)) return { flags: [], envs: [] }
   const flags = []
@@ -11,8 +20,8 @@ export function readMrcrc(file) {
   for (let line of readFileSync(file, 'utf8').split('\n')) {
     line = line.replace(/#.*$/, '').trim()
     if (!line) continue
-    if (/^[A-Z_]+=/.test(line)) envs.push(line)
-    else flags.push(line)
+    if (/^[A-Z_]+=/.test(line)) envs.push(line)               // KEY=VALUE env line — value may contain spaces, keep whole
+    else flags.push(...tokenizeArgs(line))                    // #34: tokenize — `--colima-memory 32` (a documented .mrcrc line) now parses as the flag + its value, not one dead arg. Also makes belt-0's per-token filter claim TRUE.
   }
   return { flags, envs }
 }

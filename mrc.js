@@ -12,7 +12,7 @@ import { BANNER } from './src/constants.js'
 import { setVerbose, dbg } from './src/output.js'
 import { readMrcrc, loadEnv, parseArgs, sanitizeRepoConfig } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
-import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, runContainer, startDaemon, showStatus } from './src/docker.js'
+import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus } from './src/docker.js'
 import { processSandboxignores } from './src/sandboxignore.js'
 import { findFreePort } from './src/ports.js'
 import { startClipboardProxy } from './src/proxies/clipboard-proxy.js'
@@ -25,6 +25,7 @@ import { detectToolMisses } from './src/sessions/transcript.js'
 import { resolveContextDir } from './src/context.js'
 import { saveSessionRecord, pruneSessionRecords, isAdversarySession, loadSessionRecord, classifySession } from './src/session-record.js'
 import { randomBytes } from 'node:crypto'   // R1/#44: per-session register secret
+import { createInterface } from 'node:readline'   // D10: adversary-resume consent prompt
 
 const __filename = fileURLToPath(import.meta.url)
 const SCRIPT_DIR = dirname(__filename)
@@ -154,7 +155,7 @@ if (remaining[0] === 'gui' || remaining[0] === 'studio') {
   const metaPath = resolve(process.env.HOME, '.local/share/mrc/room-daemon.json')
   const readMeta = () => { try { return JSON.parse(readFileSync(metaPath, 'utf8')) } catch { return null } }
   process.stdout.write('  🎩 Starting Mister Claude…')
-  try { await ensureRoomDaemon({ portBase: Number(process.env.MRC_PORT_BASE) || 7722, notifyPort: 0 }) } catch {}
+  try { await ensureRoomDaemon({ relayPort: Number(process.env.MRC_PORT_BASE) || 7722, notifyPort: 0 }) } catch {}   // #50: relay = the fixed portBase constant
   let dp = readMeta()?.dashboardPort
   for (let i = 0; !dp && i < 30; i++) { await new Promise((r) => setTimeout(r, 100)); dp = readMeta()?.dashboardPort }
   if (!dp) { console.error('\n  ! the daemon is not serving a dashboard (MRC_DASHBOARD_PORT=0?).'); process.exit(1) }
@@ -189,6 +190,24 @@ if (remaining[0] === 'pick') {
   remaining.length = 0
 }
 
+// D10: reconnecting to a summoned adversary (Pierre) is a legitimate, deliberate act (crash / restart /
+// keep-context) — but never an accident, so we confirm on the non-picker `sessions resume` path. The
+// resume-recage at mrc.js already re-applies the cage; this adds the consent gate in front of it. A
+// non-TTY caller can't answer, so it fails safe (NO). (The picker's own TUI confirm is D2, tracked.)
+async function askYesNo(q) {
+  if (!process.stdin.isTTY) return false
+  const rl = createInterface({ input: process.stdin, output: process.stderr })
+  try { return /^y(es)?$/i.test((await new Promise((r) => rl.question(`${q} [y/N] `, r))).trim()) }
+  finally { rl.close() }
+}
+async function confirmIfAdversary(mrcDir, uuid) {
+  if (!isAdversarySession(uuid)) return true
+  const rec = loadSessionRecord(uuid) || {}
+  const issuer = loadNames(mrcDir)[rec.summonedBy] || (rec.summonedBy || '').slice(0, 8) || 'a prior session'
+  const self = loadNames(mrcDir)[uuid] || 'this session'
+  return askYesNo(`  ⚔  "${self}" is a RED-TEAM (adversary) session you summoned for "${issuer}". Reopen it?`)
+}
+
 // --- Subcommand: mrc sessions ---
 if (remaining[0] === 'sessions') {
   const subcmd = remaining[1] || 'ls'
@@ -215,6 +234,14 @@ if (remaining[0] === 'sessions') {
       if (!query) { console.error('Usage: mrc sessions resume <name-or-#> [path]'); process.exit(1) }
       const uuid = resolveSession(resolve(repoPath, '.mrc'), query)
       if (!uuid) { console.error(`Session not found: ${query}`); process.exit(1) }
+      if (!(await confirmIfAdversary(resolve(repoPath, '.mrc'), uuid))) {   // D10: adversary resume is deliberate on every path, not just the picker
+        // Print WHY before exiting — a bare exit(0) reads as success to automation. Distinguish "human said no"
+        // from "non-TTY couldn't ask" (askYesNo fails safe to NO on a non-TTY, so a scripted resume silently did nothing).
+        console.error(process.stdin.isTTY
+          ? '  Adversary (red-team) resume not confirmed — aborting.'
+          : '  Refusing to resume a red-team (adversary) session non-interactively — rerun in a TTY to confirm, or pass --open-adversary-unsafe deliberately.')
+        process.exit(0)
+      }
       config.resumeSession = uuid
       remaining.length = 0
       break
@@ -375,9 +402,13 @@ let notifyPort = 0
 let roomDaemon = null
 if (roomsActive) {
   const { ensureRoomDaemon } = await import('./src/commands/pair.js')
-  clipPort = await findFreePort(portBase)
+  // #50: reserve portBase ITSELF for the daemon's relay — a fixed, concurrency-independent constant (cages pin
+  // it; it's the deterministic fallback when room-daemon.json is unreadable). The per-session proxies scan from
+  // portBase+1 so they can never self-squat the relay, and the relay NEVER derives from notifyPort (that
+  // derivation WAS the #50 split-brain source: the relay port drifted with per-session clip/notify allocation).
+  clipPort = await findFreePort(portBase + 1)
   notifyPort = await findFreePort(clipPort + 1)
-  roomDaemon = await ensureRoomDaemon({ portBase: notifyPort + 1, notifyPort })
+  roomDaemon = await ensureRoomDaemon({ relayPort: portBase, notifyPort })
 }
 
 // Build image
@@ -427,17 +458,21 @@ if (memberCtx) {
   volName = `${volumeName(repoPath, 1)}-pierre-${adversarySlot}`
   console.log(`  ⓘ ${config.resumeIsAdversary ? 'Resuming' : 'Summoned'} adversary on Pierre slot ${adversarySlot} — its own config volume (no clone; it can't log you out).`)
 } else {
-  const existingCount = getExistingCount(repoPath)
-  if (existingCount > 0) {
+  // D8: allocate the config-volume slot from the MOUNTED-slot SET oracle (running containers' actual config-volume
+  // mounts) + an atomic O_EXCL claim — NOT getExistingCount()+1 (a cardinality that remounted a stopped session's
+  // volume: A(1),B(2),stop A,start C → count 1 → C picks 2 = B's live ~/.claude). Nothing running → slot 1 →
+  // REUSES mrc-config-<hash> (auto-resume + login persist, per CLAUDE.md). `others` = running peers, for the warning.
+  const claim = nextInstanceSlot(repoPath)
+  if (!claim) { console.error('  ✗ Could not allocate a config-volume slot (docker unavailable, or 256 sessions running) — refusing to launch rather than risk sharing another session’s ~/.claude.'); process.exit(1) }   // fail closed
+  if (claim.others > 0) {
     console.log('')
-    console.log(`  ⚠ There's already ${existingCount} Mr. Claude running in this repo.`)
+    console.log(`  ⚠ There's already ${claim.others} Mr. Claude running in this repo.`)
     console.log('    They\'ll share the workspace but get separate config volumes.')
     console.log('    Watch out for edit conflicts — two Claudes, one codebase, no good.')
     console.log('')
     if (!config.newSession && !config.resumeSession) config.newSession = true
   }
-  const instanceId = existingCount > 0 ? existingCount + 1 : 1
-  volName = volumeName(repoPath, instanceId)
+  volName = volumeName(repoPath, claim.slot)
 }
 volumes.push('-v', `${volName}:/home/coder/.claude`)
 if (!cagedAdversary) volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)   // a caged adversary (Pierre) is Claude-only — no codex volume
@@ -487,7 +522,7 @@ if (config.daemon) {
 }
 
 // Start proxies (reuse ports pre-allocated above when rooms booted the daemon early).
-if (!clipPort) clipPort = await findFreePort(portBase)
+if (!clipPort) clipPort = await findFreePort(portBase + 1)   // #50: portBase is reserved for the room relay; per-session proxies start above it
 try {
   clipboardServer = await startClipboardProxy(clipPort)
   envFlags.push('-e', `MRC_CLIPBOARD_PORT=${clipPort}`)

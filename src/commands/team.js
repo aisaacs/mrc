@@ -144,7 +144,7 @@ function controlCall(controlPort, frame, timeoutMs = 2000) {
 export async function pushOrg(norm) {
   const { ensureRoomDaemon } = await import('./pair.js')
   const portBase = Number(process.env.MRC_PORT_BASE) || 7722
-  const daemon = await ensureRoomDaemon({ portBase, notifyPort: 0 })
+  const daemon = await ensureRoomDaemon({ relayPort: portBase, notifyPort: 0 })   // #50: ensureRoomDaemon takes relayPort (the fixed constant), not portBase
   const r = await controlCall(daemon.controlPort, { action: 'defineOrg', def: orgDef(norm) })
   return { ok: !!r?.ok, controlPort: daemon.controlPort, daemonPort: daemon.port, rooms: r?.rooms || [], error: r?.error }
 }

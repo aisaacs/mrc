@@ -35,14 +35,19 @@ export function claimLowestFree(dir, used, preferredStart = 0) {
       } catch {}
     }
   } catch {}
+  // #D8: sawClaim = the EEXIST-walk saw a slot whose claim file exists but whose container isn't in `used` yet — a
+  // CONCURRENT sibling (claimed the O_EXCL, container not docker-ps-visible yet) or a just-died launch's <TTL claim.
+  // The mount-oracle is blind to both; only this walk sees them. nextInstanceSlot folds it into "others present" so
+  // two simultaneous launches don't both --continue the shared transcript. (nextAdversarySlot ignores it.)
+  let sawClaim = false
   const attempt = (n) => {
     if (used.has(n)) return null
     try { writeFileSync(join(dir, String(n)), `${process.pid}\n`, { flag: 'wx' }); return n }
-    catch (e) { if (e && e.code === 'EEXIST') return null; throw e }
+    catch (e) { if (e && e.code === 'EEXIST') { sawClaim = true; return null }; throw e }
   }
   try {
-    if (preferredStart > 0 && preferredStart <= ADV_MAX_SLOTS) { const got = attempt(preferredStart); if (got) return { slot: got } }
-    for (let n = 1; n <= ADV_MAX_SLOTS; n++) { const got = attempt(n); if (got) return { slot: got } }
+    if (preferredStart > 0 && preferredStart <= ADV_MAX_SLOTS) { const got = attempt(preferredStart); if (got) return { slot: got, sawClaim } }
+    for (let n = 1; n <= ADV_MAX_SLOTS; n++) { const got = attempt(n); if (got) return { slot: got, sawClaim } }
   } catch { return null }   // non-EEXIST write error → lost signal → fail closed
   return null
 }
@@ -61,6 +66,54 @@ export function nextAdversarySlot(repoPath, preferredSlot = 0) {
   } catch { return null }   // lost liveness oracle → fail closed
   const r = claimLowestFree(slotsDir('pierre-slots', repoPath), used, preferredSlot)
   return r ? r.slot : null
+}
+
+/** D8 — lowest FREE config-volume instance slot for a repo (`mrc-config-<hash>` = slot 1, `-<N>` = slot N).
+ *  Replaces `getExistingCount()+1`, which used the running-container CARDINALITY: start A(1),B(2); stop A → count 1
+ *  → next launch picks 2 = B's LIVE volume → two sessions racing one ~/.claude/refresh-token. The oracle is the
+ *  occupied-slot SET, derived from running containers' ACTUAL config-volume MOUNTS (docker ps + inspect) — NOT the
+ *  count, and NOT `docker volume ls` (a config volume is DURABLE, so listing existing volumes would reserve a
+ *  stopped session's slot forever → a plain relaunch gets a FRESH volume → re-OAuth + no --continue, breaking
+ *  CLAUDE.md config-persistence/auto-resume). The mounted SET keeps all three cases right: nothing running →
+ *  used={} → slot 1 → REUSES `mrc-config-<hash>` (persistence ✓); two concurrent → claimLowestFree's O_EXCL gives
+ *  1 then 2 (no collision); A(1),B(2),stop A,start C → used={2} → C gets 1 → reuses A's stopped volume, no
+ *  collision with B. Fail-closed null on a lost oracle. `listMountedVolumes` is injectable for tests (default =
+ *  the real docker ps+inspect); it returns an array of config-volume names mounted by running mrc containers. */
+export function nextInstanceSlot(repoPath, { listMountedVolumes } = {}) {
+  const hash = createHash('md5').update(repoPath).digest('hex').slice(0, 12)
+  const base = `mrc-config-${hash}`
+  const used = new Set()
+  try {
+    let names
+    if (listMountedVolumes) {
+      names = listMountedVolumes()
+    } else {
+      const ids = execFileSync('docker', ['ps', '-q', '--filter', 'label=mrc=1', '--filter', `label=mrc.repo=${repoPath}`], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim()
+      let out = ''
+      if (ids) {
+        // A container can exit in the gap between `docker ps` and `docker inspect` (benign race, likelier with
+        // short-lived/daemon containers): inspect then exits non-zero on the "No such object" id but STILL prints
+        // the survivors' mounts to stdout. Salvage that partial stdout rather than fail-closed on a benign race —
+        // a container that just vanished has freed its slot anyway, so not counting it is correct, not a workaround.
+        try { out = execFileSync('docker', ['inspect', '--format', '{{range .Mounts}}{{.Name}} {{end}}', ...ids.split('\n')], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }) }
+        catch (e) { out = e && e.stdout ? String(e.stdout) : '' }
+      }
+      names = out.split(/\s+/)
+    }
+    const re = new RegExp('^' + base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '-(\\d+)$')   // `-N` for N>=2 (not -pierre-, not mrc-codex-)
+    for (const t of names) {
+      const name = String(t).trim(); if (!name) continue
+      if (name === base) used.add(1)                                          // base (no suffix) = instance 1
+      else { const m = name.match(re); if (m) used.add(parseInt(m[1], 10)) }
+    }
+  } catch { return null }   // lost the liveness oracle → fail closed (never collide a new session onto a live volume)
+  const r = claimLowestFree(slotsDir('instance-slots', repoPath), used)
+  if (!r) return null
+  // `others` = other REGULAR sessions for the "N running" warning + the auto-new-session force (so two sessions
+  // don't both --continue the shared /workspace/.mrc transcript). |used| = running-mounted; r.sawClaim = a
+  // concurrent sibling whose claim is on disk but whose mount isn't docker-ps-visible yet (the mount-oracle is
+  // blind to it, the EEXIST-walk saw it). Over-counting a just-died <TTL claim is the safe direction.
+  return { slot: r.slot, others: used.size + (r.sawClaim ? 1 : 0) }
 }
 
 /** Build the Docker image if needed. */

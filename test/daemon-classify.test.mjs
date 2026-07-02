@@ -11,7 +11,7 @@ import fs from 'node:fs'
 
 // Isolate HOME BEFORE importing anything that reads homedir() (session-record's recordDir()).
 process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-classify-home-`)
-const { startRoomDaemon } = await import('../src/proxies/room-daemon.js')
+const { startRoomDaemon, acquireDaemonSingleton } = await import('../src/proxies/room-daemon.js')
 const { saveSessionRecord } = await import('../src/session-record.js')
 const { findFreePort } = await import('../src/ports.js')
 
@@ -491,4 +491,144 @@ test('F2/F4: deliver tags the sender from the DURABLE record — a vanished reco
 
   daemon?.stop?.()
   for (const c of [a, b]) try { c.sock.destroy() } catch {}
+})
+
+test('#50: relay bind-retries a FOREIGN squat (relayBound=false=degraded), never relocates, and self-heals on the SAME port', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-relay50-`)
+  const relayPort = await findFreePort(20500)
+  const controlPort = await findFreePort(relayPort + 1)
+
+  // A foreign squatter holds the relay CONSTANT: it accepts a connection then immediately DROPS it — so the
+  // daemon's probeOccupant gets NO pong (reads it as NOT-a-sibling → retries) AND no probe connection lingers
+  // (a plain `() => {}` handler would keep the daemon's rolling 2s probes open and hang squatter.close()).
+  const squatter = net.createServer((s) => s.destroy())
+  await new Promise((res) => squatter.listen(relayPort, '127.0.0.1', res))
+
+  const daemon = startRoomDaemon({ port: relayPort, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+  await sleep(800)   // first relay bind → EADDRINUSE → scheduleRelayRetry (the lock already elected the singleton, so a squat is definitionally foreign); control binds independently and stamps the record on its 'listening'
+
+  // Control answers (bound first, discovery anchor), and honestly reports the relay as UNbound = degraded —
+  // NOT a false "ready". This is what stops the caller spawning a competing daemon on the same constant.
+  let st = await controlCall(controlPort, { action: 'status' })
+  assert.equal(st.relayBound, false, 'a squatted relay surfaces as relayBound:false (degraded) while control still answers')
+  assert.equal(daemon._relayBound(), false, 'relayBound is false ONLY because "listening" never fired — never set optimistically')
+
+  // OBJ-1/OBJ-A: even while DEGRADED (relay squatted), the elected singleton owns the record — now stamped on
+  // control-'listening' (not a pre-bind guess, not a deferring loser, not the old foreign-squat writeRecord that
+  // could clobber a blocked-alive incumbent), atomically, pointing at THIS daemon's ports.
+  const rec = JSON.parse(fs.readFileSync(`${process.env.HOME}/.local/share/mrc/room-daemon.json`, 'utf8'))
+  assert.equal(rec.controlPort, controlPort, 'the singleton stamps the record (its own controlPort) on control-listening even while the relay is squatted')
+  assert.equal(rec.port, relayPort, 'the record points at the fixed relay constant')
+
+  // Clear the squatter → the daemon retries (2s interval) and binds the SAME constant — it NEVER relocated.
+  await new Promise((res) => squatter.close(res))
+  await sleep(2600)
+  st = await controlCall(controlPort, { action: 'status' })
+  assert.equal(st.relayBound, true, 'once the squatter clears, retry-forever binds the fixed relay constant and relayBound self-heals — no port move')
+
+  // A peer now connects to the recovered relay on the ORIGINAL port (the whole point: sessions pinned to the
+  // constant reconnect; the daemon never moved out from under them).
+  const c = client(relayPort); await c.ready
+  assert.ok(c.sock.writable, 'a session connects to the recovered relay on the SAME constant port')
+
+  daemon?.stop?.()
+  try { c.sock.destroy() } catch {}
+})
+
+test('#23: outbound routes to the ACTIVE room (last heard from), not pairingFor first-match; re-validates a stale slot', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-misroute-`)
+  const port = await findFreePort(20700)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+
+  // Session A is in TWO pairings: r1 (with B, inserted FIRST = the stale one) and r2 (with C, the live one).
+  // (M3 forbids opening a 2nd pairing via the wire; the misroute state arises from a reconnect/misroute, so we
+  // construct it directly on the maps the daemon exposes — the exact ghost-pairing shape the owner hit.)
+  daemon.sessions.set('A', { activeRoom: null })   // no sock → send() is a no-op (it's null-guarded)
+  daemon.pairings.set('r1', { roomId: 'r1', a: 'A', b: 'B', turn: 0, turnCap: 100, state: 'Running' })
+  daemon.pairings.set('r2', { roomId: 'r2', a: 'A', b: 'C', turn: 0, turnCap: 100, state: 'Running' })
+
+  // No active room yet → first-match (r1) — the bug's default.
+  assert.equal(daemon._activePairingFor('A').roomId, 'r1', 'no active room → falls back to pairingFor first-match (r1)')
+
+  // C delivers to A in r2 → deliver() marks A active in r2. A's outbound now routes to r2, NOT r1.
+  daemon.deliver(daemon.pairings.get('r2'), 'A', 'C', 'the triage kickoff')
+  assert.equal(daemon.sessions.get('A').activeRoom, 'r2', 'delivery marks the recipient active in the delivering room')
+  assert.equal(daemon._activePairingFor('A').roomId, 'r2', 'A replies into r2 (last heard from), not r1 first-match — the misroute is fixed')
+
+  // Cond-1 re-validation: if the active room is closed/GC'd, fall back to first-match — never a dead slot.
+  daemon.pairings.delete('r2')
+  assert.equal(daemon._activePairingFor('A').roomId, 'r1', 'a stale activeRoom (its pairing was reaped) re-validates → first-match, not a dead-slot misroute')
+
+  daemon?.stop?.()
+})
+
+test('#35: dead-room GC ages out on CONTINUOUS-OFFLINE time (deadSince), not last-turn — flap + long-quiet-connected safe', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-gc-`)
+  const port = await findFreePort(20900)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, roomTtlMs: 1000, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+  const t0 = 10_000_000
+
+  // r-dead: both offline. lastActivityAt is DELIBERATELY ancient — proving the clock is offline-time, not turn-time.
+  daemon.pairings.set('r-dead', { roomId: 'r-dead', a: 'X', b: 'Y', lastActivityAt: t0 - 9_999_999, state: 'Running', turn: 3, turnCap: 100 })
+  // r-quiet: conversationally silent for AGES (ancient lastActivityAt) but STILL CONNECTED → must never be touched.
+  daemon.sessions.set('L', { sock: { destroyed: false, write() {} } })
+  daemon.pairings.set('r-quiet', { roomId: 'r-quiet', a: 'L', b: 'M', lastActivityAt: t0 - 9_999_999, state: 'Running', turn: 0, turnCap: 100 })
+
+  // Tick 1: r-dead just went offline → deadSince set, NOT reaped (even though its last TURN is ancient — that's
+  // the whole bug Pierre caught). r-quiet is connected → deadSince stays null, never reaped.
+  daemon._pruneDeadRooms(t0)
+  assert.ok(daemon.pairings.has('r-dead'), 'first dead tick starts the grace, does NOT reap despite an ancient last-turn')
+  assert.equal(daemon.pairings.get('r-dead').deadSince, t0, 'deadSince anchors to when it went OFFLINE, not the last turn')
+  assert.ok(daemon.pairings.has('r-quiet'), 'a long-quiet but CONNECTED room is spared')
+  assert.equal(daemon.pairings.get('r-quiet').deadSince, null, 'a connected room has no dead clock (quiet != dead)')
+
+  // Tick 2 within roomTtlMs → still spared (reconnect window).
+  daemon._pruneDeadRooms(t0 + 500)
+  assert.ok(daemon.pairings.has('r-dead'), 'within roomTtlMs of going offline → SPARED (reconnect window)')
+
+  // FLAP: r-dead reconnects (X online) → dead clears → deadSince=null → the clock resets (mid-flap spared).
+  daemon.sessions.set('X', { sock: { destroyed: false, write() {} } })
+  daemon._pruneDeadRooms(t0 + 600)
+  assert.equal(daemon.pairings.get('r-dead').deadSince, null, 'a reconnect within the window RESETS the dead clock — a flap is always spared')
+
+  // Goes offline again and stays CONTINUOUSLY dead past roomTtlMs → finally reaped.
+  daemon.sessions.delete('X')
+  daemon._pruneDeadRooms(t0 + 700)                 // re-arm: deadSince = t0+700
+  assert.equal(daemon.pairings.get('r-dead').deadSince, t0 + 700, 're-arms the clock from the new offline moment')
+  daemon._pruneDeadRooms(t0 + 700 + 1001)          // > roomTtlMs continuous offline → reap
+  assert.ok(!daemon.pairings.has('r-dead'), 'continuously offline past roomTtlMs → reaped (history kept on disk)')
+
+  daemon?.stop?.()
+})
+
+test('#50 OBJ-A: acquireDaemonSingleton elects one holder via process.kill(pid,0) — defers to a live pid, reaps a dead one, keeps a torn lock, and the backstop downgrades a pid-reuse-aged lock', async () => {
+  const dir = fs.mkdtempSync(`${os.tmpdir()}/mrc-lock-`)
+  const lock = `${dir}/room-daemon-test.lock`
+
+  // 1) fresh → acquire; the lock carries OUR pid + the trailing-newline sentinel.
+  assert.equal(acquireDaemonSingleton(lock), true, 'fresh path → acquired')
+  assert.equal(fs.readFileSync(lock, 'utf8'), `${process.pid}\n`, 'lock holds our pid + sentinel newline')
+
+  // 2) held by a LIVE pid (ours) → DEFER. This is the blocked-alive incumbent case: kill(pid,0) reads the process
+  // table, so a daemon frozen on its event loop is still seen alive — exactly what the old ping/pong probe missed.
+  assert.equal(acquireDaemonSingleton(lock), false, 'a live holder → defer (never clobbers a blocked-but-alive daemon → no split-brain)')
+
+  // 3) held by a DEAD pid → ESRCH → reap + acquire. 2147483646 cannot be a live pid.
+  fs.writeFileSync(lock, `2147483646\n`)
+  assert.equal(acquireDaemonSingleton(lock), true, 'a dead holder (ESRCH) → reaped + acquired')
+  assert.equal(fs.readFileSync(lock, 'utf8'), `${process.pid}\n`, 're-stamped with our pid')
+
+  // 4) TORN write (no sentinel newline) → KEEP + defer. A half-written lock (a peer mid-acquire) is never reaped.
+  fs.writeFileSync(lock, `${process.pid}`)
+  assert.equal(acquireDaemonSingleton(lock), false, 'a torn (sentinel-less) lock → defer, never reaped')
+
+  // 5) pid-reuse BACKSTOP: a live pid BUT an un-heartbeated lock older than the backstop → downgrade to dead + reap.
+  // (A live daemon heartbeats its lock every tick so its lock never ages; only a dead holder whose pid was recycled
+  // by an unrelated live process lands here. backstopMs:0 makes any age exceed it.)
+  fs.writeFileSync(lock, `${process.pid}\n`)
+  assert.equal(acquireDaemonSingleton(lock, { backstopMs: 0 }), true, 'backstopMs:0 → the alive verdict is downgraded (pid-reuse) → reaped + acquired')
+
+  fs.rmSync(dir, { recursive: true, force: true })
 })

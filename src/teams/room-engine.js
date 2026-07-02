@@ -153,7 +153,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
       roomId, kind: kind || 'team', team: team || null, org: orgId || null,
       members: memberMap || new Map(),
       state: 'Running', pauseReason: null, turn: 0, turnCap, lastActivityAt: now(),
-      held: [], autoCatchup: true, pendingCatchup: null,
+      held: [], autoCatchup: false, pendingCatchup: null,   // default OFF (owner pref): a pause doesn't interrupt members for a handoff unless opted in (🔔). Catch-up-now still on demand.
     }
   }
 

@@ -97,7 +97,7 @@ async function buildState() {
       pauseReason: lp?.pauseReason || null,
       turn: lp?.turn ?? null,
       turnCap: lp?.turnCap ?? null,
-      autoCatchup: lp?.autoCatchup ?? true,
+      autoCatchup: lp?.autoCatchup ?? false,   // default OFF (owner pref) — matches the pairing/engine default; a pause doesn't auto-elicit a handoff unless opted in
       unreviewed,
       createdAt: r.meta?.createdAt || 0,
       updatedAt,

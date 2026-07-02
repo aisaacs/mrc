@@ -5,7 +5,8 @@
 // sandboxed session, and the config volume is mounted RW too — so neither can hold a field that drives a
 // security decision (a contained session could forge its own classification). This dir is never mounted
 // into any container. It holds the security-critical fields only: `summonedBy` (the issuer's session id)
-// and `adversary`. The low-stakes name/repo half lives in .mrc/session-meta (travels with the repo).
+// and `adversary`. (The low-stakes session NAME lives separately in the repo's `.mrc/session-names` file —
+// manager.js. #32's per-uuid repo-side `.mrc/session-meta` split was never built, so don't look for it here.)
 //
 // `adversary` is DERIVED from `summonedBy` (launch-time, from --summoned-by → the durable record), never
 // from a session's name/persona/behavior — the same launch-derived-containment rule the daemon's #30 fix

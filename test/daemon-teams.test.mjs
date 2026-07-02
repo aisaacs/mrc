@@ -292,3 +292,63 @@ test('daemon #16: the @user inbox survives a daemon restart (no loss, no resurre
 
   lead2.sock.destroy(); daemon.stop()
 })
+
+test('#3/AUDIT: a member cannot bind under a DIFFERENT handle than its pinned session id maps to', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-bindforge-`)
+  const port = await findFreePort(19500)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+  const roster = { org: 'shop', repo: process.env.HOME, teams: [{ name: 'client', territory: 'client', members: [
+    { role: 'architect', backend: 'claude', name: 'roland', lead: true },
+    { role: 'critic', backend: 'claude', name: 'pierre' },
+  ] }] }
+  const norm = parseRoster(roster, { rng: seededRng(1) })
+  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+
+  // roland's REAL verified session (its own pinned id + secret, classifySession 'normal') claims pierre's handle
+  // → a forge → REFUSED, because the bind handle is derived from the pinned id, not the wire f.memberHandle.
+  const forge = client(port); await forge.ready
+  registerMember(forge, { sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'pierre/claude', repo: 'shop', label: 'roland' })
+  const refused = await forge.waitFor((f) => f.type === 'notice' && /pinned to @roland\/claude, not @pierre\/claude/.test(f.text))
+  assert.ok(refused, 'a verified member cannot bind AS a different member — delivery-hijack + from-forge closed (R2 gap)')
+
+  // sanity: the same session binding as its OWN pinned handle still succeeds (no false-refusal of legit members).
+  const legit = client(port); await legit.ready
+  registerMember(legit, { sessionId: memberSessionId('shop', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'shop', label: 'pierre' })
+  await legit.waitFor((f) => f.type === 'notice' && /Joined as @pierre/.test(f.text))
+
+  daemon?.stop?.()
+  for (const c of [forge, legit]) try { c.sock.destroy() } catch {}
+})
+
+test('#3/AUDIT: a verified-normal NON-member cannot bind a member slot via a wire handle (cross-org impersonation; legacy fallback amputated)', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-crossorg-`)
+  const port = await findFreePort(19550)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+  const roster = { org: 'shop', repo: process.env.HOME, teams: [{ name: 'client', territory: 'client', members: [
+    { role: 'architect', backend: 'claude', name: 'roland', lead: true },
+    { role: 'critic', backend: 'claude', name: 'pierre' },
+  ] }] }
+  const norm = parseRoster(roster, { rng: seededRng(1) })
+  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+
+  // The ATTACKER is a verified-normal NON-member: a PLAIN conversation UUID (never sha1(org\0handle)), with its
+  // OWN secret on record (every mrc session gets one → verifiedNormal true → R1 passes on its own secret). It crafts
+  // a register frame claiming a real member's handle. PRE-FIX this rode the idx===undefined legacy fallback →
+  // orgsWithHandle('pierre/claude') → bindSession CLOBBERED pierre's slot (delivery hijack + attribution forge). The
+  // amputation refuses it: no pinned identity, so the wire handle is never trusted for a non-pinned caller.
+  const attacker = client(port); await attacker.ready
+  const attackerId = '11111111-2222-3333-4444-555555555555'   // a plain UUID; NOT a pinned memberSessionId
+  registerMember(attacker, { sessionId: attackerId, memberHandle: 'pierre/claude', repo: 'evil', label: 'evil' })
+  const refused = await attacker.waitFor((f) => f.type === 'notice' && /no pinned member identity/.test(f.text))
+  assert.ok(refused, 'a verified-normal non-member is refused a member bind — the wire-handle legacy fallback is deleted')
+
+  // And the REAL pierre (its pinned id + secret) still binds — the amputation does not false-refuse legit members.
+  const legit = client(port); await legit.ready
+  registerMember(legit, { sessionId: memberSessionId('shop', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'shop', label: 'pierre' })
+  await legit.waitFor((f) => f.type === 'notice' && /Joined as @pierre/.test(f.text))
+
+  daemon?.stop?.()
+  for (const c of [attacker, legit]) try { c.sock.destroy() } catch {}
+})
