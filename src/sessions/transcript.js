@@ -40,7 +40,17 @@ export function extractTranscript(mrcDir, uuid, maxChars = 0, { excludeMeta = fa
       // is a belt-and-suspenders guard in case a build stops setting isMeta on channel deliveries. Track whether
       // this user turn is injected so the following assistant reply (about the peer's topic) is skipped too.
       const isChannelTurn = typeof content === 'string' && /^\s*<channel\b/.test(content)
-      const isMetaTurn = obj.isMeta === true || isChannelTurn
+      // #48 OBJ-C: structural recognizers for the OTHER injected user turns the doc promises to drop — the
+      // `--continue` resume marker and local-command caveats / slash-command wrappers. The `<channel` guard already
+      // hedges a build that stops setting isMeta on channel deliveries; extend the SAME hedge to these two so if CC
+      // ever drops isMeta on one of them it still isn't mistaken for the human retaking the floor (which would clear
+      // metaContext mid-consult → leak the peer's topic into the name). Anchored to the exact injected prefixes so a
+      // human's own prose (which never starts with these tags) isn't misclassified as meta and dropped.
+      const isInjectedTurn = isChannelTurn || (typeof content === 'string' && (
+        /^\s*<(local-)?command-[a-z-]+>/.test(content) ||                             // <command-name>/<command-message>/<local-command-caveat>/… — require the WELL-FORMED tag close so a human's prose ("<command-line interface is great") isn't cosmetically dropped (the belt overrides isMeta:false, so an open `<command-` prefix would eat any turn starting that way). Assumes bare tags (true today); revisit if CC ever attributes them.
+        /^\s*This session is being continued from a previous conversation/.test(content)  // the --continue / compaction resume marker (a full sentence — negligible human collision, left as a prefix)
+      ))
+      const isMetaTurn = obj.isMeta === true || isInjectedTurn
       // metaContext is STICKY: a peer ask (<channel>) sets it; ONLY a genuine human prompt (non-meta AND non-empty)
       // clears it. Everything else leaves it UNCHANGED — crucially a TOOL_RESULT, which is ALSO a type:'user' turn
       // (isMeta:false, an array of tool_result blocks → empty after the text filter above). A tool result is not

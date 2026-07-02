@@ -310,6 +310,13 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
   // An exact `roomId` is strict (must be a room they're in); a soft `room` hint (team name / "leads")
   // or target inference picks the room otherwise. Directed delivery to @mentioned members; @user to
   // the inbox. Honors brake/turnCap (held FIFO).
+  //
+  // ⚠️ TRUST BOUNDARY: the `sessionId` path resolves the sender from the AUTHENTICATED socket (bySession),
+  // which is forge-proof (#3). The `fromHandle` path TRUSTS the caller's asserted identity and exists ONLY for
+  // (a) tests injecting a sender without a live socket and (b) trusted programmatic posts. The daemon's wire
+  // caller (onSay → room-daemon.js) ALWAYS passes sessionId and NEVER fromHandle. NO wire-supplied field
+  // (`f.from`, a member-controlled frame) may EVER be forwarded into `fromHandle` — that would re-open the
+  // attribution/delivery forge #3 closed. On the wire path, identity comes from the socket, full stop.
   function route({ sessionId, fromHandle, fromOrg, roomId, room: hint, text, kind }) {
     const s = sessionId ? senderOf(sessionId) : (fromHandle ? senderFromHandle(fromHandle, fromOrg, roomId) : null)
     if (!s) return { ok: false, error: 'sender not bound to a member' }

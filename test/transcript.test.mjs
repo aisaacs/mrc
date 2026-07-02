@@ -132,6 +132,53 @@ t('OBJ-4 sticky: a tool_result between the ask and the reply does NOT reset the 
   assert.equal(tr.trim().length, 0, 'a pure tool-using consultation strips to nothing → below the floor → UNNAMED (the real case the text-only test missed)')
 })
 
+// --- OBJ-C: the belt extends past <channel> to the OTHER injected user turns (--continue marker + local-command /
+// slash-command wrappers). If a CC build ever drops isMeta on one of THOSE, it must still not be mistaken for the
+// human retaking the floor (which would clear the peer context mid-consult → leak the topic into the name).
+write('objc-command', [
+  channel('Peer (W) says: "audit the lockfile election path"'),     // peer ask → metaContext=true
+  assistant('Reading room-daemon.js for the lock.'),                 // reply → dropped
+  { type: 'user', message: { content: '<command-name>compact</command-name>\n<command-message>compact</command-message>' } },  // injected slash-command turn, isMeta ABSENT
+  assistant('The lockfile uses process.kill(pid,0) for the election.'),  // STILL a peer reply → must stay dropped
+])
+
+t('OBJ-C: an injected <command-*> turn without isMeta stays sticky (belt covers slash-command wrappers)', () => {
+  const tr = extractTranscript(dir, 'objc-command', 0, { excludeMeta: true })
+  assert.ok(!tr.includes('Reading room-daemon'), 'reply before the injected command turn dropped')
+  assert.ok(!tr.includes('process.kill'), 'reply AFTER an isMeta-less <command-*> turn is STILL dropped — structural belt kept metaContext sticky')
+  assert.ok(!tr.includes('command-name'), 'the injected command turn itself is dropped')
+})
+
+write('objc-continue', [
+  channel('Peer (V) says: "check the SNI ClientHello path"'),       // peer ask → metaContext=true
+  assistant('reply-to-peer-one'),                                   // dropped
+  { type: 'user', message: { content: 'This session is being continued from a previous conversation that ran out of context. The summary below covers the earlier portion.' } },  // --continue marker, isMeta ABSENT
+  assistant('reply-to-peer-two'),                                   // STILL dropped (marker did not clear the context)
+  human('now write the migration script'),                          // REAL human → clears the peer context
+  assistant('Writing the migration script now.'),                   // own work → KEPT
+])
+
+t('OBJ-C: the --continue marker without isMeta stays sticky; a real human prompt after it still clears', () => {
+  const tr = extractTranscript(dir, 'objc-continue', 0, { excludeMeta: true })
+  assert.ok(!tr.includes('reply-to-peer-two'), 'reply after the isMeta-less --continue marker is still dropped')
+  assert.ok(!tr.includes('being continued from a previous'), 'the --continue marker itself is dropped')
+  assert.ok(tr.includes('Writing the migration script'), 'own work after a REAL human prompt is kept — the marker did not permanently poison the session')
+})
+
+// --- OBJ-C false-positive (Pierre): the belt overrides isMeta, so an OPEN `<command-` prefix would eat a human's
+// own prose that happens to start that way. The well-formed-tag anchor (`<[local-]command-word>`) must let real
+// human prose through while still catching the actual injected tags.
+write('objc-human-prose', [
+  human('<command-line interface> design: should we default to --json or a TTY?'),   // human prose opening with "<command-" but NOT a well-formed CC tag
+  assistant('Defaulting to a TTY is friendlier; --json is opt-in.'),
+])
+
+t('OBJ-C: a human prompt opening "<command-line ...>" is NOT dropped (anchor requires a well-formed tag close)', () => {
+  const tr = extractTranscript(dir, 'objc-human-prose', 0, { excludeMeta: true })
+  assert.ok(tr.includes('command-line interface'), 'human prose starting "<command-" survives — it is not a well-formed <command-word> tag')
+  assert.ok(tr.includes('Defaulting to a TTY'), 'the assistant reply to a genuine human prompt is kept (no false peer-context)')
+})
+
 try { rmSync(dir, { recursive: true, force: true }) } catch {}
 
 console.log(`\nextractTranscript: ${pass} passed, ${fail} failed\n`)

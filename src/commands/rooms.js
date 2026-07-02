@@ -81,7 +81,11 @@ export async function roomsCommand(args) {
   if (sub === 'restart') {
     const { restartRoomDaemon } = await import('./pair.js')
     const r = await restartRoomDaemon()
-    console.log(r.ok ? `  ↻ room daemon restarted on :${r.port} — connected sessions will reconnect.` : `  ! ${r.error}`)
+    if (!r.ok) { console.log(`  ! ${r.error}`); return }
+    // #50/#5 (coverage-critic): surface the honest degraded signal restartRoomDaemon already returns — don't print a
+    // false "sessions will reconnect" when the relay port is squatted and peers demonstrably cannot connect.
+    if (r.degraded) console.log(`  ↻ room daemon restarted on :${r.port}, but \x1b[1;31m⚠ the RELAY port is blocked by another listener\x1b[0m — peers can't connect yet (clears when the squatter exits; see: mrc rooms status).`)
+    else console.log(`  ↻ room daemon restarted on :${r.port} — connected sessions will reconnect.`)
     return
   }
   if (sub === 'stop') {
@@ -115,6 +119,10 @@ export async function roomsCommand(args) {
     if (sub === 'status' || sub === 'ls') {
       const s = await ctrl(port, 'status')
       console.log(`  Daemon:   v${s.version || '(unknown — stale code; run: mrc rooms restart)'}`)
+      // #50/#5 (coverage-critic): the daemon reports relayBound; surface the degraded state instead of showing a
+      // healthy-looking roster while peers can't actually connect (the launch path warns too, but this is the
+      // standalone diagnostic the launch message points operators AT — it must not be silent about the block).
+      if (s.relayBound === false) console.log('  \x1b[1;31m⚠ Relay port BLOCKED\x1b[0m — the daemon is up on its control port but the relay is squatted; peers CANNOT connect until it clears.')
       console.log('  Sessions:')
       for (const x of s.sessions) console.log(`    ${x.name}${x.name !== x.repo ? `  (${x.repo})` : ''}  [${x.id}]${x.adversary ? '  ·  \x1b[1;31m⚔ ADVERSARY (contained)\x1b[0m' : ''}${x.unverified ? '  ·  \x1b[0;33m⚠ unverified\x1b[0m' : ''}`)   // D9: surface the daemon's containment classification
       console.log('  Pairings:')

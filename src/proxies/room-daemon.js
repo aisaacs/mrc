@@ -164,9 +164,20 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // secret-less and pass as 'normal'. A no-secret legacy record has nothing to match, so it still registers
   // 'unverified' and is gated OUT of the state-changing verbs by classification + the secret-PRESENCE check at
   // summon/bind — one relaunch on a current mrc backfills its secret and promotes it to a real 'normal'.)
+  // #53 (coverage-critic): a DURABLE display-name fallback for restored pairings. savePairings persists a
+  // memberNames map; on restore we seed knownNames from it so nameOf() can render a member that hasn't reconnected
+  // yet — otherwise a restart-survived pairing shows "?" in thread.log / `mrc rooms status` / the dashboard until
+  // the member re-registers. (id -> last-known display name.)
+  const knownNames = new Map()
   // Restore pairings a graceful restart dumped, so an in-flight room survives `mrc rooms restart`
   // (turn count / autoCatchup preserved). Sockets re-attach as the sessions reconnect + re-register.
-  for (const sp of loadPairings()) pairings.set(sp.roomId, { ...sp, held: [] })
+  // #41: seed lastActivityAt to restart-time (savePairings doesn't persist it, so sp.lastActivityAt is undefined) —
+  // else the stall tick evaluates `Date.now() - undefined > stallMs` = NaN>x = ALWAYS false, silently disabling
+  // soft-stall + stall-catchup for every restart-survived room. Restart-time is the right seed (a fresh stall window).
+  for (const sp of loadPairings()) {
+    pairings.set(sp.roomId, { ...sp, held: [], lastActivityAt: sp.lastActivityAt ?? Date.now() })
+    for (const [id, nm] of Object.entries(sp.memberNames || {})) if (nm && nm !== '?') knownNames.set(id, nm)   // #53
+  }
 
   // Idle auto-shutdown: exit once no session has been connected for idleMs. A longer grace applies
   // before the FIRST session ever connects, so a slow image build doesn't kill the daemon
@@ -198,7 +209,10 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   }
   const online = (id) => { const s = sessions.get(id); return !!(s && s.sock && !s.sock.destroyed) }
   const repoOf = (id) => sessions.get(id)?.repo || '?'                       // basename — for clean room ids
-  const nameOf = (id) => { const s = sessions.get(id); return s ? (s.label || s.repo) : '?' }  // display / match
+  const nameOf = (id) => { const s = sessions.get(id); return s ? (s.label || s.repo) : (knownNames.get(id) || '?') }  // display / match — #53: fall back to the durable restored name when the session isn't live (kills "?" in restored pairings)
+  // #53: serialize a pairing for savePairings, stamping the best-known display name of each member (live label, else
+  // the restored knownNames fallback) so a name survives the NEXT restart too. Single shape → one place to change.
+  const serializePairing = (p) => ({ roomId: p.roomId, a: p.a, b: p.b, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, state: p.state, pauseReason: p.pauseReason, memberNames: { [p.a]: nameOf(p.a), [p.b]: nameOf(p.b) } })
   function pairingFor(id) { for (const p of pairings.values()) if (p.a === id || p.b === id) return p; return null }
   // #23 misroute fix: route a session's OUTBOUND (reply/note) into the room it's ACTIVELY conversing in — the room
   // it last received an inbound in (tracked as sessions.get(id).activeRoom, set in deliver()) or last acted in.
@@ -208,11 +222,19 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // CONTAINS id — else a closed/GC'd/stale slot would swap first-match-misroute for stale-slot-misroute. Fall back
   // to first-match otherwise.
   // M3-DEPENDENT (cond-3): correct ONLY while M3 pins a session to one pairing (then "last heard from" is
-  // unambiguous). Under true multi-room (M3-relax) a single activeRoom slot can't represent owing replies to two
-  // rooms — last-delivery-wins would misroute the other — and the real endgame there is FRAME-TAGGING (the
-  // reply/note carries its own roomId), which needs a container rebuild. Do NOT lean on activeRoom for multi-room.
-  // This is a ROUTING fix only: the stale second pairing still EXISTS (turn-count/catch-up/brake-ripple noise)
-  // until #35 dead-room GC reaps it — so activeRoom ships TOGETHER with #35.
+  // unambiguous). Under true multi-room a single activeRoom slot can't represent owing replies to two rooms —
+  // last-delivery-wins would misroute the other — and the real endgame there is FRAME-TAGGING (the reply/note
+  // carries its own roomId), which needs a container rebuild. Do NOT lean on activeRoom for multi-room.
+  // KNOWN RESIDUAL (Gap D, coverage-critic — race-gated, low-med): the two-live-rooms state is reachable TODAY, not
+  // just under a future "M3-relax". The onAsk M3 refusal gates on `online(otherPeer)`, so an OFFLINE-WINDOW bypasses
+  // it: X⇄A forms P1; A goes offline (P1 NOT reaped — #35 needs BOTH sides offline, X is online); X asks B → refusal
+  // sees online(A)=false → not refused → ensurePairing makes P2 (B∉P1, no dedup); A reconnects → X is now ACTIVELY in
+  // P1+P2 and last-delivery-wins misroutes X's reply into the wrong room (containment-adjacent if one is an adversary
+  // room). pierre's dropped sidechannel-brake used to pause the non-active room here. Cheap close = re-pause the
+  // non-active room on such a reconnect (owner-gated: re-ports a deliberately-dropped mechanism); real close =
+  // frame-tagging. Tracked; not silently "superseded".
+  // This is a ROUTING fix only: the stale second pairing still EXISTS (turn-count/catch-up noise) until #35 dead-room
+  // GC reaps it — so activeRoom ships TOGETHER with #35.
   function activePairingFor(id) {
     const s = sessions.get(id)
     if (s && s.activeRoom) { const p = pairings.get(s.activeRoom); if (p && (p.a === id || p.b === id)) return p }
@@ -762,11 +784,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     if (exA && exA.a !== r.peer.id && exA.b !== r.peer.id && online(exA.a === askerId ? exA.b : exA.a)) return send(askerId, { type: 'notice', text: '[You are already in a live room with another peer — this session holds one room at a time. Finish or close it first, then ask_peer.]' })
     const p = ensurePairing(askerId, r.peer.id)
     markActive(askerId, p.roomId)   // #23: the asker is now actively conversing in this room
-    p.turn += 1; p.lastActivityAt = Date.now()
+    p.lastActivityAt = Date.now()   // #5: the STALL clock advances on any attempt (the agent IS working), even if the message ends up held
     appendThread(p.roomId, `${ts()} ${nameOf(askerId)}->${nameOf(r.peer.id)}: ${auditLine(question)}`)   // V3: defang + single-line the untrusted peer text
     clearStallOnActivity(p)
-    if (p.state === 'Paused') { p.held.push({ toId: r.peer.id, fromId: askerId, text: question }); appendThread(p.roomId, `${ts()} [held while ${p.pauseReason}]`); return }
+    if (p.state === 'Paused') { p.held.push({ toId: r.peer.id, fromId: askerId, text: question }); appendThread(p.roomId, `${ts()} [held while ${p.pauseReason}]`); return }   // #5: a HELD message must NOT burn a turn (was incremented pre-gate → held msgs wrongly crossed the cap + inflated [turn X/Y])
+    p.turn += 1   // #5: count only a DELIVERED turn (post-hold-gate, matching pierre's countTurn)
     deliver(p, r.peer.id, askerId, question)
+    if (p.turnCap > 0 && p.turn >= p.turnCap) { p.state = 'Paused'; p.pauseReason = 'turnCap'; notify(`Room ${p.roomId}: turn-cap check-in at ${p.turn} (resume to grant ${turnCap} more)`); maybeCatchup(p, 'turnCap') }   // #5: onAsk previously never checked the cap at all → an ask-heavy room never hit the check-in
   }
 
   function onMsg(fromId, text, ackId) {
@@ -775,10 +799,11 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     if (!p) { send(fromId, { type: 'notice', text: '[No open room to reply into — the daemon may have just restarted and lost this pairing. Re-open it with ask_peer (the room id + full history are preserved); a plain reply needs an active pairing.]' }); ack('no-pairing'); return }
     markActive(fromId, p.roomId)   // #23: the sender is now actively conversing here too
     const toId = p.a === fromId ? p.b : p.a
-    p.turn += 1; p.lastActivityAt = Date.now()
+    p.lastActivityAt = Date.now()   // #5: stall clock advances on any attempt, even if held
     appendThread(p.roomId, `${ts()} ${nameOf(fromId)}->${nameOf(toId)}: ${auditLine(text)}`)   // V3: defang + single-line the untrusted peer text
     clearStallOnActivity(p)
-    if (p.state === 'Paused') { p.held.push({ toId, fromId, text }); appendThread(p.roomId, `${ts()} [held while ${p.pauseReason}]`); ack('held'); return }
+    if (p.state === 'Paused') { p.held.push({ toId, fromId, text }); appendThread(p.roomId, `${ts()} [held while ${p.pauseReason}]`); ack('held'); return }   // #5: a held message must NOT burn a turn
+    p.turn += 1   // #5: count only a DELIVERED turn (post-hold-gate, matching pierre)
     deliver(p, toId, fromId, text)
     ack(online(toId) ? 'delivered' : 'peer-offline')
     if (p.turnCap > 0 && p.turn >= p.turnCap) { p.state = 'Paused'; p.pauseReason = 'turnCap'; notify(`Room ${p.roomId}: turn-cap check-in at ${p.turn} (resume to grant ${turnCap} more)`); maybeCatchup(p, 'turnCap') }
@@ -802,7 +827,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // working agent (not a transcript summarizer) writes it, so off-log context — its own repo work,
   // reasoning, the real blocker — makes it in. Captured per-pause into the room's catchups.json.
   function elicitCatchup(p, reason, { manual = false } = {}) {
-    const live = [['a', p.a], ['b', p.b]].filter(([, id]) => sessions.has(id))
+    // #4 (coverage-critic): exclude a summoned adversary — it's a transient red-teamer, NOT a work-holder, so a pause
+    // must never wait on its handoff (else a summoner<->caged-Pierre pane blocks on the adversary to the 120s timeout).
+    const live = [['a', p.a], ['b', p.b]].filter(([, id]) => sessions.has(id) && !adversaries.has(id))
     if (!live.length) return { ok: false, error: 'no live sessions to ask' }
     if (p.pendingCatchup) {
       if (!manual) return { ok: false, error: 'catch-up already pending' }
@@ -824,6 +851,26 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       if (p.pendingCatchup === seq) p.pendingCatchup = null
     }, catchupTimeoutMs)
     return { ok: true, seq }
+  }
+  // #29 (coverage-critic): when a member departs mid-catch-up, drop it from the pending pane's `expected` so the pane
+  // finalizes on whoever is left instead of hanging at 1/2 until the 120s timeout. Recompute expected from who is
+  // STILL live (non-adversary); if everyone remaining has already filed, mark it ready now.
+  function reconcileCatchupDepart(p, departedId) {
+    if (!p || !p.pendingCatchup) return
+    const e = readCatchups(p.roomId).find((x) => x.seq === p.pendingCatchup)
+    if (!e || e.status !== 'pending') return
+    const stillLive = [['a', p.a], ['b', p.b]].filter(([, id]) => id !== departedId && sessions.has(id) && !adversaries.has(id))
+    // #6(b) (Pierre): count STILL-LIVE filings, NOT total handoffs — else the DEPARTED side's own handoff satisfies the
+    // remaining live member's quorum (departed-filed + live-not-filed → filed=1 >= stillLive=1 → finalized with the LIVE
+    // member's slot missing). The departed's handoff STAYS in e.handoffs (preserved for the human), it just doesn't count.
+    const filed = stillLive.filter(([role]) => e.handoffs && e.handoffs[role]).length
+    if (filed >= stillLive.length) {   // every STILL-LIVE member has filed → nobody left to wait on → finalize
+      updateCatchup(p.roomId, p.pendingCatchup, { status: 'ready', expected: stillLive.length })
+      try { appendThread(p.roomId, `${ts()} [catch-up reconciled on depart — finalized (${nameOf(departedId)} left)]`) } catch {}
+      p.pendingCatchup = null
+    } else {
+      updateCatchup(p.roomId, p.pendingCatchup, { expected: stillLive.length })   // just lower the bar; the remaining side's file finalizes it
+    }
   }
   function onHandoff(fromId, text, ackId) {
     const ack = (status) => { if (ackId != null) send(fromId, { type: 'ack', id: ackId, status }) }
@@ -913,6 +960,18 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             console.error(`[room-daemon] WARN rejected register for ${f.sessionId} — secret mismatch vs the host record (possible impersonation)`)
             continue
           }
+          // #38: a register presenting a PINNED memberSessionId (∈ sessionIndex) that is NOT verified-normal is an
+          // attacker squatting an unlaunched member's future slot — the derived id is public (sha1(org\0handle)), so
+          // anyone can compute it. R1 above already rejects a WRONG secret for an ALREADY-launched member; this closes
+          // the remaining window where that member hasn't launched yet (no secret on record → R1 has nothing to check)
+          // by refusing the register before it can occupy the sessions Map under the member's id. A real member is
+          // verified-normal (its own record + secret) → passes. Inert under today's routing (delivery goes through the
+          // engine's bySession binding, which a squatter can't set), but forecloses any future send-by-derived-id path.
+          if (sessionIndex.has(f.sessionId) && !(classifySession(f.sessionId) === 'normal' && loadSessionRecord(f.sessionId).secret)) {
+            try { sock.write(JSON.stringify({ type: 'notice', text: '[Register rejected — this session id is a reserved member identity but this session is not a verified member. Relaunch via `mrc team up` so its pinned id + secret are on record.]' }) + '\n') } catch {}
+            console.error(`[room-daemon] WARN rejected register for ${f.sessionId} — reserved member id without a verified-member record (possible slot squat)`)
+            continue
+          }
           sessionId = f.sessionId
           sessions.set(sessionId, { sock, repo: safeName(f.repo || '?'), label: safeName(f.label || f.repo || '?'), room: f.room || null, hostRepo: f.repoPath || null, notifyPort: Number(f.notifyPort) || 0, memberHandle: f.memberHandle || null })   // V5: sanitize repo/label at ingest (defang + newline-strip + cap)   // hostRepo (#S2): the host repo path an adversary is summoned onto (from MRC_REPO_PATH)
           // B/#39: classify containment from the TAMPER-PROOF host-only record, NOT this register frame.
@@ -999,7 +1058,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       }
     })
     sock.on('error', () => {})
-    sock.on('close', () => { if (sessionId && sessions.get(sessionId)?.sock === sock) { const v = engine.viewForSession(sessionId); sessions.delete(sessionId); engine.unbindSession(sessionId); adversaries.delete(sessionId); unverified.delete(sessionId); lastTokens.delete(sessionId); noteSessions(); if (v) broadcastEvent({ type: 'presence', org: v.org, handle: v.handle, online: false }) } })   // AUDIT/reconnect-race: tear down ONLY if the map STILL points at THIS socket — a stale half-open socket's delayed 'close' (the macOS-nap FLAP: FIN lost during the VM freeze, fires AFTER a fresh socket re-registered the same deterministic sessionId) would otherwise delete+ghost-offline a LIVE reconnected session (dropped guard, present at pierre-plus-more:929). · #69-B: resolve the member BEFORE unbinding, then push offline · #39/3.A: clear containment flags · #caffeine OBJ6: don't delete lastActivityAt on close — let it AGE OUT over caffeineIdleMs (pruned in the stall tick). A transport blip in the documented macOS-nap FLAP used to delete the entry → next tick anyWorking()=false → releaseCaffeine() dropped the -i assertion in the exact scenario the feature prevents. Over-holding ~30min of caffeinate -i is trivial; under-holding freezes the overnight run — so age out on the SAFE side. lastTokens IS cleared (a reconnect's first frame reseeds a baseline, no spurious bump).
+    sock.on('close', () => { if (sessionId && sessions.get(sessionId)?.sock === sock) { const v = engine.viewForSession(sessionId); const dp = pairingFor(sessionId); sessions.delete(sessionId); engine.unbindSession(sessionId); adversaries.delete(sessionId); unverified.delete(sessionId); lastTokens.delete(sessionId); if (dp) reconcileCatchupDepart(dp, sessionId); noteSessions(); if (v) broadcastEvent({ type: 'presence', org: v.org, handle: v.handle, online: false }) } })   // #29: reconcile a pending catch-up before we forget this session (a mid-catch-up depart else hangs the pane to the timeout). AUDIT/reconnect-race: tear down ONLY if the map STILL points at THIS socket — a stale half-open socket's delayed 'close' (the macOS-nap FLAP: FIN lost during the VM freeze, fires AFTER a fresh socket re-registered the same deterministic sessionId) would otherwise delete+ghost-offline a LIVE reconnected session (dropped guard, present at pierre-plus-more:929). · #69-B: resolve the member BEFORE unbinding, then push offline · #39/3.A: clear containment flags · #caffeine OBJ6: don't delete lastActivityAt on close — let it AGE OUT over caffeineIdleMs (pruned in the stall tick). A transport blip in the documented macOS-nap FLAP used to delete the entry → next tick anyWorking()=false → releaseCaffeine() dropped the -i assertion in the exact scenario the feature prevents. Over-holding ~30min of caffeinate -i is trivial; under-holding freezes the overnight run — so age out on the SAFE side. lastTokens IS cleared (a reconnect's first frame reseeds a baseline, no spurious bump).
   })
   // #50: bind-retry-FOREVER on the relay CONSTANT — NEVER relocate. A moved relay is UNRECOVERABLE (the
   // container firewall hard-DROPS the new port, stranding every live session until relaunch); a WEDGE on the
@@ -1024,6 +1083,24 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   if (electSingleton && !acquireDaemonSingleton(daemonLockPath)) {
     console.error(`[room-daemon] a live daemon already holds the singleton lock for relay ${port} — deferring (this instance exits)`)
     process.exit(0)
+  }
+  // #40 (coverage-critic): release the singleton lock on EVERY graceful exit, not just the test-only stop(). The
+  // production daemon exits via the 'shutdown' control action + idle auto-reap (both process.exit(0)), which never
+  // call stop() — so without this the lock LEAKS holding the now-dead pid on every `mrc rooms restart` (the primary
+  // deploy path), and a reused pid then wedges the next boot (kill(0)='alive') until the 48h backstop = silent
+  // no-daemon. process.on('exit') fires on any process.exit(0); the signal handlers convert a signalled stop into
+  // exit(0) so it releases too. SIGKILL/OOM is uncatchable → the next boot's ESRCH reap is the (bounded) fallback for
+  // a TRUE crash only — which is all the backstop is now for. Registered ONLY after we WON the lock (a deferring loser
+  // above already exited), so a loser never unlinks the incumbent's lock; and releaseLock is OWNERSHIP-CHECKED (only
+  // deletes a lock still stamped with OUR pid) so a late exit can never delete a successor's lock. RESTART-OVERLAP is
+  // safe NOT by "unlink-before-portfree" (the ports free at close() BEFORE the 'exit' unlink runs) but by (1)
+  // acquireDaemonSingleton's ESRCH-reap of a dead holder's stale lock, and (2) the μs/ms asymmetry: the old daemon's
+  // close→exit→die is synchronous microseconds while the new one's fresh-process spawn reaches acquire in
+  // milliseconds, so the old is long dead (→ its lock ESRCH-reapable) before the new ever reads it.
+  if (electSingleton) {
+    const releaseLock = () => { try { if (readFileSync(daemonLockPath, 'utf8') === process.pid + '\n') unlinkSync(daemonLockPath) } catch {} }   // only ever delete a lock still ours (Pierre: no successor-lock deletion on a late exit)
+    process.on('exit', releaseLock)
+    for (const sig of ['SIGTERM', 'SIGINT', 'SIGHUP']) process.on(sig, () => process.exit(0))
   }
   const scheduleRelayRetry = () => { if (relayRetryTimer) return; relayRetryTimer = setTimeout(() => { relayRetryTimer = null; server.listen(port, '127.0.0.1') }, 2000) }   // re-.listen() the SAME server instance (keeps its connection handler); single-timer guard
   server.on('listening', () => { relayBound = true })   // relayBound flips true ONLY here (never optimistically); the elected singleton stamps the record on control-'listening', not here
@@ -1273,7 +1350,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         if (f.action === 'shutdown') {   // graceful stop (used by `mrc rooms restart` / version refresh)
           reply({ ok: true })
           // Dump live pairings so the next daemon can restore them — an in-flight room survives the restart.
-          savePairings([...pairings.values()].map((p) => ({ roomId: p.roomId, a: p.a, b: p.b, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, state: p.state, pauseReason: p.pauseReason })))
+          savePairings([...pairings.values()].map(serializePairing))
           stopAllTg()   // stop Telegram pollers so the refreshed daemon doesn't run a second one per token
           setTimeout(() => { try { server.close(); control.close() } catch {} ; process.exit(0) }, 50)
           continue
@@ -1341,7 +1418,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       try { appendThread(p.roomId, `${ts()} [room GC'd from the daemon — offline ${Math.round((now - (p.deadSince || now)) / 60000)}m (history kept on disk; re-opens on the next ask/summon/resume)]`) } catch {}   // best-effort audit line — honest OFFLINE duration (deadSince), not the turn clock; a missing dir must never crash the tick
       pruned = true
     }
-    if (pruned) savePairings([...pairings.values()].map((p) => ({ roomId: p.roomId, a: p.a, b: p.b, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, state: p.state, pauseReason: p.pauseReason })))
+    if (pruned) savePairings([...pairings.values()].map(serializePairing))
   }
 
   const stallTimer = setInterval(() => {

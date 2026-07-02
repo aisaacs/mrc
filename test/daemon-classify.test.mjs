@@ -8,6 +8,7 @@ import assert from 'node:assert/strict'
 import net from 'node:net'
 import os from 'node:os'
 import fs from 'node:fs'
+import { spawn } from 'node:child_process'
 
 // Isolate HOME BEFORE importing anything that reads homedir() (session-record's recordDir()).
 process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-classify-home-`)
@@ -624,11 +625,108 @@ test('#50 OBJ-A: acquireDaemonSingleton elects one holder via process.kill(pid,0
   fs.writeFileSync(lock, `${process.pid}`)
   assert.equal(acquireDaemonSingleton(lock), false, 'a torn (sentinel-less) lock → defer, never reaped')
 
-  // 5) pid-reuse BACKSTOP: a live pid BUT an un-heartbeated lock older than the backstop → downgrade to dead + reap.
+  // 5) pid-reuse BACKSTOP: a live pid BUT an un-heartbeated lock OLDER than the backstop → downgrade to dead + reap.
   // (A live daemon heartbeats its lock every tick so its lock never ages; only a dead holder whose pid was recycled
-  // by an unrelated live process lands here. backstopMs:0 makes any age exceed it.)
+  // by an unrelated live process lands here.) Set the mtime to a definitively-old time and use the REAL default
+  // backstop — deterministic (an earlier `backstopMs:0` on a just-written file flaked on FS mtime rounding, where
+  // Date.now()-mtime could be a hair negative).
   fs.writeFileSync(lock, `${process.pid}\n`)
-  assert.equal(acquireDaemonSingleton(lock, { backstopMs: 0 }), true, 'backstopMs:0 → the alive verdict is downgraded (pid-reuse) → reaped + acquired')
+  const old = new Date(Date.now() - 100 * 3600 * 1000)   // 100h ago > the 48h backstop
+  fs.utimesSync(lock, old, old)
+  assert.equal(acquireDaemonSingleton(lock), true, 'a live pid but a >48h-old un-heartbeated lock is treated as a pid-reuse stale holder → reaped + acquired')
 
   fs.rmSync(dir, { recursive: true, force: true })
+})
+
+test('#40: the daemon releases its singleton lock on a signalled (SIGTERM) exit — no leak that a pid-reuse could wedge the next boot on', async () => {
+  const home = fs.mkdtempSync(`${os.tmpdir()}/mrc-lockrelease-`)
+  const port = await findFreePort(20500)
+  const controlPort = await findFreePort(port + 1)
+  const lockPath = `${home}/.local/share/mrc/room-daemon-${port}.lock`
+  // Boot the REAL detached daemon (electSingleton:true via the direct-invocation path), isolated HOME, dashboard off.
+  const child = spawn(process.execPath, ['src/proxies/room-daemon.js', String(port), String(controlPort), '0'],
+    { env: { ...process.env, HOME: home, MRC_DASHBOARD_PORT: '0' }, stdio: 'ignore' })
+  const waitLock = async (want) => { for (let i = 0; i < 120; i++) { if (fs.existsSync(lockPath) === want) return true; await sleep(50) } return false }
+  try {
+    assert.ok(await waitLock(true), 'the daemon created its per-relay-port singleton lock on boot')
+    child.kill('SIGTERM')
+    assert.ok(await waitLock(false), 'the lock is RELEASED on a SIGTERM exit — the leak the coverage-critic found (unlink only in the test-only stop()) is closed, so a reused pid cannot wedge the next boot until the 48h backstop')
+  } finally {
+    try { child.kill('SIGKILL') } catch {}
+    try { fs.rmSync(home, { recursive: true, force: true }) } catch {}
+  }
+})
+
+test('#41/#53: a restored pairing seeds lastActivityAt (no stall-NaN) and renders persisted member names (no "?")', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-restore-`)
+  const { savePairings } = await import('../src/rooms.js')
+  // Persist a pairing exactly as savePairings does — NO lastActivityAt (it is never persisted), WITH memberNames.
+  savePairings([{ roomId: 'r-restore', a: 'mem-a', b: 'mem-b', turn: 5, turnCap: 200, autoCatchup: false, state: 'Running', pauseReason: null, memberNames: { 'mem-a': 'Roland', 'mem-b': 'Ludivine' } }])
+  const port = await findFreePort(20950)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 200, workerInvoke: async () => ({ text: '' }) })
+  const p = daemon.pairings.get('r-restore')
+  assert.ok(p, 'the pairing was restored from disk')
+  assert.equal(typeof p.lastActivityAt, 'number', '#41: lastActivityAt is seeded to a NUMBER on restore — the stall tick can no longer compute NaN>stallMs=false forever (stall detection stays alive after a restart)')
+  // #53: neither member has reconnected → nameOf must fall back to the persisted memberNames, not "?".
+  const st = await controlCall(controlPort, { action: 'status' })
+  const row = st.pairings.find((x) => x.roomId === 'r-restore')
+  assert.equal(row.a, 'Roland', '#53: a restored, not-yet-reconnected member renders its persisted name, not "?"')
+  assert.equal(row.b, 'Ludivine', '#53: the other restored member likewise')
+  daemon?.stop?.()
+})
+
+test('#5: a HELD (paused) message burns NO turn; only a delivered one does', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-turn-`)
+  const A = 'turn-a', B = 'turn-b'
+  saveSessionRecord(A, { repoPath: process.env.HOME, adversary: false, secret: 'sa' })
+  saveSessionRecord(B, { repoPath: process.env.HOME, adversary: false, secret: 'sb' })
+  const port = await findFreePort(20960)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 200, workerInvoke: async () => ({ text: '' }) })
+  const a = client(port); await a.ready; a.send({ type: 'register', sessionId: A, repo: 'a', label: 'A', secret: 'sa' })
+  const b = client(port); await b.ready; b.send({ type: 'register', sessionId: B, repo: 'b', label: 'B', secret: 'sb' })
+  await sleep(140)
+  // A asks (single other → auto-pairs with B), delivered → turn 1.
+  a.send({ type: 'ask', question: 'hello' })
+  await sleep(100)
+  const roomId = [...daemon.pairings.keys()][0]
+  const p = daemon.pairings.get(roomId)
+  assert.equal(p.turn, 1, 'a DELIVERED ask counts one turn')
+  // Pause the room (simulate a human brake), then ask again → HELD → must NOT increment the turn.
+  p.state = 'Paused'; p.pauseReason = 'brake'
+  a.send({ type: 'ask', question: 'still there?' })
+  await sleep(100)
+  assert.equal(p.turn, 1, '#5: a HELD message does NOT burn a turn (increment moved past the hold gate — was pre-gate, so held msgs wrongly crossed the cap + inflated [turn X/Y])')
+  assert.equal(p.held.length, 1, 'the held message is queued for resume')
+  daemon?.stop?.()
+  for (const c of [a, b]) try { c.sock.destroy() } catch {}
+})
+
+test('#6(b): reconcileCatchupDepart does NOT finalize while a LIVE member still owes a handoff', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-catchup-`)
+  const { appendCatchup, readCatchups } = await import('../src/rooms.js')
+  const A = 'cu-a', B = 'cu-b'
+  saveSessionRecord(A, { repoPath: process.env.HOME, adversary: false, secret: 'sa' })
+  saveSessionRecord(B, { repoPath: process.env.HOME, adversary: false, secret: 'sb' })
+  const port = await findFreePort(20970)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 200, workerInvoke: async () => ({ text: '' }) })
+  const a = client(port); await a.ready; a.send({ type: 'register', sessionId: A, repo: 'a', label: 'A', secret: 'sa' })
+  const b = client(port); await b.ready; b.send({ type: 'register', sessionId: B, repo: 'b', label: 'B', secret: 'sb' })
+  await sleep(120)
+  a.send({ type: 'ask', question: 'hi' }); await sleep(100)   // opens the pairing (A<->B)
+  const roomId = [...daemon.pairings.keys()][0]
+  const p = daemon.pairings.get(roomId)
+  // Stage a pending pane where the DEPARTED side (A) has ALREADY filed but the LIVE side (B) hasn't. (Built directly
+  // rather than via elicitCatchup so no long catch-up-timeout timer leaks into the test process.)
+  const seq = appendCatchup(roomId, { ts: 't', pauseReason: 'test', status: 'pending', expected: 2, handoffs: { a: { name: 'A', text: 'done' } } })
+  p.pendingCatchup = seq
+  const readPane = () => readCatchups(roomId).find((x) => x.seq === seq)
+  a.sock.destroy()   // A departs mid-catch-up → the close handler runs reconcileCatchupDepart
+  for (let i = 0; i < 120 && readPane()?.expected !== 1; i++) await sleep(20)
+  assert.equal(readPane().expected, 1, 'reconcile lowered expected to the one still-live member (B)')
+  assert.equal(readPane().status, 'pending', '#6(b): stays PENDING — the DEPARTED A\'s own handoff must NOT satisfy B\'s quorum. The pre-fix `filed = Object.keys(handoffs).length` (=1, A\'s) >= stillLive (=1) finalized here, robbing the live B of its slot; the fix counts still-live filings only (=0).')
+  daemon?.stop?.()
+  for (const c of [a, b]) try { c.sock.destroy() } catch {}
 })

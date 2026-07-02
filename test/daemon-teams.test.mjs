@@ -352,3 +352,31 @@ test('#3/AUDIT: a verified-normal NON-member cannot bind a member slot via a wir
   daemon?.stop?.()
   for (const c of [attacker, legit]) try { c.sock.destroy() } catch {}
 })
+
+test('#38: a register presenting a reserved memberSessionId WITHOUT a verified-member record is refused (slot-squat closed)', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-slotsquat-`)
+  const port = await findFreePort(19600)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+  const roster = { org: 'shop', repo: process.env.HOME, teams: [{ name: 'client', territory: 'client', members: [
+    { role: 'architect', backend: 'claude', name: 'roland', lead: true },
+    { role: 'critic', backend: 'claude', name: 'pierre' },
+  ] }] }
+  const norm = parseRoster(roster, { rng: seededRng(1) })
+  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+
+  // The attacker computes pierre's PUBLIC derived id (sha1(org\0handle)) and registers with it BEFORE the real pierre
+  // launches — no record on disk, so R1 has no secret to check. #38 refuses it so it can't squat the future slot.
+  const squatter = client(port); await squatter.ready
+  squatter.send({ type: 'register', sessionId: memberSessionId('shop', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'evil', label: 'evil' })   // no secret, no record written
+  const rej = await squatter.waitFor((f) => f.type === 'notice' && /reserved member identity/.test(f.text))
+  assert.ok(rej, 'a reserved memberSessionId without a verified-member record is refused at register — the sessions-Map slot-squat is closed')
+
+  // The REAL pierre (record + secret written pre-launch) still registers and binds fine — no false-refusal.
+  const legit = client(port); await legit.ready
+  registerMember(legit, { sessionId: memberSessionId('shop', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'shop', label: 'pierre' })
+  await legit.waitFor((f) => f.type === 'notice' && /Joined as @pierre/.test(f.text))
+
+  daemon?.stop?.()
+  for (const c of [squatter, legit]) try { c.sock.destroy() } catch {}
+})

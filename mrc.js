@@ -422,7 +422,12 @@ checkImageAge(repoPath)
 // config volume and is invisible to the normal picker, so this only fires on a deliberate `--resume <adv-id>`.
 if (config.resumeSession && isAdversarySession(config.resumeSession)) {
   config.resumeIsAdversary = true
-  if (!config.openAdversaryUnsafe) config.cageAdversary = true
+  if (!config.openAdversaryUnsafe) {
+    config.cageAdversary = true
+    console.error('  ⚔ Re-sandboxing this adversary session (hardened firewall, no web). Pass --open-adversary-unsafe to open it normally.')
+  } else {
+    console.error('  ⚠ --open-adversary-unsafe: reopening this adversary session WITHOUT the cage (full egress). Its Pierre volume is reattached.')
+  }
 }
 
 // A CAGED adversary (a summoned Pierre, or a re-sandboxed resume of one) gets the tightest sandbox: read-only
@@ -430,6 +435,14 @@ if (config.resumeSession && isAdversarySession(config.resumeSession)) {
 // gated on this one flag, so a NORMAL session's launch is byte-identical to before. --open-adversary-unsafe
 // leaves cageAdversary unset → it (and only it) stays uncaged (still daemon-classified via MRC_ADVERSARY).
 const cagedAdversary = !!(config.summonedBy || config.cageAdversary)
+// #11 (coverage-critic): the CONFIG-VOLUME selection keys on adversary IDENTITY, not cage STATE. A recorded adversary
+// reopened with --open-adversary-unsafe is uncaged (cagedAdversary=false: rw /workspace + full egress, deliberately)
+// but is STILL an adversary — it must reattach its dedicated -pierre-N volume, NEVER the user's real login/config
+// volume (the #9 shared-refresh-token / logout hazard the Pierre pool exists to prevent) + its transcript lives there.
+// Gating the pool branch on cagedAdversary alone (the re-port bug) dropped the uncaged-resume case into the normal
+// nextInstanceSlot branch → mounted mrc-config-<hash> (the login volume) RW into a red-team session. Restore pierre's
+// identity gate. (Workspace-ro / egress / clip stay on cagedAdversary — the flag deliberately opens those.)
+const adversaryVolume = cagedAdversary || config.resumeIsAdversary
 
 // Volumes. A team member gets territorial mounts (read-only /workspace + its writable lane); a caged
 // adversary gets /workspace READ-ONLY; a normal session gets the whole repo read-write.
@@ -442,7 +455,7 @@ let volName
 let adversarySlot = 0
 if (memberCtx) {
   volName = volumeName(`${repoPath}#${memberCtx.member.handle}`, 1)
-} else if (cagedAdversary) {
+} else if (adversaryVolume) {
   // Dedicated per-repo Pierre config-volume pool (mrc-config-<hash>-pierre-N) via a race-free O_EXCL claim, so
   // a summoned adversary NEVER mounts the user's login/config and its transcript can't be auto-resumed by a
   // normal launch (a normal launch uses a different volume, so it never sees the adversary's session). High-
@@ -475,7 +488,7 @@ if (memberCtx) {
   volName = volumeName(repoPath, claim.slot)
 }
 volumes.push('-v', `${volName}:/home/coder/.claude`)
-if (!cagedAdversary) volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)   // a caged adversary (Pierre) is Claude-only — no codex volume
+if (!adversaryVolume) volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)   // an adversary (Pierre) is Claude-only — no codex volume (and never the user's mrc-codex-<hash> — #11: keyed on adversaryVolume so an uncaged resume doesn't mount it either)
 
 // Environment flags
 const envFlags = []
