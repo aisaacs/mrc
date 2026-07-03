@@ -4,7 +4,7 @@
 // Called by entrypoint.sh after the firewall is up.
 // Handles: plugin seeding, config restore, symlinks, hooks, statusline.
 //
-import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, readdirSync, cpSync, rmSync, unlinkSync, lstatSync, statSync, appendFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, readdirSync, cpSync, rmSync, unlinkSync, renameSync, lstatSync, statSync, appendFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
 
@@ -189,6 +189,10 @@ if (ADVERSARY) {
     if (st && st.isSymbolicLink()) unlinkSync(PROJECT_STORE)                   // drop the LINK ONLY — never its target (/workspace/.mrc, the owner's real transcripts)
     else if (st && !st.isDirectory()) rmSync(PROJECT_STORE, { force: true })   // a stray non-dir where the store should be
     mkdirSync(PROJECT_STORE, { recursive: true })                             // already a real dir → no-op (persisted transcripts preserved)
+    // Tidy a stale migration temp (Pierre's cosmetic nit): a crash between the rescue cpSync and its rename/rmSync
+    // can leave a `<id>.jsonl.rescue-<pid>.tmp`. Zero correctness impact (never stat'd as a transcript, never matched
+    // by the `.jsonl` filter), but sweep it so cruft doesn't accumulate across boots.
+    try { for (const f of readdirSync(PROJECT_STORE)) if (f.endsWith('.tmp') && f.includes('.rescue-')) rmSync(join(PROJECT_STORE, f), { force: true }) } catch {}
     // Fail-LOUD (CLAUDE.md doctrine): the whole bug was a SILENT EROFS eating sessions. Prove the store is writable
     // NOW; if not, abort rather than run a session whose transcript can't persist.
     const probe = join(PROJECT_STORE, '.mrc-write-probe')
@@ -285,17 +289,62 @@ if (agent === 'claude') {
     // hard-crashes the entrypoint (the line-98 failure). Decide deterministically here — the transcript is a
     // real file in PROJECT_STORE now (a symlink for a normal session resolves through to /workspace/.mrc): a
     // non-empty file → real resume; absent → DOWNGRADE to a fresh session under the same id (empty flag → the
-    // entrypoint's `--session-id ${MRC_SESSION_ID}` path, exactly what a fresh summon uses). FAIL-LOUD so the
-    // human never gets silent fake-continuity. (LOAD-BEARING, verify on the rebuild: `--session-id <old-id>`
-    // must START, not reject, when history.jsonl/claude.json still carry that id but no transcript exists — if
-    // Claude rejects a "known" id, this needs a fresh-uuid + host-record alias instead. Not yet verified.)
-    let hasTranscript = false
-    try { hasTranscript = statSync(join(PROJECT_STORE, `${resumeSession}.jsonl`)).size > 0 } catch {}
+    // entrypoint's `--session-id ${MRC_SESSION_ID}` path, exactly what a fresh summon uses). VERIFIED on the
+    // rebuild: `--session-id <old-id>` STARTS clean even when .claude.json carries the id with no transcript
+    // (Claude discovers sessions by scanning the transcript dir, which is empty for that id) — so no alias needed.
+    // RELIABLE resume-vs-fresh + rescue (Pierre): "gone"/"absent" must mean a PERSISTENT ENOENT across retries —
+    // never a single stat, and never a non-ENOENT error (EACCES/EIO ≠ absence). /workspace/.mrc is virtiofs with a
+    // real consistency window, so the SAME rigor must gate BOTH the primary check AND the orphan check — one shared
+    // helper, so the asymmetry (a single un-retried stat that reads a transient ENOENT as "gone") cannot return. A
+    // present, correctly-named file returns success or a non-ENOENT error, never a persistent ENOENT → this can
+    // never downgrade or mislabel a present transcript, whatever the failure's cause.
+    const transcriptPresent = (p) => {
+      for (let attempt = 0; ; attempt++) {
+        try { return statSync(p).size > 0 }                                  // found (non-empty) or empty — decided
+        catch (e) {
+          if (!(e && e.code === 'ENOENT')) return true                       // non-ENOENT → NOT absence → treat as present (resume / recoverable)
+          if (attempt >= 4) return false                                     // persistent ENOENT across retries → genuinely absent
+          try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100) } catch {}   // 100ms settle, then re-stat (defeats a transient ENOENT)
+        }
+      }
+    }
+    const transcriptPath = join(PROJECT_STORE, `${resumeSession}.jsonl`)
+    let hasTranscript = transcriptPresent(transcriptPath)
+    // (A) migration rescue + HONEST recoverability (Pierre): an UNCAGED pre-fix adversary (--open-adversary-unsafe →
+    // writable /workspace) wrote its transcript THROUGH the old symlink to /workspace/.mrc/<id>.jsonl; the reconcile
+    // above removed the symlink, so on the first post-fix resume it's orphaned THERE, not at PROJECT_STORE. Rescue
+    // THIS uuid's file only (never the owner's OTHER .mrc transcripts — the containment line) into the real store.
+    let orphanRecoverablePath = null   // set iff a real transcript is on disk at the old location but couldn't be rescued
+    if (!hasTranscript) {
+      const orphan = join(MRC_LOCAL, `${resumeSession}.jsonl`)
+      if (transcriptPresent(orphan)) {   // BUG1+BUG3: same retry + non-ENOENT rigor as the primary (virtiofs can transiently ENOENT — must not read as "gone")
+        // BUG4 (Pierre): cpSync isn't atomic — a partial (ENOSPC mid-copy) would leave a truncated .jsonl that the
+        // NEXT boot's presence check reads as "present" → --resume on corrupt data. Copy to a temp then ATOMIC
+        // rename (same fs, so rename is atomic), so transcriptPath only ever holds a COMPLETE file; clean up on fail.
+        const tmp = `${transcriptPath}.rescue-${process.pid}.tmp`
+        try { cpSync(orphan, tmp); renameSync(tmp, transcriptPath); hasTranscript = true }        // rescued → --resume
+        catch { try { rmSync(tmp, { force: true }) } catch {}; orphanRecoverablePath = orphan }   // un-rescuable → downgrade, but it's RECOVERABLE (BUG2)
+      }
+    }
     if (hasTranscript) {
       resumeFlag = `--resume ${resumeSession}`
     } else {
       resumeFlag = ''
-      console.error(`⚠ No persisted transcript for session ${resumeSession} — starting FRESH under the same id. (A pre-fix cage bug ate the old transcript; it is unrecoverable, so there is nothing to resume.)`)
+      // BUG2 (Pierre): tell the TRUTH about recoverability — "unrecoverable" ONLY when nothing is on disk. If the
+      // orphan is present but the rescue failed, the real transcript is sitting at that path and the human can recover it.
+      const recover = orphanRecoverablePath
+        ? `the prior transcript is ON DISK at ${orphanRecoverablePath} (automatic recovery failed) and may be recoverable`
+        : `the prior transcript was lost to a since-fixed bug and is unrecoverable`
+      console.error(`⚠ No persisted transcript for session ${resumeSession} — starting FRESH under the same id (${recover}).`)
+      // Gap-(b): the console.error above is entrypoint STDERR — it scrolls away when the TUI paints. ALSO write an
+      // in-session note the agent relays on its FIRST turn (entrypoint folds /tmp/mrc-session-note into
+      // --append-system-prompt). NOTE (Pierre's 4th, STILL OPEN): --append-system-prompt is model-context the agent
+      // MAY not surface, and a dashboard/Telegram-supervised human never sees a TTY note — the @user-inbox routing
+      // (#62) is the real cross-surface net for the caged-summon population; this note is only the direct-TTY cover.
+      try {
+        writeFileSync('/tmp/mrc-session-note',
+          `[SESSION NOTICE — say this to your human in your FIRST message, before anything else]: This session's earlier transcript (id ${resumeSession}) could not be resumed, so you are running FRESH under the same session id — ${orphanRecoverablePath ? `the prior conversation is NOT lost: it is on disk at ${orphanRecoverablePath} (automatic recovery failed) and can be recovered` : `the prior conversation is gone, this is a clean start`}. State that plainly, then carry on.`)
+      } catch {}
     }
   } else if (!newSession) {
     try {

@@ -78,6 +78,25 @@ AGENT="${MRC_AGENT:-claude}"
 case "$AGENT" in
   claude)
     echo "Launching Claude Code..."
+    # Build the --append-system-prompt content ONCE: a team member's persona (role + protocol) AND/OR a
+    # downgrade notice. Gap-(b): a resume with no persisted transcript (a pre-fix vaporized record) downgrades to
+    # a fresh session, and container-setup.js drops /tmp/mrc-session-note — a first-turn notice for the agent to
+    # relay so the human SEES they got a clean start IN-SESSION, not just in boot stderr that scrolls away.
+    # Read the persona from a FILE so backticks/$ in it are not re-evaluated by the shell ($(cat …) is not rescanned).
+    APPEND_SYSTEM=""
+    if [ -n "${MRC_PERSONA_FILE:-}" ] && [ -f "${MRC_PERSONA_FILE}" ]; then
+      APPEND_SYSTEM="$(cat "${MRC_PERSONA_FILE}")"
+    fi
+    if [ -f /tmp/mrc-session-note ]; then
+      MRC_NOTE="$(cat /tmp/mrc-session-note)"; rm -f /tmp/mrc-session-note
+      if [ -n "$APPEND_SYSTEM" ]; then
+        APPEND_SYSTEM="$APPEND_SYSTEM
+
+$MRC_NOTE"
+      else
+        APPEND_SYSTEM="$MRC_NOTE"
+      fi
+    fi
     if [ -n "${MRC_ROOM_PORT:-}" ]; then
       # Room/crew session: load the channel from the baked-in `mrc` plugin marketplace. It's allowlisted
       # in /etc/claude-code/managed-settings.json, so `--channels plugin:room@mrc` loads the channel with
@@ -88,16 +107,16 @@ case "$AGENT" in
       if [ -z "$RESUME_FLAG" ] && [ -n "${MRC_SESSION_ID:-}" ]; then
         SESSION_FLAG="--session-id ${MRC_SESSION_ID}"
       fi
-      # Team members carry a persona (role + protocol) injected via --append-system-prompt. Read from
-      # a file so backticks/$ in the prompt are not re-evaluated by the shell ($(cat …) is not rescanned).
-      if [ -n "${MRC_PERSONA_FILE:-}" ] && [ -f "${MRC_PERSONA_FILE}" ]; then
+      if [ -n "$APPEND_SYSTEM" ]; then
         claude --dangerously-skip-permissions \
           --channels plugin:room@mrc \
-          --append-system-prompt "$(cat "${MRC_PERSONA_FILE}")" $SESSION_FLAG "$@"
+          --append-system-prompt "$APPEND_SYSTEM" $SESSION_FLAG "$@"
       else
         claude --dangerously-skip-permissions \
           --channels plugin:room@mrc $SESSION_FLAG "$@"
       fi
+    elif [ -n "$APPEND_SYSTEM" ]; then
+      claude --dangerously-skip-permissions --append-system-prompt "$APPEND_SYSTEM" $RESUME_FLAG "$@"
     else
       claude --dangerously-skip-permissions $RESUME_FLAG "$@"
     fi
