@@ -90,7 +90,7 @@ ipset create allowed-domains hash:net
 if [ "${MRC_ADVERSARY_FW:-}" = "1" ]; then
     ALLOWED_DOMAINS=()
 else
-    ALLOWED_DOMAINS=("registry.npmjs.org" "api.anthropic.com" "api.openai.com" "sentry.io" "statsig.com")
+    ALLOWED_DOMAINS=("registry.npmjs.org" "api.anthropic.com" "platform.claude.com" "api.openai.com" "sentry.io" "statsig.com")
 fi
 for domain in ${ALLOWED_DOMAINS[@]+"${ALLOWED_DOMAINS[@]}"}; do
     echo "Resolving $domain..."

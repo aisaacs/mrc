@@ -21,6 +21,7 @@ import { startSniProxy } from './src/proxies/sni-proxy.js'   // A/#40: host SNI-
 import { listSessions, nameSession, resolve as resolveSession, loadNames, resolveSessionId, getSessions } from './src/sessions/manager.js'
 import { summarize, generateName } from './src/sessions/api.js'
 import { pick, ensureNamesMigrated } from './src/sessions/picker.js'
+import { makeNamer } from './src/sessions/name-watcher.js'
 import { detectToolMisses } from './src/sessions/transcript.js'
 import { resolveContextDir } from './src/context.js'
 import { saveSessionRecord, pruneSessionRecords, isAdversarySession, loadSessionRecord, classifySession } from './src/session-record.js'
@@ -683,39 +684,43 @@ if (config.agent === 'claude') {
   try { beforeSessions = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')) } catch {}
 }
 
-// Background name generator
+// Background name generator (#52: retry until a name actually lands; #14: name THIS session's pinned UUID). The retry
+// + anti-hang core lives in src/sessions/name-watcher.js (injectable → unit-tested); wire it to THIS session's mrcDir.
+// nameWhenReady(uuid) → true iff it engaged the pinned .jsonl, false iff that file never appeared (a future --session-id
+// regression) → the caller falls through to the heuristic (the real file). See name-watcher.js for the status legend.
+const sleepMs = (ms) => new Promise(r => setTimeout(r, ms))
+const { statSync } = await import('node:fs')
+const { nameUntilDone, nameWhenReady } = makeNamer({
+  generateName: (uuid) => generateName(mrcDir, uuid),
+  statSync,
+  jsonlPath: (uuid) => resolve(mrcDir, `${uuid}.jsonl`),
+  sleep: sleepMs,
+})
 let nameWatcher = null
 if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && apiKey) {
+  // EXIT-SAFETY INVARIANT (Pierre): this is a BACKGROUND IIFE, started before runContainer and NEVER awaited on the
+  // main path — the unconditional `process.exit(exitCode)` after runContainer HARD-KILLS any pending poll. THAT is
+  // what makes the in-session nameUntilDone(Infinity) / nameWhenReady growth-poll safe (an unbounded loop can't
+  // outlive the session or block exit). Do NOT `await nameWatcher` on the main path, and keep process.exit(exitCode)
+  // unconditional — the day either changes, Infinity becomes a real hang. (The post-exit fallbacks ARE awaited, so
+  // those pass a bounded cap of 3.)
   nameWatcher = (async () => {
-    // For resumed sessions, name immediately if unnamed
+    // #14: rooms/members PIN this session's conversation UUID (MRC_SESSION_ID → `claude --session-id` → <id>.jsonl),
+    // so name its OWN .jsonl directly. The files[last]/newFiles[0] heuristics below mis-name under CONCURRENT
+    // same-repo launches (a fresh session grabs a peer's .jsonl). Non-rooms sessions (no pinned id) fall through.
+    if (roomInfo?.sessionId) { if (await nameWhenReady(roomInfo.sessionId)) return }   // #14: on success, done; if the pinned .jsonl never appeared (a --session-id regression), FALL THROUGH to the heuristic (the file the container ACTUALLY wrote) — never leave it unnamed
+    // Resumed (no pinned id): name the latest existing .jsonl if unnamed — a single attempt (it already has content).
     try {
       const files = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')).sort()
-      if (files.length > 0) {
-        const uuid = basename(files[files.length - 1], '.jsonl')
-        await generateName(mrcDir, uuid)
-      }
+      if (files.length > 0) await generateName(mrcDir, basename(files[files.length - 1], '.jsonl'))
     } catch {}
-
-    // For new sessions, wait for a new JSONL to appear
+    // New (no pinned id): wait (bounded) for the .jsonl to appear, then name-when-ready.
     for (let i = 0; i < 60; i++) {
-      await new Promise(r => setTimeout(r, 5000))
+      await sleepMs(5000)
       try {
         const after = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl'))
         const newFiles = after.filter(f => !beforeSessions.includes(f))
-        if (newFiles.length > 0) {
-          // Wait for enough conversation (~10KB)
-          const newFile = resolve(mrcDir, newFiles[0])
-          for (let j = 0; j < 60; j++) {
-            await new Promise(r => setTimeout(r, 5000))
-            try {
-              const { statSync } = await import('node:fs')
-              if (statSync(newFile).size >= 10240) break
-            } catch {}
-          }
-          const uuid = basename(newFiles[0], '.jsonl')
-          await generateName(mrcDir, uuid)
-          break
-        }
+        if (newFiles.length > 0) { await nameWhenReady(basename(newFiles[0], '.jsonl')); break }
       } catch {}
     }
   })()
@@ -752,9 +757,9 @@ if (config.agent === 'claude') {
       nameSession(mrcDir, config.newSessionName, newUuid)
     }
 
-    // Auto-generate name if none set
+    // Auto-generate name if none set (#52: bounded retry — the transcript is final, so a small cap covers a transient blip)
     if (!config.newSessionName && !config.noSummary && apiKey) {
-      await generateName(mrcDir, newUuid)
+      await nameUntilDone(newUuid, 3)
     }
 
     // Tool-miss detection
@@ -786,7 +791,7 @@ if (config.agent === 'claude') {
   if (newFiles.length === 0 && !config.noSummary && apiKey) {
     try {
       const latest = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')).sort().pop()
-      if (latest) await generateName(mrcDir, basename(latest, '.jsonl'))
+      if (latest) await nameUntilDone(basename(latest, '.jsonl'), 3)   // #52: bounded retry, on the REAL on-disk file (Pierre: never the pinned id — a phantom would make the backstop miss too)
     } catch {}
   }
 }
