@@ -25,6 +25,11 @@ function setup() {
   saveSessionRecord('adv-here', { repoPath: repo, summonedBy: 'summoner-x', adversary: true, slot: 2 })
   saveSessionRecord('adv-foreign', { repoPath: foreign, summonedBy: 'summoner-y', adversary: true, slot: 1 })
   saveSessionRecord('normal-uuid', { repoPath: repo, adversary: false })   // the .mrc session's own (non-adversary) record
+  // Deterministic recency for the collation: the normal session is NEWEST → it stays #1, adv-here #2 (matches the
+  // fixed #-assertions below). Set the .mrc file mtime and the adv record's file mtime explicitly.
+  const rec = join(process.env.HOME, '.local/share/mrc/session-meta')
+  fs.utimesSync(join(mrcDir, 'normal-uuid.jsonl'), new Date('2026-06-15T00:00:00Z'), new Date('2026-06-15T00:00:00Z'))
+  fs.utimesSync(join(rec, 'adv-here.json'), new Date('2026-06-01T00:00:00Z'), new Date('2026-06-01T00:00:00Z'))
   return { mrcDir }
 }
 
@@ -64,8 +69,8 @@ test('adversary rows carry a real timestamp (record mtime) and sort most-recent-
   fs.utimesSync(join(process.env.HOME, '.local/share/mrc/session-meta/adv-old.json'), new Date(1000), new Date(1000))
   const adv = getResumableSessions(mrcDir).filter((r) => r.adversary)
   assert.deepEqual(adv.map((r) => r.uuid), ['adv-new', 'adv-old'], 'most-recently-summoned adversary first (not undated at the bottom)')
-  assert.ok(adv[0].lastUpdated > 0, 'a real timestamp is stamped from the record mtime (was 0 → blank date + always-last)')
-  assert.equal(adv[1].lastUpdated, 1000, 'the ancient record keeps its own mtime')
+  assert.ok(adv[0].recencyMs > 0 && adv[0].lastUpdated, 'a real timestamp is stamped from the record mtime (was 0 → blank date + always-last)')
+  assert.equal(adv[1].recencyMs, 1000, 'the ancient record keeps its own mtime')
 })
 
 test('containment invariant: every resolve path to an adversary yields a uuid the mrc.js re-cage recognizes', () => {

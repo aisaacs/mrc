@@ -95,13 +95,16 @@ export function getResumableSessions(mrcDir) {
     if (!(rec.adversary || rec.summonedBy)) continue        // adversaries only (keystone: same as classifySession)
     if (rec.repoPath !== repoPath) continue                 // containment floor: only THIS repo's Pierre pool
     if (seen.has(uuid)) continue                            // dedup (a normal .mrc session that also has a record)
-    // lastUpdated = the host record's mtime (a caged adversary's transcript is in its config volume, not .mrc,
-    // so there's no in-repo mtime) → gives the picker a real timestamp AND lets a freshly-summoned Pierre sort
-    // to the TOP of the adversary group instead of being an undated row lost among a dozen historical ones.
-    advRows.push({ uuid, lastUpdated: sessionRecordMtime(uuid), preview: '', adversary: true, summonedBy: rec.summonedBy || null })
+    // recencyMs = the host record's mtime (a caged adversary's transcript is in its config volume, not .mrc, so
+    // there's no in-repo mtime). Same numeric field getSessions ranks by (+ an ISO lastUpdated string for the
+    // picker's date column) so an adversary COLLATES into the one recency order instead of sitting undated at the
+    // bottom — a Pierre summoned today lands among today's sessions.
+    const ms = sessionRecordMtime(uuid)
+    advRows.push({ uuid, recencyMs: ms, lastUpdated: ms ? new Date(ms).toISOString() : '', preview: '', adversary: true, summonedBy: rec.summonedBy || null })
   }
-  advRows.sort((a, b) => b.lastUpdated - a.lastUpdated)     // most-recently-summoned adversary first within the group
-  return [...sessions, ...advRows]   // normal (recency-ranked) first, adversaries appended → stable order for picker + resolve
+  // ONE recency order for the whole list (normal + adversary) → the picker and `resolve` share it (a stable sort
+  // keeps getSessions' existing tie-break), so `sessions resume <#>` can never diverge from the picker.
+  return [...sessions, ...advRows].sort((a, b) => (b.recencyMs || 0) - (a.recencyMs || 0))
 }
 
 /** Resolve a name or list number to a UUID. Returns UUID or null. */

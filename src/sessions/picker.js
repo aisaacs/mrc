@@ -76,9 +76,9 @@ export async function pick(mrcDir) {
       ts: lastUpdated ? formatTs(lastUpdated) : '',
       // D2: an adversary row is labelled from the durable record (summonedBy = the classifySession keystone) and,
       // when SELECTED, triggers an inline re-sandbox confirm — the picker path has no confirmIfAdversary otherwise.
-      // Compact "adv: <issuer session>" (owner pref): drops the long "⚔ … red-team for" prefix so the issuer
-      // name barely truncates in the 40-char column, and the ts column now carries a real timestamp.
-      name: adversary ? `adv: ${issuer}` : selfName,
+      // 🔴🛡️ prefix (owner pref) makes a caged red-team row pop out of the collated list at a glance; compact
+      // "adv: <issuer session>" keeps the issuer readable in the 40-char column, and ts now carries a real date.
+      name: adversary ? `🔴🛡️ adv: ${issuer}` : selfName,
       adversary: !!adversary,
       selfName,
       issuer,

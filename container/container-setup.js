@@ -4,7 +4,7 @@
 // Called by entrypoint.sh after the firewall is up.
 // Handles: plugin seeding, config restore, symlinks, hooks, statusline.
 //
-import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, readdirSync, cpSync, rmSync, lstatSync, statSync, appendFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, readdirSync, cpSync, rmSync, unlinkSync, lstatSync, statSync, appendFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
 
@@ -167,12 +167,37 @@ if (process.env.ANTHROPIC_API_KEY) {
 }
 
 // A caged adversary (MRC_ADVERSARY_FW) has /workspace mounted READ-ONLY, so the .mrc symlink + .gitignore
-// writes below can't (and shouldn't) touch the repo. Skip them: its transcript stays in PROJECT_STORE inside
-// its own (dedicated) config volume, never written into the read-only repo tree.
+// writes below can't (and shouldn't) touch the repo.
 const CAGED = !!process.env.MRC_ADVERSARY_FW
+// ADVERSARY identity is set for a caged summon AND an uncaged --open-adversary-unsafe resume (mrc.js:517-521);
+// FW is set only for the cage. Gate the project store on IDENTITY, not the cage: the -pierre-N config volume is
+// a DURABLE, sequentially-shared pool (mrc.js:479-483), so an UNCAGED adversary must ALSO keep its store as a
+// real dir — else it re-plants the /workspace/.mrc symlink and re-poisons the volume for the next caged claimant.
+const ADVERSARY = !!process.env.MRC_ADVERSARY
 
-// 4. Symlink project store into /workspace/.mrc/
-if (!CAGED) try {
+// 4. Project store. A NORMAL session symlinks ~/.claude/projects/-workspace → /workspace/.mrc (repo-local memory).
+if (ADVERSARY) {
+  // An adversary's transcript MUST be a real dir in its OWN config volume, NEVER a symlink into /workspace/.mrc:
+  // for a cage /workspace is :ro, so a symlinked write EROFS-vaporizes the transcript SILENTLY (the session runs
+  // fine, but a later resume finds nothing). The -pierre-N volumes are durable and many were minted BEFORE the
+  // caged skip existed (a create-time symlinkSync planted the link), and a skip-only guard never scrubs it — so
+  // RECONCILE every boot: drop a stale symlink/stray, ensure a real writable dir. Idempotent → this also MIGRATES
+  // the already-poisoned volumes with no `docker volume rm`. (Behavior change, intended: an uncaged adversary's
+  // transcript now lands in the pierre volume too — out of the owner's dev .mrc, and required to keep the pool clean.)
+  try {
+    let st; try { st = lstatSync(PROJECT_STORE) } catch {}
+    if (st && st.isSymbolicLink()) unlinkSync(PROJECT_STORE)                   // drop the LINK ONLY — never its target (/workspace/.mrc, the owner's real transcripts)
+    else if (st && !st.isDirectory()) rmSync(PROJECT_STORE, { force: true })   // a stray non-dir where the store should be
+    mkdirSync(PROJECT_STORE, { recursive: true })                             // already a real dir → no-op (persisted transcripts preserved)
+    // Fail-LOUD (CLAUDE.md doctrine): the whole bug was a SILENT EROFS eating sessions. Prove the store is writable
+    // NOW; if not, abort rather than run a session whose transcript can't persist.
+    const probe = join(PROJECT_STORE, '.mrc-write-probe')
+    writeFileSync(probe, ''); rmSync(probe, { force: true })
+  } catch (e) {
+    console.error(`FATAL: adversary project store ${PROJECT_STORE} is not a writable real dir (${e.message}). A transcript would be silently lost — aborting.`)
+    process.exit(1)
+  }
+} else try {
   let alreadyLinked = false
   try { alreadyLinked = lstatSync(PROJECT_STORE).isSymbolicLink() } catch {}
 
@@ -255,7 +280,23 @@ if (agent === 'claude') {
   const newSession = process.env.NEW_SESSION === '1'
 
   if (resumeSession) {
-    resumeFlag = `--resume ${resumeSession}`
+    // A resume normally targets the persisted transcript. But a PRE-FIX caged adversary's transcript was
+    // EROFS-vaporized (see the project-store reconcile above), and `--resume` on a missing conversation
+    // hard-crashes the entrypoint (the line-98 failure). Decide deterministically here — the transcript is a
+    // real file in PROJECT_STORE now (a symlink for a normal session resolves through to /workspace/.mrc): a
+    // non-empty file → real resume; absent → DOWNGRADE to a fresh session under the same id (empty flag → the
+    // entrypoint's `--session-id ${MRC_SESSION_ID}` path, exactly what a fresh summon uses). FAIL-LOUD so the
+    // human never gets silent fake-continuity. (LOAD-BEARING, verify on the rebuild: `--session-id <old-id>`
+    // must START, not reject, when history.jsonl/claude.json still carry that id but no transcript exists — if
+    // Claude rejects a "known" id, this needs a fresh-uuid + host-record alias instead. Not yet verified.)
+    let hasTranscript = false
+    try { hasTranscript = statSync(join(PROJECT_STORE, `${resumeSession}.jsonl`)).size > 0 } catch {}
+    if (hasTranscript) {
+      resumeFlag = `--resume ${resumeSession}`
+    } else {
+      resumeFlag = ''
+      console.error(`⚠ No persisted transcript for session ${resumeSession} — starting FRESH under the same id. (A pre-fix cage bug ate the old transcript; it is unrecoverable, so there is nothing to resume.)`)
+    }
   } else if (!newSession) {
     try {
       const jsonls = readdirSync(MRC_LOCAL).filter(f => f.endsWith('.jsonl'))
