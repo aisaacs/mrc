@@ -210,6 +210,21 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   const online = (id) => { const s = sessions.get(id); return !!(s && s.sock && !s.sock.destroyed) }
   const repoOf = (id) => sessions.get(id)?.repo || '?'                       // basename — for clean room ids
   const nameOf = (id) => { const s = sessions.get(id); return s ? (s.label || s.repo) : (knownNames.get(id) || '?') }  // display / match — #53: fall back to the durable restored name when the session isn't live (kills "?" in restored pairings)
+  // #58: a session's DISPLAY name is auto-generated IN-SESSION (the name-watcher writes .mrc/session-names) AFTER
+  // launch, but the daemon's `label` was frozen at register = repo basename → `mrc rooms status`/dashboard showed
+  // `repo ⇄ repo [hash]` forever. The channel-server already forwards the live name in its `status` frame
+  // (forwardStatus). Adopt it here as the display label. PUSH-on-change (not a per-call pull): nameOf stays O(1).
+  // safeName = the SAME defang as register ingest (auditLine: defangTrustMarkers + newline-kill + 80-cap) — a
+  // sandbox-WRITABLE session-names value can't forge a trust marker into the deliver() frame. NORMAL sessions
+  // ONLY — an adversary keeps its 'Pierre' override, an unverified session keeps its register label.
+  function adoptDisplayName(id, rawName) {
+    if (!rawName) return
+    const s = sessions.get(id); if (!s) return
+    if (adversaries.has(id) || unverified.has(id)) return   // Pierre PIN: a DISPLAY decision — use the O(1) live Sets, NOT classifySession (uncached readFileSync every ~4s status frame); an adversary keeps 'Pierre', an unverified keeps its register label. (A classifySession MEMO — the strictly-better one-path fix — is ticketed separately; it needs record-mutation-aware invalidation, not just close, so it's not rushed here.)
+    const nm = safeName(rawName); if (!nm || nm === s.label) return
+    s.label = nm
+    knownNames.set(id, nm)   // keep the #53 restart-durable name in lockstep so a restart doesn't revert the display
+  }
   // #53: serialize a pairing for savePairings, stamping the best-known display name of each member (live label, else
   // the restored knownNames fallback) so a name survives the NEXT restart too. Single shape → one place to change.
   const serializePairing = (p) => ({ roomId: p.roomId, a: p.a, b: p.b, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, state: p.state, pauseReason: p.pauseReason, memberNames: { [p.a]: nameOf(p.a), [p.b]: nameOf(p.b) } })
@@ -974,6 +989,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           }
           sessionId = f.sessionId
           sessions.set(sessionId, { sock, repo: safeName(f.repo || '?'), label: safeName(f.label || f.repo || '?'), room: f.room || null, hostRepo: f.repoPath || null, notifyPort: Number(f.notifyPort) || 0, memberHandle: f.memberHandle || null })   // V5: sanitize repo/label at ingest (defang + newline-strip + cap)   // hostRepo (#S2): the host repo path an adversary is summoned onto (from MRC_REPO_PATH)
+          knownNames.set(sessionId, safeName(f.label || f.repo || '?'))   // #58 (Pierre): SEED the #53 restart-durable name at register, so a live session that never adopts a different name (auto-name == repo basename, or never pushed a status yet) still renders its name — not '?' — when it drops offline mid-room
           // B/#39: classify containment from the TAMPER-PROOF host-only record, NOT this register frame.
           // The record is written host-side pre-launch (mrc.js) and never mounted into any container, so a
           // summoned adversary always classifies 'adversary' here and CANNOT declassify itself by omitting a
@@ -1053,7 +1069,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         else if (f.type === 'summon' && sessionId) { bumpActivity(sessionId); onSummon(sessionId, String(f.brief ?? ''), f.id) }   // #S4: reflex-summon a red-team adversary (Pierre)
         else if (f.type === 'say' && sessionId) { bumpActivity(sessionId); onSay(sessionId, f) }        // team room directed message
         else if (f.type === 'sendphoto' && sessionId) { bumpActivity(sessionId); onSendPhoto(sessionId, f) }   // #56: member → its human's Telegram
-        else if (f.type === 'status' && sessionId) { noteActivity(sessionId, f.tokens); const r = engine.setStatus(sessionId, f); if (r) broadcastEvent({ type: 'status', org: r.org, handle: r.handle, status: r.status, rateLimit: r.rateLimit }) }   // #64 statusline ints + #caffeine OFF-CHANNEL token supplement (a solo grind emits no room frames)
+        else if (f.type === 'status' && sessionId) { noteActivity(sessionId, f.tokens); adoptDisplayName(sessionId, f.name); const r = engine.setStatus(sessionId, f); if (r) broadcastEvent({ type: 'status', org: r.org, handle: r.handle, status: r.status, rateLimit: r.rateLimit }) }   // #64 statusline ints + #caffeine OFF-CHANNEL token supplement (a solo grind emits no room frames) + #58 PUSH-on-change display name
         else if (f.type === 'whoami' && sessionId) send(sessionId, { type: 'teaminfo', view: engine.viewForSession(sessionId) })
       }
     })
