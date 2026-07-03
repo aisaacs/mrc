@@ -55,6 +55,19 @@ test('resolve: shares the merged order — `sessions resume <#>` reaches the app
 // that MUST stay true is: EVERY resolve path that yields an adversary uuid yields one that isAdversarySession flags
 // (→ resumeIsAdversary → cageAdversary default-on → the -pierre-N volume + firewall re-cage). A future refactor that
 // resolved an adversary to a uuid the re-cage didn't recognize would be the real hole — this guards it.
+test('adversary rows carry a real timestamp (record mtime) and sort most-recent-first within the group', () => {
+  const repo = fs.mkdtempSync(join(os.tmpdir(), 'mrc-repoTs-'))
+  const mrcDir = join(repo, '.mrc'); fs.mkdirSync(mrcDir, { recursive: true })
+  saveSessionRecord('adv-old', { repoPath: repo, summonedBy: 's1', adversary: true })
+  saveSessionRecord('adv-new', { repoPath: repo, summonedBy: 's2', adversary: true })
+  // Make adv-old ancient; adv-new keeps its ~now mtime.
+  fs.utimesSync(join(process.env.HOME, '.local/share/mrc/session-meta/adv-old.json'), new Date(1000), new Date(1000))
+  const adv = getResumableSessions(mrcDir).filter((r) => r.adversary)
+  assert.deepEqual(adv.map((r) => r.uuid), ['adv-new', 'adv-old'], 'most-recently-summoned adversary first (not undated at the bottom)')
+  assert.ok(adv[0].lastUpdated > 0, 'a real timestamp is stamped from the record mtime (was 0 → blank date + always-last)')
+  assert.equal(adv[1].lastUpdated, 1000, 'the ancient record keeps its own mtime')
+})
+
 test('containment invariant: every resolve path to an adversary yields a uuid the mrc.js re-cage recognizes', () => {
   const { mrcDir } = setup()
   saveNames(mrcDir, { 'adv-here': 'redteam-pierre' })   // so the by-NAME resolve path is asserted too (Pierre), not just covered by construction

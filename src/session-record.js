@@ -11,7 +11,7 @@
 // `adversary` is DERIVED from `summonedBy` (launch-time, from --summoned-by → the durable record), never
 // from a session's name/persona/behavior — the same launch-derived-containment rule the daemon's #30 fix
 // re-derives on register. This file is the durable source that survives a daemon restart AND a resume.
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, existsSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, existsSync, rmSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -67,6 +67,12 @@ export function allSessionRecords() {
     }
   } catch {}
   return out
+}
+
+/** The record file's mtime (ms), or 0 if none — a recency proxy for a summoned adversary whose transcript
+ *  lives in its config volume (not .mrc), so it has no in-repo mtime for the picker to sort/date by. */
+export function sessionRecordMtime(uuid) {
+  try { return statSync(recordPath(uuid)).mtimeMs } catch { return 0 }
 }
 
 /** Transcript-coupled prune: the record dir grows one file per session, so drop a record when its

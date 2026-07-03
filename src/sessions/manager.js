@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync, renameSync, readdirSync, existsSync, statSync } from 'node:fs'
 import { join, basename, dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { allSessionRecords } from '../session-record.js'
+import { allSessionRecords, sessionRecordMtime } from '../session-record.js'
 
 /** Return sessions sorted newest-first as [{ uuid, lastUpdated, preview }, ...]. */
 export function getSessions(mrcDir) {
@@ -95,8 +95,12 @@ export function getResumableSessions(mrcDir) {
     if (!(rec.adversary || rec.summonedBy)) continue        // adversaries only (keystone: same as classifySession)
     if (rec.repoPath !== repoPath) continue                 // containment floor: only THIS repo's Pierre pool
     if (seen.has(uuid)) continue                            // dedup (a normal .mrc session that also has a record)
-    advRows.push({ uuid, lastUpdated: 0, preview: '', adversary: true, summonedBy: rec.summonedBy || null })
+    // lastUpdated = the host record's mtime (a caged adversary's transcript is in its config volume, not .mrc,
+    // so there's no in-repo mtime) → gives the picker a real timestamp AND lets a freshly-summoned Pierre sort
+    // to the TOP of the adversary group instead of being an undated row lost among a dozen historical ones.
+    advRows.push({ uuid, lastUpdated: sessionRecordMtime(uuid), preview: '', adversary: true, summonedBy: rec.summonedBy || null })
   }
+  advRows.sort((a, b) => b.lastUpdated - a.lastUpdated)     // most-recently-summoned adversary first within the group
   return [...sessions, ...advRows]   // normal (recency-ranked) first, adversaries appended → stable order for picker + resolve
 }
 
