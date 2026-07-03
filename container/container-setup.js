@@ -132,6 +132,15 @@ if (existsSync(CODEX_SRC)) {
   linkOrMigrate(join(CODEX_SRC, 'command.md'), join(CLAUDE_DIR, 'commands', 'codex.md'))
 }
 
+// 1d. Seed the /rename slash command — lets the human ask the session to rename itself (it runs the baked
+// mrc-rename helper). Symlinked so image updates propagate; available in every session.
+// NOTE: no /red-team command is shipped by design — the human always SUMMONS Pierre (the live
+// summon_adversary channel verb), never a one-shot slash command, to keep from reaching for the wrong tool.
+const RN_SRC = '/opt/mrc-rename'
+if (existsSync(RN_SRC)) {
+  linkOrMigrate(join(RN_SRC, 'command.md'), join(CLAUDE_DIR, 'commands', 'rename.md'))
+}
+
 // 2. Restore claude.json from backup if missing
 if (!existsSync(CONFIG_FILE)) {
   const backupDir = join(CLAUDE_DIR, 'backups')

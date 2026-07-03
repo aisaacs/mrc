@@ -400,7 +400,7 @@ function connect() {
 await mcp.connect(new StdioServerTransport())
 log(`channel up (session=${SESSION_ID} label=${LABEL} repo=${REPO} ${TEAM_MODE ? `member=${MEMBER} team=${TEAM} role=${ROLE}` : `room=${ROOM || '(ambient)'}`} port=${PORT})`)
 connect()
-if (PORT) setInterval(forwardStatus, 4000)   // #64/#caffeine: poll the statusline tee + forward changes to the daemon (team rail + liveness signal, all rooms-enabled sessions)
+if (PORT) setInterval(forwardStatus, 4000).unref?.()   // #64/#caffeine: poll the statusline tee + forward changes to the daemon (team rail + liveness signal, all rooms-enabled sessions). L5: unref — a background poller must never be the sole thing keeping the MCP process alive (stdio owns liveness).
 // #6/#50 (d) session plane: the heartbeat tears down + reconnects SILENTLY on a stale/wrong listener, and
 // list_peers just times out to empty — so in-session a squatted/down relay looks like "nobody's online".
 // This independent ticker (runs regardless of socket state, even during the reconnect loop) surfaces a
@@ -416,4 +416,4 @@ if (PORT) setInterval(() => {
     outageNotified = true
     pushIn(`[Rooms unavailable — can't reach the room daemon (relay :${PORT}) for ${Math.round((Date.now() - disconnectedSince) / 1000)}s. It may be down, restarting, or its port is squatted; other sessions are unreachable until it recovers. This clears on its own when the daemon returns, or run \`mrc rooms status\` on the host.]`)
   }
-}, PING_MS)
+}, PING_MS).unref?.()   // L5 (pierre parity): unref the outage ticker — it's a monitor, not a reason to keep the process up.

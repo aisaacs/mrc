@@ -80,6 +80,9 @@ process.stdin.on('end', () => {
   // Session name
   const projectDir = (data.workspace || {}).project_dir || ''
   const name = lookupSessionName(projectDir, data.session_id || '')
+  // U4/#28: the last-6 of the session id is the cross-reference handle — `mrc rooms status` / list_peers show a
+  // session by its id, so a `[last6]` on the statusline lets a human match this terminal to a row there at a glance.
+  const sid = (data.session_id || '').slice(-6)
 
   // #64: tee the parsed ints to a container-local file. The channel server forwards them to the host daemon
   // (transport B') for the dashboard's per-agent context bar + lead-only rate-limit rail. Numbers, not strings
@@ -94,6 +97,7 @@ process.stdin.on('end', () => {
   const parts = [`${barColor}[${bar}] ${pct}% context${RESET}`]
   if (limitParts.length) parts.push(limitParts.join(` ${DIM}│${RESET} `))
   if (name) parts.push(`${DIM}${name}${RESET}`)
+  if (sid) parts.push(`${DIM}[${sid}]${RESET}`)
 
   process.stdout.write(parts.join(' · '))
 })

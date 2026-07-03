@@ -13,7 +13,7 @@ import { homedir } from 'node:os'
 import { join, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { ensureRoom, appendThread, appendTranscript, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadLaunches, removeLaunch, loadTgStates, saveTgStates, loadInbox, saveInbox, loadUserPrefs, saveUserPrefs, roomsRoot } from '../rooms.js'
+import { ensureRoom, appendThread, appendTranscript, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadLaunches, removeLaunch, loadTgStates, saveTgStates, loadInbox, saveInbox, loadUserPrefs, saveUserPrefs, roomsRoot, removeRoomDir } from '../rooms.js'
 import { createRoomEngine } from '../teams/room-engine.js'
 import { createWorkerRunner, workerLogPath, parseWorkerLog } from '../teams/worker-runner.js'
 import { memberSessionId } from '../teams/session-id.js'
@@ -1128,7 +1128,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             version,
             relayBound,   // #50/#5: false ⇒ daemon up on controlPort but the relay port is squatted (peers can't connect) — the honest "degraded" signal the launcher/CLI reads instead of a false "ready"
             sessions: [...sessions.entries()].map(([id, v]) => ({ id, repo: v.repo, name: v.label || v.repo, member: v.memberHandle || null, adversary: adversaries.has(id) || undefined, unverified: unverified.has(id) || undefined })),   // #39/3.A: surface containment classification to `mrc rooms status`/the dashboard
-            pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, a: nameOf(p.a), b: nameOf(p.b) })),
+            pairings: [...pairings.values()].map((p) => ({ roomId: p.roomId, state: p.state, pauseReason: p.pauseReason, turn: p.turn, turnCap: p.turnCap, autoCatchup: p.autoCatchup, a: nameOf(p.a), b: nameOf(p.b), aAdversary: adversaries.has(p.a) || undefined, bAdversary: adversaries.has(p.b) || undefined })),   // D9: the daemon KNOWS which side is a contained adversary (its Set) — expose it so the dashboard badges from the flag, not a fragile browser name-match
             teams: engine.status(),
           })
           continue
@@ -1403,6 +1403,34 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // precisely in the step-away nap the caffeine feature exists for, losing real state (re-create resets turn=0 +
   // drops the held queue). deadSince starts the grace when a room actually goes offline and RESETS on any
   // reconnect, so a flap within roomTtlMs is always spared; a long-quiet but CONNECTED room is never touched.
+  // #30: reap an orphaned summon dir that NEVER connected. A summon writes `adversary-<sha>/` + the brief
+  // BEFORE the adversary boots (see the summon handler); the pairing only forms on connect, so pruneDeadRooms
+  // (which iterates PAIRINGS) never even sees a dir that never paired, and the socket-close cleanup can't fire
+  // for a socket that never opened. Such a dir would linger forever. Reap it, but ONLY when it's provably
+  // empty of a real red-team:
+  //   - name starts with `adversary-` and is NOT a live/restored pairing (a resumed Pierre re-creates it),
+  //   - mtime older than ORPHAN_BOOT_MS — the summon path is WARM (launched from a running summoner, so colima
+  //     is up and the image built), so boot is tens of seconds; 15m is generous margin for a loaded box or a
+  //     colima resuming from an idle-nap (the documented macOS flap),
+  //   - thread.log has NO `[connected` marker (a real adversary writes one at connect; it survives on disk), AND
+  //   - no other transcript content — belt-and-suspenders so an unexpected non-empty log is never nuked.
+  // We can't gate on the launch PID: the summon spawns a DETACHED new terminal, so the daemon never holds it —
+  // a conservative wall-clock TTL is the honest floor. Never touches a normal `<sha>` consult or a team room.
+  const ORPHAN_BOOT_MS = 900_000
+  function reapFailedSummonDirs(now) {
+    let root; try { root = roomsRoot() } catch { return }
+    let dirs; try { dirs = readdirSync(root) } catch { return }
+    for (const d of dirs) {
+      if (!d.startsWith('adversary-') || pairings.has(d)) continue          // live/restored pairing → keep
+      let m = 0; try { m = statSync(join(root, d)).mtimeMs } catch {}
+      if (!m || now - m <= ORPHAN_BOOT_MS) continue                        // recent → may still be booting
+      let log = ''; try { log = readFileSync(join(root, d, 'thread.log'), 'utf8') } catch {}
+      if (log.includes('[connected')) continue                            // it connected → real transcript, keep
+      if (log.replace(/\s+/g, '').length > 400) continue                  // belt: unexpectedly non-empty → don't nuke
+      if (removeRoomDir(d)) daemonLog(`reaped orphaned summon dir ${d} (never connected, ${Math.round((now - m) / 60000)}m old)`)
+    }
+  }
+
   function pruneDeadRooms(now) {
     let pruned = false
     for (const p of [...pairings.values()]) {
@@ -1442,6 +1470,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       const ago = newest ? Math.round((Date.now() - newest) / 1000) : -1
       daemonLog(`caffeine: holding · ${lastActivityAt.size} tracked · last bump ${who ? who.slice(0, 8) : '—'} ${ago}s ago`)
     }
+    reapFailedSummonDirs(Date.now())   // #30: reap an orphaned summon dir that never connected (no pairing/socket ever formed, so the other reapers never see it)
     pruneDeadRooms(Date.now())   // #35: reap dead pairings (both sides gone, or a spent adversary room) so they don't linger in `mrc rooms status`/the dashboard
     for (const p of pairings.values()) {
       if (p.state === 'Running' && sessions.has(p.a) && sessions.has(p.b) && Date.now() - p.lastActivityAt > stallMs) {

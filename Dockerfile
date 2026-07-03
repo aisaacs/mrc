@@ -112,9 +112,14 @@ RUN chmod +x /usr/local/bin/xclip
 COPY container/mrc-notify-hook.js /usr/local/bin/
 COPY container/mrc-statusline.js /usr/local/bin/
 COPY container/container-setup.js /usr/local/bin/
+# mrc-rename installs WITHOUT the .js so the /rename slash command can invoke it as a clean `mrc-rename`
+# (node shebang, lands on PATH like the xclip shim). The other three KEEP .js — they're referenced by full
+# path in hooks/settings/entrypoint, never typed as a command.
+COPY container/mrc-rename.js /usr/local/bin/mrc-rename
 RUN chmod +x /usr/local/bin/mrc-notify-hook.js \
     /usr/local/bin/mrc-statusline.js \
-    /usr/local/bin/container-setup.js
+    /usr/local/bin/container-setup.js \
+    /usr/local/bin/mrc-rename
 
 # Video analysis script + slash command (staged for runtime seeding)
 COPY container/video-analysis.sh /usr/local/bin/video-analysis
@@ -127,6 +132,12 @@ COPY container/video-analysis-defaults.json /opt/mrc-video-analysis/defaults.jso
 
 # Codex slash command (seeded into ~/.claude/commands/ at runtime)
 COPY container/codex-command.md /opt/mrc-codex/command.md
+
+# Rename slash command (seeded into ~/.claude/commands/ at runtime). Lets the human ask the session to
+# rename itself ("/rename" or "/rename a-better-name"); runs the mrc-rename helper above.
+# NOTE: we intentionally do NOT ship a /red-team slash command — the human always SUMMONS Pierre (the live
+# summon_adversary channel verb), never a one-shot command, to avoid the session reaching for the wrong tool.
+COPY container/rename-command.md /opt/mrc-rename/command.md
 
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh

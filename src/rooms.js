@@ -1,7 +1,7 @@
 // Room-directory manager (host-side). Rooms live at ~/.local/share/mrc/rooms/<roomId>/,
 // distinct from each repo's project-local .mrc/. Each room holds consensus.md (a living shared
 // summary), thread.log (append-only transcript), and room.json (metadata).
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, appendFileSync, unlinkSync, renameSync, openSync, writeSync, fsyncSync, closeSync, statSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, appendFileSync, unlinkSync, renameSync, openSync, writeSync, fsyncSync, closeSync, statSync, rmSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, basename, dirname } from 'node:path'
 
@@ -116,6 +116,17 @@ export function listRooms() {
   return readdirSync(root)
     .filter((d) => existsSync(join(root, d, 'room.json')))
     .map((d) => loadRoom(d))
+}
+
+// #30: remove a room's whole on-disk dir. Used ONLY by the daemon's failed-boot orphan reaper (a summon dir
+// that never connected — no transcript to lose). Real rooms are GC'd from memory by pruneDeadRooms, which
+// KEEPS the dir as history; this is the narrow "nothing was ever written here" case. Best-effort + scoped:
+// refuses anything that isn't a plain single-segment room id under roomsRoot (never a path with / or ..).
+export function removeRoomDir(roomId) {
+  if (!roomId || typeof roomId !== 'string' || roomId.includes('/') || roomId.includes('..') || roomId.startsWith('.')) return false
+  const dir = join(roomsRoot(), roomId)
+  if (dir !== roomDir(roomId)) return false   // belt: join must equal the canonical roomDir (no traversal)
+  try { rmSync(dir, { recursive: true, force: true }); return true } catch { return false }
 }
 
 export function appendThread(roomId, line) {

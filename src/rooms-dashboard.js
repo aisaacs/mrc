@@ -92,6 +92,8 @@ async function buildState() {
       roomId: r.roomId,
       a: lp?.a || r.meta?.repoA || '?',
       b: lp?.b || r.meta?.repoB || '?',
+      aAdversary: lp?.aAdversary || undefined,   // D9: daemon-computed containment flag per side (only for a LIVE pairing; a historical room has no live adversary to badge)
+      bAdversary: lp?.bAdversary || undefined,
       live: !!lp,
       state: lp ? lp.state : 'History',
       pauseReason: lp?.pauseReason || null,
