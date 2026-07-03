@@ -3,7 +3,7 @@
 // isolated HOME up front (UNconditionally) so it can never read/delete a real ~/.local/share/mrc record.
 //   node test/session-record.test.mjs
 import assert from 'node:assert'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -22,9 +22,18 @@ const repos = []
 function repo(uuid, withTranscript) {
   const dir = mkdtempSync(join(tmpdir(), 'mrc-repo-'))
   repos.push(dir)
-  if (withTranscript) { mkdirSync(join(dir, '.mrc'), { recursive: true }); writeFileSync(join(dir, '.mrc', `${uuid}.jsonl`), '{}\n') }
+  mkdirSync(join(dir, '.mrc'), { recursive: true })   // .mrc ALWAYS exists (the project store dir); only the transcript is conditional
+  if (withTranscript) writeFileSync(join(dir, '.mrc', `${uuid}.jsonl`), '{}\n')
   return dir
 }
+const metaDir = () => join(process.env.HOME, '.local', 'share', 'mrc', 'session-meta')
+// Backdate a record file's mtime to exercise the #64 age backstop (the record's own mtime is the clock).
+function backdateRecord(uuid, msAgo) {
+  const secs = (Date.now() - msAgo) / 1000
+  utimesSync(join(metaDir(), `${uuid}.json`), secs, secs)
+}
+// The prune-owned "transcript observed" sentinel — a FILE, not a record field (#64 containment).
+const seenSentinel = (uuid) => existsSync(join(metaDir(), `${uuid}.seen`))
 
 console.log('\nsession-record — classification + transcript-coupled prune')
 
@@ -58,15 +67,53 @@ t('prune KEEPS an adversary record even when its transcript is gone (moved-repo 
   pruneSessionRecords()
   assert.equal(loadSessionRecord('p-adv').uuid, 'p-adv')
 })
-t('prune DROPS a normal record whose transcript is provably gone', () => {
-  saveSessionRecord('p-norm-gone', { adversary: false, repoPath: repo('p-norm-gone', false) })
-  pruneSessionRecords()
-  assert.equal(loadSessionRecord('p-norm-gone').uuid, undefined)
-})
-t('prune KEEPS a normal record whose transcript still exists', () => {
+t('prune KEEPS a normal record whose transcript still exists, and marks the SENTINEL', () => {
   saveSessionRecord('p-norm-live', { adversary: false, repoPath: repo('p-norm-live', true) })
   pruneSessionRecords()
   assert.equal(loadSessionRecord('p-norm-live').uuid, 'p-norm-live')
+  assert.equal(seenSentinel('p-norm-live'), true)   // observed → sentinel file, so a future absence reads as a real deletion
+})
+// #64 containment: prune persists "observed" in a FILE, never by mutating the record (which carries the
+// cage/trust bit). Prove prune does NO read-modify-write on the record — else a future re-mark could be clobbered.
+t('#64 prune marks via the SENTINEL FILE and never mutates the record (no RMW on the trust bit)', () => {
+  saveSessionRecord('p-nomut', { adversary: false, secret: 'SEEKRIT', repoPath: repo('p-nomut', true) })
+  pruneSessionRecords()
+  assert.equal(seenSentinel('p-nomut'), true)
+  const r = loadSessionRecord('p-nomut')
+  assert.equal(r.secret, 'SEEKRIT')            // record untouched
+  assert.equal(r.transcriptSeen, undefined)    // prune wrote NO field into the record
+})
+// #64 — the DELETION vs NOT-YET-CREATED distinction. A record is dropped only once its transcript was
+// SEEN and then removed; a fresh never-seen record (booting) is KEPT no matter how absent its .jsonl is.
+t('#64 prune DROPS a normal record whose transcript was SEEN then deleted (real deletion), and clears the sentinel', () => {
+  const dir = repo('p-del', true)
+  saveSessionRecord('p-del', { adversary: false, repoPath: dir })
+  pruneSessionRecords()                                       // observes transcript → creates sentinel
+  assert.equal(seenSentinel('p-del'), true)
+  rmSync(join(dir, '.mrc', 'p-del.jsonl'), { force: true })   // now genuinely deleted
+  pruneSessionRecords()
+  assert.equal(loadSessionRecord('p-del').uuid, undefined)
+  assert.equal(seenSentinel('p-del'), false)                 // reap drops record AND sentinel together (no stale-seen inheritance)
+})
+t('#64 prune KEEPS a fresh never-seen record (transcript not created yet = booting, NOT deleted)', () => {
+  saveSessionRecord('p-booting', { adversary: false, repoPath: repo('p-booting', false) })
+  pruneSessionRecords()
+  assert.equal(loadSessionRecord('p-booting').uuid, 'p-booting')   // the bug fix: a sibling launch must NOT delete a booting session's record
+})
+t('#64 prune DROPS a never-seen record older than the age backstop (crashed before first write)', () => {
+  saveSessionRecord('p-crashed', { adversary: false, repoPath: repo('p-crashed', false) })
+  backdateRecord('p-crashed', 2 * 60 * 60 * 1000)             // 2h old, never earned the bit
+  pruneSessionRecords()
+  assert.equal(loadSessionRecord('p-crashed').uuid, undefined)
+})
+t('#64 prune KEEPS a SEEN record when the whole .mrc dir is absent (volume reset — no mass-reap)', () => {
+  const dir = repo('p-reset', true)
+  saveSessionRecord('p-reset', { adversary: false, repoPath: dir })
+  pruneSessionRecords()                                       // observes transcript → creates sentinel
+  assert.equal(seenSentinel('p-reset'), true)
+  rmSync(join(dir, '.mrc'), { recursive: true, force: true }) // whole store vanishes (dangling symlink after a reset)
+  pruneSessionRecords()
+  assert.equal(loadSessionRecord('p-reset').uuid, 'p-reset')  // dir-absent = ambiguous → KEEP, not "deleted"
 })
 t('prune KEEPS a normal record with NO repoPath (ambiguous → keep, not drop)', () => {
   saveSessionRecord('p-norm-nopath', { adversary: false })
