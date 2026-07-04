@@ -64,11 +64,47 @@ session" button, not a team builder.
 - The plain session behaves exactly like today's solo Claude session — the engine membership is
   invisible until you pull someone in.
 
-### 4b. Pierre-as-caged-member
-Summon moves from the pairings path to **adding a caged adversary *member* to your engine room**. Then
-Pierre inherits the engine's multi-room + room-tagging for free — no #47 fix needed on the legacy path
-because there is no legacy path. Cross-repo peers join the same way: a member per repo in a shared
-room, which the engine already routes.
+### 4b. Pierre-as-caged-member — via a reusable **cage profile**
+Summon moves from the pairings path to **adding a caged member to your engine room**. Pierre then
+inherits the engine's multi-room + room-tagging for free — no #47 fix needed on the legacy path because
+there is no legacy path. Cross-repo peers join the same way: a member per repo in a shared room, which
+the engine already routes.
+
+**Make the cage reusable, not Pierre-specific.** Today the cage is a *hardcoded bundle* wired inline in
+`mrc.js` behind one boolean (`cagedAdversary = config.summonedBy || config.cageAdversary`): ro workspace,
+SNI-pinned egress, dedicated login slot, blocked host bridges, scoped `/rooms`, the host security record.
+Part of this work is to **factor it into one reusable `applyCage(profile, ctx)`** — the single source of
+truth producing both the `docker run` grants *and* the host-record fields — so caging *any* member is
+"apply profile X," and a member can be caged looser or tighter without re-touching the plumbing. The
+(retiring) summon path and the member-launch path both call it.
+
+**The cage is a set of dials, not one boolean.** Read straight from the current inline cage, the real
+knobs — and the strictness axis for each:
+
+| Dial | Strict (Pierre today) | Looser options |
+|---|---|---|
+| `egress` | SNI-pinned to the model API only (`sni-proxy` + `MRC_ADVERSARY_FW` firewall + `ALLOW_WEB` force-stripped) | `whitelist` (standard mrc domains) · `web` (full) |
+| `workspace` | `/workspace:ro` | `territory` (own lane rw) · `rw` |
+| `login` | disposable dedicated `-pierre-N` slot, never the owner's config, no codex vol | own persistent per-handle volume |
+| `hostBridges` | clipboard + notify **blocked** | allowed |
+| `roomsScope` | own room dir only, `:ro` | all rooms `:ro` |
+| `mrcVisibility` | *(today: readable — this is the open **#55** hazard)* → the strict profile is the natural place to finally **mask** `/workspace/.mrc` (owner-gated) | readable |
+
+A **profile** is an allow-list of these grants, **default-deny**: the strict `adversary` profile grants
+nothing beyond model egress + ro; a looser profile *explicitly names* what it adds. Profiles live in a
+small named registry (like `presets`/`personas`); a member declares `"cage": "adversary"` in team.json,
+or an inline override object for a one-off. **The strict `adversary` profile must reproduce today's
+Pierre cage byte-for-byte** — that equivalence is the correctness anchor for the port.
+
+**Floors — identical for every profile, never a dial (the line the config must not cross):**
+1. **The profile is resolved on the HOST at launch and stamped into the tamper-proof host record; the
+   daemon classifies from that record, never the wire.** "Configurable" means *the human picks the
+   profile at launch* (team.json / summon), resolved host-side — **never** a runtime setting the caged
+   container can name, request, or soften over the channel. A member choosing its own looser cage over
+   the wire *is* the silent-wire-trust failure the whole architecture exists to prevent.
+2. **The cage is launch-time only** — no re-caging a live container; a profile change means a relaunch.
+3. **Peer text is untrusted data under every profile**; only `[Human directive]`/`[Human reply]` is
+   authoritative. A looser cage grants more *resources*, never more *trust*.
 
 ### 4c. Retire the pairings path
 Consults, summons, and resume all route through `pairings` today. Once solo + summon + consult are all
@@ -113,8 +149,9 @@ after the merge, not before. Order within the epic:
 
 1. Solo onramp (**4a**) — pure addition, no containment surface. Ship + use it as the default.
 2. Cross-repo peer as engine member — exercises multi-room with *uncaged* members first (lower risk).
-3. Pierre-as-caged-member (**4b**) — the containment port, red-teamed with a summoned Pierre against
-   the 4-point audit BEFORE it ships.
+3. Pierre-as-caged-member (**4b**) — the containment port. Factor the inline cage into
+   `applyCage(profile)`; the strict `adversary` profile must reproduce today's Pierre cage byte-for-byte;
+   red-teamed with a summoned Pierre against the 4-point audit BEFORE it ships.
 4. Retire the pairings path (**4c**) — last, behind a flag, only once 1–3 are wire-verified.
 
 ## 7. Open questions
@@ -128,6 +165,29 @@ after the merge, not before. Order within the epic:
   `memberSessionId` discipline the teams path already uses).
 - **When does the pairings path actually get deleted** vs. kept as a fallback — what's the wire-verify
   bar for each case it served (consult, summon, resume) before removal?
+
+## 8. Acceptance criteria (wire-verified before "done")
+
+Not a green suite — an *observed end-to-end round-trip on the wire*, per the standing "red-team before
+staged" rule (a green suite ships real bugs).
+
+- **4a solo onramp** — `mrc <repo>` (or the dashboard "New session") with **no `team.json`** registers as
+  a team-of-one engine member: it appears in the dashboard with a console, has an `@user` inbox, and the
+  plain-session UX is byte-identical to today *until* someone is pulled in.
+- **Telegram round-trip (the autonomous-handoff payoff)** — with the project's bot linked, a solo session
+  *and* a Pierre+session pair can reach you when stuck: `ask_user` on the box → push to your phone → your
+  reply there → the session receives it as a trusted `[Human reply]` and continues. Verified end-to-end on
+  the wire, with resolution on **either** surface editing the other in place. **The epic is not done until
+  this round-trips.** (This is why 4a matters beyond ergonomics: today's summon/consult path has no
+  `@user` inbox, so a caged Pierre literally cannot page you — only the engine path can.)
+- **4b caged member via profile** — a member launched with the strict `adversary` profile through the
+  *member* path is caged **byte-for-byte identically** to today's summoned Pierre (egress, ro, login slot,
+  host record, scoped rooms), classified from the host record (never the wire), and passes Pierre's
+  4-point audit under a **live red-team** before it ships.
+- **Reusable + configurable** — a *second* member caged with a *different, looser* profile gets exactly
+  the strictness that profile declares and **no more**: its named extra grants are present, every dial it
+  did *not* loosen is still at the strict floor, and it still cannot name or soften its own profile over
+  the wire (the three floors hold regardless of profile).
 
 ---
 
