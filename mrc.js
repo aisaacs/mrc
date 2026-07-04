@@ -5,7 +5,7 @@
 //
 import { resolve, basename, dirname } from 'node:path'
 import { readdirSync, existsSync, readFileSync } from 'node:fs'
-import { execFileSync } from 'node:child_process'
+import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
 import { BANNER } from './src/constants.js'
@@ -69,6 +69,8 @@ Options:
   -n, --new [name]     Start a new conversation (optionally named)
   -w, --web            Allow outbound HTTPS to any host (for web search/fetch)
   --agent <name>       AI agent to launch: claude (default), codex
+  --solo               Run as a team-of-one in the dashboard (browser console + @user inbox;
+                       browser + native terminal attach to one session), no team.json needed
   --room <name>        Pair only with another session that shares this --room name
   --no-rooms           Disable cross-session negotiation rooms for this session
   --no-summary         Skip AI session summary on exit
@@ -318,14 +320,46 @@ if (config.agent === 'claude' && legacyKeyVar) {
 // --- Main launch flow ---
 const repoPath = resolve(remaining[0] || '.')
 
+// #49: solo onramp — born-detachable OUTER launcher. `mrc <repo> --solo` (no --member) spawns the solo
+// session inside a dtach master + ttyd (browser console + native terminal both attach to ONE session) and
+// attaches your terminal; the INNER `--solo --member you/claude` (run inside the master) self-derives and
+// runs the container. Placed BEFORE ensureDocker + the exit-cleanup hook, and it EXITS on the dtach path,
+// so a detach-and-exit here can never stop Colima out from under the still-running inner container. When
+// ttyd/dtach are absent it falls back to a plain FOREGROUND solo member (native terminal only).
+if (config.solo && !config.member) {
+  const { startSoloSession } = await import('./src/commands/team.js')
+  const { SOLO_HANDLE } = await import('./src/teams/solo.js')
+  const solo = await startSoloSession(repoPath)
+  if (solo.fallback) {
+    config.member = SOLO_HANDLE   // no ttyd/dtach → run foreground (native only); fall through to the member block
+  } else if (!solo.ok) {
+    console.error(`  ✗ ${solo.error}`); process.exit(1)
+  } else {
+    console.log(`  ◎ Solo session live${solo.already ? ' (already running)' : ''}.`)
+    console.log(`     Browser console: http://127.0.0.1:${solo.ttydPort}/  (also in \`mrc rooms dashboard\`).`)
+    console.log('     Attaching your terminal — detach with Ctrl-\\ (the session keeps running).')
+    const r = spawnSync('dtach', ['-a', solo.sock, '-r', 'winch'], { stdio: 'inherit' })
+    // Mirror the --daemon branch (Pierre seam-a): drop the exit/signal cleanup listeners before exiting so
+    // this thin outer can NEVER stop Colima or close a proxy out from under the still-running inner session.
+    process.removeAllListeners('exit'); process.removeAllListeners('SIGINT'); process.removeAllListeners('SIGTERM')
+    process.exit(r.status || 0)
+  }
+}
+
 // --- Team-member mode: this session IS @member from the roster (launched by `mrc team up`) ---
+// #49: a --solo session self-derives its team-of-one (soloRoster) instead of loading a team.json, and
+// ALWAYS binds the reserved solo member — so an injected --member (e.g. from a repo .mrcrc) can never
+// coerce a non-solo member under solo derivation.
 let memberCtx = null
 if (config.member) {
-  const { loadRoster, memberLaunch } = await import('./src/commands/team.js')
-  const { norm, path: rosterPath } = loadRoster(repoPath, config.roster)
-  const q = config.member.toLowerCase()
-  const member = norm.members.find((m) => m.handle === q || m.first.toLowerCase() === q)
-  if (!member) { console.error(`  ✗ No member "${config.member}" in the roster (${rosterPath}).`); process.exit(1) }
+  const { memberLaunch, resolveMemberNorm } = await import('./src/commands/team.js')
+  // Selection is a pure, tested function (resolveMemberNorm): solo ⇒ soloRoster + handle forced to
+  // SOLO_HANDLE, never reading team.json; non-solo ⇒ loadRoster. Keeping it out of this inline branch is
+  // what makes the coercion-resistance a test assertion instead of "trust this branch order forever".
+  const { norm, handle, rosterPath } = resolveMemberNorm(config, repoPath)
+  config.member = handle
+  const member = norm.members.find((m) => m.handle === handle || m.first.toLowerCase() === handle)
+  if (!member) { console.error(`  ✗ No member "${config.member}" in the roster${rosterPath ? ` (${rosterPath})` : ''}.`); process.exit(1) }
   if (member.tier !== 'live') { console.error(`  ✗ @${member.handle} is a ${member.backend} worker — workers are invoked on demand, not launched as a session.`); process.exit(1) }
   const launch = memberLaunch(norm, member, repoPath)
   memberCtx = { norm, member, rosterPath, ...launch }

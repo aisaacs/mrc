@@ -223,9 +223,16 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
       else if (!h) unresolved.push(tok)
     }
     // Back-compat: a 2-member room with no explicit target delivers to the other member (consult).
+    // #49: when the sole other member IS @user (a solo room, or a single-lead leads room), fall back to
+    // @user rather than DROP the message — the exclusion `k !== '@user'` here would otherwise silently eat
+    // an un-@mentioned line whose only possible recipient is the human, which in a solo workflow (the human
+    // is the only audience) is the common case. This is the @user-priority rule (line 39: never drop a
+    // message meant for the human), not a solo-specific hack: no non-solo 2-member room pairs an agent with
+    // @user except a single-lead leads room, where reaching the human is equally the right default.
     if (!targets.size && !toUser && room.members.size === 2) {
       const other = [...room.members.keys()].find((k) => k !== lc(fromHandle) && k !== '@user')
       if (other) targets.add(other)
+      else if (lc(fromHandle) !== '@user' && room.members.has('@user')) toUser = true
     }
     return { targets: [...targets], toUser, unresolved }
   }

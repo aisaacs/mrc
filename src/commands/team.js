@@ -19,6 +19,7 @@ import { homedir } from 'node:os'
 import { join, resolve, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseRoster, validateRoster, findRoster } from '../teams/roster.js'
+import { soloRoster, SOLO_HANDLE } from '../teams/solo.js'
 import { buildPersona } from '../teams/personas.js'
 import { makeHandle } from '../teams/names.js'
 import { PRESETS, listPresets, buildPreset } from '../teams/presets.js'
@@ -155,6 +156,21 @@ function loadRoster(repoPath, rosterPath) {
   if (!path) throw new Error(`no roster found. Create team.json in ${repoPath} (or pass --roster <file>).`)
   const norm = parseRoster(readFileSync(path, 'utf8'), { repo: repoPath })
   return { norm, path }
+}
+
+// #49: PURE, Docker-free selection of which roster a member-mode launch binds — extracted from mrc.js so
+// the coercion-resistance GUARANTEE (a --solo launch picks soloRoster and NEVER reads a repo team.json) is
+// asserted by a test, not left as a one-branch-deep inline guard a future refactor could silently reorder
+// (Pierre: the lead:true fuse, one file over). `loadRoster` is injected so a test can assert it is never
+// called on the solo path. Returns { norm, handle, rosterPath }. Invariants: solo ⇒ soloRoster + handle
+// FORCED to SOLO_HANDLE (an injected `--member` can never redirect a solo launch, and team.json is never
+// even read); non-solo ⇒ loadRoster(team.json) with the requested handle.
+export function resolveMemberNorm(config, repoPath, { loadRoster: load = loadRoster } = {}) {
+  if (config.solo) {
+    return { norm: soloRoster(repoPath), handle: SOLO_HANDLE, rosterPath: null }
+  }
+  const { norm, path: rosterPath } = load(repoPath, config.roster)
+  return { norm, handle: String(config.member || '').toLowerCase(), rosterPath }
 }
 
 function memberArgv(repoPath, member, rosterPath) {
@@ -421,6 +437,37 @@ export async function startTeamSession(norm, repoPath, { rosterPath } = {}) {
   const { members, already } = await launchMembers(norm, repoPath, rosterPath, live)
   saveLaunch(norm.org, { repo: repoPath, members })
   return { ok: true, members, already, live: live.map((m) => ({ handle: m.handle, first: m.first, role: m.role })) }
+}
+
+// #49: born-detachable SOLO launch. Like startTeamSession but for the single self-deriving solo member —
+// the dtach master runs `mrc <repo> --solo --member you/claude`, which self-derives via soloRoster (no
+// team.json), so the browser (ttyd) and the native terminal (`dtach -a`) attach to ONE session. Returns
+// { ok, sock, ttydPort, already } on the dtach path, or { ok:false, fallback:true } when ttyd/dtach/pgrep
+// are missing — the caller then runs a plain FOREGROUND solo member (native terminal only, no browser), so
+// solo adds NO new hard dependency for the plain-terminal case.
+const soloShellCmd = (repoPath) =>
+  `node ${[MRC_JS, repoPath].map(shq).join(' ')} --solo --member ${shq(SOLO_HANDLE)}; echo; echo ${shq('[solo session exited — press enter]')}; read`
+
+export async function startSoloSession(repoPath) {
+  if (!hasTtyd() || !hasDtach() || !hasPgrep()) return { ok: false, fallback: true }
+  const norm = soloRoster(repoPath)
+  const res = await pushOrg(norm)   // define the personal org so the daemon binds the member when it registers
+  if (!res.ok) return { ok: false, error: res.error || 'daemon unreachable' }
+  const existing = (loadLaunches()[norm.org] || {}).members || {}
+  const prev = existing[SOLO_HANDLE]
+  if (sessionAlive(prev)) return { ok: true, sock: prev.sock, ttydPort: prev.ttydPort, already: true }   // idempotent relaunch
+  // #41 guard: never spawn over a live-but-unservable master (that orphans it). Recovery is a dashboard Relaunch.
+  if (masterAliveForSock(memberSock(norm.org, SOLO_HANDLE))) return { ok: false, error: 'a solo session master is already live but unservable — Relaunch from the dashboard (it stops the stale master first)' }
+  // THIN outer (Pierre seam-a): do NOT start Colima or build the image here — the INNER `mrc --member` is a
+  // full normal launch that starts the VM, builds, owns the proxies + teardown. The outer only spawns the
+  // dtach master + ttyd and exits, so it can never stop the VM out from under the inner's container (the
+  // cold-start race). The first solo launch shows the build inside the attached session (like `mrc team up`).
+  const port = await findFreePort(Number(process.env.MRC_TTYD_PORT) || 7681)
+  let info
+  try { info = spawnMemberSession(norm.org, SOLO_HANDLE, port, soloShellCmd(repoPath)) }
+  catch (e) { return { ok: false, error: String(e?.message || e) } }
+  saveLaunch(norm.org, { repo: repoPath, members: { [SOLO_HANDLE]: info } })
+  return { ok: true, sock: info.sock, ttydPort: info.ttydPort }
 }
 
 // Reconstruct a PINNED team.json from a normalized org def — every member keeps its assigned name —

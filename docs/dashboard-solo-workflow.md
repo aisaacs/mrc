@@ -64,6 +64,16 @@ session" button, not a team builder.
 - The plain session behaves exactly like today's solo Claude session — the engine membership is
   invisible until you pull someone in.
 
+**Decision — the solo session is born detachable (Option A).** `mrc <repo>` (solo) spawns the session
+inside a `dtach` master + `ttyd` viewer from launch and attaches your terminal to it — so the **browser
+console and your native terminal are two attachers onto one session** (dtach is a transparent,
+multi-attacher byte relay), giving both surfaces seamlessly with no relaunch to move between them. This
+is exactly the member model, so it's one code path, not two. **Graceful degradation:** if
+`ttyd`/`dtach`/`pgrep` aren't installed, solo falls back to today's direct `docker run -it` (native
+terminal only, no browser) — so born-detachable adds **zero new hard dependency** for the plain-terminal
+common case. (A foreground `docker run -it` can't be retrofitted into a detachable/browser session after
+the fact — dtach must own the pty from launch — which is why "browser bolted on later" was rejected.)
+
 ### 4b. Pierre-as-caged-member — via a reusable **cage profile**
 Summon moves from the pairings path to **adding a caged member to your engine room**. Pierre then
 inherits the engine's multi-room + room-tagging for free — no #47 fix needed on the legacy path because
@@ -156,9 +166,10 @@ after the merge, not before. Order within the epic:
 
 ## 7. Open questions
 
-- **Is the human's workspace the ttyd-embedded console, or their native terminal with the dashboard as
-  an overlay?** The member model gives the former for free; the latter may be what a heads-down solo
-  session actually wants. Possibly both (attach either way to the same dtach master).
+- ~~**Is the human's workspace the ttyd-embedded console, or their native terminal?**~~ **RESOLVED
+  (Option A, born-detachable):** both, seamlessly — the solo session lives in a dtach master from launch;
+  the browser (ttyd) and the native terminal (`dtach -a`) are two attachers onto the same session. Falls
+  back to direct `docker run -it` (native only) when ttyd/dtach aren't present. See §4a.
 - **Personal-org identity across repos** — does a solo session's "personal org" span repos (so
   multi-repo peers join one standing room), or is it per-repo with cross-repo peers joining ad hoc?
 - **Resume** — a resumed solo session must rebind to its personal org deterministically (the same

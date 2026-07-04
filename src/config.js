@@ -189,6 +189,7 @@ export function parseArgs(argv) {
     room: '',
     rooms: true,   // cross-session negotiation rooms are ON by default (disable with --no-rooms)
     member: '',    // team-member launch: this session is @member from the roster
+    solo: false,   // #49: solo onramp — register this plain session as a derived team-of-one engine member
     roster: '',    // path to team.json (for --member launches)
     summonedBy: '', // internal: stamped by the daemon's summon launcher so a spawned adversary auto-pairs with its summoner
     openAdversaryUnsafe: false, // --open-adversary-unsafe: reopen a summoned adversary UNCAGED (full egress). Loud + deliberate; belt 0 keeps it argv/~/.mrcrc-only (never repo .mrcrc).
@@ -232,6 +233,7 @@ export function parseArgs(argv) {
         break
       case '--rooms': config.rooms = true; break
       case '--no-rooms': config.rooms = false; break
+      case '--solo': config.solo = true; break   // #49: derive a team-of-one personal org, no team.json
       case '--member':
         if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.member = argv[++i]
         break

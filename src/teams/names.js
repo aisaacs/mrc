@@ -43,12 +43,19 @@ export const NAME_STYLE_NAMES = [...Object.keys(NAME_STYLES), 'custom']
 
 const defaultRng = () => Math.random()
 
-// Pick a first name not already in `taken` (a Set of lowercased first names), from the given style's
-// pool (default + fallback `french`; an unknown/`custom` style falls back to french). Falls back to a
-// numbered name if the pool is somehow exhausted, so assignment never throws.
+// #49: first names that must NEVER be auto-assigned to a team member — they are addressing keywords or the
+// reserved SOLO identity (`you` = the solo member's handle `you/claude`; `user`/`human` resolve to @user).
+// Auto-assigning one would collide a team member's handle with the solo member or ambiguate an @mention.
+// A member may still be PINNED to one in team.json only if it passes assertSafeName (these all do) — the
+// reservation is against the auto-DRAW, the only place the pool is consulted blindly.
+export const RESERVED_FIRST_NAMES = new Set(['you', 'user', 'human'])
+
+// Pick a first name not already in `taken` (a Set of lowercased first names) NOR reserved, from the given
+// style's pool (default + fallback `french`; an unknown/`custom` style falls back to french). Falls back
+// to a numbered name if the pool is somehow exhausted, so assignment never throws.
 export function pickFirstName(taken = new Set(), rng = defaultRng, style = 'french') {
   const pool = NAME_STYLES[style] || NAME_STYLES.french
-  const free = pool.filter((n) => !taken.has(n.toLowerCase()))
+  const free = pool.filter((n) => !taken.has(n.toLowerCase()) && !RESERVED_FIRST_NAMES.has(n.toLowerCase()))
   if (free.length) return free[Math.floor(rng() * free.length)]
   for (let i = 2; ; i++) {
     const base = pool[Math.floor(rng() * pool.length)]

@@ -135,6 +135,10 @@ Options:
   -n, --new [name]     Start a new conversation (optionally named)
   -w, --web            Allow outbound HTTPS to any host
   --agent <name>       AI agent to launch: claude (default), codex
+  --solo               Run as a team-of-one engine member (#49): dashboard console + @user
+                       inbox + on-demand peers, no team.json. Born-detachable — the browser
+                       (ttyd) and native terminal (dtach -a) attach to one session; falls back
+                       to a plain foreground session when ttyd/dtach are absent.
   --room <name>        Pair only with another session sharing this --room name
   --no-rooms           Disable cross-session negotiation rooms (on by default)
   --no-summary         Skip AI session summary on exit

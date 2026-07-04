@@ -18,9 +18,27 @@
 // real destination. Adversary-cage-only — normal sessions never touch this.
 //
 import { createServer, connect } from 'node:net'
+import { timingSafeEqual } from 'node:crypto'
 import { log } from '../output.js'
 
 const PREFIX = 'sni-proxy'
+
+// #49 (4b): client-auth for the sidecar. The container reaches the seal via HTTPS_PROXY carrying
+// `mrc:<MRC_ROOM_SECRET>` creds → a `Proxy-Authorization: Basic base64(mrc:secret)` on every CONNECT. The
+// seal validates it BEFORE peeking the SNI or dialing upstream, so a port-reuse (a later session rebinding
+// this port) hands egress to nobody — the wrong container carries a different secret — making containment
+// independent of the reap reconcile being perfect. timing-safe compare, constant-time on length-equal input.
+function safeEqualStr(a, b) {
+  const ba = Buffer.from(String(a)), bb = Buffer.from(String(b))
+  if (ba.length !== bb.length) return false
+  return timingSafeEqual(ba, bb)
+}
+function proxyAuthOk(headerBuf, secret) {
+  const expected = 'Basic ' + Buffer.from(`mrc:${secret}`).toString('base64')
+  const line = headerBuf.toString('latin1').split('\r\n').find((l) => /^proxy-authorization:/i.test(l))
+  if (!line) return false
+  return safeEqualStr(line.slice(line.indexOf(':') + 1).trim(), expected)
+}
 const DEFAULT_ALLOW = ['api.anthropic.com', 'platform.claude.com']
 // 5-byte TLS record header + the max 16384-byte TLS plaintext fragment. A real
 // ClientHello fits well inside one record; anything larger is malformed/hostile.
@@ -160,7 +178,7 @@ function isAllowed(sni, allow) {
 // reaches it via host.docker.internal). Resolves with the net.Server.
 // `dialUpstream` is an internal seam (default: a real net.connect to SNI:443)
 // so tests can splice a local fake upstream; production always uses the default.
-export function startSniProxy(port, { allowlist = DEFAULT_ALLOW, dialUpstream } = {}) {
+export function startSniProxy(port, { allowlist = DEFAULT_ALLOW, dialUpstream, auth = null } = {}) {
   const allow = allowlist.map(h => h.toLowerCase())
   const dial = dialUpstream || (sni => connect({ host: sni, port: 443 }))
   return new Promise((resolve, reject) => {
@@ -180,6 +198,18 @@ export function startSniProxy(port, { allowlist = DEFAULT_ALLOW, dialUpstream } 
         const m = /^CONNECT\s+([^\s:]+):(\d+)\s+HTTP\/1\.[01]$/i.exec(reqLine)
         if (!m) return void client.end('HTTP/1.1 405 Method Not Allowed\r\n\r\n')
         if (Number(m[2]) !== 443) return void client.end('HTTP/1.1 403 Forbidden\r\n\r\n')
+        // #49 (4b): AUTH BEFORE PEEK. Validate Proxy-Authorization before the 200, the SNI peek, and any
+        // upstream dial — so an unauthenticated client can't even use the seal as a probe oracle (it learns
+        // nothing about what's reachable), and a port-reuse hands egress to no one. A 407 (never a 200) is the
+        // only thing an un-authed CONNECT gets. The three-state liveness probe (seal.js) relies on this exact
+        // distinction: authed → 200, present-but-wrong-secret → 407, absent → connection refused.
+        if (auth && !proxyAuthOk(head.slice(0, idx), auth)) {
+          log(PREFIX, `DROP unauthenticated CONNECT ${m[1]} (bad/absent Proxy-Authorization)`)
+          // DESTROY after flushing (Pierre): respond 407, then force-close — a half-open 407 is a slowloris
+          // handle. The write callback fires once the bytes are flushed to the kernel, then we destroy.
+          client.write('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="mrc-cage"\r\nConnection: close\r\n\r\n', () => client.destroy())
+          return
+        }
         client.write('HTTP/1.1 200 Connection established\r\n\r\n')
         peek(client, after, m[1])
       }

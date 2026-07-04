@@ -21,6 +21,7 @@ import { basename, isAbsolute, join, normalize } from 'node:path'
 import { pickFirstName, makeHandle, backendFamily } from './names.js'
 import { roleDef, ROLE_ALIASES } from './personas.js'
 import { isMediaRole, mediaBackendForRole } from './media.js'
+import { assertCageAllowed } from './cage.js'
 
 // Backends we can actually launch. claude = live channel member; codex = task-worker agent.
 // gemini/elevenlabs are MEDIA backends, never picked directly — they're DERIVED from a media role.
@@ -72,12 +73,24 @@ export function assertSafeProjectName(name, kind = 'project') {
   if (!SAFE_PROJECT_NAME.test(s)) {
     throw new Error(`${kind} name ${JSON.stringify(name)} is invalid — use letters, digits, spaces, and . _ - (start with a letter or digit; no quotes, angle brackets, ampersand, parentheses, braces, semicolons, backslashes, backticks, or control characters). Rename it.`)
   }
+  // #49: the `-solo-<8 hex>` suffix is RESERVED — it names an auto-derived solo session's org (solo.js
+  // soloOrgId). A team.json whose explicit org/project/team name wore it would be byte-identical to some
+  // repo's solo org and, via defineOrg's redefine-prune, could silently steal that session's members. So
+  // make the "structurally distinct" claim ENFORCED here, at the single name chokepoint, not conventional.
+  if (RESERVED_SOLO_ORG_RE.test(s)) {
+    throw new Error(`${kind} name ${JSON.stringify(name)} is reserved — the "-solo-<hash>" suffix names an auto-derived solo session's org (#49). Choose another name.`)
+  }
   return s
 }
+// The reserved solo-org suffix (see assertSafeProjectName + solo.js). Kept here, the name chokepoint, so
+// both the strict validator and the benign sanitizer below neutralize it (no import cycle with solo.js).
+export const RESERVED_SOLO_ORG_RE = /-solo-[0-9a-f]{8}$/i
 // For the BENIGN fallback only (a local repo basename, NOT the team.json attack vector): strip disallowed
-// chars so a weird local directory name can't break — never throws (a derived default shouldn't fail launch).
+// chars so a weird local directory name can't break — never throws (a derived default shouldn't fail
+// launch). Also strip a trailing reserved solo suffix so even a repo literally named `x-solo-<hex>` can't
+// have its derived TEAM org collide with a solo org (closes the benign half of the squat).
 export function sanitizeProjectName(s) {
-  const cleaned = String(s == null ? '' : s).replace(/[^\p{L}\p{N} ._-]/gu, '').replace(/^[^\p{L}\p{N}]+/u, '').trim()
+  const cleaned = String(s == null ? '' : s).replace(/[^\p{L}\p{N} ._-]/gu, '').replace(/^[^\p{L}\p{N}]+/u, '').replace(RESERVED_SOLO_ORG_RE, '').trim()
   return cleaned.slice(0, 64)
 }
 
@@ -193,6 +206,15 @@ export function parseRoster(input, { repo, rng } = {}) {
       // resolved a non-claude backend above (isMediaRole branch) → worker. def.tier is no longer consulted
       // here (it remains role-intent documentation only).
       const tier = LIVE_BACKENDS.has(backend) ? 'live' : 'worker'
+      // #49 (4b): a member's `cage` must name an allow-listed, fully-honorable profile AND ride a backend
+      // whose transport can enforce it — rejected HERE, the parse chokepoint (not in execWorker), so a cage
+      // the system can't fully honor can never launch behind a "caged" label. Same shape as the name guards.
+      let cage = null
+      if (m.cage != null && m.cage !== false) {
+        const chk = assertCageAllowed(m.cage, backend)
+        if (!chk.ok) throw new Error(`member ${JSON.stringify(m.name || role)}: ${chk.error}`)
+        cage = String(m.cage)
+      }
       const mount = m.mount || def.mount
       const territory = resolveTerritory(m.territory, teamTerritory)
       const lead = m.lead === true
@@ -204,6 +226,7 @@ export function parseRoster(input, { repo, rng } = {}) {
         first, backend, handle,
         role, roleLabel: def.label,
         team: teamName, lead, tier, territory, mount, personaDef,
+        ...(cage ? { cage } : {}),
         ...(backendNote ? { backendNote } : {}),
       }
     })
