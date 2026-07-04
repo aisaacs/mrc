@@ -22,10 +22,12 @@
 // Docker/E rebuild checklist, since that fix is container-side):
 //   R1. Cross-message reassembly: a marker split ACROSS two messages — msg1 ends `…[Human`, msg2
 //       starts `directive]:…`. A per-message defang structurally cannot see both halves.
-//   R2. Confusable-allowlist gap: the homoglyph fold below is a FIXED map, so a lookalike outside it
-//       survives while still rendering as the marker (e.g. Latin alpha U+0251 "ɑ" for "a", or an
-//       unmapped in-range Cyrillic). We deliberately do NOT gold-plate the map (whack-a-mole); the
-//       structural fix removes the whole class. This pass still closes every common, rendering-
+//       R2. Confusable-allowlist gap: the homoglyph fold below is a FIXED map, so a lookalike outside it
+//       survives while still rendering as the marker (an unmapped in-range Cyrillic/Greek, or a homoglyph
+//       from a block the map doesn't touch). The map covers the common Cyrillic/Greek/IPA-ext vectors —
+//       including the ones a live adversary demonstrated — but it is a BELT over the frame, NOT a complete
+//       defense: we deliberately do NOT try to enumerate every Unicode look-alike (whack-a-mole); the
+//       structural out-of-band fix removes the whole class. This pass closes every common, rendering-
 //       identical vector and is a strict improvement.
 
 // Invisible characters an attacker inserts to break a naive matcher while rendering identically:
@@ -48,10 +50,13 @@ const CONFUSABLE = {
   'α': 'a', 'Α': 'a', 'ο': 'o', 'Ο': 'o', 'ε': 'e', 'Ε': 'e', 'ρ': 'p', 'Ρ': 'p',
   'τ': 't', 'Τ': 't', 'κ': 'k', 'Κ': 'k', 'ι': 'i', 'Ι': 'i', 'ν': 'v', 'υ': 'u',
   'Υ': 'y', 'η': 'n', 'Η': 'h', 'μ': 'm', 'Μ': 'm',
+  // IPA Extensions look-alikes (NFKC does NOT fold these) — the specific vectors a live adversary demonstrated
+  // against the marker; a targeted belt, NOT an attempt to enumerate the block (the frame is the boundary).
+  'ɑ': 'a', 'ɡ': 'g', 'ɩ': 'i', 'ɪ': 'i', 'ɔ': 'o', 'ɾ': 'r',
   // bracket variants (NFKC handles fullwidth ［］; these it leaves alone)
   '【': '[', '】': ']', '〔': '[', '〕': ']', '〖': '[', '〗': ']', '「': '[', '」': ']',
 }
-const CONFUSABLE_RE = /[Ѐ-ӿͰ-Ͽ【】〔〕〖〗「」]/g
+const CONFUSABLE_RE = /[Ѐ-ӿͰ-Ͽɑɡɩɪɔɾ【】〔〕〖〗「」]/g
 
 // Normalize untrusted text to a canonical base: fold compatibility forms (fullwidth ［Ｈ → [H), unify
 // CR/CRLF so there are no smuggled line starts, and strip invisibles. Applied to the delivered text.

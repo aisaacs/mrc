@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ripgrep \
     jq \
     file \
-    sudo \
+    gosu \
     iptables \
     ipset \
     iproute2 \
@@ -86,15 +86,23 @@ RUN mkdir -p /opt/mrc-channel \
     && npm install --loglevel=error @modelcontextprotocol/sdk
 COPY container/mrc-channel-server.js /opt/mrc-channel/mrc-channel-server.js
 
+# Local marketplace for the room channel plugin: loaded via `--channels plugin:room@mrc` with NO
+# experimental-channel prompt (vs `--dangerously-load-development-channels`, which prompts). The
+# managed-settings allowlist below makes the plugin load silent. The plugin's .mcp.json points back at
+# /opt/mrc-channel/mrc-channel-server.js above.
+COPY mrc-marketplace /opt/mrc-marketplace
+RUN mkdir -p /etc/claude-code \
+    && printf '%s\n' '{ "channelsEnabled": true, "allowedChannelPlugins": [ { "marketplace": "mrc", "plugin": "room" } ] }' > /etc/claude-code/managed-settings.json
+
 # Create workspace and config directories
 RUN mkdir -p /workspace && \
     ln -sf /home/coder/.claude/claude.json /home/coder/.claude.json
 
-# Firewall script + sudoers so coder can run it without password
+# Firewall script. C/#38: NO sudoers — the container starts as root (USER root below), the entrypoint runs
+# the firewall as root then drops to the unprivileged `coder` via gosu, and coder has NO sudo (nor a password:
+# `useradd` leaves the account locked). So a sandboxed session cannot re-run or weaken the firewall.
 COPY init-firewall.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/init-firewall.sh \
-    && echo 'coder ALL=(root) NOPASSWD: SETENV: /usr/local/bin/init-firewall.sh' > /etc/sudoers.d/coder-firewall \
-    && chmod 0440 /etc/sudoers.d/coder-firewall
+RUN chmod +x /usr/local/bin/init-firewall.sh
 
 # Clipboard shim (stays bash — mimics xclip interface)
 COPY clipboard-shim.sh /usr/local/bin/xclip
@@ -104,9 +112,14 @@ RUN chmod +x /usr/local/bin/xclip
 COPY container/mrc-notify-hook.js /usr/local/bin/
 COPY container/mrc-statusline.js /usr/local/bin/
 COPY container/container-setup.js /usr/local/bin/
+# mrc-rename installs WITHOUT the .js so the /rename slash command can invoke it as a clean `mrc-rename`
+# (node shebang, lands on PATH like the xclip shim). The other three KEEP .js — they're referenced by full
+# path in hooks/settings/entrypoint, never typed as a command.
+COPY container/mrc-rename.js /usr/local/bin/mrc-rename
 RUN chmod +x /usr/local/bin/mrc-notify-hook.js \
     /usr/local/bin/mrc-statusline.js \
-    /usr/local/bin/container-setup.js
+    /usr/local/bin/container-setup.js \
+    /usr/local/bin/mrc-rename
 
 # Video analysis script + slash command (staged for runtime seeding)
 COPY container/video-analysis.sh /usr/local/bin/video-analysis
@@ -120,6 +133,12 @@ COPY container/video-analysis-defaults.json /opt/mrc-video-analysis/defaults.jso
 # Codex slash command (seeded into ~/.claude/commands/ at runtime)
 COPY container/codex-command.md /opt/mrc-codex/command.md
 
+# Rename slash command (seeded into ~/.claude/commands/ at runtime). Lets the human ask the session to
+# rename itself ("/rename" or "/rename a-better-name"); runs the mrc-rename helper above.
+# NOTE: we intentionally do NOT ship a /red-team slash command — the human always SUMMONS Pierre (the live
+# summon_adversary channel verb), never a one-shot command, to avoid the session reaching for the wrong tool.
+COPY container/rename-command.md /opt/mrc-rename/command.md
+
 COPY entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/entrypoint.sh
 
@@ -127,7 +146,10 @@ RUN chmod +x /usr/local/bin/entrypoint.sh
 # and the firewall may block npm CDN hosts needed for updates.
 ENV DISABLE_AUTOUPDATER=1
 
-USER coder
+# C/#38: start as ROOT so the entrypoint can run the firewall (as root) and THEN drop to the unprivileged
+# `coder` via `gosu coder` for the agent. coder has no sudo and a locked account, so the agent can never
+# re-run the firewall or escalate — the cage is enforced from outside the sandboxed session.
+USER root
 WORKDIR /workspace
 
 ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]

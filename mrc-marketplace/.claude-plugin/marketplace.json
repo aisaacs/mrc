@@ -1,0 +1,11 @@
+{
+  "name": "mrc",
+  "owner": { "name": "mrc" },
+  "plugins": [
+    {
+      "name": "room",
+      "source": "./plugins/room",
+      "description": "mrc negotiation-room / crew channel — consult another live session via the host room daemon."
+    }
+  ]
+}

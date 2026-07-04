@@ -63,17 +63,29 @@ export async function summarize(mrcDir, uuid) {
 }
 
 /** Generate a descriptive kebab-case session name using Haiku. */
+// #52: returns a STATUS so the watcher can retry the RETRYABLE cases instead of dead-ending. TERMINAL:
+// 'named' (just named it), 'exists' (already named / a concurrent writer won), 'no-key' (no API key).
+// RETRYABLE: 'too-short' (below the naming floor — a still-growing session hasn't got enough OWN content yet;
+// costs NO API call), 'error' (a 429/5xx/flaky-format — retry with backoff).
 export async function generateName(mrcDir, uuid) {
   const names = loadNames(mrcDir)
-  if (names[uuid]) return  // already named
+  if (names[uuid]) return 'exists'  // already named
 
   const apiKey = namingKey()
   if (!apiKey) {
     process.stderr.write('\x1b[1;31m  ✦ Name generation skipped: no MRC_SESSION_NAMING_ANTHROPIC_API_KEY set\x1b[0m\n')
-    return
+    return 'no-key'
   }
 
-  const transcript = extractTranscript(mrcDir, uuid, 2000)
+  // #48: excludeMeta strips room/channel peer messages AND the assistant replies to them (OBJ-4) so a session a
+  // peer consulted is named from its OWN input — not the peer's topic.
+  const transcript = extractTranscript(mrcDir, uuid, 2000, { excludeMeta: true })
+  // #48/OBJ-4 FLOOR: don't name a session with too little of its OWN content. A pure-consultation session (only
+  // peer asks + replies-to-the-peer, all stripped above) falls below this and stays UNNAMED rather than mis-named
+  // from the peer's topic. Also guards the namer from an empty transcript (it replies "no transcript provided",
+  // which then fails the kebab-case check as a confusing "bad format"). (#52's version had this floor; it was
+  // deferred, so the comment promised a floor that didn't exist — a talkative consultation got named anyway.)
+  if (!transcript || transcript.trim().length < 200) return 'too-short'   // #52: RETRYABLE — a growing session gets there; a pure-consult one never does
 
   const text = await callHaiku(apiKey, [{
     role: 'user',
@@ -85,12 +97,12 @@ export async function generateName(mrcDir, uuid) {
       `Transcript:\n${transcript}`,
   }], 30)
 
-  if (!text) return
+  if (!text) return 'error'   // #52: a non-401 API failure (429/5xx) — retryable
 
   const name = text.trim().toLowerCase().replace(/^["']|["']$/g, '')
   if (!name || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(name)) {
     process.stderr.write(`\x1b[1;31m  ✦ Name generation: bad format '${name}'\x1b[0m\n`)
-    return
+    return 'error'   // #52: a flaky response — retryable
   }
 
   // Re-read in case a manual name was set while we were generating
@@ -99,5 +111,7 @@ export async function generateName(mrcDir, uuid) {
     fresh[uuid] = name
     saveNames(mrcDir, fresh)
     process.stderr.write(`\x1b[1;36m  ✦ Session named → \x1b[1;33m${name}\x1b[0m\n`)
+    return 'named'
   }
+  return 'exists'   // a concurrent writer named it while we were generating
 }

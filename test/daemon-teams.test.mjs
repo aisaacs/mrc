@@ -10,6 +10,17 @@ import { startRoomDaemon } from '../src/proxies/room-daemon.js'
 import { findFreePort } from '../src/ports.js'
 import { parseRoster, teamRoomId } from '../src/teams/roster.js'
 import { memberSessionId } from '../src/teams/session-id.js'
+import { saveSessionRecord } from '../src/session-record.js'
+
+// A real member launched by `mrc team up` always has a TAMPER-PROOF host record with a secret (mrc.js
+// writes it pre-launch, keyed by memberSessionId). R2/F3b bind requires classifySession 'normal' AND a
+// secret on record, and R1 requires the register frame to carry the matching secret. So model production:
+// write the record (deterministic secret from the id) AND send that secret in the register frame.
+function registerMember(client, frame) {
+  const secret = 'sec-' + String(frame.sessionId).slice(-12)
+  saveSessionRecord(frame.sessionId, { repoPath: process.env.HOME, adversary: false, secret })
+  client.send({ ...frame, type: 'register', secret })
+}
 
 // Redirect room files to a throwaway HOME so the test never touches the real ~/.local/share/mrc.
 const TMP_HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-test-`)
@@ -66,9 +77,11 @@ test('daemon team rooms: define org, directed delivery, @user round-trip, brake/
   // 2) Connect the three members and register them with their handles.
   const arch = client(port), engineer = client(port), critic = client(port)
   await Promise.all([arch.ready, engineer.ready, critic.ready])
-  arch.send({ type: 'register', sessionId: 's-arch', memberHandle: 'roland/claude', repo: 'shop', label: 'roland' })
-  engineer.send({ type: 'register', sessionId: 's-engineer', memberHandle: 'ludivine/claude', repo: 'shop', label: 'ludivine' })
-  critic.send({ type: 'register', sessionId: 's-critic', memberHandle: 'pierre/claude', repo: 'shop', label: 'pierre' })
+  // Register with the REAL pinned memberSessionId (what `mrc team up` uses) — R2 binds only a pinned id / a
+  // normal-classified session, not a bare-handle fallback on an arbitrary id.
+  registerMember(arch, { sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop', label: 'roland' })
+  registerMember(engineer, { sessionId: memberSessionId('shop', 'ludivine/claude'), memberHandle: 'ludivine/claude', repo: 'shop', label: 'ludivine' })
+  registerMember(critic, { sessionId: memberSessionId('shop', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'shop', label: 'pierre' })
   // each gets a join notice listing its rooms
   const joined = await arch.waitFor((f) => f.type === 'notice' && /Joined as @roland/.test(f.text))
   assert.match(joined.text, new RegExp(teamRoomId('shop', 'client')))
@@ -159,9 +172,9 @@ test('daemon containment: two orgs sharing a handle bind to the RIGHT org via th
   // share the bare handle; only the org-specific session id tells them apart.
   const aRoland = client(port), aPierre = client(port), bPierre = client(port)
   await Promise.all([aRoland.ready, aPierre.ready, bPierre.ready])
-  aRoland.send({ type: 'register', sessionId: memberSessionId('alpha', 'roland/claude'), memberHandle: 'roland/claude', repo: 'alpha' })
-  aPierre.send({ type: 'register', sessionId: memberSessionId('alpha', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'alpha' })
-  bPierre.send({ type: 'register', sessionId: memberSessionId('beta', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'beta' })
+  registerMember(aRoland, { sessionId: memberSessionId('alpha', 'roland/claude'), memberHandle: 'roland/claude', repo: 'alpha' })
+  registerMember(aPierre, { sessionId: memberSessionId('alpha', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'alpha' })
+  registerMember(bPierre, { sessionId: memberSessionId('beta', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'beta' })
   // Each binds to its own org's room (proves the index disambiguated, not a bare-handle clobber).
   const aj = await aRoland.waitFor((f) => f.type === 'notice' && /Joined as @roland/.test(f.text))
   assert.match(aj.text, new RegExp(teamRoomId('alpha', 'core')))
@@ -194,7 +207,7 @@ test('daemon #11: the ask_user `kind` survives say→route→inbox so questions 
 
   const eng = client(port)
   await eng.ready
-  eng.send({ type: 'register', sessionId: memberSessionId('shop', 'ludivine/claude'), memberHandle: 'ludivine/claude', repo: 'shop' })
+  registerMember(eng, { sessionId: memberSessionId('shop', 'ludivine/claude'), memberHandle: 'ludivine/claude', repo: 'shop' })
   await eng.waitFor((f) => f.type === 'notice' && /Joined/.test(f.text))
 
   // ask_user → say frame WITH kind:'question'; plain @user → say frame WITHOUT kind.
@@ -237,7 +250,7 @@ test('daemon #16: the @user inbox survives a daemon restart (no loss, no resurre
   await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
 
   const lead = client(port); await lead.ready
-  lead.send({ type: 'register', sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop' })
+  registerMember(lead, { sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop' })
   await lead.waitFor((f) => f.type === 'notice' && /Joined/.test(f.text))
   lead.send({ type: 'say', id: 1, text: '@user q1?', kind: 'question', room: 'leads' })
   lead.send({ type: 'say', id: 2, text: '@user q2?', kind: 'question', room: 'leads' })
@@ -269,7 +282,7 @@ test('daemon #16: the @user inbox survives a daemon restart (no loss, no resurre
 
   // A NEW question post-restart gets a FRESH id past the max restored id (no collision → TG-reply mapping safe).
   const lead2 = client(port); await lead2.ready
-  lead2.send({ type: 'register', sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop' })
+  registerMember(lead2, { sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop' })
   await lead2.waitFor((f) => f.type === 'notice' && /Joined/.test(f.text))
   lead2.send({ type: 'say', id: 9, text: '@user q4 after restart?', kind: 'question', room: 'leads' })
   await sleep(200)
@@ -278,4 +291,92 @@ test('daemon #16: the @user inbox survives a daemon restart (no loss, no resurre
   assert.ok(fresh && fresh.id > maxId, `new item id ${fresh?.id} is past the restored max ${maxId}`)
 
   lead2.sock.destroy(); daemon.stop()
+})
+
+test('#3/AUDIT: a member cannot bind under a DIFFERENT handle than its pinned session id maps to', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-bindforge-`)
+  const port = await findFreePort(19500)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+  const roster = { org: 'shop', repo: process.env.HOME, teams: [{ name: 'client', territory: 'client', members: [
+    { role: 'architect', backend: 'claude', name: 'roland', lead: true },
+    { role: 'critic', backend: 'claude', name: 'pierre' },
+  ] }] }
+  const norm = parseRoster(roster, { rng: seededRng(1) })
+  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+
+  // roland's REAL verified session (its own pinned id + secret, classifySession 'normal') claims pierre's handle
+  // → a forge → REFUSED, because the bind handle is derived from the pinned id, not the wire f.memberHandle.
+  const forge = client(port); await forge.ready
+  registerMember(forge, { sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'pierre/claude', repo: 'shop', label: 'roland' })
+  const refused = await forge.waitFor((f) => f.type === 'notice' && /pinned to @roland\/claude, not @pierre\/claude/.test(f.text))
+  assert.ok(refused, 'a verified member cannot bind AS a different member — delivery-hijack + from-forge closed (R2 gap)')
+
+  // sanity: the same session binding as its OWN pinned handle still succeeds (no false-refusal of legit members).
+  const legit = client(port); await legit.ready
+  registerMember(legit, { sessionId: memberSessionId('shop', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'shop', label: 'pierre' })
+  await legit.waitFor((f) => f.type === 'notice' && /Joined as @pierre/.test(f.text))
+
+  daemon?.stop?.()
+  for (const c of [forge, legit]) try { c.sock.destroy() } catch {}
+})
+
+test('#3/AUDIT: a verified-normal NON-member cannot bind a member slot via a wire handle (cross-org impersonation; legacy fallback amputated)', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-crossorg-`)
+  const port = await findFreePort(19550)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+  const roster = { org: 'shop', repo: process.env.HOME, teams: [{ name: 'client', territory: 'client', members: [
+    { role: 'architect', backend: 'claude', name: 'roland', lead: true },
+    { role: 'critic', backend: 'claude', name: 'pierre' },
+  ] }] }
+  const norm = parseRoster(roster, { rng: seededRng(1) })
+  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+
+  // The ATTACKER is a verified-normal NON-member: a PLAIN conversation UUID (never sha1(org\0handle)), with its
+  // OWN secret on record (every mrc session gets one → verifiedNormal true → R1 passes on its own secret). It crafts
+  // a register frame claiming a real member's handle. PRE-FIX this rode the idx===undefined legacy fallback →
+  // orgsWithHandle('pierre/claude') → bindSession CLOBBERED pierre's slot (delivery hijack + attribution forge). The
+  // amputation refuses it: no pinned identity, so the wire handle is never trusted for a non-pinned caller.
+  const attacker = client(port); await attacker.ready
+  const attackerId = '11111111-2222-3333-4444-555555555555'   // a plain UUID; NOT a pinned memberSessionId
+  registerMember(attacker, { sessionId: attackerId, memberHandle: 'pierre/claude', repo: 'evil', label: 'evil' })
+  const refused = await attacker.waitFor((f) => f.type === 'notice' && /no pinned member identity/.test(f.text))
+  assert.ok(refused, 'a verified-normal non-member is refused a member bind — the wire-handle legacy fallback is deleted')
+
+  // And the REAL pierre (its pinned id + secret) still binds — the amputation does not false-refuse legit members.
+  const legit = client(port); await legit.ready
+  registerMember(legit, { sessionId: memberSessionId('shop', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'shop', label: 'pierre' })
+  await legit.waitFor((f) => f.type === 'notice' && /Joined as @pierre/.test(f.text))
+
+  daemon?.stop?.()
+  for (const c of [attacker, legit]) try { c.sock.destroy() } catch {}
+})
+
+test('#38: a register presenting a reserved memberSessionId WITHOUT a verified-member record is refused (slot-squat closed)', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-slotsquat-`)
+  const port = await findFreePort(19600)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+  const roster = { org: 'shop', repo: process.env.HOME, teams: [{ name: 'client', territory: 'client', members: [
+    { role: 'architect', backend: 'claude', name: 'roland', lead: true },
+    { role: 'critic', backend: 'claude', name: 'pierre' },
+  ] }] }
+  const norm = parseRoster(roster, { rng: seededRng(1) })
+  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+
+  // The attacker computes pierre's PUBLIC derived id (sha1(org\0handle)) and registers with it BEFORE the real pierre
+  // launches — no record on disk, so R1 has no secret to check. #38 refuses it so it can't squat the future slot.
+  const squatter = client(port); await squatter.ready
+  squatter.send({ type: 'register', sessionId: memberSessionId('shop', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'evil', label: 'evil' })   // no secret, no record written
+  const rej = await squatter.waitFor((f) => f.type === 'notice' && /reserved member identity/.test(f.text))
+  assert.ok(rej, 'a reserved memberSessionId without a verified-member record is refused at register — the sessions-Map slot-squat is closed')
+
+  // The REAL pierre (record + secret written pre-launch) still registers and binds fine — no false-refusal.
+  const legit = client(port); await legit.ready
+  registerMember(legit, { sessionId: memberSessionId('shop', 'pierre/claude'), memberHandle: 'pierre/claude', repo: 'shop', label: 'pierre' })
+  await legit.waitFor((f) => f.type === 'notice' && /Joined as @pierre/.test(f.text))
+
+  daemon?.stop?.()
+  for (const c of [squatter, legit]) try { c.sock.destroy() } catch {}
 })

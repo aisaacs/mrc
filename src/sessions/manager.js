@@ -1,6 +1,7 @@
-import { readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs'
-import { join, basename } from 'node:path'
+import { readFileSync, writeFileSync, renameSync, readdirSync, existsSync, statSync } from 'node:fs'
+import { join, basename, dirname } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { allSessionRecords, sessionRecordMtime } from '../session-record.js'
 
 /** Return sessions sorted newest-first as [{ uuid, lastUpdated, preview }, ...]. */
 export function getSessions(mrcDir) {
@@ -29,11 +30,17 @@ export function getSessions(mrcDir) {
           if (content.length > 60) preview += '...'
         }
       }
-      if (lastTs) sessions.push({ uuid, lastUpdated: lastTs, preview })
+      // D5/#25: rank by FILE mtime (max'd with the in-transcript ts), because `claude --continue` resumes by
+      // file recency — so the host's "newest" agrees with what the container actually resumes. Metadata writes
+      // (ai-title / agent-name / snapshots) bump mtime with no in-transcript ts, so ts-only ranking drifts.
+      let mtimeMs = 0
+      try { mtimeMs = statSync(join(mrcDir, file)).mtimeMs } catch {}
+      const recencyMs = Math.max(mtimeMs, Date.parse(lastTs) || 0)
+      if (recencyMs > 0) sessions.push({ uuid, lastUpdated: new Date(recencyMs).toISOString(), recencyMs, preview })
     } catch {}
   }
 
-  sessions.sort((a, b) => b.lastUpdated.localeCompare(a.lastUpdated))
+  sessions.sort((a, b) => b.recencyMs - a.recencyMs)
   return sessions
 }
 
@@ -54,16 +61,55 @@ export function loadNames(mrcDir) {
   return names
 }
 
-/** Save session-names file. */
+/** Save session-names file. AUDIT: MERGE with the current on-disk state before writing, so two concurrent
+ *  name-watchers (same-repo sessions) don't lose each other's additions in a read-modify-write (the second
+ *  writer's stale `names` would otherwise clobber the first's just-added entry). Both callers are additive
+ *  (generateName / nameSession set a single uuid), so overlaying the caller's entries onto the disk state is
+ *  correct — it narrows the lost-update window to the reload→rename gap. Atomic write (tmp+rename) = no torn read. */
 export function saveNames(mrcDir, names) {
   const file = join(mrcDir, 'session-names')
-  const content = Object.entries(names).map(([uuid, name]) => `${uuid}=${name}`).join('\n') + '\n'
-  writeFileSync(file, content)
+  const merged = { ...loadNames(mrcDir), ...names }
+  const content = Object.entries(merged).map(([uuid, name]) => `${uuid}=${name}`).join('\n') + '\n'
+  const tmp = file + '.tmp'
+  writeFileSync(tmp, content)
+  renameSync(tmp, file)
+}
+
+/**
+ * D2: the ONE ordered list of resumable sessions, shared by the picker AND `resolve` (so `sessions resume <#>`
+ * numbering matches what the picker shows and a raw adversary uuid resolves the same way). It merges the normal
+ * `.mrc` sessions (recency-ranked) with SUMMONED-ADVERSARY sessions from the machine-global host records —
+ * appended after the normal rows. Adversaries are surfaced from the records because a caged adversary's transcript
+ * lives in its dedicated `-pierre-N` config volume, NOT in `.mrc` (container-setup skips the /workspace/.mrc symlink
+ * under the cage), so getSessions('.mrc') is structurally blind to them. CONTAINMENT FLOOR: filter to
+ * `rec.repoPath === repoPath` — allSessionRecords is GLOBAL and the `-pierre-N` pool + volume are md5(repoPath)-keyed,
+ * so surfacing a foreign-repo adversary would resume it from THIS repo's (wrong/empty/co-resident) volume.
+ * Each row: { uuid, lastUpdated, preview, adversary, summonedBy }.
+ */
+export function getResumableSessions(mrcDir) {
+  const repoPath = dirname(mrcDir)
+  const sessions = getSessions(mrcDir).map((s) => ({ ...s, adversary: false, summonedBy: null }))
+  const seen = new Set(sessions.map((s) => s.uuid))
+  const advRows = []
+  for (const [uuid, rec] of Object.entries(allSessionRecords())) {
+    if (!(rec.adversary || rec.summonedBy)) continue        // adversaries only (keystone: same as classifySession)
+    if (rec.repoPath !== repoPath) continue                 // containment floor: only THIS repo's Pierre pool
+    if (seen.has(uuid)) continue                            // dedup (a normal .mrc session that also has a record)
+    // recencyMs = the host record's mtime (a caged adversary's transcript is in its config volume, not .mrc, so
+    // there's no in-repo mtime). Same numeric field getSessions ranks by (+ an ISO lastUpdated string for the
+    // picker's date column) so an adversary COLLATES into the one recency order instead of sitting undated at the
+    // bottom — a Pierre summoned today lands among today's sessions.
+    const ms = sessionRecordMtime(uuid)
+    advRows.push({ uuid, recencyMs: ms, lastUpdated: ms ? new Date(ms).toISOString() : '', preview: '', adversary: true, summonedBy: rec.summonedBy || null })
+  }
+  // ONE recency order for the whole list (normal + adversary) → the picker and `resolve` share it (a stable sort
+  // keeps getSessions' existing tie-break), so `sessions resume <#>` can never diverge from the picker.
+  return [...sessions, ...advRows].sort((a, b) => (b.recencyMs || 0) - (a.recencyMs || 0))
 }
 
 /** Resolve a name or list number to a UUID. Returns UUID or null. */
 export function resolve(mrcDir, query) {
-  const sessions = getSessions(mrcDir)
+  const sessions = getResumableSessions(mrcDir)   // D2: include adversaries so `sessions resume <#>` matches the picker + a raw adversary uuid resolves (D10 confirmIfAdversary still guards the resume path in mrc.js)
   const names = loadNames(mrcDir)
 
   // Try as a number

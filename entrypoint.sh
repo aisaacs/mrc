@@ -2,27 +2,43 @@
 set -euo pipefail
 trap 'echo "FAILED at line $LINENO (exit code $?)" >&2' ERR
 
-# Wait for network to be ready (Colima can be slow to warm up)
-echo "Waiting for network..."
-for i in $(seq 1 30); do
-  if dig +short +timeout=1 api.anthropic.com >/dev/null 2>&1; then
-    echo "Network ready after ${i}s"
-    break
-  fi
-  if [ "$i" -eq 30 ]; then
-    echo "ERROR: Network not ready after 30 attempts"
-    dig api.anthropic.com 2>&1 || true
-    exit 1
-  fi
-  sleep 1
-done
+# ROOT PASS (C/#38): the container starts as root (Dockerfile `USER root`). Wait for the network, run the
+# firewall as root — NO sudo; coder has no sudo, so a sandboxed session can't re-run it to weaken its cage —
+# then re-exec this script as the unprivileged `coder` user for everything else. A caged adversary carries
+# MRC_ADVERSARY_FW / MRC_SNI_PROXY_PORT, which init-firewall.sh honors (empty allowlist + SNI-proxy egress).
+if [ "$(id -u)" = "0" ]; then
+  echo "Waiting for network..."
+  for i in $(seq 1 30); do
+    if dig +short +timeout=1 api.anthropic.com >/dev/null 2>&1; then
+      echo "Network ready after ${i}s"
+      break
+    fi
+    if [ "$i" -eq 30 ]; then
+      echo "ERROR: Network not ready after 30 attempts"
+      dig api.anthropic.com 2>&1 || true
+      exit 1
+    fi
+    sleep 1
+  done
 
-# Run firewall (must be bash + sudo — see init-firewall.sh)
-sudo ALLOW_WEB="${ALLOW_WEB:-}" \
-  MRC_CLIPBOARD_PORT="${MRC_CLIPBOARD_PORT:-7722}" \
-  MRC_NOTIFY_PORT="${MRC_NOTIFY_PORT:-7723}" \
-  MRC_ROOM_PORT="${MRC_ROOM_PORT:-}" \
-  /usr/local/bin/init-firewall.sh
+  ALLOW_WEB="${ALLOW_WEB:-}" \
+    MRC_ADVERSARY_FW="${MRC_ADVERSARY_FW:-}" \
+    MRC_CLIPBOARD_PORT="${MRC_CLIPBOARD_PORT:-}" \
+    MRC_NOTIFY_PORT="${MRC_NOTIFY_PORT:-}" \
+    MRC_ROOM_PORT="${MRC_ROOM_PORT:-}" \
+    MRC_SNI_PROXY_PORT="${MRC_SNI_PROXY_PORT:-}" \
+    /usr/local/bin/init-firewall.sh
+
+  export HOME=/home/coder USER=coder LOGNAME=coder
+  exec gosu coder "$0" "$@"
+fi
+
+# CODER PASS (unprivileged). Fail CLOSED if the firewall never ran — /etc/mrc-cage-profile is init-firewall's
+# first act, so its absence means we somehow reached here unprotected. Never start the agent without the cage.
+if [ ! -f /etc/mrc-cage-profile ]; then
+  echo "FATAL: firewall did not run (no /etc/mrc-cage-profile) — refusing to start the agent unprotected." >&2
+  exit 1
+fi
 
 # All config setup is now in Node
 node /usr/local/bin/container-setup.js
@@ -62,28 +78,45 @@ AGENT="${MRC_AGENT:-claude}"
 case "$AGENT" in
   claude)
     echo "Launching Claude Code..."
+    # Build the --append-system-prompt content ONCE: a team member's persona (role + protocol) AND/OR a
+    # downgrade notice. Gap-(b): a resume with no persisted transcript (a pre-fix vaporized record) downgrades to
+    # a fresh session, and container-setup.js drops /tmp/mrc-session-note — a first-turn notice for the agent to
+    # relay so the human SEES they got a clean start IN-SESSION, not just in boot stderr that scrolls away.
+    # Read the persona from a FILE so backticks/$ in it are not re-evaluated by the shell ($(cat …) is not rescanned).
+    APPEND_SYSTEM=""
+    if [ -n "${MRC_PERSONA_FILE:-}" ] && [ -f "${MRC_PERSONA_FILE}" ]; then
+      APPEND_SYSTEM="$(cat "${MRC_PERSONA_FILE}")"
+    fi
+    if [ -f /tmp/mrc-session-note ]; then
+      MRC_NOTE="$(cat /tmp/mrc-session-note)"; rm -f /tmp/mrc-session-note
+      if [ -n "$APPEND_SYSTEM" ]; then
+        APPEND_SYSTEM="$APPEND_SYSTEM
+
+$MRC_NOTE"
+      else
+        APPEND_SYSTEM="$MRC_NOTE"
+      fi
+    fi
     if [ -n "${MRC_ROOM_PORT:-}" ]; then
-      # Room session: load the channel server directly (no wrapper). Claude renders natively and
-      # the user accepts the one-time dev-channel prompt manually. NO auto-accept — an injected
-      # "1<Enter>" was dangerous (it could land on an unintended menu, e.g. trigger a compact).
+      # Room/crew session: load the channel from the baked-in `mrc` plugin marketplace. It's allowlisted
+      # in /etc/claude-code/managed-settings.json, so `--channels plugin:room@mrc` loads the channel with
+      # NO experimental-channel prompt (container-setup.js registered the plugin into this volume).
       # Pin a stable conversation id for a NEW session (empty RESUME_FLAG) so rooms survive a later
       # resume; resume/continue keep their flag, which already targets the right conversation.
       SESSION_FLAG="$RESUME_FLAG"
       if [ -z "$RESUME_FLAG" ] && [ -n "${MRC_SESSION_ID:-}" ]; then
         SESSION_FLAG="--session-id ${MRC_SESSION_ID}"
       fi
-      # Team members carry a persona (role + protocol) injected via --append-system-prompt. Read from
-      # a file so backticks/$ in the prompt are not re-evaluated by the shell ($(cat …) is not rescanned).
-      if [ -n "${MRC_PERSONA_FILE:-}" ] && [ -f "${MRC_PERSONA_FILE}" ]; then
+      if [ -n "$APPEND_SYSTEM" ]; then
         claude --dangerously-skip-permissions \
-          --dangerously-load-development-channels server:room \
-          --mcp-config /tmp/mrc-room-mcp.json \
-          --append-system-prompt "$(cat "${MRC_PERSONA_FILE}")" $SESSION_FLAG "$@"
+          --channels plugin:room@mrc \
+          --append-system-prompt "$APPEND_SYSTEM" $SESSION_FLAG "$@"
       else
         claude --dangerously-skip-permissions \
-          --dangerously-load-development-channels server:room \
-          --mcp-config /tmp/mrc-room-mcp.json $SESSION_FLAG "$@"
+          --channels plugin:room@mrc $SESSION_FLAG "$@"
       fi
+    elif [ -n "$APPEND_SYSTEM" ]; then
+      claude --dangerously-skip-permissions --append-system-prompt "$APPEND_SYSTEM" $RESUME_FLAG "$@"
     else
       claude --dangerously-skip-permissions $RESUME_FLAG "$@"
     fi

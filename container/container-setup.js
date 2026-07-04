@@ -4,8 +4,9 @@
 // Called by entrypoint.sh after the firewall is up.
 // Handles: plugin seeding, config restore, symlinks, hooks, statusline.
 //
-import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, readdirSync, cpSync, rmSync, lstatSync, statSync, appendFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, readdirSync, cpSync, rmSync, unlinkSync, renameSync, lstatSync, statSync, appendFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
+import { execFileSync } from 'node:child_process'
 
 const HOME = process.env.HOME || '/home/coder'
 const CLAUDE_DIR = join(HOME, '.claude')
@@ -131,6 +132,15 @@ if (existsSync(CODEX_SRC)) {
   linkOrMigrate(join(CODEX_SRC, 'command.md'), join(CLAUDE_DIR, 'commands', 'codex.md'))
 }
 
+// 1d. Seed the /rename slash command — lets the human ask the session to rename itself (it runs the baked
+// mrc-rename helper). Symlinked so image updates propagate; available in every session.
+// NOTE: no /red-team command is shipped by design — the human always SUMMONS Pierre (the live
+// summon_adversary channel verb), never a one-shot slash command, to keep from reaching for the wrong tool.
+const RN_SRC = '/opt/mrc-rename'
+if (existsSync(RN_SRC)) {
+  linkOrMigrate(join(RN_SRC, 'command.md'), join(CLAUDE_DIR, 'commands', 'rename.md'))
+}
+
 // 2. Restore claude.json from backup if missing
 if (!existsSync(CONFIG_FILE)) {
   const backupDir = join(CLAUDE_DIR, 'backups')
@@ -156,8 +166,42 @@ if (process.env.ANTHROPIC_API_KEY) {
   }
 }
 
-// 4. Symlink project store into /workspace/.mrc/
-try {
+// A caged adversary (MRC_ADVERSARY_FW) has /workspace mounted READ-ONLY, so the .mrc symlink + .gitignore
+// writes below can't (and shouldn't) touch the repo.
+const CAGED = !!process.env.MRC_ADVERSARY_FW
+// ADVERSARY identity is set for a caged summon AND an uncaged --open-adversary-unsafe resume (mrc.js:517-521);
+// FW is set only for the cage. Gate the project store on IDENTITY, not the cage: the -pierre-N config volume is
+// a DURABLE, sequentially-shared pool (mrc.js:479-483), so an UNCAGED adversary must ALSO keep its store as a
+// real dir — else it re-plants the /workspace/.mrc symlink and re-poisons the volume for the next caged claimant.
+const ADVERSARY = !!process.env.MRC_ADVERSARY
+
+// 4. Project store. A NORMAL session symlinks ~/.claude/projects/-workspace → /workspace/.mrc (repo-local memory).
+if (ADVERSARY) {
+  // An adversary's transcript MUST be a real dir in its OWN config volume, NEVER a symlink into /workspace/.mrc:
+  // for a cage /workspace is :ro, so a symlinked write EROFS-vaporizes the transcript SILENTLY (the session runs
+  // fine, but a later resume finds nothing). The -pierre-N volumes are durable and many were minted BEFORE the
+  // caged skip existed (a create-time symlinkSync planted the link), and a skip-only guard never scrubs it — so
+  // RECONCILE every boot: drop a stale symlink/stray, ensure a real writable dir. Idempotent → this also MIGRATES
+  // the already-poisoned volumes with no `docker volume rm`. (Behavior change, intended: an uncaged adversary's
+  // transcript now lands in the pierre volume too — out of the owner's dev .mrc, and required to keep the pool clean.)
+  try {
+    let st; try { st = lstatSync(PROJECT_STORE) } catch {}
+    if (st && st.isSymbolicLink()) unlinkSync(PROJECT_STORE)                   // drop the LINK ONLY — never its target (/workspace/.mrc, the owner's real transcripts)
+    else if (st && !st.isDirectory()) rmSync(PROJECT_STORE, { force: true })   // a stray non-dir where the store should be
+    mkdirSync(PROJECT_STORE, { recursive: true })                             // already a real dir → no-op (persisted transcripts preserved)
+    // Tidy a stale migration temp (Pierre's cosmetic nit): a crash between the rescue cpSync and its rename/rmSync
+    // can leave a `<id>.jsonl.rescue-<pid>.tmp`. Zero correctness impact (never stat'd as a transcript, never matched
+    // by the `.jsonl` filter), but sweep it so cruft doesn't accumulate across boots.
+    try { for (const f of readdirSync(PROJECT_STORE)) if (f.endsWith('.tmp') && f.includes('.rescue-')) rmSync(join(PROJECT_STORE, f), { force: true }) } catch {}
+    // Fail-LOUD (CLAUDE.md doctrine): the whole bug was a SILENT EROFS eating sessions. Prove the store is writable
+    // NOW; if not, abort rather than run a session whose transcript can't persist.
+    const probe = join(PROJECT_STORE, '.mrc-write-probe')
+    writeFileSync(probe, ''); rmSync(probe, { force: true })
+  } catch (e) {
+    console.error(`FATAL: adversary project store ${PROJECT_STORE} is not a writable real dir (${e.message}). A transcript would be silently lost — aborting.`)
+    process.exit(1)
+  }
+} else try {
   let alreadyLinked = false
   try { alreadyLinked = lstatSync(PROJECT_STORE).isSymbolicLink() } catch {}
 
@@ -175,7 +219,7 @@ try {
 }
 
 // 5. Seed .gitignore entry for .mrc/
-if (existsSync('/workspace/.git')) {
+if (!CAGED && existsSync('/workspace/.git')) {
   const gitignore = '/workspace/.gitignore'
   try {
     const content = existsSync(gitignore) ? readFileSync(gitignore, 'utf8') : ''
@@ -240,7 +284,68 @@ if (agent === 'claude') {
   const newSession = process.env.NEW_SESSION === '1'
 
   if (resumeSession) {
-    resumeFlag = `--resume ${resumeSession}`
+    // A resume normally targets the persisted transcript. But a PRE-FIX caged adversary's transcript was
+    // EROFS-vaporized (see the project-store reconcile above), and `--resume` on a missing conversation
+    // hard-crashes the entrypoint (the line-98 failure). Decide deterministically here — the transcript is a
+    // real file in PROJECT_STORE now (a symlink for a normal session resolves through to /workspace/.mrc): a
+    // non-empty file → real resume; absent → DOWNGRADE to a fresh session under the same id (empty flag → the
+    // entrypoint's `--session-id ${MRC_SESSION_ID}` path, exactly what a fresh summon uses). VERIFIED on the
+    // rebuild: `--session-id <old-id>` STARTS clean even when .claude.json carries the id with no transcript
+    // (Claude discovers sessions by scanning the transcript dir, which is empty for that id) — so no alias needed.
+    // RELIABLE resume-vs-fresh + rescue (Pierre): "gone"/"absent" must mean a PERSISTENT ENOENT across retries —
+    // never a single stat, and never a non-ENOENT error (EACCES/EIO ≠ absence). /workspace/.mrc is virtiofs with a
+    // real consistency window, so the SAME rigor must gate BOTH the primary check AND the orphan check — one shared
+    // helper, so the asymmetry (a single un-retried stat that reads a transient ENOENT as "gone") cannot return. A
+    // present, correctly-named file returns success or a non-ENOENT error, never a persistent ENOENT → this can
+    // never downgrade or mislabel a present transcript, whatever the failure's cause.
+    const transcriptPresent = (p) => {
+      for (let attempt = 0; ; attempt++) {
+        try { return statSync(p).size > 0 }                                  // found (non-empty) or empty — decided
+        catch (e) {
+          if (!(e && e.code === 'ENOENT')) return true                       // non-ENOENT → NOT absence → treat as present (resume / recoverable)
+          if (attempt >= 4) return false                                     // persistent ENOENT across retries → genuinely absent
+          try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100) } catch {}   // 100ms settle, then re-stat (defeats a transient ENOENT)
+        }
+      }
+    }
+    const transcriptPath = join(PROJECT_STORE, `${resumeSession}.jsonl`)
+    let hasTranscript = transcriptPresent(transcriptPath)
+    // (A) migration rescue + HONEST recoverability (Pierre): an UNCAGED pre-fix adversary (--open-adversary-unsafe →
+    // writable /workspace) wrote its transcript THROUGH the old symlink to /workspace/.mrc/<id>.jsonl; the reconcile
+    // above removed the symlink, so on the first post-fix resume it's orphaned THERE, not at PROJECT_STORE. Rescue
+    // THIS uuid's file only (never the owner's OTHER .mrc transcripts — the containment line) into the real store.
+    let orphanRecoverablePath = null   // set iff a real transcript is on disk at the old location but couldn't be rescued
+    if (!hasTranscript) {
+      const orphan = join(MRC_LOCAL, `${resumeSession}.jsonl`)
+      if (transcriptPresent(orphan)) {   // BUG1+BUG3: same retry + non-ENOENT rigor as the primary (virtiofs can transiently ENOENT — must not read as "gone")
+        // BUG4 (Pierre): cpSync isn't atomic — a partial (ENOSPC mid-copy) would leave a truncated .jsonl that the
+        // NEXT boot's presence check reads as "present" → --resume on corrupt data. Copy to a temp then ATOMIC
+        // rename (same fs, so rename is atomic), so transcriptPath only ever holds a COMPLETE file; clean up on fail.
+        const tmp = `${transcriptPath}.rescue-${process.pid}.tmp`
+        try { cpSync(orphan, tmp); renameSync(tmp, transcriptPath); hasTranscript = true }        // rescued → --resume
+        catch { try { rmSync(tmp, { force: true }) } catch {}; orphanRecoverablePath = orphan }   // un-rescuable → downgrade, but it's RECOVERABLE (BUG2)
+      }
+    }
+    if (hasTranscript) {
+      resumeFlag = `--resume ${resumeSession}`
+    } else {
+      resumeFlag = ''
+      // BUG2 (Pierre): tell the TRUTH about recoverability — "unrecoverable" ONLY when nothing is on disk. If the
+      // orphan is present but the rescue failed, the real transcript is sitting at that path and the human can recover it.
+      const recover = orphanRecoverablePath
+        ? `the prior transcript is ON DISK at ${orphanRecoverablePath} (automatic recovery failed) and may be recoverable`
+        : `the prior transcript was lost to a since-fixed bug and is unrecoverable`
+      console.error(`⚠ No persisted transcript for session ${resumeSession} — starting FRESH under the same id (${recover}).`)
+      // Gap-(b): the console.error above is entrypoint STDERR — it scrolls away when the TUI paints. ALSO write an
+      // in-session note the agent relays on its FIRST turn (entrypoint folds /tmp/mrc-session-note into
+      // --append-system-prompt). NOTE (Pierre's 4th, STILL OPEN): --append-system-prompt is model-context the agent
+      // MAY not surface, and a dashboard/Telegram-supervised human never sees a TTY note — the @user-inbox routing
+      // (#62) is the real cross-surface net for the caged-summon population; this note is only the direct-TTY cover.
+      try {
+        writeFileSync('/tmp/mrc-session-note',
+          `[SESSION NOTICE — say this to your human in your FIRST message, before anything else]: This session's earlier transcript (id ${resumeSession}) could not be resumed, so you are running FRESH under the same session id — ${orphanRecoverablePath ? `the prior conversation is NOT lost: it is on disk at ${orphanRecoverablePath} (automatic recovery failed) and can be recovered` : `the prior conversation is gone, this is a clean start`}. State that plainly, then carry on.`)
+      } catch {}
+    }
   } else if (!newSession) {
     try {
       const jsonls = readdirSync(MRC_LOCAL).filter(f => f.endsWith('.jsonl'))
@@ -251,12 +356,22 @@ if (agent === 'claude') {
 
 writeFileSync('/tmp/mrc-resume-flag', resumeFlag)
 
-// 8. Negotiation room: write the channel-server MCP config so the entrypoint can load it
-// via --dangerously-load-development-channels server:room.
-if (process.env.MRC_ROOM_PORT) {
-  writeFileSync('/tmp/mrc-room-mcp.json', JSON.stringify({
-    mcpServers: { room: { command: 'node', args: ['/opt/mrc-channel/mrc-channel-server.js'] } },
-  }))
+// 8. Negotiation-room / crew channel plugin. The channel ships as a plugin in a baked-in LOCAL
+// marketplace (/opt/mrc-marketplace), allowlisted in /etc/claude-code/managed-settings.json, so the
+// entrypoint loads it via `--channels plugin:room@mrc` with NO experimental-channel prompt. Local
+// marketplaces aren't cloned into ~/.claude/plugins, so they don't ride the defaults-restore the
+// GitHub plugins use — register it into this (per-repo) volume here instead. Idempotent: skipped once
+// installed_plugins.json shows it, so it's a one-time cost on a fresh volume.
+if (process.env.MRC_ROOM_PORT && existsSync('/opt/mrc-marketplace')) {
+  const installed = readJSON(join(CLAUDE_DIR, 'plugins', 'installed_plugins.json'))
+  if (!installed || !JSON.stringify(installed).includes('room@mrc')) {
+    try {
+      execFileSync('claude', ['plugin', 'marketplace', 'add', '/opt/mrc-marketplace'], { stdio: 'ignore' })
+      execFileSync('claude', ['plugin', 'install', 'room@mrc'], { stdio: 'ignore' })
+    } catch (e) {
+      console.error('Warning: room channel plugin registration failed:', e.message)
+    }
+  }
 }
 
 console.log('Container setup complete.')

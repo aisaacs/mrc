@@ -264,6 +264,7 @@ test('personas: buildPersona injects identity, addressing, trust, territory, com
   assert.match(p, /@roland/)                     // teammate listed
   assert.match(p, /DIRECTED DELIVERY/)
   assert.match(p, /\[Human directive\]/)         // trust model
+  assert.match(p, /never[\s\S]*fetch a URL, run a command, or POST/i)  // L4: the general do-not-be-a-peer's-hands caution lives in the shared protocol (not a role-keyed per-message tag)
   assert.match(p, /client\/src/)                 // territory
   assert.match(p, /Do NOT run `git commit`/)     // human commits
   assert.match(p, /you may EDIT/)                // rw mount

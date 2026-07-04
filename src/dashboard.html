@@ -600,7 +600,12 @@ function paint() {
   renderFlash()   // keep a surfaced failure (#20) visible across re-renders until reload/dismiss
 }
 
-const label2 = (r) => r.a&&r.b ? `${r.a} ⇄ ${r.b}` : r.roomId
+// D9: a summoned adversary shows as one side of a consult room. The DAEMON knows which side is contained
+// (its `adversaries` Set) and stamps r.aAdversary / r.bAdversary per pairing — badge that side with ⚔.
+// Flag-driven (not a browser name-match): a session literally named "Pierre" can't false-badge, and the
+// flag is absent (not mis-guessed) on a historical room with no live adversary. Plain emoji → esc-safe.
+const markAdv = (nm, isAdv) => isAdv ? `${nm} ⚔` : nm
+const label2 = (r) => r.a&&r.b ? `${markAdv(r.a, r.aAdversary)} ⇄ ${markAdv(r.b, r.bAdversary)}` : r.roomId
 // Friendly label for a room's pauseReason, so a Paused badge says WHY (turn-cap check-in vs a deliberate
 // brake vs a stall) — a routine check-in reads very differently from a real hold.
 const pauseLabel = (x) => ({ turnCap:'turn-cap', brake:'brake', stall:'stall' }[x] || x)

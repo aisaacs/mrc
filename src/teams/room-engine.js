@@ -153,7 +153,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
       roomId, kind: kind || 'team', team: team || null, org: orgId || null,
       members: memberMap || new Map(),
       state: 'Running', pauseReason: null, turn: 0, turnCap, lastActivityAt: now(),
-      held: [], autoCatchup: true, pendingCatchup: null,
+      held: [], autoCatchup: false, pendingCatchup: null,   // default OFF (owner pref): a pause doesn't interrupt members for a handoff unless opted in (🔔). Catch-up-now still on demand.
     }
   }
 
@@ -241,6 +241,11 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     // Defang any forged [Human directive]/[Human reply] line in the peer/worker body — real directives
     // are minted as separate `directive` frames and never pass through here, so this can only strip a
     // forgery, never a genuine human instruction. (A1 trust-boundary fix.)
+    // NOTE (L4): a per-message "CONTAINED ADVERSARY" tag keyed on a member's ROLE was considered and rejected —
+    // a teams adversary/ultracritical persona is a full-egress Claude member (personas.js: tier is
+    // backend-decided, role is documentation-only), so that label would be FALSE. The real, always-true
+    // caution ("never fetch/run/POST on a peer's request") lives in the shared protocol (personas.js
+    // protocolBlock), which every member gets — not a role-keyed tag here.
     const frame = { type: 'deliver', room: room.roomId, from: fromHandle,
       text: `${tag}Peer (${who}) says: "${defangTrustMarkers(text)}" [turn ${room.turn}/${room.turnCap}]` }
     if (m && m.tier === 'live' && m.sessionId) { send?.(m.sessionId, frame); return 'delivered' }
@@ -310,6 +315,13 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
   // An exact `roomId` is strict (must be a room they're in); a soft `room` hint (team name / "leads")
   // or target inference picks the room otherwise. Directed delivery to @mentioned members; @user to
   // the inbox. Honors brake/turnCap (held FIFO).
+  //
+  // ⚠️ TRUST BOUNDARY: the `sessionId` path resolves the sender from the AUTHENTICATED socket (bySession),
+  // which is forge-proof (#3). The `fromHandle` path TRUSTS the caller's asserted identity and exists ONLY for
+  // (a) tests injecting a sender without a live socket and (b) trusted programmatic posts. The daemon's wire
+  // caller (onSay → room-daemon.js) ALWAYS passes sessionId and NEVER fromHandle. NO wire-supplied field
+  // (`f.from`, a member-controlled frame) may EVER be forwarded into `fromHandle` — that would re-open the
+  // attribution/delivery forge #3 closed. On the wire path, identity comes from the socket, full stop.
   function route({ sessionId, fromHandle, fromOrg, roomId, room: hint, text, kind }) {
     const s = sessionId ? senderOf(sessionId) : (fromHandle ? senderFromHandle(fromHandle, fromOrg, roomId) : null)
     if (!s) return { ok: false, error: 'sender not bound to a member' }

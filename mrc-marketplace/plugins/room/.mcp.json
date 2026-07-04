@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "room": {
+      "command": "node",
+      "args": ["/opt/mrc-channel/mrc-channel-server.js"]
+    }
+  }
+}
