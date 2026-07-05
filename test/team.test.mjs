@@ -6,7 +6,8 @@ import assert from 'node:assert/strict'
 import os from 'node:os'
 import fs from 'node:fs'
 import { join } from 'node:path'
-import { parseRoster } from '../src/teams/roster.js'
+import { parseRoster, validateRoster } from '../src/teams/roster.js'
+import { addAuthorizedRepo, _authPathForTest } from '../src/teams/repo-auth.js'
 import {
   memberSessionId, memberWorkspaceVolumes, memberEnv, personaForMember, writePersonaFile, orgDef, memberLaunch, cleanWorkerOutput,
   rosterFromDef, addMemberToRoster, removeMemberFromRoster, writeTeamFile,
@@ -208,6 +209,42 @@ test('cleanWorkerOutput extracts the worker reply from the container chatter', (
   const raw = 'Waiting for network...\nNetwork ready after 2s\n[firewall up]\n===MRC-WORKER-OUTPUT-START===\nDone: added client/api/parse.js\n===MRC-WORKER-OUTPUT-END===\n'
   assert.equal(cleanWorkerOutput(raw), 'Done: added client/api/parse.js')
   assert.match(cleanWorkerOutput('no markers, just tail text'), /tail text/)   // graceful fallback
+})
+
+test('Inc 2: member.repo — default = the org repo; unauthorized cross-repo REFUSED at parse; authorized resolves', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-mr-')))
+  const orgRepo = join(root, 'orgrepo'); fs.mkdirSync(orgRepo)
+  const other = join(root, 'otherrepo'); fs.mkdirSync(other)
+  const org = `test-inc2-${process.pid}`
+  const mk = (members) => parseRoster({ project: org, teams: [{ name: 't', members }] }, { repo: orgRepo })
+  try {
+    // default: no member.repo → the org repo, raw (no config-volume shift for existing members)
+    assert.equal(mk([{ name: 'a', role: 'engineer', backend: 'claude' }]).members[0].repo, orgRepo)
+    // explicit cross-repo, UNAUTHORIZED (empty set) → refused at PARSE, legibly, with the member handle
+    assert.throws(() => mk([{ name: 'b', role: 'engineer', backend: 'claude', repo: other }]), /@b.*not authorized/)
+    // after a HUMAN authorizes it for THIS org → resolves to the canonical cross-repo
+    addAuthorizedRepo(org, other)
+    assert.equal(mk([{ name: 'c', role: 'engineer', backend: 'claude', repo: other }]).members[0].repo, other)
+  } finally { fs.rmSync(root, { recursive: true, force: true }); try { fs.unlinkSync(_authPathForTest(org)) } catch {} }
+})
+
+test('validateRoster missing-territory: MOUNTED members (engineer, tester) ERROR; media-maker (host-side write) EXEMPT', () => {
+  // #49 (Pierre — mechanism-derived, not a role list): a member whose LAUNCH MOUNTS its territory
+  // (canonicalMountSource, throws on missing) errors legibly at validate; a media-maker writes host-side
+  // (canonicalWriteTarget, tolerate-and-create) so a missing territory is fine. The TESTER is live+rw → MOUNTS
+  // → NOT exempt, despite being in the overlap-exempt set (a different concept). Three members, two mechanisms.
+  const repo = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-terr-')))
+  try {
+    const n = parseRoster({ teams: [{ name: 't', members: [
+      { name: 'eng', role: 'engineer', backend: 'claude', mount: 'rw', territory: 'code-missing' },
+      { name: 'des', role: 'designer', backend: 'claude', mount: 'rw', territory: 'assets-missing' },
+      { name: 'tst', role: 'tester',   backend: 'claude', mount: 'rw', territory: 'tests-missing' },
+    ] }] }, { repo })
+    const errText = validateRoster(n).errors.join(' | ')
+    assert.match(errText, /@eng.*not found/, 'code engineer with a missing MOUNTED territory → error')
+    assert.match(errText, /@tst.*not found/, 'tester (live+rw, MOUNTS) → error — NOT existence-exempt despite the overlap set')
+    assert.ok(!/@des/.test(errText), 'media designer writes host-side (canonicalWriteTarget creates the dir) → NOT an error')
+  } finally { fs.rmSync(repo, { recursive: true, force: true }) }
 })
 
 test('memberLaunch assembles env + territorial volumes + a stable session id', () => {

@@ -130,7 +130,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
       omap.set(h, {
         handle: m.handle, first: m.first, role: m.role, team: m.team, lead: !!m.lead,
         backend: m.backend, tier: m.tier || (m.backend === 'claude' ? 'live' : 'worker'),
-        territory: m.territory, mount: m.mount, org: orgId, repo: repo || null,
+        territory: m.territory, mount: m.mount, org: orgId, repo: m.repo || repo || null,   // #49 Inc 2: a member's OWN repo (multi-repo) survives; else the org repo
         sessionId: prev?.sessionId ?? null,   // keep an existing live binding across a re-define
       })
     }

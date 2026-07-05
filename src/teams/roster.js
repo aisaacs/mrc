@@ -23,6 +23,7 @@ import { roleDef, ROLE_ALIASES } from './personas.js'
 import { isMediaRole, mediaBackendForRole } from './media.js'
 import { assertCageAllowed } from './cage.js'
 import { canonicalMountSource } from '../mount-guard.js'   // #49: realpath-canonical territory validation (legible, symlink-safe)
+import { resolveMemberRepo } from './repo-auth.js'   // #49 Inc 2: gate an explicit member.repo against the org's human-authorized set
 
 // Backends we can actually launch. claude = live channel member; codex = task-worker agent.
 // gemini/elevenlabs are MEDIA backends, never picked directly — they're DERIVED from a media role.
@@ -219,6 +220,27 @@ export function parseRoster(input, { repo, rng } = {}) {
       const mount = m.mount || def.mount
       const territory = resolveTerritory(m.territory, teamTerritory)
       const lead = m.lead === true
+      // #49 (Inc 2): the member's repo. Default = the team's OWN repo (unchanged for existing rosters, which
+      // set no member.repo). An EXPLICIT member.repo (multi-repo) must be HUMAN-authorized — resolveMemberRepo
+      // returns the canonical authorized path or THROWS, so a cross-repo member is refused at PARSE until a
+      // human adds that repo to the org's set (member.repo-differs can never ship an unauthorized mount). Store
+      // the RETURNED canonical repo — so all five consumers (mount, worker mount, worker-log, asset write, the
+      // .env secret read) inherit an already-authorized value, gated once at the mint, not at each door.
+      // The DEFAULT keeps the RAW repoPath (not realpath'd) — today's behavior, so no config-volume-key shift
+      // for existing symlinked-repo members (Pierre #3); only an explicit cross-repo gets the canonical
+      // authorized path (and those are new, no volume to re-login). Surface an unauthorized repo LEGIBLY with
+      // the member handle (Pierre #2), not a raw throw.
+      // ASYMMETRY — do NOT "fix" the sidestep, it preserves `mrc ~` (Pierre): the OWN repo trusts the human's
+      // LAUNCH CHOICE (they typed the path — they may mount their own $HOME if they chose to), so the default
+      // skips resolveMemberRepo's broad-guard. A CROSS-REPO member.repo is different — a summoned member must
+      // never reach into $HOME on its own — so it goes through resolveMemberRepo, where the broad-guard fires
+      // AND it must be human-authorized. $HOME as the ORG repo = allowed (the user's choice); $HOME as a
+      // CROSS-REPO member.repo = refused. Routing the default through the broad-guard would break `mrc ~`.
+      let memberRepo = repoPath
+      if (m.repo != null && m.repo !== '' && String(m.repo) !== String(repoPath)) {
+        try { memberRepo = resolveMemberRepo(repoPath, m.repo, org) }
+        catch (e) { throw new Error(`member @${handle}: ${e.message || e}`) }
+      }
       // Resolved persona for this member: label/mandate/leadByDefault from the (custom or built-in)
       // def, with the EFFECTIVE mount + backend-derived tier folded in. buildPersona consumes this.
       const personaDef = { label: def.label, mandate: def.mandate, mount, tier, leadByDefault: def.leadByDefault === true, custom: !!def.custom }
@@ -226,7 +248,7 @@ export function parseRoster(input, { repo, rng } = {}) {
         id: `${slug(org)}:${slug(teamName)}:${handle.replace('/', '-')}`,
         first, backend, handle,
         role, roleLabel: def.label,
-        team: teamName, lead, tier, territory, mount, personaDef,
+        team: teamName, lead, tier, territory, mount, personaDef, repo: memberRepo,
         ...(cage ? { cage } : {}),
         ...(backendNote ? { backendNote } : {}),
       }
@@ -286,18 +308,24 @@ export function validateRoster(norm) {
         `("${writers[i].territory}" vs "${writers[j].territory}") — risk of edit contention`)
     }
   }
-  // #49 (Pierre trap #2): a rw member's territory must realpath-resolve WITHIN the repo. Surface it LEGIBLY
-  // here rather than as a raw ENOENT / stack trace at mount time. A symlink ESCAPE (or a '/'-resolving repo)
-  // is a hard ERROR (security); a MISSING territory is a WARNING (the mount fails closed on it). Only when the
-  // repo actually exists on disk — a validate against an in-memory norm with no real repo skips it.
+  // #49 (Pierre): a rw member's territory must realpath-resolve WITHIN the repo — surfaced LEGIBLY here, both
+  // an escape AND a missing territory as a hard ERROR, rather than a raw ENOENT stack trace at mount time.
+  // MECHANISM-DERIVED exemption (not a role list): error only for the members whose LAUNCH MOUNTS the territory
+  // via memberWorkspaceVolumes → canonicalMountSource (which THROWS on a missing source) — i.e. every rw
+  // sub-tree member EXCEPT media-makers, who generate HOST-SIDE via media.js → canonicalWriteTarget
+  // (tolerate-and-CREATE a missing dir, no container mount). Keyed on isMediaRole — the SAME predicate that
+  // routes a member to media.js vs the container mount — so a new host-side generator is auto-exempt and a new
+  // container role auto-requires its territory (no list to drift). The TESTER is live+rw and MOUNTS, so it is
+  // NOT exempt (it sits in the OVERLAP-exempt set for a DIFFERENT reason — contention, not existence). Only
+  // when the repo exists on disk (a validate against an in-memory norm with no real repo skips it).
   if (norm.repo && existsSync(norm.repo)) {
     for (const m of norm.members) {
-      if (m.mount === 'rw' && m.territory && m.territory !== '.') {
+      if (m.mount === 'rw' && m.territory && m.territory !== '.' && !isMediaRole(m.role)) {
         try { canonicalMountSource(norm.repo, m.territory) }
         catch (e) {
           const msg = String(e?.message || e)
           if (/escapes the repo|filesystem root/.test(msg)) errors.push(`member @${m.handle}: territory "${m.territory}" ${msg}`)
-          else warnings.push(`member @${m.handle}: territory "${m.territory}" not found in the repo — it must exist before launch (the mount fails closed on a missing source)`)
+          else errors.push(`member @${m.handle}: territory "${m.territory}" not found in the repo — its container mounts it and the mount fails closed on a missing source; create it (or fix the roster) before launch`)
         }
       }
     }
