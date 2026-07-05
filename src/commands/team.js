@@ -20,6 +20,7 @@ import { join, resolve, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseRoster, validateRoster, findRoster, RESERVED_SOLO_ORG_RE } from '../teams/roster.js'
 import { soloRoster, SOLO_HANDLE } from '../teams/solo.js'
+import { canonicalMountSource, canonicalWriteTarget } from '../mount-guard.js'   // #49: realpath-canonical mount/write containment (no symlink escape)
 import { buildPersona } from '../teams/personas.js'
 import { makeHandle } from '../teams/names.js'
 import { PRESETS, listPresets, buildPreset } from '../teams/presets.js'
@@ -43,15 +44,22 @@ export { memberSessionId }   // shared impl: src/teams/session-id.js (no raw-NUL
 // other member gets /workspace READ-ONLY, with .mrc kept rw (session transcripts + persona file)
 // and, for a sub-tree writer, just its territory mounted rw on top. This is the territorial write
 // isolation: members literally cannot write outside their lane.
+// #49 (realpath floor, Pierre-reviewed): the mount SOURCE (left of the colon = the host path) is
+// realpath-canonicalized so a symlink in the repo can't escape (`territory:'evil'` where `evil -> /etc`);
+// the container TARGET (right of the colon) STAYS the declared spelling, or the member sees its files at the
+// wrong in-container path and territorial isolation breaks (Pierre trap #3). `.mrc` uses the may-not-exist
+// canonicalizer (docker/setup may create it — catches a symlink `.mrc`, tolerates absence); the workspace root
+// and the territory use canonicalMountSource (must exist — a missing territory throws, caught legibly at
+// roster-validate, Pierre trap #2).
 export function memberWorkspaceVolumes(member, repoPath) {
   const vols = []
   if (member.mount === 'rw' && member.territory === '.') {
-    vols.push('-v', `${repoPath}:/workspace`)
+    vols.push('-v', `${canonicalMountSource(repoPath, '.')}:/workspace`)
   } else {
-    vols.push('-v', `${repoPath}:/workspace:ro`)
-    vols.push('-v', `${join(repoPath, '.mrc')}:/workspace/.mrc`)
+    vols.push('-v', `${canonicalMountSource(repoPath, '.')}:/workspace:ro`)
+    vols.push('-v', `${canonicalWriteTarget(repoPath, '.mrc')}:/workspace/.mrc`)
     if (member.mount === 'rw' && member.territory !== '.') {
-      vols.push('-v', `${join(repoPath, member.territory)}:/workspace/${member.territory}`)
+      vols.push('-v', `${canonicalMountSource(repoPath, member.territory)}:/workspace/${member.territory}`)
     }
   }
   return vols
@@ -78,11 +86,15 @@ const personaSlug = (handle) => handle.replace(/[^a-z0-9]+/gi, '-')
 // path (/workspace/.mrc/... ). Read in the entrypoint via --append-system-prompt "$(cat …)" — safe
 // against backticks/$ in the prompt (command-substituted text is not re-scanned).
 export function writePersonaFile(repoPath, member, text) {
-  const dir = join(repoPath, '.mrc', 'teams')
-  mkdirSync(dir, { recursive: true })
   const name = `${personaSlug(member.handle)}.persona`
-  writeFileSync(join(dir, name), text)
-  return `/workspace/.mrc/teams/${name}`
+  // #49 (Pierre trap #4): the write is TWO syscalls (mkdir + write) and BOTH must build from the guard's
+  // RETURN — a mkdir on the raw `join(repo,'.mrc','teams')` FOLLOWS a `.mrc -> /etc` symlink and creates
+  // /etc/teams before the write ever runs. So canonicalize the write target, then mkdir its DIRNAME and write
+  // THE RETURN — never the raw spelling.
+  const p = canonicalWriteTarget(repoPath, join('.mrc', 'teams', name))
+  mkdirSync(dirname(p), { recursive: true })
+  writeFileSync(p, text)
+  return `/workspace/.mrc/teams/${name}`   // in-container path (declared) — unchanged
 }
 
 // The full org definition pushed to the daemon (what the engine.defineOrg expects).
@@ -103,10 +115,12 @@ export function cleanWorkerOutput(out) {
 // across turns. (This is the one path that needs Docker — validated via the rebuild recipe.)
 export async function execWorker(norm, member, repoPath, prompt) {
   loadEnv(dirname(MRC_JS))   // populate OPENAI_API_KEY etc. (team dispatch runs before mrc.js loads .env)
-  const dir = join(repoPath, '.mrc', 'teams')
-  mkdirSync(dir, { recursive: true })
   const name = `${personaSlug(member.handle)}.exec-prompt`
-  writeFileSync(join(dir, name), prompt)
+  // #49 (Pierre trap #4): canonicalize the write target; mkdir its DIRNAME + write THE RETURN (both from the
+  // guard — a raw-join mkdir would follow a symlinked `.mrc`).
+  const promptPath = canonicalWriteTarget(repoPath, join('.mrc', 'teams', name))
+  mkdirSync(dirname(promptPath), { recursive: true })
+  writeFileSync(promptPath, prompt)
   const containerPromptFile = `/workspace/.mrc/teams/${name}`
   const vols = [...memberWorkspaceVolumes(member, repoPath)]
   const volName = volumeName(`${repoPath}#${member.handle}`, 1)
@@ -579,8 +593,12 @@ export async function launchMember(org, repoPath, rosterPath, member) {
 // members can --roster it, and return { norm, rosterPath }. Used by the daemon's GUI launch.
 export function materializeRoster(rosterInput, repoHint) {
   const norm = parseRoster(rosterInput, { repo: repoHint })
-  const dir = join(norm.repo, '.mrc'); mkdirSync(dir, { recursive: true })
-  const rosterPath = join(dir, 'team.runtime.json')
+  // #49 (Pierre — the enumeration's reachable miss): route the runtime-roster write through the canonical
+  // guard. Plain writeFileSync FOLLOWS a symlinked `.mrc -> /etc` (and mkdirSync on the existing symlink-dir
+  // succeeds silently), and this runs on every `mrc team up` AND the daemon's GUI launch — same `.mrc` symlink
+  // class as writePersonaFile, just a different write site.
+  const rosterPath = canonicalWriteTarget(norm.repo, join('.mrc', 'team.runtime.json'))
+  mkdirSync(dirname(rosterPath), { recursive: true })
   writeFileSync(rosterPath, typeof rosterInput === 'string' ? rosterInput : JSON.stringify(rosterInput, null, 2))
   return { norm, rosterPath }
 }
@@ -622,9 +640,12 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
       const preset = flag('--preset')
       if (!preset) { console.error(`Usage: mrc team new --preset <name> [path]\n  presets: ${Object.keys(PRESETS).join(', ')}`); process.exit(1) }
       let roster; try { roster = buildPreset(preset, { org: basename(repoPath) }) } catch (e) { console.error(`  ✗ ${e.message}`); process.exit(1) }
-      const file = join(repoPath, 'team.json')
+      mkdirSync(repoPath, { recursive: true })   // ensure the repo dir exists before canonicalizing within it
+      // #49 (Pierre — narrow, same class): a symlinked `team.json -> <nonexistent>` slips past existsSync (broken
+      // symlink reads false) and plain writeFileSync would create the target THROUGH the link. Canonicalize it.
+      let file; try { file = canonicalWriteTarget(repoPath, 'team.json') } catch (e) { console.error(`  ✗ ${e.message}`); process.exit(1) }
       if (existsSync(file)) { console.error(`  ✗ ${file} already exists — edit it, or delete it first.`); process.exit(1) }
-      mkdirSync(repoPath, { recursive: true }); writeFileSync(file, JSON.stringify(roster, null, 2) + '\n')
+      writeFileSync(file, JSON.stringify(roster, null, 2) + '\n')
       console.log(`  ◎ Wrote ${file} from preset "${preset}". Edit it, then \`mrc team up\` (or \`mrc team up --preset ${preset}\`).`)
       return
     }

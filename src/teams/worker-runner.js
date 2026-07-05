@@ -9,8 +9,9 @@
 // runs a container and is validated via the rebuild recipe.
 
 import { appendFileSync, mkdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { defangTrustMarkers } from './trust.js'
+import { canonicalWriteTarget } from '../mount-guard.js'   // #49: symlink-safe worker-log write target
 
 export const workerLogPath = (repo, handle) => join(repo, '.mrc', 'worker-logs', handle.replace(/[^a-z0-9]+/gi, '-') + '.log')
 
@@ -31,11 +32,15 @@ export function workerCallOk(threw, explicitOk) {
 function logWorker(member, items, { text, asset, ok }, nameOf) {
   if (!member.repo) return
   try {
-    mkdirSync(join(member.repo, '.mrc', 'worker-logs'), { recursive: true })
+    // #49 (Pierre — the appendFileSync my grep verb-set missed): a symlinked `.mrc -> /etc` would append the
+    // worker-log JSONL to a host path. Canonicalize the log path (mkdir the DIRNAME of the return + append THE
+    // return — both from the guard, so the recursive mkdir can't follow the symlink either).
+    const logPath = canonicalWriteTarget(member.repo, join('.mrc', 'worker-logs', member.handle.replace(/[^a-z0-9]+/gi, '-') + '.log'))
+    mkdirSync(dirname(logPath), { recursive: true })
     const askers = items.map((it) => ({ from: it.directive ? null : nameOf(it.fromHandle), text: it.text, directive: !!it.directive }))
     const rec = { at: new Date().toISOString(), ok, askers, result: text, kind: asset?.kind || null,
       asset: asset ? { path: asset.path, ext: asset.ext, bytes: asset.bytes, prompt: asset.prompt } : null }
-    appendFileSync(workerLogPath(member.repo, member.handle), JSON.stringify(rec) + '\n')
+    appendFileSync(logPath, JSON.stringify(rec) + '\n')
   } catch {}
 }
 

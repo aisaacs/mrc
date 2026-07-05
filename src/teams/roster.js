@@ -22,6 +22,7 @@ import { pickFirstName, makeHandle, backendFamily } from './names.js'
 import { roleDef, ROLE_ALIASES } from './personas.js'
 import { isMediaRole, mediaBackendForRole } from './media.js'
 import { assertCageAllowed } from './cage.js'
+import { canonicalMountSource } from '../mount-guard.js'   // #49: realpath-canonical territory validation (legible, symlink-safe)
 
 // Backends we can actually launch. claude = live channel member; codex = task-worker agent.
 // gemini/elevenlabs are MEDIA backends, never picked directly — they're DERIVED from a media role.
@@ -283,6 +284,22 @@ export function validateRoster(norm) {
     if (territoriesOverlap(writers[i].territory, writers[j].territory)) {
       warnings.push(`writers @${writers[i].handle} and @${writers[j].handle} share write territory ` +
         `("${writers[i].territory}" vs "${writers[j].territory}") — risk of edit contention`)
+    }
+  }
+  // #49 (Pierre trap #2): a rw member's territory must realpath-resolve WITHIN the repo. Surface it LEGIBLY
+  // here rather than as a raw ENOENT / stack trace at mount time. A symlink ESCAPE (or a '/'-resolving repo)
+  // is a hard ERROR (security); a MISSING territory is a WARNING (the mount fails closed on it). Only when the
+  // repo actually exists on disk — a validate against an in-memory norm with no real repo skips it.
+  if (norm.repo && existsSync(norm.repo)) {
+    for (const m of norm.members) {
+      if (m.mount === 'rw' && m.territory && m.territory !== '.') {
+        try { canonicalMountSource(norm.repo, m.territory) }
+        catch (e) {
+          const msg = String(e?.message || e)
+          if (/escapes the repo|filesystem root/.test(msg)) errors.push(`member @${m.handle}: territory "${m.territory}" ${msg}`)
+          else warnings.push(`member @${m.handle}: territory "${m.territory}" not found in the repo — it must exist before launch (the mount fails closed on a missing source)`)
+        }
+      }
     }
   }
   return { errors, warnings, ok: errors.length === 0 }

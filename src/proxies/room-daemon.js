@@ -21,6 +21,7 @@ import { createTelegramBridge, sendMessage as tgSend, sendMessageChunked as tgSe
 import { freshTgState, classifyInbound, addPending, confirmPending, rejectPending, unpair as tgUnpair, prePin, tgView, isDuplicateUpdate, markUpdateProcessed } from '../teams/telegram-auth.js'
 import { defangTrustMarkers } from '../teams/trust.js'
 import { classifySession, loadSessionRecord } from '../session-record.js'   // #39/3.A: containment from the TAMPER-PROOF host record, not the wire
+import { canonicalWriteTarget } from '../mount-guard.js'   // #49: realpath-canonical write containment (no symlinked-.mrc escape)
 import { resolveTerritoryImage } from '../safe-path.js'   // #56: shared dual-containment (repo + territory) image guard
 import { leadsRoomId } from '../teams/roster.js'
 import { repoEnvKeyStrict } from '../config.js'
@@ -1228,11 +1229,14 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             const { norm, rosterPath } = teamMod.materializeRoster(roster, f.repo)
             orgRoster.set(norm.org, roster)
             defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
-            const logDir = join(norm.repo, '.mrc'); mkdirSync(logDir, { recursive: true })
-            let fd = 'ignore'; try { fd = openSync(join(logDir, 'launch.log'), 'a') } catch {}
+            // #49 (Pierre — the enumeration's daemon-side miss): the GUI-launch log is a repo-relative write,
+            // so a symlinked `.mrc` would escape. Canonicalize it (best-effort: a rejected/symlinked .mrc just
+            // skips the log — the spawned `mrc team up` hits the same guards and fails closed).
+            let fd = 'ignore'; let logPath = null
+            try { logPath = canonicalWriteTarget(norm.repo, join('.mrc', 'launch.log')); mkdirSync(dirname(logPath), { recursive: true }); fd = openSync(logPath, 'a') } catch {}
             const child = spawn(process.execPath, [MRC_JS, 'team', 'up', norm.repo, '--roster', rosterPath], { detached: true, stdio: ['ignore', fd, fd] })
             child.unref()
-            daemonLog(`launch ${norm.org}: spawned mrc team up (pid ${child.pid}); log ${join(logDir, 'launch.log')}`)
+            daemonLog(`launch ${norm.org}: spawned mrc team up (pid ${child.pid}); log ${logPath || '(skipped — non-canonical .mrc)'}`)
             reply({ ok: true, launching: true })
           } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
           continue

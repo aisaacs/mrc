@@ -121,23 +121,45 @@ test('memberSessionId: team.js and the shared session-id module agree byte-for-b
   }
 })
 
-test('memberWorkspaceVolumes: whole-repo engineer gets rw /workspace', () => {
-  const m = { mount: 'rw', territory: '.' }
-  assert.deepEqual(memberWorkspaceVolumes(m, '/repo'), ['-v', '/repo:/workspace'])
+// #49: memberWorkspaceVolumes now realpath-canonicalizes the mount SOURCE (the guard requires a real path),
+// so these use a REAL temp repo. The SOURCE (left of colon) is the resolved host path; the TARGET (right of
+// colon) stays the declared spelling.
+test('memberWorkspaceVolumes: whole-repo engineer gets rw /workspace (source realpath-canonical)', () => {
+  const repo = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-mwv-')))
+  try {
+    assert.deepEqual(memberWorkspaceVolumes({ mount: 'rw', territory: '.' }, repo), ['-v', `${repo}:/workspace`])
+  } finally { fs.rmSync(repo, { recursive: true, force: true }) }
 })
 
 test('memberWorkspaceVolumes: read-only member gets ro /workspace + rw .mrc', () => {
-  const v = memberWorkspaceVolumes({ mount: 'ro', territory: 'client' }, '/repo')
-  assert.deepEqual(v, ['-v', '/repo:/workspace:ro', '-v', '/repo/.mrc:/workspace/.mrc'])
+  const repo = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-mwv-')))
+  try {
+    const v = memberWorkspaceVolumes({ mount: 'ro', territory: 'client' }, repo)   // .mrc need not exist (write-mode canonicalizer)
+    assert.deepEqual(v, ['-v', `${repo}:/workspace:ro`, '-v', `${join(repo, '.mrc')}:/workspace/.mrc`])
+  } finally { fs.rmSync(repo, { recursive: true, force: true }) }
 })
 
-test('memberWorkspaceVolumes: sub-tree engineer gets ro repo + rw .mrc + rw its territory', () => {
-  const v = memberWorkspaceVolumes({ mount: 'rw', territory: 'client/src' }, '/repo')
-  assert.deepEqual(v, [
-    '-v', '/repo:/workspace:ro',
-    '-v', '/repo/.mrc:/workspace/.mrc',
-    '-v', '/repo/client/src:/workspace/client/src',
-  ])
+test('memberWorkspaceVolumes: sub-tree engineer gets ro repo + rw .mrc + rw its (existing) territory', () => {
+  const repo = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-mwv-')))
+  try {
+    fs.mkdirSync(join(repo, 'client', 'src'), { recursive: true })   // the territory MUST exist (guard throws otherwise — the fail-closed change)
+    const v = memberWorkspaceVolumes({ mount: 'rw', territory: 'client/src' }, repo)
+    assert.deepEqual(v, [
+      '-v', `${repo}:/workspace:ro`,
+      '-v', `${join(repo, '.mrc')}:/workspace/.mrc`,
+      '-v', `${join(repo, 'client', 'src')}:/workspace/client/src`,
+    ])
+  } finally { fs.rmSync(repo, { recursive: true, force: true }) }
+})
+
+test('memberWorkspaceVolumes: a symlink territory escaping the repo is REJECTED (the live escape, closed)', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-mwv-')))
+  try {
+    const repo = join(root, 'repo'); fs.mkdirSync(repo)
+    const outside = join(root, 'outside'); fs.mkdirSync(outside)
+    fs.symlinkSync(outside, join(repo, 'evil'))   // territory 'evil' -> outside the repo
+    assert.throws(() => memberWorkspaceVolumes({ mount: 'rw', territory: 'evil' }, repo), /escapes the repo/)
+  } finally { fs.rmSync(root, { recursive: true, force: true }) }
 })
 
 test('memberEnv carries handle/team/role + persona path', () => {
@@ -189,12 +211,14 @@ test('cleanWorkerOutput extracts the worker reply from the container chatter', (
 })
 
 test('memberLaunch assembles env + territorial volumes + a stable session id', () => {
-  const repo = fs.mkdtempSync(join(os.tmpdir(), 'mrc-team-'))
-  const n = norm(); const w = find(n, 'engineer')
-  const launch = memberLaunch(n, w, repo)
-  assert.match(launch.sessionId, UUID_RE)
-  assert.ok(launch.workspaceVolumes.includes('/repo/client/src:/workspace/client/src') ||
-            launch.workspaceVolumes.some((x) => x.endsWith('client/src:/workspace/client/src')))
-  assert.ok(launch.envFlags.some((x) => x.startsWith('MRC_PERSONA_FILE=')))
-  assert.match(launch.persona, /You are @Ludivine/)
+  const repo = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-team-')))
+  try {
+    fs.mkdirSync(join(repo, 'client', 'src'), { recursive: true })   // the engineer's territory must exist (guard)
+    const n = norm(); const w = find(n, 'engineer')
+    const launch = memberLaunch(n, w, repo)
+    assert.match(launch.sessionId, UUID_RE)
+    assert.ok(launch.workspaceVolumes.some((x) => x.endsWith('client/src:/workspace/client/src')))
+    assert.ok(launch.envFlags.some((x) => x.startsWith('MRC_PERSONA_FILE=')))
+    assert.match(launch.persona, /You are @Ludivine/)
+  } finally { fs.rmSync(repo, { recursive: true, force: true }) }
 })

@@ -4,8 +4,9 @@
 // container, just an HTTP call from the daemon (which has the keys via loadEnv). The HTTP calls take
 // an injectable fetch so the dispatch / prompt-extraction / file-writing are unit-testable offline.
 import { mkdirSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
+import { canonicalWriteTarget } from '../mount-guard.js'   // #49: symlink-safe asset write target
 import { stripMentions } from './names.js'
 import { repoEnvKey } from '../config.js'
 import { HAIKU_MODEL } from '../constants.js'
@@ -163,9 +164,15 @@ export async function generateMedia(member, { items = [], fetchFn, room, now } =
     try { const { chromaKey } = await import('./png.js'); asset = { ...asset, bytes: chromaKey(asset.bytes, CHROMA, 70) }; transparent = true } catch {}
   }
   const territory = member.territory && member.territory !== '.' ? member.territory : 'assets'
-  const dir = join(member.repo, territory)
   const name = `${fileBase}-${createHash('sha1').update(prompt + asset.bytes.length).digest('hex').slice(0, 6)}.${asset.ext}`
-  try { mkdirSync(dir, { recursive: true }); writeFileSync(join(dir, name), asset.bytes) }
+  // #49 (Pierre — the indirection-hidden site): `territory` came through resolveTerritory (rejects textual
+  // `..` but NOT symlinks), so `territory:'evil'` where `member.repo/evil -> /etc` would writeFileSync the
+  // generated asset bytes to /etc — the SAME symlinked-territory escape closed for the MOUNT, on the WRITE.
+  // Canonicalize the full asset path (catches the symlink, tolerates a not-yet-created territory dir).
+  let assetPath
+  try { assetPath = canonicalWriteTarget(member.repo, join(territory, name)) }
+  catch (e) { return { text: `[@${member.first} generated it but the target path escapes the repo: ${e?.message || e}]`, ok: false } }
+  try { mkdirSync(dirname(assetPath), { recursive: true }); writeFileSync(assetPath, asset.bytes) }
   catch (e) { return { text: `[@${member.first} generated it but couldn't write the file: ${e?.message || e}]`, ok: false } }
   const rel = join(territory, name)
   // #48: return the structured asset alongside the text (the clean {text, asset} contract — no backtick

@@ -308,6 +308,28 @@ rebuild + Pierre's matrix, never blind).** Precise plan + the open conflicts to 
    reaped; AND a resume during the window keeps its fresh seal (Strike A/E).
 3. Kill the container → the seal reaped by `pgrep`-nonce (a pid-renamed decoy process must survive).
 
+## 7.6 The realpath mount/write floor (BUILT — the multi-repo foundation + a live pre-existing fix)
+
+`src/mount-guard.js` (`canonicalMountSource` / `canonicalWriteTarget`) + wiring closes two LIVE pre-existing
+escapes the launcher had, and is the floor the multi-repo epic stands on. The mount chain compared path
+STRINGS while docker/Node resolve symlinks: a session could plant `evil -> /etc`, name `territory:'evil'`
+(passes the textual `..` check) → docker mounts `/etc`; or a symlinked `.mrc -> /etc` → the persona/log
+writers `writeFileSync` onto a host path. Fix: realpath every repo-relative path, confirm the resolved target
+is inside the resolved repo, use the resolved path (SOURCE canonical, container TARGET stays declared;
+write-mode walks to the deepest existing ancestor so a not-yet-created leaf doesn't ENOENT; refuse a `/`-repo
+in the primitive). **Pierre red-teamed design → helper → wiring → the full write ENUMERATION.**
+
+**Two surfaces (the enumeration split):**
+- **Team-launch writers — SESSION-controlled (the multi-repo threat): ALL GUARDED.** memberWorkspaceVolumes
+  (territory/`.mrc`), writePersonaFile, execWorker, materializeRoster, `team new`, the daemon GUI-launch log,
+  media-asset writes, worker-log appends. A session naming a territory / summoning a member can't escape.
+- **Session-store writers — HOSTILE-CLONE-controlled (pre-existing, narrower): the `.mrc`-at-entry chokepoint
+  (task #7, the NEXT hardening).** session-names/summaries/transcripts write under `repo/.mrc`; a non-git tree
+  with a pre-planted `.mrc -> /etc` symlink escapes (NARROW: `.mrc` is gitignored, so a `git clone` never
+  ships it; and atomic-rename does NOT save a symlinked PARENT dir — the tmp write is already inside it). Fix
+  = ONE chokepoint (realpath repo + `.mrc` once at entry, fail-closed before the first touch, thread the
+  canonical mrcDir down, audit every `join(...,'.mrc')` descends from it — not N piecemeal guards).
+
 ## 8. Acceptance criteria (wire-verified before "done")
 
 Not a green suite — an *observed end-to-end round-trip on the wire*, per the standing "red-team before
