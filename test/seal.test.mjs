@@ -60,9 +60,9 @@ test('ensureSeal: spawns the detached seal, confirms bound via a live auth hands
     pid = r.pid
     assert.ok(existsSync(sealPortfilePath(nonce)), 'portfile written after bind')
     assert.equal(await probeSeal(r.port, 'TOK'), 'alive', 'the spawned seal authenticates the token')
-    // idempotent: a second call finds it alive and reuses it (no double-spawn)
-    const again = await ensureSeal({ nonce, secret: 'TOK', freshness: 'fr1', portBase: 9550 })
-    assert.ok(again.ok && again.already, 'second ensureSeal reuses the live seal')
+    // idempotent: a second call finds it alive AND a live container carries the nonce → reuses (no double-spawn)
+    const again = await ensureSeal({ nonce, secret: 'TOK', freshness: 'fr1', portBase: 9550, liveContainerForNonce: () => true })
+    assert.ok(again.ok && again.already, 'second ensureSeal reuses the live seal of a RUNNING member')
     assert.equal(again.port, r.port)
   } finally { killQuiet(pid); removeSealPortfile(nonce) }
 })
@@ -110,9 +110,17 @@ test('reconcile: healthy sealed container (container up + seal alive) → no kil
   assert.deepEqual(r.reapSeals, [])
 })
 
-test('reconcile: orphan reap — seal alive but NO live container carries the nonce → reap it', () => {
-  const r = reconcileSealDecision({ liveSealNonces: new Set([]), allSealNonces: ['N1'], sealAlive: alwaysAlive, withinGrace: neverGrace })
+test('reconcile: orphan reap — seal alive, NO live container, PAST reap grace → reap it', () => {
+  const r = reconcileSealDecision({ liveSealNonces: new Set([]), allSealNonces: ['N1'], sealAlive: alwaysAlive, withinGrace: neverGrace, withinReapGrace: neverGrace })
   assert.deepEqual(r.reapSeals, ['N1'])
+})
+
+test('reconcile: Strike E — a fresh seal WITHIN reap grace (container still registering its label) is NOT reaped', () => {
+  // The resume race on the REAP branch: S2 is spawned + pgrep-alive, but docker run has not yet registered
+  // C2's mrc.seal label, so !live.has(N). Without a reap grace this reaps S2 out from under launching C2.
+  // The spawn-age grace (symmetric to the kill boot-grace) holds the reap until the container can register.
+  const r = reconcileSealDecision({ liveSealNonces: new Set([]), allSealNonces: ['N1'], sealAlive: alwaysAlive, withinGrace: neverGrace, withinReapGrace: alwaysGrace })
+  assert.deepEqual(r.reapSeals, [], 'a freshly-spawned seal is not reaped while its container may still be registering')
 })
 
 test('reconcile: Strike A — a RESUME reusing the nonce keeps its seal (re-check container-label at decision time)', () => {
@@ -121,6 +129,39 @@ test('reconcile: Strike A — a RESUME reusing the nonce keeps its seal (re-chec
   // N1 is in service → NOT reaped. This is the fix for reaping a resume's fresh (or reused) seal.
   const r = reconcileSealDecision({ liveSealNonces: new Set(['N1']), allSealNonces: ['N1'], sealAlive: alwaysAlive, withinGrace: neverGrace })
   assert.deepEqual(r.reapSeals, [], 'a nonce still carried by a live container is never reaped, stale death-observation notwithstanding')
+})
+
+test('ensureSeal reuse-gate: an alive-but-ORPHANED seal (no live container) is NOT reused — respawn fresh', async () => {
+  // Strike A, launch half: the OLD seal S1 is still alive pre-reap, but its container is gone. ensureSeal must
+  // NOT reuse S1 (the reconcile is about to reap it) — it respawns a fresh seal on a new port. Simulate S1 with
+  // a real proxy + a portfile pointing at it, then ensureSeal with liveContainerForNonce → false.
+  const nonce = 'test-reuse-gate'
+  const s1 = await startSniProxy(0, { auth: 'TOK', dialUpstream: () => null })
+  let newPid
+  try {
+    writeSealPortfile(nonce, { port: portOf(s1), pid: 111, freshness: 'old' })
+    assert.equal(await sealAliveForNonce(nonce, 'TOK'), 'alive', 'S1 authenticates (orphan, but alive)')
+    const r = await ensureSeal({ nonce, secret: 'TOK', freshness: 'new', portBase: 9700, readyTimeoutMs: 6000, liveContainerForNonce: () => false })
+    assert.ok(r.ok, `respawned: ${r.error || ''}`)
+    assert.ok(!r.already, 'did NOT reuse the doomed orphan')
+    assert.notEqual(r.port, portOf(s1), 'respawned on a fresh port, not the orphan\'s')
+    newPid = r.pid
+  } finally { killQuiet(newPid); await close(s1); removeSealPortfile(nonce) }
+})
+
+test('ensureSeal fail-safe default: no liveContainerForNonce injected → respawn fresh, NEVER reuse-on-alive', async () => {
+  // A forgotten injection must fail toward the SAFE behavior (respawn), not the risky reuse the gate prevents.
+  const nonce = 'test-failsafe-default'
+  const s1 = await startSniProxy(0, { auth: 'TOK', dialUpstream: () => null })
+  let newPid
+  try {
+    writeSealPortfile(nonce, { port: portOf(s1), pid: 111, freshness: 'old' })
+    assert.equal(await sealAliveForNonce(nonce, 'TOK'), 'alive')
+    const r = await ensureSeal({ nonce, secret: 'TOK', freshness: 'new', portBase: 9750, readyTimeoutMs: 6000 }) // no injection
+    assert.ok(r.ok && !r.already, 'respawned; did not reuse-on-alive with the injection absent')
+    assert.notEqual(r.port, portOf(s1))
+    newPid = r.pid
+  } finally { killQuiet(newPid); await close(s1); removeSealPortfile(nonce) }
 })
 
 test('reap: kills the sidecar by pgrep-nonce, NEVER the stored pf.pid (drift + pid-reuse safe, #41 at the kill step)', async (t) => {

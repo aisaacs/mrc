@@ -136,20 +136,36 @@ export function reapSealForNonce(nonce, freshness = null) {
 // (firewall + dead/hung port refuse egress regardless). Conservative for CONTAINMENT (never a false-kill),
 // but a silent AVAILABILITY hole: a wedged seal dangles unreaped until the human notices Pierre gone quiet.
 // Accepted for now; the fix (if it bites) is an auth-liveness recheck on the reap path to recycle a wedged seal.
-//   liveSealNonces: Set<nonce> from live containers' mrc.seal labels (docker ps, re-read at decision time)
-//   allSealNonces:  iterable<nonce> of seals that might need reaping (existing portfiles + pgrep hits)
-//   sealAlive:      (nonce) => bool   (sealProcessAlive)
-//   withinGrace:    (nonce) => bool   (container younger than the seal-boot grace)
+// BOTH branches fail-toward-starting with a grace, symmetric (Strike E): the KILL branch waits out the
+// seal's BOOT (a booting seal isn't yet pgrep-visible → don't kill its container), and the REAP branch waits
+// out the container's LAUNCH-REGISTRATION (a freshly-spawned seal's container isn't yet LABEL-visible in
+// `docker ps` → don't reap its seal). Leaving the reap branch bare (as a first cut did) reaps a RESUME's
+// fresh seal in the sub-second before `docker run` registers the label — re-reading liveSealNonces doesn't
+// help because the label isn't there YET (a TOCTOU). A genuine orphan is always PAST the reap grace; a
+// resume's fresh seal is always WITHIN it (portfile mtime is the clock — written post-listen()).
+//   liveSealNonces:  Set<nonce> from live containers' mrc.seal labels (docker ps, re-read at decision time)
+//   allSealNonces:   iterable<nonce> of seals that might need reaping (existing portfiles + pgrep hits)
+//   sealAlive:       (nonce) => bool   (sealProcessAlive, pgrep)
+//   withinGrace:     (nonce) => bool   KILL grace, clock = CONTAINER age (a booting container's seal isn't
+//                                      pgrep-visible yet — Strike B).
+//   withinReapGrace: (nonce) => bool   REAP grace, clock = SEAL age / portfile mtime, SIZED FOR A COLD LAUNCH
+//                                      (Colima boot + image build = MINUTES: a fresh seal's container isn't
+//                                      label-visible yet — Strike E). DISTINCT CLOCKS from withinGrace: keying
+//                                      both on one timer cross-wires them — a shared seal-spawn clock starts
+//                                      BEFORE container launch, so the kill grace would expire early and
+//                                      false-kill a still-booting container (Strike B back open). A genuine
+//                                      orphan's mtime is minutes-to-hours old; a resume's is seconds — a
+//                                      generous reap grace never mis-classifies.
 // returns { killContainers:[nonce…], reapSeals:[nonce…] }
-export function reconcileSealDecision({ liveSealNonces, allSealNonces = [], sealAlive, withinGrace }) {
+export function reconcileSealDecision({ liveSealNonces, allSealNonces = [], sealAlive, withinGrace, withinReapGrace = () => false }) {
   const live = liveSealNonces instanceof Set ? liveSealNonces : new Set(liveSealNonces || [])
   const killContainers = []
   const reapSeals = []
   for (const nonce of live) {
-    if (!sealAlive(nonce) && !withinGrace(nonce)) killContainers.push(nonce)   // zombie: container up, seal dead, past grace
+    if (!sealAlive(nonce) && !withinGrace(nonce)) killContainers.push(nonce)   // zombie: container up, seal dead, past boot grace
   }
   for (const nonce of new Set(allSealNonces)) {
-    if (!live.has(nonce) && sealAlive(nonce)) reapSeals.push(nonce)             // orphan: seal alive, no live container needs the nonce
+    if (!live.has(nonce) && sealAlive(nonce) && !withinReapGrace(nonce)) reapSeals.push(nonce)  // orphan: seal alive, no live container carries the nonce, PAST the reap grace
   }
   return { killContainers, reapSeals }
 }
@@ -167,12 +183,23 @@ export function reconcileSealDecision({ liveSealNonces, allSealNonces = [], seal
 // portfile (same nonce) un-readable as "ready" (the stale-portfile-on-resume race). Bind-fail (port stolen
 // between alloc + listen) → no matching-freshness portfile → timeout → { ok:false } → the caller does NOT
 // launch the container (fail-closed). `secret` here is the derived EGRESS TOKEN, not the master.
-export async function ensureSeal({ nonce, secret, allowlist, freshness, portBase, findPort, readyTimeoutMs = 8000, pollMs = 100 }) {
+export async function ensureSeal({ nonce, secret, allowlist, freshness, portBase, findPort, liveContainerForNonce, readyTimeoutMs = 8000, pollMs = 100 }) {
   const alloc = findPort || (() => findFreePort(Number(portBase) || 9440))
   const state = await sealAliveForNonce(nonce, secret)
-  if (state === 'alive') { const pf = readSealPortfile(nonce); return { ok: true, already: true, port: pf.port, pid: pf.pid } }
-  // dead OR alive-wrong-secret → respawn on a fresh port (see the action table above).
-  removeSealPortfile(nonce)
+  // Reuse ONLY if the seal is alive AND a live container still carries the nonce — an idempotent relaunch of a
+  // RUNNING member (its container is up, don't disturb it). An alive seal with NO live container is a DOOMED
+  // ORPHAN the reconcile is about to reap (Strike A, launch half): reusing it would ride the new container on a
+  // corpse. `liveContainerForNonce` is injected (docker ps). FAIL-SAFE DEFAULT (Pierre): if it is NOT injected,
+  // do NOT reuse — respawn fresh. A missing injection must fail toward the safe behavior (never ride a corpse),
+  // not toward the very reuse-on-alive the gate exists to prevent. "The gate is on unless someone forgets" is
+  // exactly the footgun this codebase keeps punishing — so a forgotten injection can only be over-safe.
+  if (state === 'alive' && liveContainerForNonce && (await liveContainerForNonce(nonce))) {
+    const pf = readSealPortfile(nonce); return { ok: true, already: true, port: pf.port, pid: pf.pid }
+  }
+  // Otherwise (dead / alive-wrong-secret / alive-but-orphan) → REAP-then-spawn: kill any prior instance of
+  // THIS nonce FIRST, so one live seal per nonce ever exists and the nonce-keyed portfile never names two
+  // instances (the #41 refuse/reap-before-respawn discipline — masterAliveForSock, applied to the seal).
+  reapSealForNonce(nonce)
   const port = await alloc()
   const pid = spawnSeal({ nonce, secret, port, allowlist, freshness })
   const deadline = Date.now() + readyTimeoutMs
@@ -183,7 +210,11 @@ export async function ensureSeal({ nonce, secret, allowlist, freshness, portBase
     }
     await new Promise((r) => setTimeout(r, pollMs))
   }
-  return { ok: false, error: `seal for nonce ${nonce} did not confirm bound within ${readyTimeoutMs}ms (fail-closed — the container is NOT launched)` }
+  // Fail-closed must also be CLEAN-closed (Pierre): spawnSeal is detached+unref'd, so a bind-timeout would
+  // otherwise leak a half-spawned zombie sidecar (+ its stale portfile). Reap the corpse we couldn't confirm
+  // BEFORE refusing — so every failed caged launch cleans up after itself instead of leaking a detached seal.
+  reapSealForNonce(nonce, freshness)
+  return { ok: false, error: `seal for nonce ${nonce} did not confirm bound within ${readyTimeoutMs}ms (fail-closed — the container is NOT launched, the unconfirmed seal reaped)` }
 }
 
 // --- standalone sidecar entry: `node seal.js <port> --auth <secret> --portfile <path> --freshness <tok> [--allow a,b]`

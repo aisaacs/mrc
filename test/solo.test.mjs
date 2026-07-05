@@ -10,7 +10,8 @@ import { orgDef } from '../src/commands/team.js'
 import { buildPersona } from '../src/teams/personas.js'
 import { pickFirstName, RESERVED_FIRST_NAMES } from '../src/teams/names.js'
 import { parseRoster, assertSafeProjectName, sanitizeProjectName } from '../src/teams/roster.js'
-import { personaForMember, resolveMemberNorm } from '../src/commands/team.js'
+import { personaForMember, resolveMemberNorm, writeTeamFile } from '../src/commands/team.js'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -187,6 +188,22 @@ test('resolveMemberNorm: a non-solo member launch DOES read the roster (loadRost
   assert.deepEqual(loaded, { repo: '/x', roster: 'r.json' }, 'loadRoster WAS called on the non-solo path')
   assert.equal(r.handle, 'gaston', 'requested handle preserved (lowercased) on the non-solo path')
   assert.equal(r.rosterPath, '/x/team.json')
+})
+
+test('solo org is NEVER persisted to team.json (regression: --solo clobbered the real roster)', () => {
+  // The owner's --solo smoke surfaced this: the daemon syncs every defined org via writeTeamFile, so a solo
+  // launch overwrote the repo's real hand-authored team.json with the one-member solo roster. Guard holds.
+  const dir = mkdtempSync(join(tmpdir(), 'mrc-solo-tj-'))
+  try {
+    // A pre-existing REAL team.json must survive a solo-org write attempt.
+    writeFileSync(join(dir, 'team.json'), JSON.stringify({ project: 'RealTeam', teams: [{ name: 'eng', members: [] }] }))
+    const soloOrg = soloRoster(dir).org
+    const wrote = writeTeamFile(dir, { org: soloOrg, teams: [{ name: 'solo', members: [] }] })
+    assert.equal(wrote, false, 'writeTeamFile refuses a solo org')
+    assert.equal(JSON.parse(readFileSync(join(dir, 'team.json'), 'utf8')).project, 'RealTeam', 'the real team.json is untouched')
+    // A normal (non-solo) org still writes.
+    assert.equal(writeTeamFile(dir, { org: 'RealTeam', teams: [{ name: 'eng', members: [] }] }), true)
+  } finally { rmSync(dir, { recursive: true, force: true }) }
 })
 
 test('isSoloHandle recognizes the solo member', () => {

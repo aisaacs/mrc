@@ -18,7 +18,7 @@ import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from '
 import { homedir } from 'node:os'
 import { join, resolve, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parseRoster, validateRoster, findRoster } from '../teams/roster.js'
+import { parseRoster, validateRoster, findRoster, RESERVED_SOLO_ORG_RE } from '../teams/roster.js'
 import { soloRoster, SOLO_HANDLE } from '../teams/solo.js'
 import { buildPersona } from '../teams/personas.js'
 import { makeHandle } from '../teams/names.js'
@@ -511,6 +511,12 @@ export function removeMemberFromRoster(roster, handle) {
 // Prefer the roster's own personas; else keep whatever is already on disk. Atomic, like the other two
 // team.json writers (temp→fsync→rename) so a kill mid-sync can't tear the authoritative file.
 export function writeTeamFile(repo, roster) {
+  // #49: a SOLO org is DERIVED + ephemeral (soloRoster — it reads no roster file and has no team.json home),
+  // so it must NEVER be persisted here. The daemon syncs EVERY defined org (defineOrg → writeTeamFile,
+  // room-daemon.js), so without this guard a plain `mrc <repo> --solo` clobbers the repo's real, hand-authored
+  // team.json with the one-member solo roster (a data-loss bug surfaced by the owner's --solo smoke). team.json
+  // belongs to declared teams only; skip solo orgs at this single chokepoint.
+  if (RESERVED_SOLO_ORG_RE.test(String(roster?.org || roster?.project || ''))) return false
   try {
     const file = join(repo, 'team.json')
     let personas = roster.personas
