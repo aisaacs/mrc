@@ -330,6 +330,56 @@ in the primitive). **Pierre red-teamed design → helper → wiring → the full
   = ONE chokepoint (realpath repo + `.mrc` once at entry, fail-closed before the first touch, thread the
   canonical mrcDir down, audit every `join(...,'.mrc')` descends from it — not N piecemeal guards).
 
+## 7.7 Multi-repo teams — the authorization floor (BUILT) vs. the coupled enablement phase (designed, Docker-gated)
+
+Option A: one org whose members may live in DIFFERENT repos, grown by summoning. A session choosing
+`member.repo` is a session choosing what host-filesystem slice to MOUNT and READ SECRETS FROM (media.js reads
+`member.repo/.env` for the API key), so the repo axis is HUMAN-authorized, never session-arbitrary.
+
+**Authorization floor — BUILT, unit-green + wire-witnessed (Inc 1-2):**
+- `src/teams/repo-auth.js` — the host-only per-org authorized-repo record (`~/.local/share/mrc/authorized-repos/`,
+  never mounted → a container can't read or grow it) + `resolveMemberRepo` the SINGLE mint gate. Key is the RAW
+  org hex-encoded (INJECTIVE — a lossy `slug(org)` collapses `acme.prod`/`acme_prod` onto one file = a
+  cross-org privilege leak, attacker-triggerable). Fail-closed: missing record → empty set → a cross-repo member
+  is REFUSED by default. Broad-guard (`/`/`$HOME`) on the IMPLICIT own-repo grant only; the explicit set is
+  gated by the set-membership check itself. `addAuthorizedRepo`/`removeAuthorizedRepo` are the HUMAN
+  control-plane primitives (dashboard CSRF / CLI), NEVER a session-callable verb — a session may REQUEST a repo,
+  authorization is a human act.
+- `src/teams/roster.js` — `parseRoster` resolves `member.repo` through `resolveMemberRepo` ONCE (the mint), so
+  all five consumers (workspace mount, worker mount, worker-log, media asset, `.env` secret read) inherit an
+  authorized, realpath-canonical value. Default `member.repo = raw repoPath` (own-repo, no config-vol-key shift
+  for existing symlinked-repo members).
+- Wire-witnessed via item-7 smoke: an `evil→/etc` territory REJECTED at validate (`/private/etc` outside the
+  repo) AND a legit in-repo territory ACCEPTED (precise, not a blanket refuse).
+
+**The enablement phase — designed, ONE coupled Docker-verified unit (NOT four separable increments).** With the
+authorized set empty, `member.repo === repoPath` universally (a differing `member.repo` THROWS at parse), so
+the media/worker consumers already reading `member.repo` are byte-identical to today. Inc 3's REMAINING switch
+is exactly three sites still on `repoPath` — `memberWorkspaceVolumes` (the live mount), the config-vol key
+(mrc.js:498), the `--member` launch — all no-ops while `member.repo === repoPath`. Threading them now is
+dead-for-its-purpose code no test can reach ("green now, breaks when the feature turns on"). So the enablement
+is built + Docker-verified together when the owner wants cross-repo live: the consumer switch + launch-in-
+`member.repo` + teardown label/record + the human-adds-repos flow (dashboard/CLI over `addAuthorizedRepo`) +
+the caged per-session Pierre.
+
+**PINNED — the org-stability CONTAINMENT invariant (Pierre; load-bearing, fail-closed, not a wire-time
+surprise).** A cross-repo member juggles TWO roots: `member.repo` (FILES — workspace mount + config-vol + `.mrc`
+transcript key) and the TEAM org (IDENTITY — `memberSessionId = sha1(team-org\0handle)` + room membership). The
+failure mode is NOT a visibly-broken launch — it's a silent **cross-org bleed**: if the launch derives org from
+`basename(member.repo)` instead of the team org, the member binds to the WRONG org's room set (or collides with
+an org named that basename), defeating the line-345 isolation the whole model rests on, by a basename. The
+invariant the enablement launch code MUST satisfy:
+- A cross-repo member's org is ALWAYS the team org (roster `project` / `defineOrg`'s org), **NEVER**
+  `basename(member.repo)`.
+- The launch **FAILS CLOSED** — throws — if the roster it reads carries no team `project`, rather than falling
+  back to `basename(member.repo)`. The standard `materializeRoster`-writes-`{project}` path satisfies it; a
+  launch reading a roster lacking `project` must refuse, not guess.
+- `member.repo` is used ONLY for files; the org is threaded explicitly from the team; there is NO code path
+  where the two roots get crossed.
+
+This is the thing to read hardest when the launch code lands — written down as a fail-closed containment
+requirement now, not discovered at wire-time.
+
 ## 8. Acceptance criteria (wire-verified before "done")
 
 Not a green suite — an *observed end-to-end round-trip on the wire*, per the standing "red-team before

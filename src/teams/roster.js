@@ -324,7 +324,7 @@ export function validateRoster(norm) {
         try { canonicalMountSource(norm.repo, m.territory) }
         catch (e) {
           const msg = String(e?.message || e)
-          if (/escapes the repo|filesystem root/.test(msg)) errors.push(`member @${m.handle}: territory "${m.territory}" ${msg}`)
+          if (/escapes the repo|filesystem root/.test(msg)) errors.push(`member @${m.handle}: territory "${m.territory}" ${msg.replace(/^mount source "[^"]*" /, '')}`)
           else errors.push(`member @${m.handle}: territory "${m.territory}" not found in the repo — its container mounts it and the mount fails closed on a missing source; create it (or fix the roster) before launch`)
         }
       }
