@@ -57,7 +57,12 @@ async function defaultWorkerInvoke(member, ctx) {
 function spawnWorkerInvoke(member, { prompt }) {
   return new Promise((resolve, reject) => {
     if (!member.repo) return reject(new Error('no repo recorded for this worker'))
-    const child = spawn(process.execPath, [MRC_JS, 'team', '_worker-exec', '--handle', member.handle, '--repo', member.repo], { stdio: ['pipe', 'pipe', 'ignore'] })
+    // #49-SEC (Mouth A): hand the worker exec the AUTHORITATIVE member the engine already holds (memberByHandle),
+    // as the same host-set --member-def blob the live path uses. Without it, `_worker-exec` re-parses findRoster
+    // and would take a worker's container mount/territory from a member-writable roster — the exact class the
+    // live-launch fix closes. `member` here is engine-authoritative (org/mount/territory/repo all set at defineOrg).
+    const memberDef = Buffer.from(JSON.stringify({ ...member, org: member.org }), 'utf8').toString('base64')
+    const child = spawn(process.execPath, [MRC_JS, 'team', '_worker-exec', '--handle', member.handle, '--repo', member.repo, '--member-def', memberDef], { stdio: ['pipe', 'pipe', 'ignore'] })
     let out = ''
     const timer = setTimeout(() => { try { child.kill('SIGKILL') } catch {}; reject(new Error('worker timed out (180s)')) }, 180_000)
     child.stdout.on('data', (d) => { out += d })

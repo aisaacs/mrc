@@ -191,6 +191,11 @@ export function parseArgs(argv) {
     member: '',    // team-member launch: this session is @member from the roster
     solo: false,   // #49: solo onramp — register this plain session as a derived team-of-one engine member
     roster: '',    // path to team.json (for --member launches)
+    memberDef: '', // #49-SEC: base64(json) of the OUTER launcher's already-resolved, already-authorized member
+                   // def (+ its team org). The inner --member launch derives EVERY security-load-bearing field
+                   // (org→sessionId, mount/territory→write-scope, repo, cage) from THIS host-set argv — which the
+                   // member CONTAINER cannot tamper — NOT from the member-writable roster (team.runtime.json in
+                   // the rw .mrc mount). The roster survives only as display context (persona teammates).
     summonedBy: '', // internal: stamped by the daemon's summon launcher so a spawned adversary auto-pairs with its summoner
     openAdversaryUnsafe: false, // --open-adversary-unsafe: reopen a summoned adversary UNCAGED (full egress). Loud + deliberate; belt 0 keeps it argv/~/.mrcrc-only (never repo .mrcrc).
   }
@@ -239,6 +244,9 @@ export function parseArgs(argv) {
         break
       case '--roster':
         if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.roster = argv[++i]
+        break
+      case '--member-def':   // #49-SEC: host-set authoritative member blob (base64 json); never container-tamperable
+        if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.memberDef = argv[++i]
         break
       case '--summoned-by':   // internal (daemon-set): pair this session with the summoner once it registers
         if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.summonedBy = argv[++i]

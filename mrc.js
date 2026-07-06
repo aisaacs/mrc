@@ -352,17 +352,26 @@ if (config.solo && !config.member) {
 // coerce a non-solo member under solo derivation.
 let memberCtx = null
 if (config.member) {
-  const { memberLaunch, resolveMemberNorm } = await import('./src/commands/team.js')
+  const { memberLaunch, resolveMemberNorm, resolveMemberIdentity } = await import('./src/commands/team.js')
   // Selection is a pure, tested function (resolveMemberNorm): solo ⇒ soloRoster + handle forced to
   // SOLO_HANDLE, never reading team.json; non-solo ⇒ loadRoster. Keeping it out of this inline branch is
   // what makes the coercion-resistance a test assertion instead of "trust this branch order forever".
   const { norm, handle, rosterPath } = resolveMemberNorm(config, repoPath)
   config.member = handle
-  const member = norm.members.find((m) => m.handle === handle || m.first.toLowerCase() === handle)
+  // #49-SEC (member-writable-roster confused deputy): the inner --member launch derives EVERY security-load-bearing
+  // field (org→sessionId, mount/territory→write-scope, repo, cage) from resolveMemberIdentity — the host-set
+  // --member-def blob for a team member (immune to a re-tampered on-disk roster), or the repo-derived soloRoster
+  // org for solo — and NEVER from `norm` (parsed from the member-writable team.runtime.json). A missing/malformed
+  // blob THROWS → fail CLOSED (refuse), never falls through to the roster. `norm` survives ONLY as display context
+  // for personaForMember's teammate list (non-load-bearing: rooms bind via the daemon's authoritative sessionIndex;
+  // the persona is the member's own untrusted prompt).
+  let member
+  try { member = resolveMemberIdentity(config, norm, handle) }
+  catch (e) { console.error(`  ✗ Refusing to launch: ${e?.message || e}.`); process.exit(1) }
   if (!member) { console.error(`  ✗ No member "${config.member}" in the roster${rosterPath ? ` (${rosterPath})` : ''}.`); process.exit(1) }
   if (member.tier !== 'live') { console.error(`  ✗ @${member.handle} is a ${member.backend} worker — workers are invoked on demand, not launched as a session.`); process.exit(1) }
   const launch = memberLaunch(norm, member, repoPath)
-  memberCtx = { norm, member, rosterPath, ...launch }
+  memberCtx = { norm, member, org: member.org, rosterPath, ...launch }
   config.rooms = true   // a member is always a room participant
   // Resume this member's OWN conversation if it exists; else start fresh (pinned to its stable id),
   // so the shared /workspace/.mrc never makes one member resume another's transcript.
@@ -634,10 +643,15 @@ if (roomsActive) {
   const { roomsRoot } = await import('./src/rooms.js')
   const daemon = roomDaemon
   if (memberCtx) {
-    // Team member: ensure the daemon knows the org (so it can bind this member to its rooms when the
-    // channel registers), pin the member's own conversation id, and inject the persona + member env.
-    const { pushOrg } = await import('./src/commands/team.js')
-    await pushOrg(memberCtx.norm)
+    // Team member: the daemon ALREADY holds this org authoritatively — the OUTER launcher pushed it
+    // (`mrc team up` at team.js pushOrg-before-launch, or the solo outer's startSoloSession), and it
+    // survives a daemon restart via loadOrgs→defineOrg on boot. So the inner member does NOT (re)define
+    // its org. #49-SEC/Door-2 (member-writable-roster confused deputy): the inner member must NEVER call
+    // defineOrg — its roster (team.runtime.json) is member-writable (.mrc is bind-mounted rw), and
+    // defineOrg is redefine-with-PRUNE (drops members/rooms + deletes their live bySession bindings), so a
+    // member re-pushing a tampered `norm` could corrupt or DoS ANOTHER org's structure. Dropping the push
+    // is verified redundant on every launch path; if no team-up ever defined the org, the register fails
+    // LOUD at the daemon ("no pinned member identity — relaunch via `mrc team up`"), not silently.
     const sessionId = memberCtx.sessionId
     envFlags.push('-e', `MRC_ROOM_PORT=${daemon.port}`, '-e', `MRC_SESSION_ID=${sessionId}`, '-e', `MRC_REPO_NAME=${basename(repoPath)}`, '-e', `MRC_ROOM_LABEL=${memberCtx.member.first}`)
     envFlags.push(...memberCtx.envFlags)   // MRC_MEMBER_HANDLE, MRC_TEAM, MRC_ROLE, MRC_PERSONA_FILE
@@ -763,7 +777,7 @@ if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && 
 // Run container
 const roomLabels = roomInfo
   ? ['--label', 'mrc.room=1', '--label', `mrc.room.session=${roomInfo.sessionId}`,
-     ...(memberCtx ? ['--label', `mrc.member=${memberCtx.member.handle}`, '--label', `mrc.team=${memberCtx.member.team}`, '--label', `mrc.project=${memberCtx.norm.org}`] : []),
+     ...(memberCtx ? ['--label', `mrc.member=${memberCtx.member.handle}`, '--label', `mrc.team=${memberCtx.member.team}`, '--label', `mrc.project=${memberCtx.org}`] : []),   // #49-SEC: authoritative org (blob/solo), not the member-writable roster's norm.org
      ...(cagedAdversary ? ['--label', 'mrc.adversary=1', '--label', `mrc.adversary.slot=${adversarySlot}`] : [])]   // the Pierre-slot pool's liveness oracle reads these labels
   : []
 const exitCode = await runContainer({

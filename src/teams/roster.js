@@ -405,7 +405,13 @@ export function loadRosterFile(path, opts = {}) {
 
 // Conventional roster locations for a repo, most-specific first.
 export function rosterCandidates(repo) {
-  return [join(repo, 'team.json'), join(repo, '.mrc', 'team.json'), join(repo, 'mrc-team.json')]
+  // #49-SEC (Mouth A): source a roster ONLY from RO-to-members locations (repo root). Deliberately NOT
+  // <repo>/.mrc/team.json — `.mrc` is the rw member mount, so a member can PLANT a team.json there and steer any
+  // findRoster consumer (notably the worker exec's memberWorkspaceVolumes → its container mount). Nothing WRITES
+  // that path (team.json is always written at the repo root by writeTeamFile), so it was a pure member-writable
+  // discovery hole, not a real config location. Removing it closes the manual `mrc team exec` mouth of the
+  // member-writable-roster class (the daemon's _worker-exec is closed separately by threading --member-def).
+  return [join(repo, 'team.json'), join(repo, 'mrc-team.json')]
 }
 export function findRoster(repo) {
   return rosterCandidates(repo).find((p) => existsSync(p)) || null

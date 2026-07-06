@@ -187,8 +187,47 @@ export function resolveMemberNorm(config, repoPath, { loadRoster: load = loadRos
   return { norm, handle: String(config.member || '').toLowerCase(), rosterPath }
 }
 
-function memberArgv(repoPath, member, rosterPath) {
-  return [MRC_JS, repoPath, '--member', member.handle, '--roster', rosterPath]
+// #49-SEC (member-writable-roster confused deputy): resolve the AUTHORITATIVE member for a launch — the
+// identity/mount/territory/repo/cage the container gets. PURE + TESTED (like resolveMemberNorm), so the
+// "no roster backstop of a security field" invariant is a TEST ASSERTION, not a trust-the-branch-order. Two
+// authoritative sources, and NO security field is ever read from the member-writable roster (team.runtime.json
+// in the rw-mounted .mrc):
+//   • solo → the soloRoster member with its repo-DERIVED org stamped (norm here IS soloRoster — derived from
+//            repoPath, a launch arg, not a mounted file — so it's authoritative by construction).
+//   • team → the OUTER launcher's host-set --member-def blob (base64 json), REQUIRED, JSON-validated, with its
+//            required boundary fields present and its handle matching the requested --member.
+// THROWS (fail-closed) on a missing / malformed / field-short / handle-mismatched blob — it NEVER falls back to
+// `norm` (the member-writable roster). A caller catches and refuses the launch. There is deliberately NO
+// `?? norm.<field>` anywhere: a roster-parsed value backstopping a missing authoritative one is the exact
+// regression that reopens the org/mount/cage doors.
+export function resolveMemberIdentity(config, norm, handle) {
+  if (config.solo) {
+    const sm = norm.members.find((m) => m.handle === handle || m.first.toLowerCase() === handle)
+    return sm ? { ...sm, org: norm.org } : null
+  }
+  if (!config.memberDef) throw new Error('a team-member session requires the launcher-set --member-def (run `mrc team up`, not a bare `--member`)')
+  let auth
+  try { auth = JSON.parse(Buffer.from(String(config.memberDef), 'base64').toString('utf8')) }
+  catch (e) { throw new Error(`unreadable --member-def (${e?.message || e})`) }
+  if (!auth || typeof auth !== 'object' || !auth.handle || !auth.org || !auth.mount || !auth.territory) {
+    throw new Error('--member-def is missing a required authoritative field (org/handle/mount/territory)')
+  }
+  if (String(auth.handle).toLowerCase() !== String(handle)) throw new Error(`--member-def is for @${auth.handle}, not the requested @${handle}`)
+  return auth   // authoritative WHOLESALE — org/mount/territory/repo/cage all from the host-set blob, not the roster
+}
+
+// #49-SEC (member-writable-roster confused deputy): pass the OUTER launcher's ALREADY-RESOLVED, already-authorized
+// member def (+ its authoritative team org) to the inner `mrc --member` as a host-set argv the member CONTAINER
+// cannot tamper (it's baked into the dtach master's shell command, a host process). The inner derives EVERY
+// security-load-bearing field from THIS blob — org→sessionId, mount/territory→write-scope, repo, cage — NEVER from
+// the member-writable roster (team.runtime.json lives in the rw-mounted .mrc). --roster survives only as display
+// context (persona teammates). base64 so a persona mandate with quotes/newlines can't break shell quoting. `org`
+// is the AUTHORITATIVE team org (norm.org at team-up / def.org on relaunch) — the label the daemon keyed its
+// sessionIndex on — so the inner computes the SAME sessionId and binds to the right org even if the on-disk roster
+// was re-tampered in the relaunch TOCTOU window.
+export function memberArgv(repoPath, member, rosterPath, org) {
+  const def = Buffer.from(JSON.stringify({ ...member, org }), 'utf8').toString('base64')
+  return [MRC_JS, repoPath, '--member', member.handle, '--roster', rosterPath, '--member-def', def]
 }
 
 // Is a recorded process still alive? (signal 0 = existence check; EPERM still means it exists.)
@@ -313,8 +352,8 @@ export function classifyTerminal(info, { containerAlive, online, withinGrace } =
 const shq = (a) => `'${String(a).replace(/'/g, `'\\''`)}'`
 // The shell command ttyd runs for a member: the member session, then a persisted exit line so the browser
 // terminal shows "[@x exited — press enter]" instead of ttyd dropping the session the instant Claude exits.
-const memberShellCmd = (repoPath, m, rosterPath) =>
-  `node ${memberArgv(repoPath, m, rosterPath).map(shq).join(' ')}; echo; echo ${shq(`[@${m.first} exited — press enter]`)}; read`
+const memberShellCmd = (repoPath, m, rosterPath, org) =>
+  `node ${memberArgv(repoPath, m, rosterPath, org).map(shq).join(' ')}; echo; echo ${shq(`[@${m.first} exited — press enter]`)}; read`
 
 // dtach sockets (one per member, stable across reconnects) live under the daemon dir.
 const socketDir = () => join(homedir(), '.local', 'share', 'mrc', 'sockets')
@@ -362,7 +401,7 @@ async function launchMembers(norm, repoPath, rosterPath, live) {
     already = false
     const port = await findFreePort(nextPort); nextPort = port + 1
     try {
-      members[m.handle] = spawnMemberSession(norm.org, m.handle, port, memberShellCmd(repoPath, m, rosterPath))
+      members[m.handle] = spawnMemberSession(norm.org, m.handle, port, memberShellCmd(repoPath, m, rosterPath, norm.org))
     } catch (e) {
       // The unlink-guard throw (or any spawn failure) must fail LOUD-but-CONTAINED: log + flag this one
       // member, never abort the whole team launch or crash the daemon's launch subprocess (#28 backstop
@@ -584,7 +623,7 @@ export async function launchMember(org, repoPath, rosterPath, member) {
   if (masterAliveForSock(memberSock(org, member.handle))) return { ok: false, error: 'session orphaned — use Relaunch (stops the live master first) to restore the terminal', orphaned: true }
   try {
     const port = await findFreePort(Number(process.env.MRC_TTYD_PORT) || 7681)
-    setMemberLaunch(org, member.handle, spawnMemberSession(org, member.handle, port, memberShellCmd(repoPath, member, rosterPath)))
+    setMemberLaunch(org, member.handle, spawnMemberSession(org, member.handle, port, memberShellCmd(repoPath, member, rosterPath, org)))
     return { ok: true }
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
@@ -677,7 +716,7 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
         console.log(`  ${missing} not found — ttyd hosts each member terminal, dtach keeps its session alive across`)
         console.log('  console switches, and pgrep drives terminal-liveness detection (without it NO terminal can serve).')
         console.log('  Install (brew install ttyd dtach / apt install ttyd dtach procps) and relaunch, or run a member directly:')
-        for (const m of live) console.log(`      node ${memberArgv(repoPath, m, path).join(' ')}`)
+        for (const m of live) console.log(`      node ${memberArgv(repoPath, m, path, norm.org).join(' ')}`)
         return
       }
       const r = await startTeamSession(norm, repoPath, { rosterPath: path })
@@ -739,8 +778,21 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
       const handle = sub === 'exec' ? rest[0] : flag('--handle')
       const repo = flag('--repo') ? resolve(flag('--repo')) : repoPath
       if (!handle) { console.error('Usage: mrc team exec <handle> ["prompt"] [path]'); process.exit(1) }
-      const { norm } = loadRoster(repo, rosterFlag)
-      const member = norm.members.find((m) => m.handle === handle.toLowerCase() || m.first.toLowerCase() === handle.toLowerCase())
+      // #49-SEC (Mouth A): the worker's container mount/territory/repo (memberWorkspaceVolumes(member)) must come
+      // from an AUTHORITATIVE member, not a member-writable roster. The daemon's _worker-exec passes --member-def
+      // (the engine's authoritative member) → use it WHOLESALE and never parse the roster at all. A manual
+      // `mrc team exec` (no blob) falls back to findRoster, now sourced only from RO-to-members locations (the
+      // rw `.mrc/team.json` candidate was dropped in rosterCandidates). execWorker ignores `norm` (mount is from
+      // `member`), so a null norm on the blob path is fine.
+      const memberDef = flag('--member-def')
+      let member, norm
+      if (memberDef) {
+        try { member = resolveMemberIdentity({ solo: false, memberDef }, null, String(handle).toLowerCase()) }
+        catch (e) { console.error(`  ✗ Refusing to run worker: ${e?.message || e}.`); process.exit(1) }
+      } else {
+        ;({ norm } = loadRoster(repo, rosterFlag))
+        member = norm.members.find((m) => m.handle === handle.toLowerCase() || m.first.toLowerCase() === handle.toLowerCase())
+      }
       if (!member) { console.error(`No member "${handle}" in the roster.`); process.exit(1) }
       let prompt = sub === 'exec' ? rest.slice(1).filter((a) => !a.startsWith('--')).join(' ') : ''
       if (!prompt) prompt = await readStdin()
@@ -777,7 +829,13 @@ export function memberLaunch(norm, member, repoPath) {
   return {
     envFlags: memberEnv(member, personaPath),
     workspaceVolumes: memberWorkspaceVolumes(member, repoPath),
-    sessionId: memberSessionId(norm.org, member.handle),
+    // #49-SEC: the sessionId (→ daemon bind) keys on `member.org`, which the caller sets AUTHORITATIVELY — the
+    // host-set --member-def blob for a team member (immune to a re-tampered on-disk roster), or the repo-derived
+    // soloRoster org for solo. NO `|| norm.org` backstop: a roster-parsed org must NEVER backstop a missing
+    // authoritative one (that reopens the door); a missing member.org yields a bind-to-nothing id (fail-closed).
+    // memberWorkspaceVolumes(member)/memberEnv(member) likewise consume the blob member's already-resolved
+    // mount/territory/repo — so no security field is ever read from the member-writable roster.
+    sessionId: memberSessionId(member.org, member.handle),
     persona,
   }
 }
