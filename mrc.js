@@ -4,7 +4,7 @@
 // Launch Claude Code in a sandboxed Docker container with network firewall.
 //
 import { resolve, basename, dirname } from 'node:path'
-import { readdirSync, existsSync, readFileSync } from 'node:fs'
+import { readdirSync, existsSync, readFileSync, mkdirSync } from 'node:fs'
 import { execFileSync, spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 
@@ -13,7 +13,7 @@ import { setVerbose, dbg } from './src/output.js'
 import { readMrcrc, loadEnv, parseArgs, sanitizeRepoConfig } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
 import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer, heldUuids } from './src/docker.js'
-import { resolveStoreMode, storeCtx, mrcStoreDir, sessionStoreDir, migrateAndNormalize } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable
+import { resolveStoreMode, storeCtx, mrcStoreDir, sessionStoreDir, migrateAndNormalize, noticePopulatedSliceOnLegacy } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable
 import { rosterMemberSessionIds } from './src/commands/team.js'   // #5 PICKABLE⟺MIGRATED: the roster's memberSessionId exclude, shared by the picker + the migration
 import { processSandboxignores } from './src/sandboxignore.js'
 import { findFreePort } from './src/ports.js'
@@ -545,6 +545,13 @@ const cagedAdversary = !!(config.summonedBy || config.cageAdversary)
 // identity gate. (Workspace-ro / egress / clip stay on cagedAdversary — the flag deliberately opens those.)
 const adversaryVolume = cagedAdversary || config.resumeIsAdversary
 
+// #5 SEC (Pierre t7): the USER-RESOURCE isolation invariant. An adversary IDENTITY (summon OR resume, caged OR
+// uncaged) must NEVER reach the user's private resources — the config/login volume (adversaryVolume, above), the
+// memory store (/mrc, storeActive), or the /rooms tree. This is the SAME predicate as adversaryVolume by construction;
+// named + shared so the gates can't drift (the bug that put the memory slice + /rooms tree on `cagedAdversary` — which
+// gates CAGE FEATURES the uncaged mode deliberately opens: :ro workspace, SNI egress, clip/notify — not identity).
+const adversaryIdentity = cagedAdversary || config.resumeIsAdversary
+
 // Volumes. A team member gets territorial mounts (read-only /workspace + its writable lane); a caged
 // adversary gets /workspace READ-ONLY; a normal session gets the whole repo read-write.
 const volumes = memberCtx ? [...memberCtx.workspaceVolumes] : ['-v', `${repoPath}:/workspace${cagedAdversary ? ':ro' : ''}`]
@@ -618,10 +625,20 @@ if (!adversaryVolume) volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-
 // DESTRUCTIVELY drop its un-migrated real-dir transcripts (container-setup's rmSync of a real-dir PROJECT_STORE,
 // which the repo/.mrc→slice migration never touches). Defer the adv-slice until it has its own migration. So
 // store-mode applies to plain / solo / member only; an adversary keeps today's pierre-vol behavior.
-const storeActive = store.storeMode && !cagedAdversary
+const storeActive = store.storeMode && !adversaryIdentity   // #5 SEC: identity, not cage — an UNCAGED adversary must NOT get the user's /mrc slice (Pierre t7)
 const storeExclude = storeActive ? rosterMemberSessionIds(repoPath) : null   // store-active only → legacy resolveSessionId is identical to today
 const isMemberLaunch = !!memberCtx && config.solo !== true                   // a REAL team member; solo is mechanically a member but keys on repoId + migrates like plain
 const launchIsPlainOrSolo = !cagedAdversary && !isMemberLaunch
+// #5 DE-ACTIVATION AMNESIA (Pierre t5): a capability-ABSENT (legacy) launch of a repo that already has store-era memory
+// would SILENTLY show only the frozen pre-migration snapshot in repo/.mrc — hiding every store-born conversation (no
+// reverse bridge). Surface it loudly (repoId slice + team-member m-<hash> slices). Read-only + best-effort; never blocks.
+if (!store.storeMode && !adversaryIdentity && launchIsPlainOrSolo) {
+  try {
+    const memberKeys = (rosterMemberSessionIds(repoPath) || []).map(id => `m-${id}`)
+    const notice = noticePopulatedSliceOnLegacy(repoPath, { extraSliceKeys: memberKeys })
+    if (notice) console.error(`  ! mrc: ${notice}`)
+  } catch {}
+}
 // #5 migration scope: plain/solo brings its whole repo/.mrc (minus @member transcripts) into the repoId slice; a
 // MEMBER brings ONLY its own transcript into its (org,handle) slice, so it RESUMES on the first store launch rather
 // than re-starting (owner directive: no member re-start). Include-scoped → no sibling transcript bleeds into a member slice.
@@ -646,7 +663,13 @@ const EXIT_STORE_BUSY = 69   // EX_UNAVAILABLE — distinct so automation detect
 const sliceLive = storeActive ? probeSliceLive(mrcDir) : { id: null, determined: true }
 const skipWrite = storeActive && (!!sliceLive.id || !sliceLive.determined)
 if (storeActive && migrateOpts.migrate) migrateAndNormalize(legacyDir, mrcDir, { ...migrateOpts, skipWrite })
-if (storeActive) volumes.push('-v', `${mrcDir}:/mrc`)
+// #5 GAP A (Pierre t19): ensure the slice DIR exists host-side (owned by us) BEFORE docker mounts it. `skipWrite` gates
+// the WRITES INTO the slice (migrate/normalize), NEVER its existence — but migrateAndNormalize is ALSO the only host
+// mkdir. So on a FRESH slice + an UNDETERMINED liveness probe (docker ps hiccuped → skipWrite=true), nothing created
+// mrcDir and `docker run -v mrcDir:/mrc` would auto-create it ROOT-owned → the container's correct-owner write-probe
+// FATALs a launch that should succeed (the "fatal-on-fresh" class). mkdir it ourselves → docker mounts an existing,
+// correctly-owned dir. Idempotent + harmless when migrate already created it.
+if (storeActive) { mkdirSync(mrcDir, { recursive: true }); volumes.push('-v', `${mrcDir}:/mrc`) }
 
 // #5: the member resume-vs-fresh decision (deferred here from the member block so it reads the POST-build store dir).
 // Read the member's OWN phase dir — mrcDir is its (org,handle) slice in store-mode (where 2c makes it write),
@@ -824,10 +847,12 @@ if (roomsActive) {
     let label = basename(repoPath)
     try { const nm = loadNames(mrcDir)[sessionId]; if (nm) label = nm } catch {}
     envFlags.push(...roomSessionEnv({ daemonPort: daemon.port, sessionId, repoName: basename(repoPath), repoPath, roomName: config.room, label, summonedBy: config.summonedBy || undefined }))
-    if (cagedAdversary) {
-      // D/#43: a caged adversary sees ONLY its own room, read-only — not the whole /rooms tree. Verify the
-      // resolved path is a real subdir of roomsRoot() (defends a `..` in config.room); no valid room → no
-      // /rooms mount at all (fail-closed — it just can't read a brief).
+    if (adversaryIdentity) {
+      // D/#43 + #5 SEC (Pierre t7): an adversary — caged OR uncaged (--open-adversary-unsafe) — sees ONLY its own room,
+      // read-only, NOT the whole /rooms tree. Gating this on `cagedAdversary` let an uncaged adversary fall into the else
+      // and mount the ENTIRE roomsRoot() :ro → cross-session disclosure of every session's thread.log/consensus.md. It's
+      // an adversary IDENTITY, so it gets the restricted mount. Verify the resolved path is a real subdir of roomsRoot()
+      // (defends a `..` in config.room); no valid room → no /rooms mount at all (fail-closed — it just can't read a brief).
       const rid = config.room || ''
       const roomPath = resolve(roomsRoot(), rid)
       if (rid && roomPath.startsWith(roomsRoot() + '/') && existsSync(roomPath)) volumes.push('-v', `${roomPath}:/rooms/${rid}:ro`)

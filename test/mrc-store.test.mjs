@@ -357,7 +357,7 @@ test('migrate v2: a v1-migrated slice RE-migrates once (sentinel bump) to recove
 })
 
 // ---------- BUG-1: mtime not clobbered on migrate (Fix B) + repaired on an already-migrated slice (Fix C) ----------
-import { normalizeSliceMtimes, migrateAndNormalize } from '../src/mrc-store.js'
+import { normalizeSliceMtimes, migrateAndNormalize, noticePopulatedSliceOnLegacy } from '../src/mrc-store.js'
 test('BUG-1 Fix B: migrateToStore preserves the SOURCE mtime (copyFileSync alone would stamp NOW → recency collapse)', () => {
   const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
   const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'plain')
@@ -397,6 +397,52 @@ test('BUG-1 Fix C: normalizeSliceMtimes repairs a clobbered mtime to MAX(legacy,
     // idempotent: own sentinel → second call is a no-op
     assert.equal(normalizeSliceMtimes(slice, legacy).alreadyDone, true, 'mtime sentinel → one-time')
   } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
+})
+
+test('#5 SECURITY (Pierre t3): normalizeSliceMtimes CLAMPS a future-forged in-transcript ts to ≤ now — no auto-continue hijack', () => {
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
+  const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'plain')
+  try {
+    mkdirSync(slice, { recursive: true })
+    // a real conversation: legacy mtime + in-transcript ts are a genuine PAST time
+    const realTs = '2026-06-01T00:00:00Z'
+    writeFileSync(join(legacy, 'real.jsonl'), `{"type":"user","timestamp":"${realTs}"}\n`)
+    utimesSync(join(legacy, 'real.jsonl'), new Date(realTs), new Date(realTs))
+    writeFileSync(join(slice, 'real.jsonl'), `{"type":"user","timestamp":"${realTs}"}\n`)
+    // a hostile force-committed transcript: OLD legacy mtime (git checkout time) but its in-transcript ts forged to
+    // 2099 to deterministically win auto-continue. The clamp must IGNORE the future ts → fall back to the legacy mtime.
+    const oldMtime = new Date('2020-01-01T00:00:00Z')
+    writeFileSync(join(legacy, 'evil.jsonl'), '{"type":"user","timestamp":"2099-01-01T00:00:00Z"}\n')
+    utimesSync(join(legacy, 'evil.jsonl'), oldMtime, oldMtime)
+    writeFileSync(join(slice, 'evil.jsonl'), '{"type":"user","timestamp":"2099-01-01T00:00:00Z"}\n')
+
+    normalizeSliceMtimes(slice, legacy)
+    const mReal = statSync(join(slice, 'real.jsonl')).mtimeMs, mEvil = statSync(join(slice, 'evil.jsonl')).mtimeMs
+    assert.ok(mEvil <= Date.now() + 2000, `future ts CLAMPED — evil mtime is not in the future (got ${new Date(mEvil).toISOString()})`)
+    assert.ok(Math.abs(mEvil - oldMtime.getTime()) < 2000, 'evil fell back to its OLD legacy source mtime, not its forged 2099 ts')
+    assert.ok(mReal > mEvil, 'the REAL conversation out-sorts the future-forged hostile transcript → auto-continue picks the real one, not the payload')
+  } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
+})
+
+test('#5 (Pierre t5): noticePopulatedSliceOnLegacy warns on a legacy launch with a populated repoId + member slice; silent + traversal-safe otherwise', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-store-')))
+  const repo = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-repo-')))
+  try {
+    assert.equal(noticePopulatedSliceOnLegacy(repo, { root }), null, 'no .mrc-id → no notice')
+    const repoId = '11111111-2222-3333-4444-555555555555'
+    mkdirSync(join(repo, '.mrc'), { recursive: true }); writeFileSync(join(repo, '.mrc', '.mrc-id'), repoId)
+    mkdirSync(join(root, repoId), { recursive: true })
+    writeFileSync(join(root, repoId, 'a.jsonl'), '{}\n'); writeFileSync(join(root, repoId, 'b.jsonl'), '{}\n')
+    const memberKey = 'm-99999999-8888-7777-6666-555555555555'
+    mkdirSync(join(root, memberKey), { recursive: true }); writeFileSync(join(root, memberKey, 'm.jsonl'), '{}\n')
+    const notice = noticePopulatedSliceOnLegacy(repo, { root, extraSliceKeys: [memberKey] })
+    assert.ok(notice && /2 conversations/.test(notice), `counts repoId transcripts: ${notice}`)
+    assert.ok(/1 team-member conversation/.test(notice), 'counts the member m-<hash> slice too — no silent under-report (Pierre t7)')
+    assert.ok(/not store-capable/.test(notice) && /docker rmi/.test(notice), 'actionable rebuild guidance')
+    // a tampered .mrc-id must NOT traverse and must not produce a spurious notice
+    writeFileSync(join(repo, '.mrc', '.mrc-id'), '../escape')
+    assert.equal(noticePopulatedSliceOnLegacy(repo, { root }), null, 'tampered .mrc-id → assertSafeSegment rejects → no traversal, no notice')
+  } finally { rmSync(root, { recursive: true, force: true }); rmSync(repo, { recursive: true, force: true }) }
 })
 
 test('Finding-1 + v2 gate: migrateAndNormalize skipWrite — NEITHER migrate NOR normalize touches a live slice', () => {

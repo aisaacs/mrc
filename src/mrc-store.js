@@ -94,7 +94,12 @@ export function repoStoreId(repoPath) {
 
 // The slice-key builders — each a known-safe segment by construction.
 const memberSliceKey = (org, handle) => `m-${memberSessionId(String(org), String(handle))}`   // team member/worker: the ONE \0-separated injective member hash; .mrc-id NEVER read
-const advSliceKey = (repoPath, slot) => `adv-${md5(String(repoPath))}-${Number(slot) || 0}`    // adversary: SAME (repo,slot) boundary as its -pierre-N config vol
+// adversary: SAME (repo,slot) boundary as its -pierre-N config vol. RESERVED isolated-adversary store (the "option-a"
+// walled slice). UNREACHABLE in production BY DESIGN, not by accident (Pierre t7): the storeActive IDENTITY gate
+// (mrc.js — `!(cagedAdversary || resumeIsAdversary)`) denies EVERY adversary a /mrc mount at all (the chosen "option-b").
+// Kept because branch 1 below is the lattice's UNTRUSTED-FIRST second layer: if that mrc.js gate ever regresses, an
+// adversary still isolates HERE (an adv- slice), never the user's repoId. Wire an adv- /mrc mount to make it live.
+const advSliceKey = (repoPath, slot) => `adv-${md5(String(repoPath))}-${Number(slot) || 0}`
 const isoSliceKey = (sessionId) => `iso-${sha(String(sessionId || randomUUID()))}`             // isolated per-session floor — never repoId
 
 // THE keying lattice — isolated-by-default, repoId-by-GRANT, UNTRUSTED-FIRST. `repoStoreId` is injected for tests
@@ -157,9 +162,13 @@ export function sessionStoreDir({ storeMode, ctx, legacyDir, migrate = false, ex
 // mechanically a member but must key on repoId), `isSolo` from config.solo, and the (org,handle)/slot that key the
 // isolated slices. Callers pass their launch state; this is the ONE place launch signals → a slice ctx.
 // #5 MIGRATION: bring a repo's existing LEGACY .mrc transcripts + session-names into its store slice, ONCE, on the
-// first store-capable launch. NON-DESTRUCTIVE (COPY, leave the legacy originals intact) — that's what makes the
-// pick/resume bridge SYMMETRIC across BOTH the activation AND the de-activation rebuild boundary (a de-activation
-// launch reading legacy still finds the session, because the copy never removed it). Copy-if-absent PER FILE
+// first store-capable launch. NON-DESTRUCTIVE (COPY, leave the legacy originals intact). CAUTION (Pierre t5): this
+// makes the pick/resume bridge symmetric ONLY for PRE-MIGRATION content — a de-activation launch reading legacy still
+// finds anything that existed BEFORE the first store launch, because the copy never removed it. It is NOT symmetric
+// for STORE-ERA-BORN conversations (created in the slice, never in legacy): migration is one-directional (legacy→slice,
+// NO reverse bridge), so on a de-activation (image loses the capability label) those live ONLY in the slice and a
+// legacy launch cannot see them. That reachability gap must be SURFACED, not silent — a legacy launch that finds a
+// populated slice for this repo's .mrc-id emits a loud notice (see noticePopulatedSliceOnLegacy). Copy-if-absent PER FILE
 // (kill-safe: a Ctrl-C'd migration re-enters and only copies what's missing, never a torn overwrite — a partial
 // copy stays a .tmp, the real dst appears only on the atomic rename) and the completion SENTINEL is written LAST,
 // atomically (temp→rename), so an INTERRUPTED migration leaves NO sentinel → it re-runs cleanly.
@@ -280,7 +289,13 @@ export function normalizeSliceMtimes(sliceDir, legacyDir) {
       let lastTs = ''
       for (const line of readFileSync(dst, 'utf8').split('\n')) { if (!line) continue; try { const o = JSON.parse(line); if (o.timestamp) lastTs = o.timestamp } catch {} }
       const tsMs = Date.parse(lastTs) || 0
-      if (tsMs > ms) ms = tsMs
+      // #5 SECURITY (Pierre, turn 3): the in-transcript `timestamp` is ATTACKER-CONTROLLED file content — a hostile
+      // clone can force-commit a `<uuid>.jsonl` stamped "2099-..." so this derivation makes it out-sort every real
+      // conversation and DETERMINISTICALLY win auto-continue (mrc.js sessions[0]) → first-launch injection. A genuine
+      // transcript's last ts is ALWAYS ≤ now; only a forgery is in the future. Clamp to now: a future-stamped file
+      // can't inflate its recency (it falls back to the legacy source mtime). Closes the amplifier #5's own file added;
+      // the migrate-copies-hostile-content root cause is the separate .mrc-at-entry chokepoint.
+      if (tsMs > ms && tsMs <= Date.now()) ms = tsMs
     } catch {}
     if (ms > 0) { try { const d = new Date(ms); utimesSync(dst, d, d); normalized++ } catch { failed = true } }   // a utimes that THREW (transient EPERM/rotation) is retry-worthy; ms=0 (no derivable recency) is unhelpable, NOT a failure
   }
@@ -303,6 +318,40 @@ export function migrateAndNormalize(legacyDir, sliceDir, opts = {}) {
   const r = migrateToStore(legacyDir, sliceDir, opts)
   normalizeSliceMtimes(sliceDir, legacyDir)
   return r
+}
+
+// #5 DE-ACTIVATION AMNESIA GUARD (Pierre t5). A LEGACY launch (store-mode INACTIVE — e.g. the image lost its
+// capability label via a rebuild/rollback/STORE_SUPPORTED bump) on a repo that already has a populated store slice
+// would SILENTLY show only the frozen migration-snapshot in repo/.mrc — hiding every store-era-BORN conversation,
+// which lives ONLY in the slice (migration is one-directional; there is no reverse bridge). That is reachability-loss
+// presenting as amnesia — the exact panic #5 exists to kill, self-inflicted by the "fail toward legacy" fallback. So
+// SURFACE it: return a loud notice string the launcher logs. Read-only + fail-safe (any error → null → no notice, never
+// a crash). `root` injectable for tests. Returns null when there's nothing to warn about (no .mrc-id / tampered id /
+// no slice / empty slice).
+export function noticePopulatedSliceOnLegacy(repoPath, { root = storeRoot(), extraSliceKeys = [] } = {}) {
+  const count = (key) => {
+    try {
+      if (!key) return 0
+      try { assertSafeSegment(key) } catch { return 0 }   // a tampered/invalid key maps to no legitimate slice
+      const slice = join(root, key)
+      if (!existsSync(slice)) return 0
+      return readdirSync(slice).filter(f => f.endsWith('.jsonl')).length
+    } catch { return 0 }
+  }
+  try {
+    let repoId = null
+    const idFile = repoIdFile(repoPath)
+    if (existsSync(idFile)) { const id = readFileSync(idFile, 'utf8').trim(); try { assertSafeSegment(id); repoId = id } catch {} }
+    const repoN = repoId ? count(repoId) : 0
+    // Pierre t7: also count team-MEMBER stores (m-<hash> slices) — a repo that ran a team in store-mode strands those
+    // too, and a repoId-only notice would silently under-report. The caller passes the roster's member slice keys.
+    const memberN = extraSliceKeys.reduce((s, k) => s + count(k), 0)
+    if (repoN + memberN === 0) return null
+    const parts = []
+    if (repoN) parts.push(`${repoN} conversation${repoN === 1 ? '' : 's'}`)
+    if (memberN) parts.push(`${memberN} team-member conversation${memberN === 1 ? '' : 's'}`)
+    return `${parts.join(' + ')} live in your host memory store (${root}) but THIS image is not store-capable — this legacy launch shows only the pre-migration snapshot in ${join(repoPath, '.mrc')}. Your store-era history is safe, just not visible here; rebuild a store-capable image to see it:  docker rmi mister-claude && mrc ${repoPath}`
+  } catch { return null }
 }
 
 export function storeCtx({ solo, memberCtx, cagedAdversary, adversarySlot, repoPath, sessionId }) {
