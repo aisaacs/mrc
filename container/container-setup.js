@@ -203,6 +203,7 @@ if (STORE_MOUNTED && !ADVERSARY) try {
   if (cur && cur.isSymbolicLink()) unlinkSync(PROJECT_STORE)                                            // drop a stale/wrong link — NEVER its target
   else if (cur && existsSync(PROJECT_STORE)) rmSync(PROJECT_STORE, { recursive: true, force: true })   // a real dir (a prior legacy store) → for plain/solo/member their transcripts were migrated to the slice host-side (repo/.mrc→/mrc); the store IS /mrc now. Adversary is excluded above (its real-dir pierre-vol store is un-migrated → never reaches here).
   mkdirSync(MRC_STORE_MOUNT, { recursive: true })
+  mkdirSync(dirname(PROJECT_STORE), { recursive: true })   // #5 FIX: ensure ~/.claude/projects/ exists before the symlink — a FRESH config volume (a new repo's first store launch) lacks it after the config restore → symlink ENOENTs → FATAL. (The legacy branch already does this; the store-mode branch had missed it.)
   symlinkSync(MRC_STORE_MOUNT, PROJECT_STORE)
   const probe = join(MRC_STORE_MOUNT, `.mrc-write-probe-${process.pid}`); writeFileSync(probe, ''); rmSync(probe, { force: true })   // #5 per-session name — under per-uuid COEXIST two sessions probe /mrc at once; a shared name would race
 } catch (e) {

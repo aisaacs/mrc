@@ -684,8 +684,9 @@ if (storeActive && launchIsPlainOrSolo && !config.newSession) {
     } else if (!explicit) {                                                   // newest is FREE → host-resolve it (kill the in-container --continue mtime-pick)
       config.resumeSession = target; config.resumeIsAuto = true
     }
-    // #4 honest coexist notice — once, when another session is genuinely live alongside us
-    if (determined && held.size > 0) {
+    // #4 honest coexist notice — ONLY when another container is live on THIS slice (sharing THIS repo's /memory), not
+    // merely any mrc session running globally (heldUuids is global; sliceLive is this-slice — the memory-sharing test).
+    if (sliceLive.id) {
       console.error(`  ℹ mrc: running alongside another session on this repo — Claude Code's project /memory is SHARED and not concurrency-safe: a simultaneous memory edit can drop an index entry or lose a fact's content (last-write-wins). Your conversations are isolated.`)
     }
   }
@@ -718,6 +719,16 @@ for (const env of configEnvs) {
 }
 for (const key of Object.keys(process.env)) {
   if (key.startsWith('MRC_VIDEO_')) envFlags.push('-e', `${key}=${process.env[key]}`)
+}
+
+// #5 per-UUID: MRC_SESSION_ID must be in the container env for the per-conversation flock + deterministic --resume, on
+// EVERY store-mode launch and BEFORE either launch path (the --daemon startDaemon just below, or interactive later).
+// The roomsActive block further down sets it for ROOM sessions (which are never --daemon), but a NON-ROOM store session
+// (--daemon/--json/--no-rooms) reaches startDaemon FIRST — so resolve + set it HERE. Consistent with RESUME_SESSION
+// above (resolveSessionId returns config.resumeSession when set → MRC_SESSION_ID == RESUME_SESSION == the flocked uuid).
+if (storeActive && !memberCtx && !roomsActive) {
+  const sessionId = resolveSessionId(mrcDir, { resumeSession: config.resumeSession, newSession: config.newSession, exclude: launchIsPlainOrSolo ? storeExclude : null })
+  envFlags.push('-e', `MRC_SESSION_ID=${sessionId}`)
 }
 
 // A caged adversary can't run detached: its only egress is the host SNI proxy, which lives in THIS process.
@@ -854,14 +865,6 @@ if (roomsActive) {
     if (cagedAdversary) { console.error(`Refusing to launch a caged adversary without its host security record: ${e?.message || e}`); process.exit(1) }
     dbg(`session-record write failed: ${e?.message || e}`)
   }
-}
-
-// #5 per-UUID: the container needs MRC_SESSION_ID for the per-conversation flock + deterministic --resume on EVERY
-// store-mode launch, but the roomsActive block above only sets it for room sessions. Ensure it for a non-room store
-// session (--daemon/--json/--no-rooms) — consistent with RESUME_SESSION/NEW_SESSION (resolveSessionId returns that id).
-if (storeActive && !memberCtx && !roomInfo) {
-  const sessionId = resolveSessionId(mrcDir, { resumeSession: config.resumeSession, newSession: config.newSession, exclude: launchIsPlainOrSolo ? storeExclude : null })
-  envFlags.push('-e', `MRC_SESSION_ID=${sessionId}`)
 }
 
 // Banner
