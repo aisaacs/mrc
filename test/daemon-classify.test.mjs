@@ -644,8 +644,10 @@ test('#40: the daemon releases its singleton lock on a signalled (SIGTERM) exit 
   const controlPort = await findFreePort(port + 1)
   const lockPath = `${home}/.local/share/mrc/room-daemon-${port}.lock`
   // Boot the REAL detached daemon (electSingleton:true via the direct-invocation path), isolated HOME, dashboard off.
+  // MRC_DAEMON_SKIP_DOTENV=1: the daemon boot must NOT resolve the developer's .env / 1Password (op://) here — that
+  // prompts Touch ID or, in this stripped spawn env, hangs the suite. Hermetic: a test daemon needs no real keys.
   const child = spawn(process.execPath, ['src/proxies/room-daemon.js', String(port), String(controlPort), '0'],
-    { env: { ...process.env, HOME: home, MRC_DASHBOARD_PORT: '0' }, stdio: 'ignore' })
+    { env: { ...process.env, HOME: home, MRC_DASHBOARD_PORT: '0', MRC_DAEMON_SKIP_DOTENV: '1' }, stdio: 'ignore' })
   const waitLock = async (want) => { for (let i = 0; i < 120; i++) { if (fs.existsSync(lockPath) === want) return true; await sleep(50) } return false }
   try {
     assert.ok(await waitLock(true), 'the daemon created its per-relay-port singleton lock on boot')

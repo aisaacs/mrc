@@ -1536,7 +1536,11 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   const { homedir } = await import('node:os')
   const { findFreePort } = await import('../ports.js')
   // Load .env so media members (designer/sound/composer) have their generation keys in-process.
-  try { const { loadEnv } = await import('../config.js'); loadEnv(fileURLToPath(new URL('../../', import.meta.url))) } catch {}
+  // A test that spawns this daemon sets MRC_DAEMON_SKIP_DOTENV=1 so boot never reaches for the developer's real
+  // .env / 1Password (which would prompt Touch ID or hang the suite). Production leaves it unset → keys load as before.
+  if (!process.env.MRC_DAEMON_SKIP_DOTENV) {
+    try { const { loadEnv } = await import('../config.js'); loadEnv(fileURLToPath(new URL('../../', import.meta.url))) } catch {}
+  }
   // #21b: stamp = hash of the whole src/ tree (same fn the launcher uses), so the daemon's reported
   // version changes when ANY reachable module is edited — not just room-daemon.js. Must match
   // pair.js's daemonVersion() exactly or `waitUpVersion` never matches after a restart.
