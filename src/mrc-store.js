@@ -254,7 +254,7 @@ export function migrateToStore(legacyDir, sliceDir, { exclude = null, include = 
     try {
       const src = join(legacyDir, rel)
       const lst = lstatSync(src)                                                         // re-lstat: TOCTOU — a symlink swapped in AFTER planMigration must still be refused (copyFileSync follows links)
-      if (lst.isSymbolicLink()) { log(`refused a symlink at ${rel} (not migrated)`); continue }
+      if (lst.isSymbolicLink()) { log(`refused a symlink at ${rel} (swapped in mid-migration — not migrated)`); plan.refused.push({ path: rel, reason: 'symlink-swapped' }); continue }   // mark it so verify attributes the miss to a swap (slice changed underfoot), NOT a divergent sharer
       mkdirSync(dirname(dst), { recursive: true })                                       // manifest leaves under memory/ etc. need their parent
       const tmp = `${dst}.${process.pid}.mig.tmp`
       copyFileSync(src, tmp); renameSync(tmp, dst)                                        // atomic per-file

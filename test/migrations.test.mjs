@@ -5,7 +5,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { tmpdir } from 'node:os'
-import { sliceMigrationState, recordMigration, pendingMigrations, hasMigration } from '../src/migrations/registry.js'
+import { sliceMigrationState, recordMigration, pendingMigrations, hasMigration, sliceLayoutLevel } from '../src/migrations/registry.js'
 import mig001 from '../src/migrations/001-relocate-mrc-to-store.js'
 
 const U1 = '11111111-1111-1111-1111-111111111111', U2 = '22222222-2222-2222-2222-222222222222'
@@ -93,13 +93,43 @@ test('#001 verify SKIPS excluded @member transcripts (relocated to their own sli
   } finally { w.done() }
 })
 
-test('registry FAIL-CLOSED: a corrupt (unparseable) host marker → corrupt=true (deny store-mode, never silent level 0)', () => {
+test('registry FAIL-CLOSED: corrupt marker is UNSATISFIABLE — sliceLayoutLevel=Infinity (deny), pendingMigrations + hasMigration THROW', () => {
   const w = ws()
   mkdirSync(w.metaDir, { recursive: true })
   writeFileSync(join(w.metaDir, mig001.id), 'not json {{{')
+  const opts = { metaRoot: w.metaRoot }
   try {
-    const st = sliceMigrationState(w.slice, { metaRoot: w.metaRoot })
-    assert.equal(st.corrupt, true, 'a present-but-unparseable marker fails closed')
+    assert.equal(sliceMigrationState(w.slice, opts).corrupt, true, 'unparseable marker → corrupt')
+    // the fail-OPEN this prevents: a store-capable image (cap 0) must NOT satisfy the gate over a corrupt record
+    assert.equal(sliceLayoutLevel(w.slice, opts), Infinity, 'corrupt → Infinity, so imageCapability >= level DENIES by construction')
+    assert.equal(0 >= sliceLayoutLevel(w.slice, opts), false, 'a cap-0 image does NOT activate over a corrupt slice (no misread)')
+    assert.throws(() => pendingMigrations(w.slice, opts), /CORRUPT/, 'runner HALTS, never auto-re-runs over a corrupt record')
+    assert.throws(() => hasMigration(w.slice, mig001.id, opts), /CORRUPT/, 'hasMigration does not report a confident true over a corrupt marker')
+  } finally { w.done() }
+})
+
+test('registry FAIL-CLOSED (record LOSS): slice has DATA but NO host record → deny (Infinity + THROW), never level-0-fresh', () => {
+  const w = ws()
+  // the exact rm-rf / backup-restore case the host-only sidecar introduced: real data in the slice, host record gone.
+  writeFileSync(join(w.slice, `${U1}.jsonl`), 'x\n')
+  writeFileSync(join(w.slice, '.mrc-store-migrated-v2'), '')
+  const opts = { metaRoot: w.metaRoot }   // metaRoot has no dir for this slice → record absent
+  try {
+    const st = sliceMigrationState(w.slice, opts)
+    assert.equal(st.recordLost, true, 'data + no record → recordLost'); assert.equal(st.migrated, false)
+    assert.equal(sliceLayoutLevel(w.slice, opts), Infinity, 'record-lost → Infinity (never level-0-over-level-N misread)')
+    assert.equal(0 >= sliceLayoutLevel(w.slice, opts), false, 'a cap-0 image does NOT activate over a record-lost slice')
+    assert.throws(() => pendingMigrations(w.slice, opts), /MISSING/, 'runner HALTS — never blind-re-runs a layout migration over already-migrated data')
+  } finally { w.done() }
+})
+
+test('registry: a genuinely FRESH slice (no data, no record) → level 0, safe (first launch migrates)', () => {
+  const w = ws()   // empty slice + no record
+  const opts = { metaRoot: w.metaRoot }
+  try {
+    const st = sliceMigrationState(w.slice, opts)
+    assert.equal(st.recordLost, false, 'empty slice + no record = fresh, NOT record-lost')
+    assert.equal(sliceLayoutLevel(w.slice, opts), 0, 'fresh → level 0 (a store-capable image activates + the migrate runs)')
   } finally { w.done() }
 })
 

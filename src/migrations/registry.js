@@ -27,6 +27,14 @@ export const MIGRATIONS = [mig001]
 const defaultMetaRoot = () => join(homedir(), '.local', 'share', 'mrc', 'migration-meta')
 const metaDir = (sliceDir, metaRoot) => join(metaRoot || defaultMetaRoot(), basename(sliceDir))
 
+// Does the SLICE hold real memory content (transcripts / shared memory / the relocate sentinel)? Used to distinguish a
+// genuinely-fresh slice (no data, no record → safe, level 0) from a slice whose host record was LOST (data present, no
+// record → dangerous, deny). "has data" is container-forgeable, but a forged data-present only pushes toward MORE deny
+// (fail-closed), never activate → the attacker can't weaponize it.
+const sliceHasData = (sliceDir) => {
+  try { return readdirSync(sliceDir).some(f => f.endsWith('.jsonl') || f === 'memory' || f === 'session-names' || f === 'session-summaries' || f.startsWith('.mrc-store-migrated')) } catch { return false }
+}
+
 // The slice's migration state, from its HOST-ONLY records. `layoutLevel` = MAX over the STAMPED rec.layoutLevel of every
 // applied migration — the STAMP is authoritative (a live module-constant change can't retro-reinterpret an old slice), AND
 // an UNKNOWN-module record (a slice migrated by a NEWER host, read by an OLDER one) STILL contributes its stamped level →
@@ -35,15 +43,22 @@ const metaDir = (sliceDir, metaRoot) => join(metaRoot || defaultMetaRoot(), base
 export function sliceMigrationState(sliceDir, { metaRoot } = {}) {
   const dir = metaDir(sliceDir, metaRoot)
   const ran = new Map(); let corrupt = false, layoutLevel = 0
-  let files; try { files = readdirSync(dir) } catch { return { ran, layoutLevel: 0, migrated: false, corrupt: false } }
-  for (const f of files) {
+  let files = null; try { files = readdirSync(dir) } catch {}                                                 // absent dir → files null (handled below)
+  for (const f of (files || [])) {
     if (f.startsWith('.')) continue
     let rec; try { rec = JSON.parse(readFileSync(join(dir, f), 'utf8')) } catch { corrupt = true; continue }   // present-but-unparseable → fail-closed
     ran.set(f, rec)
     const lvl = Number(rec.layoutLevel)
     if (Number.isFinite(lvl)) { if (lvl > layoutLevel) layoutLevel = lvl } else corrupt = true               // missing/NaN stamped level → fail-closed
   }
-  return { ran, layoutLevel, migrated: ran.size > 0, corrupt }
+  const migrated = ran.size > 0
+  // RECORD-LOSS fail-closed (Pierre): a slice with DATA but NO host record is NOT a fresh slice — the host-only record
+  // was LOST (backup-restore / disk / cleanup — the durability cost the trilemma named). We can't prove what layout the
+  // data is at → DENY, never assume level 0 over level-N data (a misread + a cascading #002 double-apply). An absent
+  // record + EMPTY slice = genuinely fresh = safe → level 0. This is the primary durability case, not an edge — record
+  // LOSS is far likelier than record CORRUPTION and is the failure the host-only sidecar introduced by design.
+  const recordLost = !migrated && sliceHasData(sliceDir)
+  return { ran, layoutLevel, migrated, corrupt, recordLost }
 }
 
 // Record a migration as applied — HOST-ONLY, atomic (tmp→rename). Stamps the module's layoutLevel + whatever `extra`
@@ -56,11 +71,28 @@ export function recordMigration(sliceDir, mod, { metaRoot, ...extra } = {}) {
   return rec
 }
 
-// The migrations PENDING for this slice, in order. Pending = no host record AND the module's own isPending(ctx) agrees.
-export function pendingMigrations(sliceDir, ctx = {}) {
-  const { ran } = sliceMigrationState(sliceDir, ctx)
-  return MIGRATIONS.filter(m => !ran.has(m.id) && (typeof m.isPending === 'function' ? m.isPending({ ...ctx, sliceDir }) : true))
+// FAIL-CLOSED accessors (Pierre): both deny states — `corrupt` (present-but-unreadable record) AND `recordLost` (data
+// present, record missing) — must be UNSATISFIABLE BY CONSTRUCTION, honored in the RETURN, never a flag a caller
+// (resolveStoreMode, the runner) has to remember, or the convenience path silently fails OPEN (the job-1 pattern).
+const denied = (s) => s.corrupt || s.recordLost
+//   sliceLayoutLevel → Infinity on either deny → EVERY `imageCapability >= level` denies automatically (no misread).
+export function sliceLayoutLevel(sliceDir, opts = {}) {
+  const s = sliceMigrationState(sliceDir, opts)
+  return denied(s) ? Infinity : s.layoutLevel
 }
-
-export function sliceLayoutLevel(sliceDir, opts = {}) { return sliceMigrationState(sliceDir, opts).layoutLevel }
-export function hasMigration(sliceDir, id, { metaRoot } = {}) { return existsSync(join(metaDir(sliceDir, metaRoot), id)) }
+//   pendingMigrations THROWS on either deny — the runner MUST HALT (over a corrupt/lost record you can't prove what ran;
+//   auto-re-running would act on unknown state — e.g. re-apply #002 over already-layout-2 data). A forgetful caller gets
+//   a loud error, never a silent fail-open re-run. (The runner ADOPTS a legit record-lost #001 slice explicitly — see it.)
+export function pendingMigrations(sliceDir, ctx = {}) {
+  const s = sliceMigrationState(sliceDir, ctx)
+  if (s.corrupt) throw new Error(`migration record for slice ${basename(sliceDir)} is CORRUPT — refusing to compute pending (inspect ~/.local/share/mrc/migration-meta/${basename(sliceDir)})`)
+  if (s.recordLost) throw new Error(`slice ${basename(sliceDir)} holds DATA but its migration record is MISSING (host-only record lost) — refusing to blind-migrate; adopt/recover it explicitly (inspect ~/.local/share/mrc/migration-meta/${basename(sliceDir)})`)
+  return MIGRATIONS.filter(m => !s.ran.has(m.id) && (typeof m.isPending === 'function' ? m.isPending({ ...ctx, sliceDir }) : true))
+}
+//   hasMigration routes through the PARSED state (not a bare existsSync — a corrupt marker file "exists" but proves
+//   nothing) → throws on either deny, else honestly "did <id> run".
+export function hasMigration(sliceDir, id, opts = {}) {
+  const s = sliceMigrationState(sliceDir, opts)
+  if (denied(s)) throw new Error(`migration record for slice ${basename(sliceDir)} is ${s.corrupt ? 'CORRUPT' : 'MISSING (data present, record lost)'}`)
+  return s.ran.has(id)
+}

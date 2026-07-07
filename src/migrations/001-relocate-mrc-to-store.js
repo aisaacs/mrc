@@ -48,15 +48,22 @@ export default {
   // manifest is taken from up()'s record when present (ctx.manifest), else re-derived via the SAME planMigration.
   verify(ctx) {
     const { legacyDir: L, sliceDir: S } = ctx
-    const manifest = Array.isArray(ctx.manifest) ? ctx.manifest : planMigration(L, { exclude: ctx.exclude, include: ctx.include }).manifest
+    const plan = Array.isArray(ctx.manifest) ? { manifest: ctx.manifest, refused: ctx.refused || [] } : planMigration(L, { exclude: ctx.exclude, include: ctx.include })
+    const swapped = new Set(plan.refused.filter(r => r.reason === 'symlink-swapped').map(r => r.path))   // leaf that turned into a symlink DURING migration (slice changed underfoot)
     const checks = []; let pass = true, verified = 0
-    for (const rel of manifest) {
+    for (const rel of plan.manifest) {
       const sf = join(S, rel)
-      if (!existsSync(sf)) { pass = false; checks.push({ ok: false, kind: 'missing', file: rel, msg: `${rel} is in repo/.mrc but NOT in the store — dropped, or another working copy shares this slice (divergent sharer)` }); continue }
+      if (!existsSync(sf)) {
+        pass = false
+        checks.push(swapped.has(rel)
+          ? { ok: false, kind: 'changed-underfoot', file: rel, msg: `${rel} was swapped to a symlink DURING migration — the slice changed underfoot; re-run \`mrc migrate\`` }
+          : { ok: false, kind: 'missing', file: rel, msg: `${rel} is in repo/.mrc but NOT in the store — dropped, or another working copy shares this slice (divergent sharer)` })
+        continue
+      }
       if (sha256(join(L, rel)) !== sha256(sf)) { pass = false; checks.push({ ok: false, kind: 'differs', file: rel, msg: `${rel} bytes differ between repo/.mrc and the store (divergent sharer, or corruption)` }); continue }
       verified++
     }
-    checks.unshift({ ok: pass, msg: `byte-verified ${verified}/${manifest.length} migrated file(s) legacy↔store${pass ? '' : ' — INTEGRITY FAILURE (see below)'}` })
+    checks.unshift({ ok: pass, msg: `byte-verified ${verified}/${plan.manifest.length} migrated file(s) legacy↔store${pass ? '' : ' — INTEGRITY FAILURE (see below)'}` })
     return { pass, checks }
   },
 }
