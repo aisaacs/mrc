@@ -22,6 +22,27 @@ import mig001 from './001-relocate-mrc-to-store.js'
 // Ordered list. APPEND new migrations; NEVER reorder or renumber — the id IS the identity and the order is the apply order.
 export const MIGRATIONS = [mig001]
 
+// LAYOUT-MARKER CONVENTION (Pierre, ADOPT-A structural fix). ADOPTION of a pre-framework slice (data + in-slice
+// sentinel, but NO host record — the old auto-migrate's output) must adopt DOWNWARD to the level the evidence
+// PROVES and NEVER launder a HIGHER layout down to level-0. Detecting "higher" by scanning control files is only
+// sound IF every layout-CHANGING migration leaves a durable, RECOGNIZABLE in-slice marker. So we make that a
+// RULE, not a hope: any migration that changes the on-disk layout (layoutLevel >= 1) MUST declare `layoutMarker`
+// = a filename in the RESERVED `.mrc-store-layout-<N>` namespace and WRITE it in up(). #001 is layout-NEUTRAL
+// (level 0, a pure relocation any store-capable image reads) so it declares none — it IS the pre-framework
+// baseline adoption is allowed to reach. `assertLayoutMarkerConvention` is the LINT (a test calls it): the day a
+// #002 ships without a conforming marker, the suite fails — so adoption can never silently launder it. This turns
+// ADOPT-A from a naming heuristic into a by-construction guarantee.
+export const LAYOUT_MARKER_RE = /^\.mrc-store-layout-\d+$/
+export function layoutMarkersOf(list = MIGRATIONS) { return new Set(list.map(m => m && m.layoutMarker).filter(Boolean)) }
+export function assertLayoutMarkerConvention(list = MIGRATIONS) {
+  for (const m of list) {
+    if (Number(m.layoutLevel) >= 1 && !(m.layoutMarker && LAYOUT_MARKER_RE.test(m.layoutMarker))) {
+      throw new Error(`migration ${m.id} changes layout (level ${m.layoutLevel}) but declares no valid layoutMarker (must match ${LAYOUT_MARKER_RE}); adoption could launder a level-${m.layoutLevel} slice down to level-0 — declare a .mrc-store-layout-${m.layoutLevel} marker and write it in up()`)
+    }
+  }
+  return true
+}
+
 // HOST-ONLY record dir for a slice. `metaRoot` is injectable for tests (so a test never touches the real ~/.local/share);
 // production defaults to the migration-meta sibling of the store.
 const defaultMetaRoot = () => join(homedir(), '.local', 'share', 'mrc', 'migration-meta')
@@ -31,8 +52,12 @@ const metaDir = (sliceDir, metaRoot) => join(metaRoot || defaultMetaRoot(), base
 // genuinely-fresh slice (no data, no record → safe, level 0) from a slice whose host record was LOST (data present, no
 // record → dangerous, deny). "has data" is container-forgeable, but a forged data-present only pushes toward MORE deny
 // (fail-closed), never activate → the attacker can't weaponize it.
+// "has data" = ANY non-store-CONTROL entry (Pierre: a name allow-list would miss a session-summaries/- or <uuid>/-only
+// slice → lost-record fail-open for that shape). Control files (`.mrc-*` incl the sentinel + migration markers, `.oxcl*`,
+// `*.lock`) are the store's own; everything else is memory data.
+const isStoreControl = (f) => f.startsWith('.mrc-') || f.startsWith('.oxcl') || f.endsWith('.lock')
 const sliceHasData = (sliceDir) => {
-  try { return readdirSync(sliceDir).some(f => f.endsWith('.jsonl') || f === 'memory' || f === 'session-names' || f === 'session-summaries' || f.startsWith('.mrc-store-migrated')) } catch { return false }
+  try { return readdirSync(sliceDir).some(f => !isStoreControl(f)) } catch { return false }
 }
 
 // The slice's migration state, from its HOST-ONLY records. `layoutLevel` = MAX over the STAMPED rec.layoutLevel of every

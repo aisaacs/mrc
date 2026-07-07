@@ -259,6 +259,23 @@ export function getExistingCount(repoPath) {
   } catch { return 0 }
 }
 
+/** #12: the FAIL-CLOSED repo-label live-container probe for `mrc migrate`'s preflight. getExistingCount swallows a
+ *  docker error to 0 (fail-OPEN — fine for launch's instance-count, WRONG for a migrate guard: a transient error
+ *  would green a migrate racing a live LEGACY session, the exact split incident). Same retry/determined discipline
+ *  as sliceLiveContainer: a clean `ps` → {count, determined:true}; retries exhausted without an answer →
+ *  {count:0, determined:false} so the preflight refuses rather than assume idle. */
+export function repoLiveContainers(repoPath, { attempts = 3, backoffMs = 200, timeoutMs = LIVENESS_TIMEOUT_MS } = {}) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      const ids = execFileSync('docker', ['ps', '-q', '--filter', 'label=mrc=1', '--filter', `label=mrc.repo=${repoPath}`], { encoding: 'utf8', timeout: timeoutMs }).trim().split('\n').filter(Boolean)
+      return { count: ids.length, determined: true }
+    } catch {
+      if (attempt < attempts - 1) { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, backoffMs) } catch {} }
+    }
+  }
+  return { count: 0, determined: false }
+}
+
 /** Compute a per-repo config volume name. */
 export function volumeName(repoPath, instanceId) {
   const hash = createHash('md5').update(repoPath).digest('hex').slice(0, 12)

@@ -12,9 +12,10 @@ import { BANNER } from './src/constants.js'
 import { setVerbose, dbg } from './src/output.js'
 import { readMrcrc, loadEnv, parseArgs, sanitizeRepoConfig } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
-import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer, heldUuids } from './src/docker.js'
+import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer, heldUuids, repoLiveContainers } from './src/docker.js'
 import { resolveStoreMode, storeCtx, mrcStoreDir, sessionStoreDir, migrateAndNormalize, noticePopulatedSliceOnLegacy } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable
 import { rosterMemberSessionIds } from './src/commands/team.js'   // #5 PICKABLE⟺MIGRATED: the roster's memberSessionId exclude, shared by the picker + the migration
+import { runMigrate, repoSliceDir } from './src/commands/migrate.js'   // #12: the explicit, guarded `mrc migrate` runner (replaces the silent auto-migrate)
 import { processSandboxignores } from './src/sandboxignore.js'
 import { findFreePort } from './src/ports.js'
 import { startClipboardProxy } from './src/proxies/clipboard-proxy.js'
@@ -41,7 +42,7 @@ const { flags: globalFlags, envs: globalEnvs } = readMrcrc(resolve(process.env.H
 let repoHint = process.cwd()
 for (const arg of process.argv.slice(2)) {
   if (arg.startsWith('-') || arg === '--') continue
-  if (['status', 'sessions', 'pick'].includes(arg)) break
+  if (['status', 'sessions', 'pick', 'migrate'].includes(arg)) break
   try { if (existsSync(arg)) { repoHint = resolve(arg); break } } catch {}
 }
 // Belt 0: the repo .mrcrc is sandbox-writable, so allowlist it (deny-by-default) BEFORE the merge — a
@@ -135,6 +136,28 @@ if (!['claude', 'codex'].includes(config.agent)) {
 if (remaining[0] === 'status') {
   showStatus()
   process.exit(0)
+}
+
+// --- Subcommand: mrc migrate (explicit, guarded memory-store migration; no API key, no image build) ---
+// #12: the runner for the migration framework (src/migrations/). Decoupled from launch — it inspects the EXISTING
+// image's store capability (never builds), takes the slice lock, runs the live-container preflight, and applies /
+// adopts / detaches per the 8 invariants. `up` (default) migrates or adopts; `status` reports honestly; `detach`
+// opts a repo out (refuse-by-default on store-born content). See src/commands/migrate.js.
+if (remaining[0] === 'migrate') {
+  const sub = ['up', 'status', 'detach'].includes(remaining[1]) ? remaining[1] : 'up'
+  const migRepo = resolve((['up', 'status', 'detach'].includes(remaining[1]) ? remaining[2] : remaining[1]) || '.')
+  // Capability from the EXISTING image (deny-unless-proven; no build here — rebuild is the user's explicit act).
+  const { id: existingImage, labels: existingLabels } = imageIdAndLabels()
+  const store = resolveStoreMode(existingImage, () => existingLabels)
+  const deps = {
+    repoContainers: (p) => repoLiveContainers(p),   // #12: FAIL-CLOSED (a docker hiccup → refuse, never a silent 0)
+    sliceLive: (sliceHostDir) => sliceLiveContainer(sliceHostDir),
+    store,
+    confirm: (q) => askYesNo(q),
+    log: (m) => console.error(m),
+  }
+  const res = await runMigrate(sub, migRepo, { yes: config.yes, force: config.forceDetach, deps })
+  process.exit(res && res.ok ? 0 : 1)
 }
 
 // --- Subcommand: mrc rooms (observe/steer ambient pairings via the daemon; no API key) ---
