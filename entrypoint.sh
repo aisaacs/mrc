@@ -43,14 +43,14 @@ fi
 # All config setup is now in Node
 node /usr/local/bin/container-setup.js
 
-# #5 GATE-3 FLOOR (store-mode only): acquire the SLICE writer lock. flock is advisory on the shared bind-mounted
-# inode, so it serializes ACROSS containers — one container owns a /mrc slice at a time — and it auto-releases when
-# this container dies (the kernel closes the fd), so a SIGKILL'd container leaves no stale lock (no reaping logic).
-# fd 200 is opened here and survives the exec into tail/agent below, so the lock is HELD for the container's life.
-# On CONTENTION another live container already owns this slice: REFUSE loudly rather than co-write the shared
-# slice state (transcripts, the merge-on-write session-names, and Claude's own project-store internals) and corrupt
-# it. The host CEILING normally forks a concurrent opener onto a DIFFERENT slice before we reach here; this is the
-# rare host-TOCTOU backstop. Adversaries never mount /mrc (gated fully legacy host-side), so this never touches them.
+# #5 per-UUID COEXIST FLOOR (store-mode only): lock the specific CONVERSATION this session resumes, NOT the whole
+# slice — /mrc/<MRC_SESSION_ID>.lock. flock is advisory on the shared bind-mounted inode, so it serializes ACROSS
+# containers, and it auto-releases when this container dies (kernel closes the fd → no stale lock, no reaping). Two
+# same-repo sessions on DIFFERENT conversations hold DIFFERENT lock files → they COEXIST; only a genuine
+# same-conversation double-open contends and is REFUSED (two containers on one transcript is the one thing that truly
+# corrupts a single file). The host normally routes a bare launch to a free conversation before we reach here; this
+# is the TOCTOU backstop. Shared project /memory is NOT covered by a per-conversation lock — that's the owner-accepted
+# residual (Claude Code doesn't lock its own memory writes). Adversaries never mount /mrc, so this never touches them.
 if [ -d /mrc ]; then
   # FAIL-LOUD if the primitive is missing: the floor's correctness DEPENDS on flock, so a missing binary must
   # abort, never run the session unguarded (no-silent-failure doctrine). flock is util-linux (Dockerfile), present.
@@ -59,7 +59,10 @@ if [ -d /mrc ]; then
     echo "       memory-store corruption. Refusing to start unguarded (rebuild the image with util-linux)." >&2
     exit 1
   }
-  exec 200>/mrc/.writer.lock
+  # Per-conversation lock. If MRC_SESSION_ID is somehow unset in store-mode (shouldn't happen — the host always
+  # resolves a concrete id), fall back to the whole-slice lock: conservative (serializes everything), never unguarded.
+  LOCKFILE="/mrc/${MRC_SESSION_ID:-.writer}.lock"
+  exec 200>"$LOCKFILE"
   # LOAD-BEARING: fd 200 is held by THIS shell process, and the agent below runs as a CHILD (NOT `exec claude`), so
   # the shell stays alive as the authoritative fd-200 holder for the whole session — the child's own fd hygiene
   # (a native binary may closefrom() on startup) can't drop the lock. If anyone ever converts the interactive agent
@@ -68,11 +71,27 @@ if [ -d /mrc ]; then
   # Gate the agent on a POSITIVE flock-acquired. `flock -n` exits 0 iff WE now own the lock; ANY non-zero (a live
   # peer holds it, or an error) fails CLOSED → refuse, never fall through to the agent unlocked.
   if flock -n 200; then
-    : # acquired — this container owns the slice; fd 200 stays open across the exec below → held for its life
+    : # acquired — this container owns THIS conversation; fd 200 stays open across the exec below → held for its life
+  elif [ "${MRC_RESUME_IS_AUTO:-}" = "1" ]; then
+    # #5 TOCTOU on an AUTO-continue: the conversation the host resolved was FREE at the host check but got claimed
+    # in the sub-second before this flock (the owner's near-simultaneous multi-launch makes this more likely). Auto-
+    # continue must never hard-fail cryptically — the human/automation re-runs; the host's held-check then routes to a
+    # free conversation (which can't re-loop: if ALL are held, auto→FRESH, an uncontended id). We do NOT silently
+    # re-mint an id here: an auto-continue is almost always a room session, and re-minting MRC_SESSION_ID mid-container
+    # would desync the daemon registration the host already pinned. Exit 69 (EX_UNAVAILABLE, retry-able) so a
+    # non-interactive wrapper AUTO-retries; friendly prose only on a TTY (Pierre — same split as the explicit path).
+    if [ -t 2 ]; then
+      echo "  ! mrc: your most recent conversation was just opened by another session (a rare timing overlap)." >&2
+      echo "     Re-run \`mrc <this repo>\` — I'll continue a different conversation automatically." >&2
+    else
+      echo "mrc: this conversation was just claimed by another session — retry (auto-continue routes to a free one)." >&2
+    fi
+    exit 69
   else
-    echo "FATAL: another live mrc session already owns this memory store (/mrc)." >&2
-    echo "       Two sessions writing one memory slice would corrupt each other's transcripts. Close the other" >&2
-    echo "       session and retry (or the host will place a concurrent open on its own slice automatically)." >&2
+    # An EXPLICIT resume/pick of a held conversation (or an unset-auto path) → hard refuse; they asked for THIS one.
+    echo "FATAL: this conversation (${MRC_SESSION_ID:-slice}) is already open in another live mrc session." >&2
+    echo "       Two sessions resuming one conversation corrupt its transcript. Close the other session, or open a" >&2
+    echo "       different conversation." >&2
     exit 1
   fi
 fi

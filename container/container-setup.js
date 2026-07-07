@@ -204,7 +204,7 @@ if (STORE_MOUNTED && !ADVERSARY) try {
   else if (cur && existsSync(PROJECT_STORE)) rmSync(PROJECT_STORE, { recursive: true, force: true })   // a real dir (a prior legacy store) → for plain/solo/member their transcripts were migrated to the slice host-side (repo/.mrc→/mrc); the store IS /mrc now. Adversary is excluded above (its real-dir pierre-vol store is un-migrated → never reaches here).
   mkdirSync(MRC_STORE_MOUNT, { recursive: true })
   symlinkSync(MRC_STORE_MOUNT, PROJECT_STORE)
-  const probe = join(MRC_STORE_MOUNT, '.mrc-write-probe'); writeFileSync(probe, ''); rmSync(probe, { force: true })
+  const probe = join(MRC_STORE_MOUNT, `.mrc-write-probe-${process.pid}`); writeFileSync(probe, ''); rmSync(probe, { force: true })   // #5 per-session name — under per-uuid COEXIST two sessions probe /mrc at once; a shared name would race
 } catch (e) {
   console.error(`FATAL: store-mode /mrc slice is not a writable real mount (${e.message}). A transcript would be silently lost — aborting.`)
   process.exit(1)
@@ -381,7 +381,14 @@ if (agent === 'claude') {
   } else if (!newSession) {
     try {
       const jsonls = readdirSync(MRC_LOCAL).filter(f => f.endsWith('.jsonl'))
-      if (jsonls.length > 0) resumeFlag = '--continue'
+      if (jsonls.length > 0) {
+        // #5 per-UUID COEXIST: NEVER in-container `--continue` in store-mode — its newest-by-MTIME pick can diverge
+        // from the host's per-uuid resolution AND from the per-conversation flock (MRC_SESSION_ID), so two coexisting
+        // sessions could lock uuid A while `--continue` resumes B → co-write. The host ALWAYS resolves a concrete
+        // MRC_SESSION_ID (an existing conversation when jsonls>0), so --resume it deterministically. Legacy unchanged.
+        const sid = process.env.MRC_SESSION_ID || ''
+        resumeFlag = (STORE_MOUNTED && sid) ? `--resume ${sid}` : '--continue'
+      }
     } catch {}
   }
 }

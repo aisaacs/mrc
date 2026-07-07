@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { claimLowestFree, nextInstanceSlot, sliceLiveContainer } from '../src/docker.js'
+import { claimLowestFree, nextInstanceSlot, sliceLiveContainer, heldUuids } from '../src/docker.js'
 import { createHash } from 'node:crypto'
 
 const freshDir = () => fs.mkdtempSync(join(os.tmpdir(), 'mrc-slot-'))
@@ -165,4 +165,27 @@ test('sliceLiveContainer: FAIL-CLOSED at the INSPECT grain — a per-container i
     attempts: 2, backoffMs: 1,
   })
   assert.deepEqual(r, { id: null, determined: false }, 'an inspect timeout on a candidate is undetermined — it might be the one on our slice (Pierre: the fail-open leaks at the inspect grain otherwise)')
+})
+
+// --- #5 per-UUID COEXIST: heldUuids — the set of session uuids live containers are --resuming (MRC_SESSION_ID env) ---
+test('heldUuids: collects MRC_SESSION_ID off every running mrc container → the held set', () => {
+  const r = heldUuids({
+    runningIds: () => ['a', 'b', 'c'],
+    envOf: (id) => ({ a: 'uuid-AAA', b: 'uuid-BBB', c: '' }[id]),   // c has no MRC_SESSION_ID (e.g. legacy) → not held
+  })
+  assert.equal(r.determined, true)
+  assert.deepEqual([...r.held].sort(), ['uuid-AAA', 'uuid-BBB'], 'held = the resumed uuids; a container with no MRC_SESSION_ID contributes nothing')
+})
+
+test('heldUuids: nothing running → empty held, determined (a bare launch resumes freely)', () => {
+  assert.deepEqual(heldUuids({ runningIds: () => [] }), { held: new Set(), determined: true })
+})
+
+test('heldUuids: FAIL-CLOSED — ps throw → determined:false (caller force-news/refuses, never a silent "nothing held")', () => {
+  assert.deepEqual(heldUuids({ runningIds: () => { throw new Error('docker down') }, attempts: 2, backoffMs: 1 }), { held: new Set(), determined: false })
+})
+
+test('heldUuids: FAIL-CLOSED at the inspect grain — an env read that throws → determined:false', () => {
+  const r = heldUuids({ runningIds: () => ['a'], envOf: () => { throw new Error('inspect timeout') }, attempts: 2, backoffMs: 1 })
+  assert.deepEqual(r, { held: new Set(), determined: false }, 'can\'t read a container\'s session → can\'t rule its uuid out → undetermined')
 })

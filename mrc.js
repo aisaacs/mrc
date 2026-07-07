@@ -12,7 +12,7 @@ import { BANNER } from './src/constants.js'
 import { setVerbose, dbg } from './src/output.js'
 import { readMrcrc, loadEnv, parseArgs, sanitizeRepoConfig } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
-import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer } from './src/docker.js'
+import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer, heldUuids } from './src/docker.js'
 import { resolveStoreMode, storeCtx, mrcStoreDir, sessionStoreDir, migrateAndNormalize } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable
 import { rosterMemberSessionIds } from './src/commands/team.js'   // #5 PICKABLE⟺MIGRATED: the roster's memberSessionId exclude, shared by the picker + the migration
 import { processSandboxignores } from './src/sandboxignore.js'
@@ -194,6 +194,16 @@ function probeSliceLive(slice) {
   const msg = '  ⏳ checking the memory store…'
   if (tty) { try { process.stderr.write(msg) } catch {} }
   const r = sliceLiveContainer(slice)
+  if (tty) { try { process.stderr.write('\r' + ' '.repeat(msg.length) + '\r') } catch {} }
+  return r
+}
+
+// #5 per-UUID: the set of session uuids held by live containers (transient TTY note, same as probeSliceLive).
+function probeHeldUuids() {
+  const tty = process.stderr.isTTY
+  const msg = '  ⏳ checking for other sessions…'
+  if (tty) { try { process.stderr.write(msg) } catch {} }
+  const r = heldUuids()
   if (tty) { try { process.stderr.write('\r' + ' '.repeat(msg.length) + '\r') } catch {} }
   return r
 }
@@ -586,7 +596,11 @@ if (memberCtx) {
     console.log('    They\'ll share the workspace but get separate config volumes.')
     console.log('    Watch out for edit conflicts — two Claudes, one codebase, no good.')
     console.log('')
-    if (!config.newSession && !config.resumeSession) config.newSession = true
+    // #5: in STORE-MODE the per-uuid held-check (below) owns the resume decision — a 2nd bare launch CONTINUES its
+    // next-most-recent conversation (or fresh if all held), never a same-conversation collision. So DON'T coarsely
+    // force-new here (that would pre-empt the held-check → a needless fresh session). LEGACY keeps the force-new
+    // (multi-instance shares repo/.mrc, so two --continue would hit one transcript — the old coarse guard).
+    if (!config.newSession && !config.resumeSession && !store.storeMode) config.newSession = true
   }
   volName = volumeName(repoPath, claim.slot)
 }
@@ -622,37 +636,16 @@ const legacyDir = resolve(repoPath, '.mrc')
 let mrcDir = storeActive
   ? mrcStoreDir(storeCtx({ solo: config.solo, memberCtx, cagedAdversary, adversarySlot, repoPath }))
   : legacyDir
-// #5 GATE-3 CEILING (plain/solo only) — FAIL-CLOSED REFUSE, not fork-to-blank. A silent blank fork IS the "mrc lost
-// my history" panic (the owner's own report), so instead of forking a concurrent opener onto empty memory, REFUSE:
-// two sessions writing one slice corrupt each other. The probe RETRIES then reports {id, determined}; we refuse on a
-// live peer (id) OR an unproven-idle slice (!determined — docker wedged), never GRANTing "clear" on a failed probe
-// (the fail-open sin). Interactive → loud message + --force-store override; non-interactive (daemon/json/no-TTY) →
-// clean-fail with a distinct exit code (never silently run automation against contended/empty memory). MEMBERS are
-// excluded (unique (org,handle) slice → no self-contention). The container floor backstops the ceiling's TOCTOU.
-// [Interim COARSE per-slice guard, banked as a UX regression vs legacy multi-instance; the per-UUID coexist redesign
-// lets two same-repo sessions share the slice on disjoint transcripts, replacing the refuse.]
-const EXIT_STORE_BUSY = 69   // EX_UNAVAILABLE — distinct so automation can detect "memory store in use", not a generic failure
-let forcedOntoLiveSlice = false
-if (storeActive && launchIsPlainOrSolo) {
-  const probe = probeSliceLive(mrcDir)
-  if (probe.id || !probe.determined) {
-    const why = probe.id ? `is already in use by a live session (container ${probe.id.slice(0, 12)})` : `could not be verified free — Docker is unresponsive`
-    if (!config.forceStore) {
-      const nonInteractive = config.daemon || config.json || !process.stdin.isTTY
-      console.error(`\n  ⚠ mrc: this repo's memory store ${why}.`)
-      console.error(`  Two sessions writing one memory store corrupt each other's transcripts, so mrc won't open a second.`)
-      console.error(nonInteractive
-        ? `  Close the other session and retry.  (exit ${EXIT_STORE_BUSY})\n`
-        : `  → Close the other session and retry, or pass --force-store to open on it anyway (you accept the risk).\n`)
-      process.exit(EXIT_STORE_BUSY)
-    }
-    forcedOntoLiveSlice = true   // --force-store: the human accepted the co-write risk → proceed, but SKIP the normalize write-race (never mtime-rewrite a live agent's transcripts)
-  }
-}
-// Migrate legacy → the slice (copy-if-absent is safe on any slice — never touches an existing/live file). The
-// normalize WRITE is skipped when forced onto a live slice (Finding-1). On the clean path it repairs clobbered mtimes
-// BEFORE the container mounts /mrc (its --continue reads on-disk mtime) and BEFORE resolveSessionId.
-if (storeActive && migrateOpts.migrate) migrateAndNormalize(legacyDir, mrcDir, { ...migrateOpts, skipNormalize: forcedOntoLiveSlice })
+// #5 per-UUID COEXIST replaces the coarse per-slice refuse (owner chose coexist). Two same-repo sessions MAY run
+// concurrently; they collide only if they'd --resume the SAME transcript, which the RESUME held-check (below, after
+// the member block) prevents by picking a non-colliding conversation. The container per-UUID flock is the last-line
+// floor. skipWrite: the v2 re-migration + normalize are slice WRITES → skip them when ANY container is live on this
+// slice (never race a live agent); recovery/repair defer to a solo launch. Applies to EVERY path (plain/solo/member),
+// probing the actual mrcDir (repoId slice or the member's own).
+const EXIT_STORE_BUSY = 69   // EX_UNAVAILABLE — distinct so automation detects "conversation open elsewhere", not a generic failure
+const sliceLive = storeActive ? probeSliceLive(mrcDir) : { id: null, determined: true }
+const skipWrite = storeActive && (!!sliceLive.id || !sliceLive.determined)
+if (storeActive && migrateOpts.migrate) migrateAndNormalize(legacyDir, mrcDir, { ...migrateOpts, skipWrite })
 if (storeActive) volumes.push('-v', `${mrcDir}:/mrc`)
 
 // #5: the member resume-vs-fresh decision (deferred here from the member block so it reads the POST-build store dir).
@@ -663,6 +656,39 @@ if (storeActive) volumes.push('-v', `${mrcDir}:/mrc`)
 if (memberCtx) {
   if (existsSync(resolve(mrcDir, `${memberCtx.sessionId}.jsonl`))) config.resumeSession = memberCtx.sessionId
   else config.newSession = true
+}
+
+// #5 per-UUID COEXIST — the RESUME held-check (plain/solo, store-mode). Coexist means a bare launch can't be refused,
+// so a collision on the target conversation resolves by picking a DIFFERENT conversation, LOUDLY (never a silent
+// blank — that's the "mrc lost my history" panic). Sequenced BEFORE RESUME_SESSION + resolveSessionId so the chosen
+// uuid flows to the per-uuid lock (MRC_SESSION_ID) AND the room identity. Also HOST-RESOLVES the auto-continue so the
+// container --resumes an exact uuid, killing the in-container --continue mtime-pick (deterministic, needed for the lock).
+if (storeActive && launchIsPlainOrSolo && !config.newSession) {
+  const explicit = !!config.resumeSession                                    // an explicit pick/resume set it; auto-continue leaves it unset
+  const sessions = explicit ? null : getSessions(mrcDir, { exclude: storeExclude })
+  const target = explicit ? config.resumeSession : (sessions[0] && sessions[0].uuid)
+  if (target) {
+    const { held, determined } = probeHeldUuids()
+    const collide = held.has(target) || !determined                         // fail-closed: an unverifiable probe counts as "might be held"
+    if (collide && explicit && !config.forceStore) {
+      let nm; try { nm = loadNames(mrcDir)[target] } catch {}
+      console.error(`\n  ✗ mrc: "${nm || target.slice(0, 8)}" is already open in another session — two sessions on one conversation corrupt it.`)
+      console.error(`  → Close the other, \`mrc pick\` a different conversation, or --force-store to co-open it anyway (risky).\n`)
+      process.exit(EXIT_STORE_BUSY)
+    } else if (collide && explicit) {
+      console.error(`  ! mrc: --force-store — co-opening a conversation already live elsewhere; simultaneous writes can corrupt it. You accepted the risk.`)
+    } else if (collide) {                                                     // auto-continue collided → newest NOT-held, else FRESH; LOUD either way
+      const free = determined ? sessions.find((s) => !held.has(s.uuid)) : null
+      if (free) { config.resumeSession = free.uuid; config.resumeIsAuto = true; console.error(`  ! mrc: your most recent conversation is open in another session — continuing your next-most-recent here instead (your history is safe; \`mrc pick\` to choose a specific one).`) }
+      else { config.newSession = true; console.error(`  ! mrc: your recent conversations are open in other sessions — starting a FRESH one here (your history is safe; \`mrc pick\` to open a specific past conversation).`) }
+    } else if (!explicit) {                                                   // newest is FREE → host-resolve it (kill the in-container --continue mtime-pick)
+      config.resumeSession = target; config.resumeIsAuto = true
+    }
+    // #4 honest coexist notice — once, when another session is genuinely live alongside us
+    if (determined && held.size > 0) {
+      console.error(`  ℹ mrc: running alongside another session on this repo — Claude Code's project /memory is SHARED and not concurrency-safe: a simultaneous memory edit can drop an index entry or lose a fact's content (last-write-wins). Your conversations are isolated.`)
+    }
+  }
 }
 
 // Environment flags
@@ -682,6 +708,7 @@ if (config.allowWeb) envFlags.push('-e', 'ALLOW_WEB=1')
 if (config.summonedBy || config.cageAdversary) envFlags.push('-e', 'MRC_ADVERSARY_FW=1')
 if (config.summonedBy || config.resumeIsAdversary) envFlags.push('-e', 'MRC_ADVERSARY=1')
 if (config.resumeSession) envFlags.push('-e', `RESUME_SESSION=${config.resumeSession}`)
+if (config.resumeIsAuto) envFlags.push('-e', 'MRC_RESUME_IS_AUTO=1')   // #5: the host force-resolved an AUTO-continue → on a per-uuid flock-fail TOCTOU, the entrypoint routes to graceful re-run, not the explicit-resume FATAL
 if (config.newSession) envFlags.push('-e', 'NEW_SESSION=1')
 envFlags.push('-e', `CLAUDE_CODE_MAX_OUTPUT_TOKENS=${process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '128000'}`)
 envFlags.push('-e', `MRC_REPO_NAME=${basename(repoPath)}`)
@@ -827,6 +854,14 @@ if (roomsActive) {
     if (cagedAdversary) { console.error(`Refusing to launch a caged adversary without its host security record: ${e?.message || e}`); process.exit(1) }
     dbg(`session-record write failed: ${e?.message || e}`)
   }
+}
+
+// #5 per-UUID: the container needs MRC_SESSION_ID for the per-conversation flock + deterministic --resume on EVERY
+// store-mode launch, but the roomsActive block above only sets it for room sessions. Ensure it for a non-room store
+// session (--daemon/--json/--no-rooms) — consistent with RESUME_SESSION/NEW_SESSION (resolveSessionId returns that id).
+if (storeActive && !memberCtx && !roomInfo) {
+  const sessionId = resolveSessionId(mrcDir, { resumeSession: config.resumeSession, newSession: config.newSession, exclude: launchIsPlainOrSolo ? storeExclude : null })
+  envFlags.push('-e', `MRC_SESSION_ID=${sessionId}`)
 }
 
 // Banner

@@ -167,6 +167,38 @@ export function sliceLiveContainer(sliceHostDir, { runningIds, mountSourceOf, at
   return { id: null, determined: false }   // retries exhausted without a determination → caller must fail-closed
 }
 
+/** #5 per-UUID COEXIST: the SET of session uuids currently HELD by live containers. Each mrc container --resumes its
+ *  MRC_SESSION_ID; the host reads that env off every running mrc container so it can (a) force-new a bare launch off
+ *  a HELD newest (coexist, not collide) and (b) REFUSE an explicit resume of a held uuid. Returns { held, determined };
+ *  same fail-closed retry discipline as sliceLiveContainer — a ps/inspect throw → determined:false so the caller
+ *  fails closed (force-new for auto, refuse for explicit), never a silent "nothing held" that lets a co-resume through. */
+export function heldUuids({ runningIds, envOf, attempts = 3, backoffMs = 200, timeoutMs = LIVENESS_TIMEOUT_MS } = {}) {
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let undetermined = false
+    const held = new Set()
+    try {
+      const ids = runningIds
+        ? runningIds()
+        : execFileSync('docker', ['ps', '-q', '--filter', 'label=mrc=1'], { encoding: 'utf8', timeout: timeoutMs }).trim().split('\n').filter(Boolean)
+      for (const id of ids) {
+        let sid
+        if (envOf) sid = envOf(id)
+        else {
+          try {
+            const env = execFileSync('docker', ['inspect', '--format', '{{range .Config.Env}}{{println .}}{{end}}', id], { encoding: 'utf8', timeout: timeoutMs })
+            const line = env.split('\n').find((l) => l.startsWith('MRC_SESSION_ID='))
+            sid = line ? line.slice('MRC_SESSION_ID='.length).trim() : ''
+          } catch { undetermined = true; break }   // can't read this container's session → can't rule its uuid out
+        }
+        if (sid) held.add(sid)
+      }
+      if (!undetermined) return { held, determined: true }
+    } catch { undetermined = true }
+    if (undetermined && attempt < attempts - 1) { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, backoffMs) } catch {} }
+  }
+  return { held: new Set(), determined: false }   // couldn't determine → caller fails closed
+}
+
 /** Build the Docker image if needed. */
 export function buildImage(scriptDir, { rebuild, verbose, uid, gid }) {
   const buildFlags = ['-q', '--build-arg', `USER_UID=${uid}`, '--build-arg', `USER_GID=${gid}`]

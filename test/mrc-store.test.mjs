@@ -260,6 +260,102 @@ test('migrateToStore INCLUDE (member): copies ONLY the member\'s own transcript 
   } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
 })
 
+// ---------- v2: SUBDIRECTORY migration (the silent-drop fix) — allow-list + symlink-refuse + member-scope ----------
+test('migrate v2: carries Class-1 SUBDIRS (memory/, session-summaries/, <uuid>/) for the PLAIN slice', () => {
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
+  const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'plain')
+  try {
+    writeFileSync(join(legacy, '11111111-2222-3333-4444-555555555555.jsonl'), '{"type":"user"}\n')
+    mkdirSync(join(legacy, 'memory'), { recursive: true }); writeFileSync(join(legacy, 'memory', 'MEMORY.md'), '# facts\n')
+    mkdirSync(join(legacy, 'session-summaries'), { recursive: true }); writeFileSync(join(legacy, 'session-summaries', '11111111-2222-3333-4444-555555555555.md'), 'summary\n')
+    mkdirSync(join(legacy, '11111111-2222-3333-4444-555555555555', 'subagents'), { recursive: true }); writeFileSync(join(legacy, '11111111-2222-3333-4444-555555555555', 'subagents', 'agent-x.jsonl'), '{"type":"user"}\n')
+    migrateToStore(legacy, slice, {})
+    assert.ok(existsSyncT(join(slice, 'memory', 'MEMORY.md')), 'memory/ migrated (was SILENTLY DROPPED before v2)')
+    assert.ok(existsSyncT(join(slice, 'session-summaries', '11111111-2222-3333-4444-555555555555.md')), 'session-summaries/ migrated (the picker previews)')
+    assert.ok(existsSyncT(join(slice, '11111111-2222-3333-4444-555555555555', 'subagents', 'agent-x.jsonl')), '<uuid>/subagents migrated (subagent history)')
+  } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
+})
+
+test('migrate v2: HARD-DENIES session-meta (machine-global containment records) + Class-2 + logs the unknown', () => {
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
+  const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'plain')
+  try {
+    mkdirSync(join(legacy, 'session-meta'), { recursive: true }); writeFileSync(join(legacy, 'session-meta', 'x.json'), '{"adversary":true,"repoPath":"/x"}\n')
+    writeFileSync(join(legacy, '.env'), 'MRC_TELEGRAM_BOT_TOKEN=secret\n')
+    mkdirSync(join(legacy, 'teams'), { recursive: true }); writeFileSync(join(legacy, 'teams', 'p.md'), 'persona\n')
+    mkdirSync(join(legacy, 'mystery-dir'), { recursive: true }); writeFileSync(join(legacy, 'mystery-dir', 'q'), 'x\n')   // unknown → skip + log
+    migrateToStore(legacy, slice, {})
+    assert.ok(!existsSyncT(join(slice, 'session-meta')), 'session-meta HARD-DENIED — never drop caging records into a container-readable slice')
+    assert.ok(!existsSyncT(join(slice, '.env')), 'Class-2 secret (.env) never migrates')
+    assert.ok(!existsSyncT(join(slice, 'teams')), 'Class-3 persona (teams/) never migrates')
+    assert.ok(!existsSyncT(join(slice, 'mystery-dir')), 'an UNKNOWN item fails CLOSED (not swept into the mount) — logged, not migrated')
+  } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
+})
+
+test('migrate v2: REFUSES symlinks (attacker-influenceable legacyDir feeds a mount — no traversal/exfil)', () => {
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
+  const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'plain')
+  try {
+    symlinkSync('/etc', join(legacy, 'memory'))                                   // a symlinked memory/ → /etc
+    writeFileSync(join(legacy, 'aaaaaaaa-2222-3333-4444-555555555555.jsonl'), '{"type":"user"}\n')
+    mkdirSync(join(legacy, 'session-summaries'), { recursive: true }); symlinkSync('/etc/hosts', join(legacy, 'session-summaries', 'evil.md'))   // nested symlink
+    migrateToStore(legacy, slice, {})
+    assert.ok(!existsSyncT(join(slice, 'memory')), 'a symlinked top-level dir is REFUSED (never followed into /etc)')
+    assert.ok(!existsSyncT(join(slice, 'session-summaries', 'evil.md')), 'a NESTED symlink is refused by the recursive walk too')
+    assert.ok(existsSyncT(join(slice, 'aaaaaaaa-2222-3333-4444-555555555555.jsonl')), 'real transcripts still migrate alongside the refused symlinks')
+  } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
+})
+
+test('migrate v2: a MEMBER gets STRICTLY its own subtree — NEVER memory/, session-names, or a sibling summary', () => {
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
+  const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'member')
+  const me = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'   // a memberSessionId (40 hex)
+  try {
+    writeFileSync(join(legacy, `${me}.jsonl`), '{"type":"user"}\n')
+    mkdirSync(join(legacy, me, 'subagents'), { recursive: true }); writeFileSync(join(legacy, me, 'subagents', 'a.jsonl'), '{"type":"user"}\n')
+    writeFileSync(join(legacy, 'dddddddd-2222-3333-4444-555555555555.jsonl'), '{"type":"user"}\n')   // a SIBLING (non-member) transcript
+    mkdirSync(join(legacy, 'memory'), { recursive: true }); writeFileSync(join(legacy, 'memory', 'MEMORY.md'), 'USER SECRETS\n')
+    writeFileSync(join(legacy, 'session-names'), 'x=y\n')
+    migrateToStore(legacy, slice, { include: new Set([me]) })
+    assert.ok(existsSyncT(join(slice, `${me}.jsonl`)), 'member gets its own transcript')
+    assert.ok(existsSyncT(join(slice, me, 'subagents', 'a.jsonl')), 'member gets its own <uuid>/ subagent subtree')
+    assert.ok(!existsSyncT(join(slice, 'dddddddd-2222-3333-4444-555555555555.jsonl')), 'a SIBLING transcript never lands in the member slice')
+    assert.ok(!existsSyncT(join(slice, 'memory')), 'CARDINAL SIN GUARD: the user\'s memory/ NEVER lands in a member slice')
+    assert.ok(!existsSyncT(join(slice, 'session-names')), 'a member never gets shared session-names')
+  } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
+})
+
+test('migrate v2: the @member uuid-exclude reaches NESTED leaves (session-summaries/<memberUuid>.md) for the plain slice', () => {
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
+  const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'plain')
+  const member = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'
+  try {
+    mkdirSync(join(legacy, 'session-summaries'), { recursive: true })
+    writeFileSync(join(legacy, 'session-summaries', 'plain-1111.md'), 'plain summary\n')
+    writeFileSync(join(legacy, 'session-summaries', `${member}.md`), 'MEMBER summary\n')
+    migrateToStore(legacy, slice, { exclude: new Set([member]) })
+    assert.ok(existsSyncT(join(slice, 'session-summaries', 'plain-1111.md')), 'a plain summary migrates')
+    assert.ok(!existsSyncT(join(slice, 'session-summaries', `${member}.md`)), 'a @member summary NESTED in the allowed dir is EXCLUDED (PICKABLE⟺MIGRATED at every leaf)')
+  } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
+})
+
+test('migrate v2: a v1-migrated slice RE-migrates once (sentinel bump) to recover the dropped subdirs', () => {
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
+  const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'plain')
+  try {
+    mkdirSync(slice, { recursive: true })
+    writeFileSync(join(slice, 'aaaa-1111.jsonl'.replace('aaaa-1111','cccccccc-2222-3333-4444-555555555555')), '{"type":"user"}\n')   // transcript already in the slice (v1 migrated it)
+    writeFileSync(join(slice, '.mrc-store-migrated'), '')                          // the OLD v1 sentinel
+    // legacy still has the transcript + the DROPPED memory/
+    writeFileSync(join(legacy, 'cccccccc-2222-3333-4444-555555555555.jsonl'), '{"type":"user"}\n')
+    mkdirSync(join(legacy, 'memory'), { recursive: true }); writeFileSync(join(legacy, 'memory', 'MEMORY.md'), '# recovered\n')
+    const r = migrateToStore(legacy, slice, {})
+    assert.notEqual(r.alreadyDone, true, 'v1 sentinel does NOT satisfy v2 → re-migration runs')
+    assert.ok(existsSyncT(join(slice, 'memory', 'MEMORY.md')), 'the dropped memory/ is RECOVERED on the v2 re-migration')
+    assert.ok(existsSyncT(join(slice, '.mrc-store-migrated-v2')), 'the v2 sentinel is stamped so it won\'t re-run again')
+  } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
+})
+
 // ---------- BUG-1: mtime not clobbered on migrate (Fix B) + repaired on an already-migrated slice (Fix C) ----------
 import { normalizeSliceMtimes, migrateAndNormalize } from '../src/mrc-store.js'
 test('BUG-1 Fix B: migrateToStore preserves the SOURCE mtime (copyFileSync alone would stamp NOW → recency collapse)', () => {
@@ -303,15 +399,17 @@ test('BUG-1 Fix C: normalizeSliceMtimes repairs a clobbered mtime to MAX(legacy,
   } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
 })
 
-test('Finding-1: migrateAndNormalize skipNormalize — migrates (copy-if-absent) but NEVER runs the mtime WRITE on a live slice', () => {
+test('Finding-1 + v2 gate: migrateAndNormalize skipWrite — NEITHER migrate NOR normalize touches a live slice', () => {
   const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
   const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'plain')
   try {
     writeFileSync(join(legacy, 'a.jsonl'), '{"type":"user","timestamp":"2020-01-01T00:00:00Z"}\n')
     utimesSync(join(legacy, 'a.jsonl'), new Date('2020-01-01T00:00:00Z'), new Date('2020-01-01T00:00:00Z'))
-    migrateAndNormalize(legacy, slice, { skipNormalize: true })
-    assert.ok(existsSyncT(join(slice, 'a.jsonl')), 'migrate still ran (copy-if-absent is safe on a live slice)')
-    assert.ok(!existsSyncT(join(slice, '.mrc-mtimes-normalized')), 'skipNormalize → the mtime WRITE was skipped (no sentinel) — never mtime-race a live agent; the repair defers to an idle launch')
+    migrateAndNormalize(legacy, slice, { skipWrite: true })
+    // v2 sentinel bump → migrate is now a REAL write on a v1 slice, so skipWrite must skip it too (not just normalize):
+    // NOTHING is written to a live slice; recovery + repair defer to an idle launch.
+    assert.ok(!existsSyncT(join(slice, 'a.jsonl')), 'skipWrite → migrate did NOT run (no file copied onto the live slice)')
+    assert.ok(!existsSyncT(join(slice, '.mrc-mtimes-normalized')), 'skipWrite → normalize did NOT run (no mtime sentinel)')
   } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
 })
 
