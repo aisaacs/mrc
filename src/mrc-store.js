@@ -195,76 +195,75 @@ const KNOWN_NON_MEMORY = new Set(['.env', '.mrc-id', 'video-analysis.json', 'tea
 // flock locks. `.mrc-*` covers them all (+ future ones), so a store artifact never gets logged as "unrecognized".
 const isStoreInternal = (f) => f.startsWith('.mrc-') || f.startsWith('.oxcl') || f.endsWith('.lock')   // sentinels/markers/migrate-log/probe + the per-uuid + whole-slice flock files
 
-// Recursive copy-if-absent at the LEAF, SYMLINK-REFUSING. legacyDir is ATTACKER-INFLUENCEABLE and feeds a MOUNT, and
-// going recursive reopens the hostile-symlink surface the flat copy never faced — so lstat EVERY entry and REFUSE any
-// symlink (a symlinked memory/→/etc or →another slice = traversal/exfil). Leaf copy-if-absent (never skip a dir
-// because it exists — a partial dir from a prior write must be filled). Preserves source mtimes. Returns files copied.
-function copyTreeIfAbsent(srcDir, dstDir, log, excludeSet) {
-  let copied = 0, ents
-  try { ents = readdirSync(srcDir, { withFileTypes: true }) } catch { return 0 }
-  for (const ent of ents) {
-    const src = join(srcDir, ent.name), dst = join(dstDir, ent.name)
-    let lst; try { lst = lstatSync(src) } catch { continue }
-    if (lst.isSymbolicLink()) { log(`refused a symlink at ${src} (not migrated — attacker-influenceable)`); continue }
-    if (lst.isDirectory()) { mkdirSync(dst, { recursive: true }); copied += copyTreeIfAbsent(src, dst, log, excludeSet) }
-    else if (lst.isFile() && !existsSync(dst)) {
-      // Refinement (Pierre): apply the @member uuid-exclude at EVERY uuid-keyed LEAF, not just top-level — a
-      // session-summaries/<memberUuid>.md nested in an allowed dir would otherwise land in the plain slice and break
-      // PICKABLE⟺MIGRATED (a file present the picker excludes). A leaf "<id>.<ext>" whose <id> is excluded → skip.
-      if (excludeSet && excludeSet.size && excludeSet.has(ent.name.replace(/\.[^.]+$/, ''))) continue
-      try { const tmp = `${dst}.${process.pid}.mig.tmp`; copyFileSync(src, tmp); renameSync(tmp, dst); try { utimesSync(dst, lst.atime, lst.mtime) } catch {}; copied++ } catch {}
+// The SINGLE enumeration of what a migration copies — shared by migrateToStore (to COPY) AND #001.verify (to BYTE-CHECK
+// the same set), so the two can NEVER drift (Pierre: a verify whose allow-list drifts from up()'s certifies its own blind
+// spot). legacyDir is ATTACKER-INFLUENCEABLE and feeds a MOUNT → lstat EVERY entry and REFUSE any symlink (a symlinked
+// memory/→/etc or →another slice = traversal/exfil). Recursive into memory/ + session-summaries/ + <uuid>/ dirs; the
+// @member uuid-exclude applies at EVERY uuid-keyed leaf (a nested session-summaries/<memberUuid>.md must not land in a
+// plain slice). Returns { manifest: relative paths of in-scope memory LEAVES (what SHOULD be in the slice),
+// refused: {path, reason:'symlink'|'unrecognized'} that up() deliberately did NOT migrate (verify must NOT flag these) }.
+export function planMigration(legacyDir, { exclude = null, include = null } = {}) {
+  const manifest = [], refused = []
+  const inScope = (uuid) => include ? include.has(uuid) : !(exclude && exclude.has(uuid))
+  const excludedLeaf = (name) => exclude && exclude.size && exclude.has(name.replace(/\.[^.]+$/, ''))
+  const walk = (rel) => {
+    let ents; try { ents = readdirSync(join(legacyDir, rel), { withFileTypes: true }) } catch { return }
+    for (const e of ents) {
+      const r = rel ? `${rel}/${e.name}` : e.name
+      let lst; try { lst = lstatSync(join(legacyDir, r)) } catch { continue }
+      if (lst.isSymbolicLink()) { refused.push({ path: r, reason: 'symlink' }); continue }
+      if (lst.isDirectory()) walk(r)
+      else if (lst.isFile() && !excludedLeaf(e.name)) manifest.push(r)
     }
   }
-  return copied
-}
-
-export function migrateToStore(legacyDir, sliceDir, { exclude = null, include = null } = {}) {
-  const sentinel = join(sliceDir, MIGRATED_SENTINEL)
-  if (existsSync(sentinel)) return { migrated: 0, skipped: 0, alreadyDone: true }
-  mkdirSync(sliceDir, { recursive: true })
-  // LOUD-log (Pierre): stderr AND a slice-local migrate log — stderr scrolls under the TUI, so a genuinely-dropped
-  // new class stays diagnosable post-hoc (`.mrc-migrate.log`, itself store-internal so never re-migrated).
-  const logFile = join(sliceDir, '.mrc-migrate.log')
-  const log = (m) => { try { console.error(`  ! mrc migrate: ${m}`) } catch {}; try { appendFileSync(logFile, `${m}\n`) } catch {} }
-  let migrated = 0, skipped = 0, ents
-  try { ents = readdirSync(legacyDir, { withFileTypes: true }) } catch { ents = [] }   // no legacy dir → nothing to copy (still stamp the sentinel)
+  let ents; try { ents = readdirSync(legacyDir, { withFileTypes: true }) } catch { return { manifest, refused } }
   for (const ent of ents) {
     const f = ent.name
-    if (KNOWN_NON_MEMORY.has(f) || isStoreInternal(f)) continue                          // known non-memory → skip SILENTLY
+    if (KNOWN_NON_MEMORY.has(f) || isStoreInternal(f)) continue                          // known non-memory → silent skip
     let lst; try { lst = lstatSync(join(legacyDir, f)) } catch { continue }
-    if (lst.isSymbolicLink()) { log(`refused a symlink at ${f} (not migrated)`); continue }   // symlink refuse (see copyTreeIfAbsent)
-
+    if (lst.isSymbolicLink()) { refused.push({ path: f, reason: 'symlink' }); continue }
     const isTranscript = lst.isFile() && f.endsWith('.jsonl')
     const uuid = isTranscript ? f.slice(0, -6) : f
     const isSessionDir = lst.isDirectory() && SESSION_ID_RE.test(f)                      // <uuid>/ subagent subtree
-    // SHARED, project-scoped items — RECOGNIZED (never logged), but PLAIN-only: a MEMBER gets STRICTLY its own uuid
-    // subtree, never shared memory (leaking the user's history into a member is the cardinal sin, mrc-store header).
     const isSharedFile = lst.isFile() && (f === 'session-names' || f === 'names-migrated' || f === 'security-migrated')
     const isSharedDir = lst.isDirectory() && (f === 'memory' || f === 'session-summaries')
+    if (isTranscript || isSessionDir) { if (!inScope(uuid)) continue; if (isSessionDir) walk(f); else manifest.push(f) }
+    else if (isSharedFile) { if (!include) manifest.push(f) }                            // shared → PLAIN only (a member is silently excluded)
+    else if (isSharedDir) { if (!include) walk(f) }
+    else refused.push({ path: f, reason: 'unrecognized' })                               // recognized-shape-none → LOUD-log at copy time
+  }
+  return { manifest, refused }
+}
 
-    let take = false, dirCopy = false
-    if (isTranscript || isSessionDir) {                                                  // uuid-keyed: scoped by include (member: own) / exclude (plain: minus @members)
-      take = include ? include.has(uuid) : !(exclude && exclude.has(uuid))
-      dirCopy = isSessionDir
-    } else if (isSharedFile) { take = !include }                                         // recognized shared → PLAIN only; a member is silently excluded (NOT logged)
-    else if (isSharedDir) { take = !include; dirCopy = true }
-    else { log(`not migrating "${f}" — unrecognized store item; if this is memory it must be added to the allow-list`); skipped++; continue }
-
-    if (!take) { skipped++; continue }                                                   // recognized-but-out-of-scope (a member's shared item) → silent skip
-    const dst = join(sliceDir, f)
-    if (dirCopy) { mkdirSync(dst, { recursive: true }); migrated += copyTreeIfAbsent(join(legacyDir, f), dst, log, exclude) }   // exclude reaches nested uuid-keyed leaves (session-summaries/<memberUuid>.md); null for a member (include-scoped)
-    else {
-      if (existsSync(dst)) { skipped++; continue }                                       // leaf copy-if-absent — never clobber newer store data
-      try {
-        const src = join(legacyDir, f), tmp = `${dst}.${process.pid}.mig.tmp`
-        copyFileSync(src, tmp); renameSync(tmp, dst)                                     // atomic per-file
-        try { utimesSync(dst, lst.atime, lst.mtime) } catch {}                           // BUG-1: preserve SOURCE mtime (copyFileSync stamps NOW → recency collapse)
-        migrated++
-      } catch { /* raced/vanished → skip; no sentinel yet on a throw path means a re-run retries */ }
-    }
+export function migrateToStore(legacyDir, sliceDir, { exclude = null, include = null } = {}) {
+  const plan = planMigration(legacyDir, { exclude, include })                            // the ONE enumeration (verify shares it → can't drift)
+  const sentinel = join(sliceDir, MIGRATED_SENTINEL)
+  if (existsSync(sentinel)) return { migrated: 0, skipped: 0, alreadyDone: true, manifest: plan.manifest, refused: plan.refused }
+  mkdirSync(sliceDir, { recursive: true })
+  // LOUD-log: stderr AND a slice-local .mrc-migrate.log (store-internal → never re-migrated) so a genuinely-dropped new
+  // class stays diagnosable post-hoc even though stderr scrolls under the TUI.
+  const logFile = join(sliceDir, '.mrc-migrate.log')
+  const log = (m) => { try { console.error(`  ! mrc migrate: ${m}`) } catch {}; try { appendFileSync(logFile, `${m}\n`) } catch {} }
+  for (const r of plan.refused) log(r.reason === 'symlink'
+    ? `refused a symlink at ${r.path} (not migrated)`
+    : `not migrating "${r.path}" — unrecognized store item; if this is memory it must be added to the allow-list`)
+  let migrated = 0, skipped = 0
+  for (const rel of plan.manifest) {
+    const dst = join(sliceDir, rel)
+    if (existsSync(dst)) { skipped++; continue }                                         // leaf copy-if-absent — never clobber newer store data
+    try {
+      const src = join(legacyDir, rel)
+      const lst = lstatSync(src)                                                         // re-lstat: TOCTOU — a symlink swapped in AFTER planMigration must still be refused (copyFileSync follows links)
+      if (lst.isSymbolicLink()) { log(`refused a symlink at ${rel} (not migrated)`); continue }
+      mkdirSync(dirname(dst), { recursive: true })                                       // manifest leaves under memory/ etc. need their parent
+      const tmp = `${dst}.${process.pid}.mig.tmp`
+      copyFileSync(src, tmp); renameSync(tmp, dst)                                        // atomic per-file
+      try { utimesSync(dst, lst.atime, lst.mtime) } catch {}                             // preserve SOURCE mtime (copyFileSync stamps NOW → recency collapse)
+      migrated++
+    } catch { /* raced/vanished → skip; no sentinel yet on a throw means a re-run retries */ }
   }
   try { const stmp = `${sentinel}.${process.pid}.tmp`; writeFileSync(stmp, ''); renameSync(stmp, sentinel) } catch {}   // SENTINEL LAST + atomic → interrupt before here = clean re-entry
-  return { migrated, skipped }
+  return { migrated, skipped, manifest: plan.manifest, refused: plan.refused }
 }
 
 const MTIME_SENTINEL = '.mrc-mtimes-normalized'
