@@ -15,6 +15,13 @@ const SETTINGS_FILE = join(CLAUDE_DIR, 'settings.json')
 const CONFIG_FILE = join(CLAUDE_DIR, 'claude.json')
 const MRC_LOCAL = '/workspace/.mrc'
 const PROJECT_STORE = join(CLAUDE_DIR, 'projects', '-workspace')
+// #5 STORE-MODE: the store-layout contract version this container-setup implements (mount-conditional retarget of
+// the project store to /mrc). The Dockerfile emits this as LABEL mrc.store.capability so the HOST launcher can
+// gate store-mode on it (deny-unless-proven). MUST equal src/mrc-store.js's STORE_CAPABILITY (drift-tested).
+// Bumping this changes THIS file's content → its COPY layer rebuilds → the label can never be present on an image
+// whose container-setup is stale (the tie that stops the capability label from lying).
+const STORE_CAPABILITY = 1
+const MRC_STORE_MOUNT = '/mrc'   // where the host mounts the leaf slice when store-mode is active (existsSync = the runtime coordination signal)
 
 function readJSON(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null }

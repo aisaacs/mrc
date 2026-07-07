@@ -112,6 +112,11 @@ RUN chmod +x /usr/local/bin/xclip
 COPY container/mrc-notify-hook.js /usr/local/bin/
 COPY container/mrc-statusline.js /usr/local/bin/
 COPY container/container-setup.js /usr/local/bin/
+# #5 STORE-MODE capability: emitted RIGHT AFTER the container-setup COPY so a bump to container-setup.js's
+# STORE_CAPABILITY (which changes its content → busts this COPY layer → busts this LABEL) can never leave the label
+# claiming a capability the shipped container-setup doesn't implement. The HOST gates store-mode on this label
+# (deny-unless-proven); value MUST equal container-setup.js's STORE_CAPABILITY + src/mrc-store.js's (drift-tested).
+LABEL mrc.store.capability=1
 # mrc-rename installs WITHOUT the .js so the /rename slash command can invoke it as a clean `mrc-rename`
 # (node shebang, lands on PATH like the xclip shim). The other three KEEP .js — they're referenced by full
 # path in hooks/settings/entrypoint, never typed as a command.
