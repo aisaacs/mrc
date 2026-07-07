@@ -126,6 +126,24 @@ export function sliceKeyFor(ctx, { repoStoreId: getId = repoStoreId } = {}) {
 // ONLY Class-1 (Class-2 .env/config reads stay repo-relative, asserted by their own tests; they never call this).
 export function mrcStoreDir(ctx, opts) { return sliceDir(sliceKeyFor(ctx, opts)) }
 
+// Build the slice ctx from a launch's resolved state. EVERY signal is coerced EXPLICIT so the lattice never hits
+// its floor by accident (an unset field → the wrong grant/floor): `adversary` from the HOST-set caged flag (never
+// a container-influenceable field), `isMember` = a REAL team member (a memberCtx present AND not solo — solo is
+// mechanically a member but must key on repoId), `isSolo` from config.solo, and the (org,handle)/slot that key the
+// isolated slices. Callers pass their launch state; this is the ONE place launch signals → a slice ctx.
+export function storeCtx({ solo, memberCtx, cagedAdversary, adversarySlot, repoPath, sessionId }) {
+  return {
+    adversary: cagedAdversary === true,
+    adversarySlot,
+    isMember: !!(memberCtx && solo !== true),
+    isSolo: solo === true,
+    org: memberCtx && memberCtx.org,
+    handle: memberCtx && memberCtx.member && memberCtx.member.handle,
+    repoPath,
+    sessionId,
+  }
+}
+
 // ── STORE-MODE CAPABILITY GATE ──────────────────────────────────────────────────────────────────────────────
 // Store-mode (memory OUT of the repo, mounted at /mrc) is coupled to a CONTAINER change (container-setup retargets
 // the project-store symlink to /mrc) that only lands in a rebuilt IMAGE. Routing the host reads to the store while
@@ -157,7 +175,11 @@ export function decideStoreMode(imageLabels) {
 // injected (tests / mrc.js's docker shell-out). ANY failure → legacy, WITH a no-silent-failure log (couldn't
 // confirm capability ≠ silently reshaping the user's memory layout).
 export function resolveStoreMode(imageId, inspect) {
-  if (!imageId || typeof inspect !== 'function') return { storeMode: false, cap: 0, reason: 'no image id / inspector → legacy' }
+  if (typeof inspect !== 'function') return { storeMode: false, cap: 0, reason: 'no inspector → legacy' }   // programming/test path — no log
+  if (!imageId) {   // a docker hiccup at the PIN (imageIdOf returned '') — log for no-silent-failure PARITY with the inspect-failure below
+    try { console.error(`  ! mrc: could not pin an image id (docker hiccup?) — store-mode disabled, using LEGACY memory layout (repo/.mrc). Safe fallback.`) } catch {}
+    return { storeMode: false, cap: 0, reason: 'no pinned image id → legacy' }
+  }
   let labels
   try { labels = inspect(imageId) }
   catch (e) {

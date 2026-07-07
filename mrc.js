@@ -12,7 +12,8 @@ import { BANNER } from './src/constants.js'
 import { setVerbose, dbg } from './src/output.js'
 import { readMrcrc, loadEnv, parseArgs, sanitizeRepoConfig } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
-import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus } from './src/docker.js'
+import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus, imageIdOf, imageLabels } from './src/docker.js'
+import { resolveStoreMode, storeCtx, mrcStoreDir } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable
 import { processSandboxignores } from './src/sandboxignore.js'
 import { findFreePort } from './src/ports.js'
 import { startClipboardProxy } from './src/proxies/clipboard-proxy.js'
@@ -459,6 +460,14 @@ if (roomsActive) {
 const uid = process.getuid?.() ?? 1000
 const gid = process.getgid?.() ?? 1000
 buildImage(CONTEXT_DIR, { rebuild: config.rebuild, verbose: config.verbose, uid, gid })
+
+// #5 store-mode: pin the built image to its immutable ID (so inspect-and-run are the SAME image — Hazard C) and
+// decide store-mode from its capability LABEL. DENY-UNLESS-PROVEN: an image without the label (today's image, or a
+// stale-labeled one that fails the supported-set) → LEGACY, so this is a pure no-op = today's repo/.mrc behavior
+// until a rebuilt image flips it. The slice/mount/routing/migration (2b.2+) all gate on `store.storeMode`.
+const pinnedImage = imageIdOf()
+const store = resolveStoreMode(pinnedImage, imageLabels)
+dbg(`store-mode: ${store.reason}`)
 checkImageAge(repoPath)
 
 // Resume-recage: explicitly resuming a RECORDED adversary re-applies its cage. --open-adversary-unsafe reopens
@@ -582,7 +591,7 @@ if (cagedAdversary && config.daemon) {
 
 // Daemon mode: start container in background, print container ID, exit
 if (config.daemon) {
-  const containerId = startDaemon({ repoPath, envFlags, volumes, allowWeb: config.allowWeb })
+  const containerId = startDaemon({ repoPath, envFlags, volumes, allowWeb: config.allowWeb, image: pinnedImage || undefined })
   process.stdout.write(containerId + '\n')
   process.removeAllListeners('exit')
   process.removeAllListeners('SIGINT')
@@ -789,6 +798,7 @@ const exitCode = await runContainer({
   json: config.json,
   labels: roomLabels,
   member: memberCtx?.member?.handle || null,   // #34: TERM=xterm-256color + mrc.member label for ttyd-hosted members
+  image: pinnedImage || undefined,             // #5: run the PINNED image id (inspect+run same image); '' → IMAGE_NAME fallback
 })
 
 // --- Post-session processing (Claude only) ---

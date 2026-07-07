@@ -192,7 +192,19 @@ export function volumeName(repoPath, instanceId) {
 /** Run the Docker container. Returns a promise that resolves to the exit code.
  *  Uses spawn (not execFileSync) so the event loop stays free for the
  *  clipboard and notification proxy servers running in the same process. */
-export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb, json, labels = [], member = null }) {
+// #5 store-mode: resolve an image tag/name to its immutable ID ONCE, so inspect-and-run pin the SAME image (a tag
+// can retag between the two — Hazard C). '' on any failure → the caller falls back to the tag + legacy store-mode.
+export function imageIdOf(name = IMAGE_NAME) {
+  try { return execFileSync('docker', ['image', 'inspect', '--format', '{{.Id}}', name], { encoding: 'utf8', timeout: 10000 }).trim() } catch { return '' }
+}
+// The Config.Labels of an image (BY ID) for the store-mode capability gate. THROWS on a docker failure so
+// resolveStoreMode logs + falls to legacy (fail-toward-legacy); a labelless image → `null` → {} (→ legacy).
+export function imageLabels(imageId) {
+  const raw = execFileSync('docker', ['image', 'inspect', '--format', '{{json .Config.Labels}}', imageId], { encoding: 'utf8', timeout: 10000 })
+  return JSON.parse(raw) || {}
+}
+
+export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb, json, labels = [], member = null, image = IMAGE_NAME }) {
   // A team member (#34) runs as its own ttyd-hosted PTY (no tmux). Force TERM=xterm-256color so Claude
   // sees a real xterm — that's what makes the mouse wheel scroll the transcript natively — and label the
   // container with the member handle so the daemon can reconcile/console/stop it by `docker ps` label.
@@ -210,7 +222,7 @@ export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb
     ...labels,
     ...envFlags,
     ...volumes,
-    IMAGE_NAME,
+    image,   // #5: the PINNED image id (resolved once via imageIdOf) so inspect-and-run are the same image; falls back to IMAGE_NAME
     ...(json ? ['--output-format', 'stream-json'] : []),
     ...claudeArgs,
   ]
@@ -252,7 +264,7 @@ export function runWorkerExec({ repoPath, envFlags, volumes, allowWeb }) {
 }
 
 /** Start a daemon container (detached). Returns the container ID. */
-export function startDaemon({ repoPath, envFlags, volumes, allowWeb }) {
+export function startDaemon({ repoPath, envFlags, volumes, allowWeb, image = IMAGE_NAME }) {
   const args = [
     'run', '-d', '--rm', '--init',
     '--cap-add=NET_ADMIN', '--cap-add=NET_RAW',
@@ -263,7 +275,7 @@ export function startDaemon({ repoPath, envFlags, volumes, allowWeb }) {
     '--label', `mrc.web=${!!allowWeb}`,
     '-e', 'MRC_DAEMON=1',
     ...envFlags, ...volumes,
-    IMAGE_NAME,
+    image,   // #5: pinned image id (or IMAGE_NAME fallback)
   ]
   return execFileSync('docker', args, { encoding: 'utf8' }).trim()
 }

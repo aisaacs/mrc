@@ -7,7 +7,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, readFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { sliceKeyFor, repoStoreId, sliceDir, assertSafeSegment, storeRoot, repoIdFile, decideStoreMode, resolveStoreMode, STORE_CAPABILITY } from '../src/mrc-store.js'
+import { sliceKeyFor, repoStoreId, sliceDir, assertSafeSegment, storeRoot, repoIdFile, decideStoreMode, resolveStoreMode, STORE_CAPABILITY, storeCtx } from '../src/mrc-store.js'
 
 // ---------- the keying lattice (the security core) ----------
 test('lattice: a summoned adversary (summonedBy set, no member) → (repo,slot) slice, NEVER repoId', () => {
@@ -159,4 +159,34 @@ test('drift guard: Dockerfile LABEL === container-setup.js STORE_CAPABILITY === 
   assert.equal(consts.length, 1, 'exactly ONE top-level `const STORE_CAPABILITY =` declaration')
   assert.equal(Number(labels[0][1]), STORE_CAPABILITY, 'Dockerfile label === src/mrc-store STORE_CAPABILITY')
   assert.equal(Number(consts[0][1]), STORE_CAPABILITY, 'container-setup STORE_CAPABILITY === it too — a bump to any one alone fails HERE')
+})
+
+// ---------- storeCtx (launch signals → slice ctx; every signal explicit) ----------
+test('storeCtx: a plain session (no memberCtx, no solo, not caged) → clean grant ctx (repoId)', () => {
+  const c = storeCtx({ solo: false, memberCtx: null, cagedAdversary: false, repoPath: '/r', sessionId: 's' })
+  assert.equal(c.isMember, false); assert.equal(c.isSolo, false); assert.equal(c.adversary, false)
+  // through the lattice → repoId (the guardrail)
+  assert.equal(sliceKeyFor(c, { repoStoreId: () => 'RID' }), 'RID')
+})
+
+test('storeCtx: solo → isSolo true, isMember false (repoId, not the member slice) even though solo carries a memberCtx', () => {
+  const c = storeCtx({ solo: true, memberCtx: { org: 'x-solo', member: { handle: 'you/claude' } }, cagedAdversary: false, repoPath: '/r' })
+  assert.equal(c.isSolo, true); assert.equal(c.isMember, false)
+  assert.equal(sliceKeyFor(c, { repoStoreId: () => 'RID' }), 'RID')
+})
+
+test('storeCtx: a real team member → isMember true + org/handle (its own slice), .mrc-id never read', () => {
+  const c = storeCtx({ solo: false, memberCtx: { org: 'acme', member: { handle: 'a/claude' } }, cagedAdversary: false, repoPath: '/r' })
+  assert.equal(c.isMember, true); assert.equal(c.org, 'acme'); assert.equal(c.handle, 'a/claude')
+  let idRead = false
+  assert.match(sliceKeyFor(c, { repoStoreId: () => { idRead = true; return 'RID' } }), /^m-/)
+  assert.equal(idRead, false)
+})
+
+test('storeCtx: a caged adversary → adversary true + slot (walled slice), never repoId/member', () => {
+  const c = storeCtx({ solo: false, memberCtx: null, cagedAdversary: true, adversarySlot: 2, repoPath: '/r' })
+  assert.equal(c.adversary, true); assert.equal(c.adversarySlot, 2)
+  let idRead = false
+  assert.match(sliceKeyFor(c, { repoStoreId: () => { idRead = true; return 'RID' } }), /^adv-[0-9a-f]{12}-2$/)
+  assert.equal(idRead, false, 'an adversary never reads the user repo-id')
 })
