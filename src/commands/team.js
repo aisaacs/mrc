@@ -172,6 +172,27 @@ function loadRoster(repoPath, rosterPath) {
   return { norm, path }
 }
 
+// #5 PICKABLE⟺MIGRATED: the set of memberSessionId transcript uuids for a repo's team roster. A plain picker
+// AND the plain-slice migration must EXCLUDE these identically — they're @member private transcripts (in the
+// SHARED repo/.mrc, named by memberSessionId, UUID-shaped so filename-indistinguishable from a plain conversation
+// UUID), NOT the user's own plain sessions. Derived ONCE from team.json; the same set feeds the picker filter and
+// the migration copy-set so (pickable − migrated) is empty by construction (no ghost pick, no member bleed into
+// the plain slice). It's also correct independent of store-mode: a plain `mrc pick` shouldn't list @alice's
+// conversation (manager.js already blinds the picker to ADVERSARY sessions; members are the gap — they're in .mrc).
+// No roster → empty set → nothing excluded (all sessions ARE plain, correct). Unreadable roster → empty (fail
+// toward list/migrate-as-plain — a member ghost is a host-side confusion of the user's OWN repo, never a
+// cross-identity leak; the daemon-bind is the real member boundary).
+export function rosterMemberSessionIds(repoPath) {
+  const out = new Set()
+  try {
+    const path = findRoster(repoPath)
+    if (!path) return out
+    const norm = parseRoster(readFileSync(path, 'utf8'), { repo: repoPath })
+    for (const m of norm.members) out.add(memberSessionId(norm.org, m.handle))
+  } catch {}
+  return out
+}
+
 // #49: PURE, Docker-free selection of which roster a member-mode launch binds — extracted from mrc.js so
 // the coercion-resistance GUARANTEE (a --solo launch picks soloRoster and NEVER reads a repo team.json) is
 // asserted by a test, not left as a one-branch-deep inline guard a future refactor could silently reorder

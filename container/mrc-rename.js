@@ -20,10 +20,12 @@
 // Invoked by the /rename slash command, or directly when the human asks Claude to rename the session
 // ("rename this session" / "rename this to <x>"). Mirrors src/sessions/manager.js's saveNames (merge-on-save),
 // which we can't import here (src/ isn't in the container) — so the file format + merge are replicated.
-import { readFileSync, writeFileSync, readdirSync, statSync } from 'node:fs'
+import { readFileSync, writeFileSync, readdirSync, statSync, existsSync } from 'node:fs'
 import { join, basename } from 'node:path'
 
-const MRC_DIR = process.env.MRC_RENAME_DIR || '/workspace/.mrc'   // override only for tests; prod is always the repo's .mrc
+// #5: session-names lives in the mounted /mrc slice under store-mode, else the repo's /workspace/.mrc (existsSync
+// = the same runtime mount signal container-setup follows). MRC_RENAME_DIR overrides for tests.
+const MRC_DIR = process.env.MRC_RENAME_DIR || (existsSync('/mrc') ? '/mrc' : '/workspace/.mrc')
 const fail = (msg) => { process.stderr.write(msg + '\n'); process.exit(1) }
 
 function currentUuid() {

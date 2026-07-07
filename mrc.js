@@ -12,8 +12,9 @@ import { BANNER } from './src/constants.js'
 import { setVerbose, dbg } from './src/output.js'
 import { readMrcrc, loadEnv, parseArgs, sanitizeRepoConfig } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
-import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus, imageIdOf, imageLabels } from './src/docker.js'
-import { resolveStoreMode, storeCtx, mrcStoreDir } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable
+import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer } from './src/docker.js'
+import { resolveStoreMode, storeCtx, mrcStoreDir, sessionStoreDir, forkSliceDir, migrateToStore } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable
+import { rosterMemberSessionIds } from './src/commands/team.js'   // #5 PICKABLE⟺MIGRATED: the roster's memberSessionId exclude, shared by the picker + the migration
 import { processSandboxignores } from './src/sandboxignore.js'
 import { findFreePort } from './src/ports.js'
 import { startClipboardProxy } from './src/proxies/clipboard-proxy.js'
@@ -180,10 +181,26 @@ const openaiKey = process.env.OPENAI_API_KEY || ''
 dbg(`Naming key: ${apiKey ? `set (${apiKey.length} chars)${legacyKeyVar ? ' [legacy ANTHROPIC_API_KEY]' : ''}` : 'NOT SET'}`)
 dbg(`OpenAI key: ${openaiKey ? `set (${openaiKey.length} chars)` : 'NOT SET'}`)
 
+// #5: session-store routing for a PRE-build read (a subcommand or the auto-resume guard — they run BEFORE the image
+// build, so they inspect the EXISTING image; the LAUNCH re-decides from the post-build pinned image and migration
+// bridges the activation edge). Plain/user ctx (a subcommand/auto-resume is never a member/adversary). Returns
+// { dir, exclude }: dir = the migrated repoId slice (store-mode) or repo/.mrc (legacy); exclude = the roster's
+// memberSessionId set (PICKABLE⟺MIGRATED — the picker shows ONLY sessions the launch can resolve).
+function preBuildSessionStore(repoPath) {
+  const { id, labels } = imageIdAndLabels()
+  const storeMode = resolveStoreMode(id, () => labels).storeMode
+  // exclude ONLY in store-mode → the LEGACY picker/resume stays byte-identical to today (the whole relocation is
+  // inert until a rebuilt image flips the capability). In store-mode the SAME set feeds the migration (PICKABLE⟺MIGRATED).
+  const exclude = storeMode ? rosterMemberSessionIds(repoPath) : null
+  const dir = sessionStoreDir({ storeMode, ctx: { isMember: false, isSolo: false, adversary: false, repoPath }, legacyDir: resolve(repoPath, '.mrc'), migrate: true, exclude })
+  return { dir, exclude }
+}
+
 // --- Subcommand: mrc pick ---
 if (remaining[0] === 'pick') {
   const repoPath = resolve(remaining[1] || '.')
-  const result = await pick(resolve(repoPath, '.mrc'))
+  const { dir: mrcDir, exclude } = preBuildSessionStore(repoPath)
+  const result = await pick(mrcDir, { exclude })
   if (!result) process.exit(0)
   config.allowWeb = true
   if (result === 'NEW') {
@@ -220,8 +237,9 @@ if (remaining[0] === 'sessions') {
   switch (subcmd) {
     case 'ls': {
       const repoPath = resolve(sessionsArgs[0] || '.')
-      await ensureNamesMigrated(resolve(repoPath, '.mrc'))
-      listSessions(resolve(repoPath, '.mrc'))
+      const { dir, exclude } = preBuildSessionStore(repoPath)
+      await ensureNamesMigrated(dir)
+      listSessions(dir, { exclude })
       process.exit(0)
     }
     case 'name': {
@@ -229,16 +247,18 @@ if (remaining[0] === 'sessions') {
       const num = sessionsArgs[1] || '1'
       const repoPath = resolve(sessionsArgs[2] || '.')
       if (!name) { console.error('Usage: mrc sessions name <name> [#] [path]'); process.exit(1) }
-      nameSession(resolve(repoPath, '.mrc'), name, num)
+      const { dir, exclude } = preBuildSessionStore(repoPath)
+      nameSession(dir, name, num, { exclude })
       process.exit(0)
     }
     case 'resume': {
       const query = sessionsArgs[0]
       const repoPath = resolve(sessionsArgs[1] || '.')
       if (!query) { console.error('Usage: mrc sessions resume <name-or-#> [path]'); process.exit(1) }
-      const uuid = resolveSession(resolve(repoPath, '.mrc'), query)
+      const { dir, exclude } = preBuildSessionStore(repoPath)
+      const uuid = resolveSession(dir, query, { exclude })
       if (!uuid) { console.error(`Session not found: ${query}`); process.exit(1) }
-      if (!(await confirmIfAdversary(resolve(repoPath, '.mrc'), uuid))) {   // D10: adversary resume is deliberate on every path, not just the picker
+      if (!(await confirmIfAdversary(dir, uuid))) {   // D10: adversary resume is deliberate on every path, not just the picker
         // Print WHY before exiting — a bare exit(0) reads as success to automation. Distinguish "human said no"
         // from "non-TTY couldn't ask" (askYesNo fails safe to NO on a non-TTY, so a scripted resume silently did nothing).
         console.error(process.stdin.isTTY
@@ -252,7 +272,8 @@ if (remaining[0] === 'sessions') {
     }
     case 'pick': {
       const repoPath = resolve(sessionsArgs[0] || '.')
-      const result = await pick(resolve(repoPath, '.mrc'))
+      const { dir, exclude } = preBuildSessionStore(repoPath)
+      const result = await pick(dir, { exclude })
       if (!result) process.exit(0)
       config.allowWeb = true
       if (result === 'NEW') config.newSession = true
@@ -374,10 +395,10 @@ if (config.member) {
   const launch = memberLaunch(norm, member, repoPath)
   memberCtx = { norm, member, org: member.org, rosterPath, ...launch }
   config.rooms = true   // a member is always a room participant
-  // Resume this member's OWN conversation if it exists; else start fresh (pinned to its stable id),
-  // so the shared /workspace/.mrc never makes one member resume another's transcript.
-  if (existsSync(resolve(repoPath, '.mrc', `${launch.sessionId}.jsonl`))) config.resumeSession = launch.sessionId
-  else config.newSession = true
+  // #5: the member resume-vs-fresh decision is DEFERRED to after the post-build store decision (mrcDir@launch),
+  // because in store-mode a member's transcript lives in ITS slice, not repo/.mrc — deciding here (pre-build,
+  // raw repo/.mrc) would tell a store-mode member to start fresh even when its slice holds the transcript. The
+  // plain/adversary auto-resume guard below is gated on !memberCtx so this deferral can't let it misfire.
 }
 
 // Ensure Docker / Colima
@@ -428,9 +449,10 @@ const roomsActive = roomsEligible && (config.room || config.rooms)
 // uncaged. An 'unknown' (pre-record legacy) session can't be a current adversary (a summon needs the daemon +
 // writes a record), so it still auto-continues. Runs before session-id resolution so config.newSession takes
 // effect. TTY or not, we start FRESH (safe) and point the human at `mrc pick` to deliberately reconnect.
-if (config.agent === 'claude' && !config.newSession && !config.resumeSession) {
+if (config.agent === 'claude' && !memberCtx && !config.newSession && !config.resumeSession) {   // #5: !memberCtx — a member's resume-vs-fresh is decided at the launch (against its own slice), not here
   try {
-    const newest = getSessions(resolve(repoPath, '.mrc'))[0]
+    const { dir, exclude } = preBuildSessionStore(repoPath)   // #5: read the newest from the EXISTING image's store (slice or legacy), excluding @member transcripts
+    const newest = getSessions(dir, { exclude })[0]
     if (newest && classifySession(newest.uuid) === 'adversary') {
       console.error('  ⚔  Your most recent session here is a red-team (adversary) — not auto-continuing it uncaged. Starting fresh; use `mrc pick` to deliberately reconnect (it re-applies the cage).')
       config.newSession = true
@@ -465,8 +487,8 @@ buildImage(CONTEXT_DIR, { rebuild: config.rebuild, verbose: config.verbose, uid,
 // decide store-mode from its capability LABEL. DENY-UNLESS-PROVEN: an image without the label (today's image, or a
 // stale-labeled one that fails the supported-set) → LEGACY, so this is a pure no-op = today's repo/.mrc behavior
 // until a rebuilt image flips it. The slice/mount/routing/migration (2b.2+) all gate on `store.storeMode`.
-const pinnedImage = imageIdOf()
-const store = resolveStoreMode(pinnedImage, imageLabels)
+const { id: pinnedImage, labels: pinnedLabels } = imageIdAndLabels()
+const store = resolveStoreMode(pinnedImage, () => pinnedLabels)   // one folded inspect; the id we RUN == the id we DECIDED from (Hazard C)
 dbg(`store-mode: ${store.reason}`)
 checkImageAge(repoPath)
 
@@ -554,6 +576,72 @@ if (memberCtx) {
 }
 volumes.push('-v', `${volName}:/home/coder/.claude`)
 if (!adversaryVolume) volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)   // an adversary (Pierre) is Claude-only — no codex volume (and never the user's mrc-codex-<hash> — #11: keyed on adversaryVolume so an uncaged resume doesn't mount it either)
+
+// #5 LAUNCH-phase session-store dir. `store` (from the POST-build pinned image) decides. This session's slice comes
+// from its FULL ctx: a plain/solo session → its repoId slice, MIGRATED so its repo/.mrc history carries in (and its
+// picker excluded @member transcripts identically — PICKABLE⟺MIGRATED); a member/adversary → its own isolated
+// slice, migration DEFERRED (old transcripts stay in repo/.mrc, non-destructive/recoverable). Mount it at /mrc; the
+// mount-conditional container-setup (2c) retargets the project store there. EVERY launch session-store read routes
+// through `mrcDir` — no bypass. Legacy → repo/.mrc unchanged, today's behavior.
+// #5: an ADVERSARY stays FULLY LEGACY (its isolated pierre config-vol store + repo/.mrc), NOT store-mode. It's
+// already isolated by the pierre vol, so an adv-slice buys no isolation — and the store-mode transition would
+// DESTRUCTIVELY drop its un-migrated real-dir transcripts (container-setup's rmSync of a real-dir PROJECT_STORE,
+// which the repo/.mrc→slice migration never touches). Defer the adv-slice until it has its own migration. So
+// store-mode applies to plain / solo / member only; an adversary keeps today's pierre-vol behavior.
+const storeActive = store.storeMode && !cagedAdversary
+const storeExclude = storeActive ? rosterMemberSessionIds(repoPath) : null   // store-active only → legacy resolveSessionId is identical to today
+const isMemberLaunch = !!memberCtx && config.solo !== true                   // a REAL team member; solo is mechanically a member but keys on repoId + migrates like plain
+const launchIsPlainOrSolo = !cagedAdversary && !isMemberLaunch
+// #5 migration scope: plain/solo brings its whole repo/.mrc (minus @member transcripts) into the repoId slice; a
+// MEMBER brings ONLY its own transcript into its (org,handle) slice, so it RESUMES on the first store launch rather
+// than re-starting (owner directive: no member re-start). Include-scoped → no sibling transcript bleeds into a member slice.
+const migrateOpts = launchIsPlainOrSolo ? { migrate: true, exclude: storeExclude }
+  : isMemberLaunch ? { migrate: true, include: new Set([memberCtx.sessionId]) }
+  : { migrate: false }
+const legacyDir = resolve(repoPath, '.mrc')
+// #5: resolve the INTENDED slice PATH first — do NOT migrate yet (mrcStoreDir is pure path resolution). Migration
+// is deferred until AFTER the GATE-3 fork check so a forking launch NEVER touches the contended slice — not even
+// the sentinel-existsSync read migrate would do — honoring GATE-3's "don't touch a slice another container owns"
+// literally, and decoupling the fork case from the migration's own two-process concurrency-safety.
+let mrcDir = storeActive
+  ? mrcStoreDir(storeCtx({ solo: config.solo, memberCtx, cagedAdversary, adversarySlot, repoPath }))
+  : legacyDir
+// #5 GATE-3 CEILING (best-effort, plain/solo only), FORK-BEFORE-MIGRATE: if this repo's slice is ALREADY live in a
+// running container (a cp'd repo opened twice, or the same repo opened concurrently), don't contend — the container
+// flock floor would refuse. Fork THIS launch onto its OWN side slice so both run clean. EPHEMERAL: .mrc-id is
+// untouched, so the repo re-adopts its normal slice on the next solo open ("memory travels on cp" preserved). The
+// concurrent session starts FRESH (reset resume → never --resume a uuid absent from the empty fork slice) in a NAMED
+// slice printed below. MEMBERS are excluded: a member has a unique (org,handle) slice by construction, so it never
+// self-contends, and forking one would fork its identity — a member contends only on a genuine double-launch, which
+// the floor refuses. TOCTOU (two launches both docker-run before either is probed) is backstopped by the flock floor.
+let forkedForConcurrency = false
+if (storeActive && launchIsPlainOrSolo) {
+  const liveId = sliceLiveContainer(mrcDir)
+  if (liveId) {
+    mrcDir = forkSliceDir()
+    forkedForConcurrency = true
+    config.resumeSession = undefined
+    config.newSession = true
+    console.error(`  ! mrc: this repo's memory store is already in use by a live session (container ${liveId.slice(0, 12)}).`)
+    console.error(`    To avoid corrupting it, THIS session uses a separate store:`)
+    console.error(`      ${mrcDir}`)
+    console.error(`    Your repo identity is unchanged — open this repo alone and it rejoins its normal memory.`)
+  }
+}
+// Migrate legacy → the slice ONLY when we did NOT fork. A fork is ephemeral + empty by design (cp-concurrent gets no
+// memory), and skipping migration here is what makes a forking launch never read or write the contended slice.
+if (storeActive && !forkedForConcurrency && migrateOpts.migrate) migrateToStore(legacyDir, mrcDir, migrateOpts)
+if (storeActive) volumes.push('-v', `${mrcDir}:/mrc`)
+
+// #5: the member resume-vs-fresh decision (deferred here from the member block so it reads the POST-build store dir).
+// Read the member's OWN phase dir — mrcDir is its (org,handle) slice in store-mode (where 2c makes it write),
+// repo/.mrc in legacy — NOT raw repo/.mrc. Its own transcript was just migrated INTO that slice (include-scoped,
+// above), so a member RESUMES on the first store launch; it starts fresh only when it genuinely has no prior
+// transcript. This is the no-bypass fix for the member path.
+if (memberCtx) {
+  if (existsSync(resolve(mrcDir, `${memberCtx.sessionId}.jsonl`))) config.resumeSession = memberCtx.sessionId
+  else config.newSession = true
+}
 
 // Environment flags
 const envFlags = []
@@ -670,11 +758,11 @@ if (roomsActive) {
     // Stable session identity = the Claude conversation UUID, so a resumed conversation keeps its id
     // (rooms between the same two conversations resume) while a new conversation gets a fresh id —
     // pinned via `claude --session-id` in the entrypoint when RESUME_FLAG is empty.
-    const sessionId = resolveSessionId(resolve(repoPath, '.mrc'), { resumeSession: config.resumeSession, newSession: config.newSession })
+    const sessionId = resolveSessionId(mrcDir, { resumeSession: config.resumeSession, newSession: config.newSession, exclude: launchIsPlainOrSolo ? storeExclude : null })   // #5: route through the store dir; a plain --continue never auto-resumes a @member
     // Human-readable label (alias) for `mrc rooms` + ask_peer matching: the session's name if it has
     // one, else the repo basename.
     let label = basename(repoPath)
-    try { const nm = loadNames(resolve(repoPath, '.mrc'))[sessionId]; if (nm) label = nm } catch {}
+    try { const nm = loadNames(mrcDir)[sessionId]; if (nm) label = nm } catch {}
     envFlags.push(...roomSessionEnv({ daemonPort: daemon.port, sessionId, repoName: basename(repoPath), repoPath, roomName: config.room, label, summonedBy: config.summonedBy || undefined }))
     if (cagedAdversary) {
       // D/#43: a caged adversary sees ONLY its own room, read-only — not the whole /rooms tree. Verify the
@@ -735,7 +823,8 @@ if (!config.json) {
 }
 
 // Snapshot sessions for post-exit processing (Claude only — Codex has no .jsonl sessions)
-const mrcDir = resolve(repoPath, '.mrc')
+// mrcDir declared above (#5 store-mode routing) — the post-session naming/summary reads/writes use it, so they land
+// in the same slice the container wrote to (store-mode) or repo/.mrc (legacy).
 let beforeSessions = []
 if (config.agent === 'claude') {
   try { beforeSessions = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')) } catch {}

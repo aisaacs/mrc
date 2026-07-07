@@ -7,7 +7,7 @@ import fs from 'node:fs'
 import os from 'node:os'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
-import { claimLowestFree, nextInstanceSlot } from '../src/docker.js'
+import { claimLowestFree, nextInstanceSlot, sliceLiveContainer } from '../src/docker.js'
 import { createHash } from 'node:crypto'
 
 const freshDir = () => fs.mkdtempSync(join(os.tmpdir(), 'mrc-slot-'))
@@ -129,4 +129,30 @@ test('nextInstanceSlot: ignores -pierre-<N> and mrc-codex-* mounts (separate slo
 test('nextInstanceSlot: fail-CLOSED (null) when the mount oracle throws', () => {
   setHome()
   assert.equal(nextInstanceSlot('/repo/x', { listMountedVolumes: () => { throw new Error('docker down') } }), null, 'lost oracle → null → caller refuses to launch (never collide onto a live volume)')
+})
+
+// --- #5 GATE-3 CEILING: sliceLiveContainer — match a running container by its /mrc BIND-mount Source (basename) ---
+test('sliceLiveContainer: matches a running container mounting THIS slice at /mrc (by Source basename)', () => {
+  const live = sliceLiveContainer('/Users/me/.local/share/mrc/store/repo-uuid-abc', {
+    runningIds: () => ['aaa', 'bbb'],
+    mountSourceOf: (id) => id === 'bbb' ? '/some/other/prefix/store/repo-uuid-abc' : '/x/store/other-slice',
+  })
+  assert.equal(live, 'bbb', 'matched the container whose /mrc Source basename == this slice key, across a REMAPPED path prefix (Colima)')
+})
+
+test('sliceLiveContainer: a container mounting a DIFFERENT slice is NOT a match (no label false-positive)', () => {
+  const live = sliceLiveContainer('/store/repo-uuid-abc', {
+    runningIds: () => ['aaa'],
+    mountSourceOf: () => '/store/repo-uuid-DIFFERENT',   // same mrc label, DIFFERENT slice → must not match
+  })
+  assert.equal(live, null, 'two mrc sessions on different slices must not false-positive (match the SLICE, not the label)')
+})
+
+test('sliceLiveContainer: no /mrc mount (empty Source) is skipped; none live → null', () => {
+  assert.equal(sliceLiveContainer('/store/s1', { runningIds: () => ['a', 'b'], mountSourceOf: () => '' }), null, 'containers with no /mrc mount (legacy sessions) never match')
+  assert.equal(sliceLiveContainer('/store/s1', { runningIds: () => [] }), null, 'nothing running → null')
+})
+
+test('sliceLiveContainer: docker error → null (fail toward NOT forking; the flock floor still backstops)', () => {
+  assert.equal(sliceLiveContainer('/store/s1', { runningIds: () => { throw new Error('docker down') } }), null, 'lost the oracle → null → no fork; if a peer IS live the container flock floor refuses (never silent co-write)')
 })

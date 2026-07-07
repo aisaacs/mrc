@@ -12,7 +12,7 @@
 // (the SAME boundary its -pierre-N config volume already isolates on); anything unsure → an isolated per-session
 // floor. repoId is NEVER a fall-through default — that would leak the user's history to a member or a red-team
 // (the exact fail-open both first drafts had, closed here by making repoId a positive grant, never the else).
-import { openSync, writeSync, closeSync, readFileSync, writeFileSync, mkdirSync, realpathSync, renameSync, lstatSync } from 'node:fs'
+import { openSync, writeSync, closeSync, readFileSync, writeFileSync, mkdirSync, realpathSync, renameSync, lstatSync, copyFileSync, readdirSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, sep, dirname } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
@@ -126,11 +126,71 @@ export function sliceKeyFor(ctx, { repoStoreId: getId = repoStoreId } = {}) {
 // ONLY Class-1 (Class-2 .env/config reads stay repo-relative, asserted by their own tests; they never call this).
 export function mrcStoreDir(ctx, opts) { return sliceDir(sliceKeyFor(ctx, opts)) }
 
+// #5 GATE-3 EPHEMERAL fork: a per-launch side slice for a concurrent opener the host detected is already live (a
+// cp'd repo opened twice, or the same repo opened twice). EPHEMERAL by construction — a fresh random key NEVER
+// derived from .mrc-id, so it exists for THIS launch only and the repo re-adopts its normal slice on the next solo
+// open ("memory travels on cp" preserved; a persisted fork rewriting .mrc-id would silently reverse that). The
+// `fork-` prefix makes the side slice greppable/nameable so the concurrent session's history is findable.
+export const forkSliceKey = () => `fork-${randomUUID()}`
+export function forkSliceDir() { return sliceDir(forkSliceKey()) }
+
+// Orchestrator: the effective session-store dir for a launch or a subcommand. LEGACY → the repo's .mrc unchanged.
+// STORE-MODE → the slice (mrcStoreDir(ctx)), migrating legacy→slice FIRST (before any read/resolve) when `migrate`:
+// plain/solo carry their whole repo/.mrc in (`exclude`-scoped, minus @members, keeping PICKABLE⟺MIGRATED with the
+// picker); a MEMBER carries ONLY its own transcript in (`include`-scoped) so it RESUMES rather than re-starting. An
+// ADVERSARY is never store-mode (gated fully legacy upstream) so its pierre-vol history is untouched. One place
+// launch/subcommand → session-store dir.
+export function sessionStoreDir({ storeMode, ctx, legacyDir, migrate = false, exclude = null, include = null }) {
+  if (!storeMode) return legacyDir
+  const slice = mrcStoreDir(ctx)
+  if (migrate) migrateToStore(legacyDir, slice, { exclude, include })
+  return slice
+}
+
 // Build the slice ctx from a launch's resolved state. EVERY signal is coerced EXPLICIT so the lattice never hits
 // its floor by accident (an unset field → the wrong grant/floor): `adversary` from the HOST-set caged flag (never
 // a container-influenceable field), `isMember` = a REAL team member (a memberCtx present AND not solo — solo is
 // mechanically a member but must key on repoId), `isSolo` from config.solo, and the (org,handle)/slot that key the
 // isolated slices. Callers pass their launch state; this is the ONE place launch signals → a slice ctx.
+// #5 MIGRATION: bring a repo's existing LEGACY .mrc transcripts + session-names into its store slice, ONCE, on the
+// first store-capable launch. NON-DESTRUCTIVE (COPY, leave the legacy originals intact) — that's what makes the
+// pick/resume bridge SYMMETRIC across BOTH the activation AND the de-activation rebuild boundary (a de-activation
+// launch reading legacy still finds the session, because the copy never removed it). Copy-if-absent PER FILE
+// (kill-safe: a Ctrl-C'd migration re-enters and only copies what's missing, never a torn overwrite — a partial
+// copy stays a .tmp, the real dst appears only on the atomic rename) and the completion SENTINEL is written LAST,
+// atomically (temp→rename), so an INTERRUPTED migration leaves NO sentinel → it re-runs cleanly.
+// TWO scopes: `exclude` (plain/solo — the roster's memberSessionId set) is SKIPPED so PICKABLE⟺MIGRATED holds (the
+// picker excludes the SAME set, nothing pickable is left un-migrated, no @member transcript bleeds into the plain
+// slice); `include` (a MEMBER launch — its OWN memberSessionId) copies ONLY that transcript into its (org,handle)
+// slice, and NOT the shared session-names (which would leak sibling names), so a member RESUMES on the first store
+// launch rather than re-starting. exclude and include are mutually exclusive (a caller passes one); include wins.
+const MIGRATED_SENTINEL = '.mrc-store-migrated'
+export function migrateToStore(legacyDir, sliceDir, { exclude = null, include = null } = {}) {
+  const sentinel = join(sliceDir, MIGRATED_SENTINEL)
+  if (existsSync(sentinel)) return { migrated: 0, skipped: 0, alreadyDone: true }
+  mkdirSync(sliceDir, { recursive: true })
+  let migrated = 0, skipped = 0
+  let entries
+  try { entries = readdirSync(legacyDir) } catch { entries = [] }   // no legacy dir → nothing to copy (still stamp the sentinel so we don't re-scan every launch)
+  for (const f of entries) {
+    const isTranscript = f.endsWith('.jsonl')
+    if (!isTranscript && f !== 'session-names') continue                                 // ONLY memory (Class 1): transcripts + names. NOT .env/config (Class 2 stays repo-relative), never .mrc-id.
+    if (include) {                                                                       // MEMBER scope: only its OWN transcript, never session-names (no sibling-name leak into a member slice)
+      if (!isTranscript || !include.has(f.slice(0, -6))) { skipped++; continue }
+    } else if (isTranscript && exclude && exclude.has(f.slice(0, -6))) { skipped++; continue }   // -6 = '.jsonl'; PLAIN scope: a @member transcript → excluded (its own slice), matching the picker
+    const dst = join(sliceDir, f)
+    if (existsSync(dst)) { skipped++; continue }                                          // copy-if-absent: idempotent + never clobber newer store data with older repo data
+    try {
+      const tmp = `${dst}.${process.pid}.mig.tmp`
+      copyFileSync(join(legacyDir, f), tmp)
+      renameSync(tmp, dst)                                                                // atomic per-file — a partial copy is a .tmp, the dst appears whole or not at all
+      migrated++
+    } catch { /* a file that raced/vanished → skip; without a sentinel a re-run retries it */ }
+  }
+  try { const stmp = `${sentinel}.${process.pid}.tmp`; writeFileSync(stmp, ''); renameSync(stmp, sentinel) } catch {}   // SENTINEL LAST + atomic → an interrupt before here = no sentinel = clean re-entry
+  return { migrated, skipped }
+}
+
 export function storeCtx({ solo, memberCtx, cagedAdversary, adversarySlot, repoPath, sessionId }) {
   return {
     adversary: cagedAdversary === true,

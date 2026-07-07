@@ -58,10 +58,10 @@ export async function ensureNamesMigrated(mrcDir) {
 /**
  * Interactive session picker. Returns selected UUID, 'NEW', or null (quit).
  */
-export async function pick(mrcDir) {
+export async function pick(mrcDir, { exclude = null } = {}) {
   await ensureNamesMigrated(mrcDir)
 
-  const sessions = getResumableSessions(mrcDir)   // D2: normal .mrc sessions + repoPath-filtered summoned adversaries (SAME order `resolve` uses → `sessions resume <#>` can't diverge)
+  const sessions = getResumableSessions(mrcDir, { exclude })   // D2: normal .mrc sessions + repoPath-filtered summoned adversaries (SAME order `resolve` uses → `sessions resume <#>` can't diverge). #5: exclude @member transcripts (PICKABLE⟺MIGRATED)
   const names = loadNames(mrcDir)
 
   // Build rows: { action, num, ts, name, adversary, selfName, issuer, preview }

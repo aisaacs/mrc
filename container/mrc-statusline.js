@@ -5,7 +5,7 @@
 // Claude Code pipes a JSON blob to stdin on each refresh. We render:
 //   [█████████░░░░░░░░░░░] 49% context · 5h 12% │ 7d 7% · my-session
 //
-import { readFileSync, writeFileSync } from 'node:fs'
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
 import { join } from 'node:path'
 
 const BAR_WIDTH = 20
@@ -25,7 +25,9 @@ const RESET = '\x1b[0m'
 function lookupSessionName(projectDir, sessionId) {
   if (!projectDir || !sessionId) return ''
   try {
-    const lines = readFileSync(join(projectDir, '.mrc', 'session-names'), 'utf8').split('\n')
+    // #5: session-names is in the mounted /mrc slice under store-mode, else the repo's .mrc (same runtime mount signal)
+    const namesPath = existsSync('/mrc') ? '/mrc/session-names' : join(projectDir, '.mrc', 'session-names')
+    const lines = readFileSync(namesPath, 'utf8').split('\n')
     for (const line of lines) {
       const eq = line.indexOf('=')
       if (eq > 0 && line.slice(0, eq) === sessionId) {

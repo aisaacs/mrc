@@ -123,6 +123,32 @@ export function nextInstanceSlot(repoPath, { listMountedVolumes } = {}) {
   return { slot: r.slot, others: used.size + (r.sawClaim ? 1 : 0) }
 }
 
+/** #5 GATE-3 CEILING probe: is a RUNNING mrc container already mounting host slice `sliceHostDir` at /mrc? Returns
+ *  its container id, else null. The host CAN'T flock-probe (no flock(1) on macOS, no flock(2) in Node), so container
+ *  liveness is the host-side oracle — and it's SHARPER than a flock-probe would be: `docker ps` reports only running
+ *  containers (a crashed/killed owner drops off automatically — no stale marker to reap), it works for --daemon (a
+ *  detached container still shows after the host exits), and the /mrc mount exists from `docker run` time, so it
+ *  catches an owner even in its pre-flock startup window. Match by the /mrc BIND mount's Source (a bind carries
+ *  .Source, NOT .Name — .Name is for named volumes, cf. nextInstanceSlot), by BASENAME (the slice key), which is
+ *  invariant to Colima's host-path remapping. NOT by the mrc.repo label: a cp'd repo at a DIFFERENT path shares the
+ *  SAME slice, and two unrelated sessions share the mrc label while mounting different slices — the SLICE is the
+ *  identity. On any docker error → null (fail toward NOT forking; the container flock floor still backstops co-write). */
+export function sliceLiveContainer(sliceHostDir, { runningIds, mountSourceOf } = {}) {
+  const want = basename(sliceHostDir)
+  try {
+    const ids = runningIds
+      ? runningIds()
+      : execFileSync('docker', ['ps', '-q', '--filter', 'label=mrc=1'], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim().split('\n').filter(Boolean)
+    for (const id of ids) {
+      let src
+      if (mountSourceOf) src = mountSourceOf(id)
+      else { try { src = execFileSync('docker', ['inspect', '--format', '{{range .Mounts}}{{if eq .Destination "/mrc"}}{{.Source}}{{end}}{{end}}', id], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim() } catch { src = '' } }
+      if (src && basename(src) === want) return id
+    }
+  } catch { return null }
+  return null
+}
+
 /** Build the Docker image if needed. */
 export function buildImage(scriptDir, { rebuild, verbose, uid, gid }) {
   const buildFlags = ['-q', '--build-arg', `USER_UID=${uid}`, '--build-arg', `USER_GID=${gid}`]
@@ -192,16 +218,19 @@ export function volumeName(repoPath, instanceId) {
 /** Run the Docker container. Returns a promise that resolves to the exit code.
  *  Uses spawn (not execFileSync) so the event loop stays free for the
  *  clipboard and notification proxy servers running in the same process. */
-// #5 store-mode: resolve an image tag/name to its immutable ID ONCE, so inspect-and-run pin the SAME image (a tag
-// can retag between the two — Hazard C). '' on any failure → the caller falls back to the tag + legacy store-mode.
-export function imageIdOf(name = IMAGE_NAME) {
-  try { return execFileSync('docker', ['image', 'inspect', '--format', '{{.Id}}', name], { encoding: 'utf8', timeout: 10000 }).trim() } catch { return '' }
-}
-// The Config.Labels of an image (BY ID) for the store-mode capability gate. THROWS on a docker failure so
-// resolveStoreMode logs + falls to legacy (fail-toward-legacy); a labelless image → `null` → {} (→ legacy).
-export function imageLabels(imageId) {
-  const raw = execFileSync('docker', ['image', 'inspect', '--format', '{{json .Config.Labels}}', imageId], { encoding: 'utf8', timeout: 10000 })
-  return JSON.parse(raw) || {}
+// #5 store-mode: resolve an image's immutable ID + capability labels in ONE docker inspect (one call, not two), so
+// the id we RUN and the labels we DECIDE from come from a single consistent inspect — a tag can't retag between two
+// calls (Hazard C), and the caller RUNS this exact id. `{ id:'', labels:{} }` on ANY failure → the caller falls to
+// legacy. A labelless image → `{{json .Config.Labels}}` prints `null` → {} → legacy.
+export function imageIdAndLabels(name = IMAGE_NAME) {
+  try {
+    const out = execFileSync('docker', ['image', 'inspect', '--format', '{{.Id}} {{json .Config.Labels}}', name], { encoding: 'utf8', timeout: 10000 }).trim()
+    const sp = out.indexOf(' ')
+    const id = sp < 0 ? out : out.slice(0, sp)
+    let labels = {}
+    if (sp >= 0) { try { labels = JSON.parse(out.slice(sp + 1)) || {} } catch {} }
+    return { id, labels }
+  } catch { return { id: '', labels: {} } }
 }
 
 export function runContainer({ repoPath, envFlags, volumes, claudeArgs, allowWeb, json, labels = [], member = null, image = IMAGE_NAME }) {

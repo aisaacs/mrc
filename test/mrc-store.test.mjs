@@ -6,8 +6,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, readFileSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
+import { existsSync as existsSyncT } from 'node:fs'
 import { join } from 'node:path'
-import { sliceKeyFor, repoStoreId, sliceDir, assertSafeSegment, storeRoot, repoIdFile, decideStoreMode, resolveStoreMode, STORE_CAPABILITY, storeCtx } from '../src/mrc-store.js'
+import { sliceKeyFor, repoStoreId, sliceDir, assertSafeSegment, storeRoot, repoIdFile, decideStoreMode, resolveStoreMode, STORE_CAPABILITY, storeCtx, forkSliceKey, forkSliceDir } from '../src/mrc-store.js'
 
 // ---------- the keying lattice (the security core) ----------
 test('lattice: a summoned adversary (summonedBy set, no member) → (repo,slot) slice, NEVER repoId', () => {
@@ -189,4 +190,91 @@ test('storeCtx: a caged adversary → adversary true + slot (walled slice), neve
   let idRead = false
   assert.match(sliceKeyFor(c, { repoStoreId: () => { idRead = true; return 'RID' } }), /^adv-[0-9a-f]{12}-2$/)
   assert.equal(idRead, false, 'an adversary never reads the user repo-id')
+})
+
+// ---------- GATE-3 ephemeral fork slice (the ceiling's side slice) ----------
+test('forkSliceKey: fresh + distinct each call, `fork-` prefixed, a traversal-safe segment, NEVER derived from .mrc-id', () => {
+  const a = forkSliceKey(), b = forkSliceKey()
+  assert.notEqual(a, b, 'each fork is a fresh key (ephemeral, one launch)')
+  assert.ok(a.startsWith('fork-') && b.startsWith('fork-'), 'greppable/nameable prefix')
+  assert.doesNotThrow(() => assertSafeSegment(a), 'a fork key is a safe single path segment (no traversal)')
+  // forkSliceDir resolves under the store root (never through a planted symlink) — same ..-guard as every slice
+  const d = forkSliceDir()
+  assert.ok(d.startsWith(realpathSync(storeRoot())), 'the fork slice is a real child of the store root')
+})
+
+// ---------- migrateToStore (non-destructive, exclude, idempotent, kill-safe sentinel) ----------
+import { migrateToStore } from '../src/mrc-store.js'
+test('migrateToStore: copies transcripts+names, EXCLUDES member sessionIds, leaves Class-2 + originals, idempotent', () => {
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
+  const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'plain')
+  try {
+    writeFileSync(join(legacy, 'plain-uuid.jsonl'), '{"type":"user"}\n')
+    writeFileSync(join(legacy, 'member-uuid.jsonl'), '{"type":"user"}\n')   // a @member transcript
+    writeFileSync(join(legacy, 'session-names'), 'plain-uuid=my session\n')
+    writeFileSync(join(legacy, '.env'), 'SECRET=1\n')                       // Class 2 — must NOT migrate
+    const r = migrateToStore(legacy, slice, { exclude: new Set(['member-uuid']) })
+    assert.equal(r.migrated, 2, 'plain transcript + session-names copied')
+    assert.ok(existsSyncT(join(slice, 'plain-uuid.jsonl')), 'plain transcript migrated')
+    assert.ok(existsSyncT(join(slice, 'session-names')), 'names migrated')
+    assert.ok(!existsSyncT(join(slice, 'member-uuid.jsonl')), 'MEMBER transcript excluded (its own slice)')
+    assert.ok(!existsSyncT(join(slice, '.env')), 'Class-2 .env NOT migrated (stays repo-relative)')
+    // non-destructive: originals intact
+    assert.ok(existsSyncT(join(legacy, 'plain-uuid.jsonl')) && existsSyncT(join(legacy, 'member-uuid.jsonl')) && existsSyncT(join(legacy, '.env')), 'legacy originals left intact (symmetric bridge)')
+    // idempotent: sentinel present → second call is a no-op
+    const r2 = migrateToStore(legacy, slice, { exclude: new Set(['member-uuid']) })
+    assert.equal(r2.alreadyDone, true, 'sentinel → idempotent no-op')
+  } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
+})
+
+test('migrateToStore: copy-if-absent never clobbers newer store data with older repo data', () => {
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
+  const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'plain')
+  try {
+    mkdirSync(slice, { recursive: true })
+    writeFileSync(join(legacy, 'x.jsonl'), 'OLD-repo\n')
+    writeFileSync(join(slice, 'x.jsonl'), 'NEW-store\n')   // store already has a newer x.jsonl
+    migrateToStore(legacy, slice, {})
+    assert.equal(readFileSync(join(slice, 'x.jsonl'), 'utf8'), 'NEW-store\n', 'copy-if-absent kept the newer store copy')
+  } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
+})
+
+test('migrateToStore INCLUDE (member): copies ONLY the member\'s own transcript into its slice — no sibling, no session-names', () => {
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
+  const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'member')
+  try {
+    writeFileSync(join(legacy, 'member-me.jsonl'), '{"type":"user"}\n')      // THIS member's transcript
+    writeFileSync(join(legacy, 'member-other.jsonl'), '{"type":"user"}\n')   // a SIBLING member's transcript
+    writeFileSync(join(legacy, 'plain-uuid.jsonl'), '{"type":"user"}\n')     // a plain conversation
+    writeFileSync(join(legacy, 'session-names'), 'member-me=me\nmember-other=other\n')
+    const r = migrateToStore(legacy, slice, { include: new Set(['member-me']) })
+    assert.equal(r.migrated, 1, 'ONLY the member\'s own transcript copied')
+    assert.ok(existsSyncT(join(slice, 'member-me.jsonl')), 'the member resumes: its own transcript is in its slice')
+    assert.ok(!existsSyncT(join(slice, 'member-other.jsonl')), 'a SIBLING member transcript never bleeds into this slice')
+    assert.ok(!existsSyncT(join(slice, 'plain-uuid.jsonl')), 'a plain transcript never bleeds into a member slice')
+    assert.ok(!existsSyncT(join(slice, 'session-names')), 'session-names NOT copied (would leak sibling names into the member slice)')
+    // non-destructive: every legacy original intact (recoverable)
+    assert.ok(existsSyncT(join(legacy, 'member-me.jsonl')) && existsSyncT(join(legacy, 'member-other.jsonl')), 'legacy originals intact')
+    // idempotent
+    assert.equal(migrateToStore(legacy, slice, { include: new Set(['member-me']) }).alreadyDone, true, 'sentinel → idempotent')
+  } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
+})
+
+// ---------- PICKABLE ⟺ MIGRATED (the guardrail invariant, unit level) ----------
+import { getSessions } from '../src/sessions/manager.js'
+import { readdirSync } from 'node:fs'
+test('PICKABLE⟺MIGRATED: the SAME exclude at the picker AND the migration → every listed session is migrated (no ghost)', () => {
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
+  const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'plain')
+  try {
+    writeFileSync(join(legacy, 'plain.jsonl'), '{"type":"user","timestamp":"2026-01-01T00:00:00Z","message":{"content":"hi"}}\n')
+    writeFileSync(join(legacy, 'member-abc.jsonl'), '{"type":"user","timestamp":"2026-01-02T00:00:00Z","message":{"content":"member"}}\n')
+    const exclude = new Set(['member-abc'])   // the roster's memberSessionId set
+    const listed = new Set(getSessions(legacy, { exclude }).map((s) => s.uuid))            // the PICKER
+    migrateToStore(legacy, slice, { exclude })                                             // the MIGRATION (same exclude)
+    const migrated = new Set(readdirSync(slice).filter((f) => f.endsWith('.jsonl')).map((f) => f.slice(0, -6)))
+    assert.ok(!listed.has('member-abc') && !migrated.has('member-abc'), 'member excluded from BOTH picker and migration')
+    assert.ok(listed.has('plain') && migrated.has('plain'), 'plain in BOTH')
+    for (const u of listed) assert.ok(migrated.has(u), `every listed session must be migrated — ${u} would be a GHOST otherwise`)
+  } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
 })

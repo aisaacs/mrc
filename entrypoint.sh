@@ -43,6 +43,40 @@ fi
 # All config setup is now in Node
 node /usr/local/bin/container-setup.js
 
+# #5 GATE-3 FLOOR (store-mode only): acquire the SLICE writer lock. flock is advisory on the shared bind-mounted
+# inode, so it serializes ACROSS containers — one container owns a /mrc slice at a time — and it auto-releases when
+# this container dies (the kernel closes the fd), so a SIGKILL'd container leaves no stale lock (no reaping logic).
+# fd 200 is opened here and survives the exec into tail/agent below, so the lock is HELD for the container's life.
+# On CONTENTION another live container already owns this slice: REFUSE loudly rather than co-write the shared
+# slice state (transcripts, the merge-on-write session-names, and Claude's own project-store internals) and corrupt
+# it. The host CEILING normally forks a concurrent opener onto a DIFFERENT slice before we reach here; this is the
+# rare host-TOCTOU backstop. Adversaries never mount /mrc (gated fully legacy host-side), so this never touches them.
+if [ -d /mrc ]; then
+  # FAIL-LOUD if the primitive is missing: the floor's correctness DEPENDS on flock, so a missing binary must
+  # abort, never run the session unguarded (no-silent-failure doctrine). flock is util-linux (Dockerfile), present.
+  command -v flock >/dev/null 2>&1 || {
+    echo "FATAL: flock(1) is missing from this image, but store-mode requires it to prevent concurrent" >&2
+    echo "       memory-store corruption. Refusing to start unguarded (rebuild the image with util-linux)." >&2
+    exit 1
+  }
+  exec 200>/mrc/.writer.lock
+  # LOAD-BEARING: fd 200 is held by THIS shell process, and the agent below runs as a CHILD (NOT `exec claude`), so
+  # the shell stays alive as the authoritative fd-200 holder for the whole session — the child's own fd hygiene
+  # (a native binary may closefrom() on startup) can't drop the lock. If anyone ever converts the interactive agent
+  # launch to `exec claude` (replacing this shell), claude becomes the SOLE fd-200 holder and closing it would
+  # SILENTLY drop the writer lock mid-session → the exact silent co-write this guard exists to stop. Keep it a child.
+  # Gate the agent on a POSITIVE flock-acquired. `flock -n` exits 0 iff WE now own the lock; ANY non-zero (a live
+  # peer holds it, or an error) fails CLOSED → refuse, never fall through to the agent unlocked.
+  if flock -n 200; then
+    : # acquired — this container owns the slice; fd 200 stays open across the exec below → held for its life
+  else
+    echo "FATAL: another live mrc session already owns this memory store (/mrc)." >&2
+    echo "       Two sessions writing one memory slice would corrupt each other's transcripts. Close the other" >&2
+    echo "       session and retry (or the host will place a concurrent open on its own slice automatically)." >&2
+    exit 1
+  fi
+fi
+
 # One-shot worker turn (task-worker member): run the backend non-interactively on the prompt file and
 # print its output (captured by the host runWorkerExec). No interactive TTY, no channel. The prompt is
 # read from a file so backticks/$ in it are not re-evaluated by the shell.
@@ -78,6 +112,8 @@ AGENT="${MRC_AGENT:-claude}"
 case "$AGENT" in
   claude)
     echo "Launching Claude Code..."
+    # NB: claude runs as a CHILD of this shell (never `exec claude`) — this is LOAD-BEARING for the #5 /mrc writer
+    # lock (fd 200, opened above): the shell must stay alive as the fd holder for the whole session. Do not exec.
     # Build the --append-system-prompt content ONCE: a team member's persona (role + protocol) AND/OR a
     # downgrade notice. Gap-(b): a resume with no persisted transcript (a pre-fix vaporized record) downgrades to
     # a fresh session, and container-setup.js drops /tmp/mrc-session-note — a first-turn notice for the agent to

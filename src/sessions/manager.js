@@ -4,10 +4,13 @@ import { randomUUID } from 'node:crypto'
 import { allSessionRecords, sessionRecordMtime } from '../session-record.js'
 
 /** Return sessions sorted newest-first as [{ uuid, lastUpdated, preview }, ...]. */
-export function getSessions(mrcDir) {
+export function getSessions(mrcDir, { exclude = null } = {}) {
   const sessions = []
   let files
-  try { files = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl')) } catch { return [] }
+  // #5 PICKABLE⟺MIGRATED: `exclude` is the roster's memberSessionId set — a plain picker/resume must not list a
+  // @member's private transcript (it's in the shared repo/.mrc, UUID-named, filename-indistinguishable from a
+  // plain conversation). The migration uses the SAME set, so a listed session is always one the launch can resolve.
+  try { files = readdirSync(mrcDir).filter(f => f.endsWith('.jsonl') && !(exclude && exclude.has(basename(f, '.jsonl')))) } catch { return [] }
 
   for (const file of files) {
     const uuid = basename(file, '.jsonl')
@@ -86,9 +89,9 @@ export function saveNames(mrcDir, names) {
  * so surfacing a foreign-repo adversary would resume it from THIS repo's (wrong/empty/co-resident) volume.
  * Each row: { uuid, lastUpdated, preview, adversary, summonedBy }.
  */
-export function getResumableSessions(mrcDir) {
+export function getResumableSessions(mrcDir, { exclude = null } = {}) {
   const repoPath = dirname(mrcDir)
-  const sessions = getSessions(mrcDir).map((s) => ({ ...s, adversary: false, summonedBy: null }))
+  const sessions = getSessions(mrcDir, { exclude }).map((s) => ({ ...s, adversary: false, summonedBy: null }))
   const seen = new Set(sessions.map((s) => s.uuid))
   const advRows = []
   for (const [uuid, rec] of Object.entries(allSessionRecords())) {
@@ -108,8 +111,8 @@ export function getResumableSessions(mrcDir) {
 }
 
 /** Resolve a name or list number to a UUID. Returns UUID or null. */
-export function resolve(mrcDir, query) {
-  const sessions = getResumableSessions(mrcDir)   // D2: include adversaries so `sessions resume <#>` matches the picker + a raw adversary uuid resolves (D10 confirmIfAdversary still guards the resume path in mrc.js)
+export function resolve(mrcDir, query, { exclude = null } = {}) {
+  const sessions = getResumableSessions(mrcDir, { exclude })   // D2: include adversaries so `sessions resume <#>` matches the picker + a raw adversary uuid resolves (D10 confirmIfAdversary still guards the resume path in mrc.js)
   const names = loadNames(mrcDir)
 
   // Try as a number
@@ -140,9 +143,9 @@ export function resolve(mrcDir, query) {
 /** The stable per-conversation id used for room identity: the resumed UUID, the latest conversation
  *  (plain --continue), or a fresh UUID for a brand-new conversation (which the entrypoint then pins
  *  via `claude --session-id`). Stable across resume; unique per new conversation. */
-export function resolveSessionId(mrcDir, { resumeSession, newSession } = {}) {
+export function resolveSessionId(mrcDir, { resumeSession, newSession, exclude } = {}) {
   if (resumeSession) return resumeSession
-  if (!newSession) { try { const s = getSessions(mrcDir)[0]; if (s) return s.uuid } catch {} }
+  if (!newSession) { try { const s = getSessions(mrcDir, { exclude })[0]; if (s) return s.uuid } catch {} }   // #5: a plain --continue never auto-resumes a @member's transcript
   return randomUUID()
 }
 
@@ -166,8 +169,8 @@ function formatTs(ts) {
 }
 
 /** Print session list to stdout. */
-export function listSessions(mrcDir) {
-  const sessions = getSessions(mrcDir)
+export function listSessions(mrcDir, { exclude = null } = {}) {
+  const sessions = getSessions(mrcDir, { exclude })   // #5: don't list @member transcripts to the user
   if (!sessions.length) {
     console.log(`No sessions found in ${mrcDir}`)
     return
@@ -185,8 +188,8 @@ export function listSessions(mrcDir) {
 }
 
 /** Name a session. */
-export function nameSession(mrcDir, name, target = '1') {
-  const uuid = resolve(mrcDir, target)
+export function nameSession(mrcDir, name, target = '1', { exclude = null } = {}) {
+  const uuid = resolve(mrcDir, target, { exclude })   // #5: the #N target indexes the SAME excluded list the picker shows
   if (!uuid) {
     process.stderr.write(`Session not found: ${target}\nRun 'mrc sessions ls' to list available sessions.\n`)
     process.exit(1)

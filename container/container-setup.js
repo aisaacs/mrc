@@ -182,8 +182,33 @@ const CAGED = !!process.env.MRC_ADVERSARY_FW
 // real dir — else it re-plants the /workspace/.mrc symlink and re-poisons the volume for the next caged claimant.
 const ADVERSARY = !!process.env.MRC_ADVERSARY
 
-// 4. Project store. A NORMAL session symlinks ~/.claude/projects/-workspace → /workspace/.mrc (repo-local memory).
-if (ADVERSARY) {
+// 4. Project store. #5 STORE-MODE: the host mounted the /mrc slice (existsSync = the runtime coordination signal —
+// the container FOLLOWS the mount, so a stale-labeled image with no /mrc mount degrades to legacy, never
+// split-brain). Memory lives in /mrc, which is RW (no /workspace:ro EROFS), so the adversary cage transcript
+// special-case DISSOLVES — a caged adversary symlinks to /mrc like everyone else. Retarget the project store to
+// /mrc UNCONDITIONALLY every boot (Trap 4: fix a stale/wrong link from a config-restore or a just-activated
+// store-mode). Fail-LOUD writable probe (the whole EROFS class was a SILENT transcript loss). Else → the existing
+// behavior (adversary: a real dir in its config vol; normal: symlink to /workspace/.mrc). MUST equal src/mrc-store's
+// mount path; container-setup owns MRC_STORE_MOUNT.
+// #5 ADVERSARY-EXCLUDED: an adversary NEVER follows a /mrc mount. The host already keeps /mrc unmounted for an
+// adversary (mrc.js storeActive = store.storeMode && !cagedAdversary) because its transcripts live in its own
+// pierre config-vol as a REAL DIR that the repo/.mrc→slice migration never touches — so the store branch's
+// real-dir rmSync (below) would DESTROY its un-migrated history. `&& !ADVERSARY` is belt-and-suspenders: even if
+// a future host regression mounts /mrc for an adversary, the container refuses it and stays on the pierre-vol
+// (ADVERSARY branch), so line 197 can never rmSync an adversary's only copy. For plain/solo/member the real-dir
+// case is safe — their store is a symlink to /workspace/.mrc (host-migrated), so a real dir here is empty/fresh.
+const STORE_MOUNTED = existsSync(MRC_STORE_MOUNT)
+if (STORE_MOUNTED && !ADVERSARY) try {
+  let cur; try { cur = lstatSync(PROJECT_STORE) } catch {}
+  if (cur && cur.isSymbolicLink()) unlinkSync(PROJECT_STORE)                                            // drop a stale/wrong link — NEVER its target
+  else if (cur && existsSync(PROJECT_STORE)) rmSync(PROJECT_STORE, { recursive: true, force: true })   // a real dir (a prior legacy store) → for plain/solo/member their transcripts were migrated to the slice host-side (repo/.mrc→/mrc); the store IS /mrc now. Adversary is excluded above (its real-dir pierre-vol store is un-migrated → never reaches here).
+  mkdirSync(MRC_STORE_MOUNT, { recursive: true })
+  symlinkSync(MRC_STORE_MOUNT, PROJECT_STORE)
+  const probe = join(MRC_STORE_MOUNT, '.mrc-write-probe'); writeFileSync(probe, ''); rmSync(probe, { force: true })
+} catch (e) {
+  console.error(`FATAL: store-mode /mrc slice is not a writable real mount (${e.message}). A transcript would be silently lost — aborting.`)
+  process.exit(1)
+} else if (ADVERSARY) {
   // An adversary's transcript MUST be a real dir in its OWN config volume, NEVER a symlink into /workspace/.mrc:
   // for a cage /workspace is :ro, so a symlinked write EROFS-vaporizes the transcript SILENTLY (the session runs
   // fine, but a later resume finds nothing). The -pierre-N volumes are durable and many were minted BEFORE the
