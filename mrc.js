@@ -662,7 +662,13 @@ let mrcDir = storeActive
 const EXIT_STORE_BUSY = 69   // EX_UNAVAILABLE — distinct so automation detects "conversation open elsewhere", not a generic failure
 const sliceLive = storeActive ? probeSliceLive(mrcDir) : { id: null, determined: true }
 const skipWrite = storeActive && (!!sliceLive.id || !sliceLive.determined)
-if (storeActive && migrateOpts.migrate) migrateAndNormalize(legacyDir, mrcDir, { ...migrateOpts, skipWrite })
+if (storeActive && migrateOpts.migrate) {
+  const migRes = migrateAndNormalize(legacyDir, mrcDir, { ...migrateOpts, skipWrite })
+  // #5: migration is silent-on-success by design (the .mrc-migrate.log records only anomalies), which left the user
+  // unable to tell IF their memory relocated. Print a ONE-LINE confirmation on the FIRST real migration (migrated>0;
+  // a no-op re-launch has migrated=0 → stays quiet). Non-destructive → say so, so "relocated" doesn't read as "moved+lost".
+  if (migRes && migRes.migrated > 0) console.error(`  ✓ mrc: relocated ${migRes.migrated} memory item${migRes.migrated === 1 ? '' : 's'} into the host store (${mrcDir}) — your repo/.mrc is kept as a backup.`)
+}
 // #5 GAP A (Pierre t19): ensure the slice DIR exists host-side (owned by us) BEFORE docker mounts it. `skipWrite` gates
 // the WRITES INTO the slice (migrate/normalize), NEVER its existence — but migrateAndNormalize is ALSO the only host
 // mkdir. So on a FRESH slice + an UNDETERMINED liveness probe (docker ps hiccuped → skipWrite=true), nothing created
