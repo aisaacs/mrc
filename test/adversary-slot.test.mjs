@@ -131,28 +131,38 @@ test('nextInstanceSlot: fail-CLOSED (null) when the mount oracle throws', () => 
   assert.equal(nextInstanceSlot('/repo/x', { listMountedVolumes: () => { throw new Error('docker down') } }), null, 'lost oracle → null → caller refuses to launch (never collide onto a live volume)')
 })
 
-// --- #5 GATE-3 CEILING: sliceLiveContainer — match a running container by its /mrc BIND-mount Source (basename) ---
-test('sliceLiveContainer: matches a running container mounting THIS slice at /mrc (by Source basename)', () => {
-  const live = sliceLiveContainer('/Users/me/.local/share/mrc/store/repo-uuid-abc', {
+// --- #5 GATE-3 CEILING: sliceLiveContainer — {id, determined}, match by /mrc BIND-mount Source basename, FAIL-CLOSED ---
+test('sliceLiveContainer: matches a running container mounting THIS slice at /mrc (by Source basename) → {id, determined:true}', () => {
+  const r = sliceLiveContainer('/Users/me/.local/share/mrc/store/repo-uuid-abc', {
     runningIds: () => ['aaa', 'bbb'],
     mountSourceOf: (id) => id === 'bbb' ? '/some/other/prefix/store/repo-uuid-abc' : '/x/store/other-slice',
   })
-  assert.equal(live, 'bbb', 'matched the container whose /mrc Source basename == this slice key, across a REMAPPED path prefix (Colima)')
+  assert.deepEqual(r, { id: 'bbb', determined: true }, 'matched the container whose /mrc Source basename == this slice key, across a REMAPPED path prefix (Colima)')
 })
 
-test('sliceLiveContainer: a container mounting a DIFFERENT slice is NOT a match (no label false-positive)', () => {
-  const live = sliceLiveContainer('/store/repo-uuid-abc', {
+test('sliceLiveContainer: a container mounting a DIFFERENT slice is NOT a match → PROVEN clear {id:null, determined:true}', () => {
+  const r = sliceLiveContainer('/store/repo-uuid-abc', {
     runningIds: () => ['aaa'],
     mountSourceOf: () => '/store/repo-uuid-DIFFERENT',   // same mrc label, DIFFERENT slice → must not match
   })
-  assert.equal(live, null, 'two mrc sessions on different slices must not false-positive (match the SLICE, not the label)')
+  assert.deepEqual(r, { id: null, determined: true }, 'different-slice = a clean sweep = PROVEN clear (not a false-positive, and NOT undetermined)')
 })
 
-test('sliceLiveContainer: no /mrc mount (empty Source) is skipped; none live → null', () => {
-  assert.equal(sliceLiveContainer('/store/s1', { runningIds: () => ['a', 'b'], mountSourceOf: () => '' }), null, 'containers with no /mrc mount (legacy sessions) never match')
-  assert.equal(sliceLiveContainer('/store/s1', { runningIds: () => [] }), null, 'nothing running → null')
+test('sliceLiveContainer: no /mrc mount (empty Source) + nothing running → PROVEN clear {id:null, determined:true}', () => {
+  assert.deepEqual(sliceLiveContainer('/store/s1', { runningIds: () => ['a', 'b'], mountSourceOf: () => '' }), { id: null, determined: true }, 'legacy containers with no /mrc mount never match → clean sweep')
+  assert.deepEqual(sliceLiveContainer('/store/s1', { runningIds: () => [] }), { id: null, determined: true }, 'nothing running → PROVEN clear, normal launch')
 })
 
-test('sliceLiveContainer: docker error → null (fail toward NOT forking; the flock floor still backstops)', () => {
-  assert.equal(sliceLiveContainer('/store/s1', { runningIds: () => { throw new Error('docker down') } }), null, 'lost the oracle → null → no fork; if a peer IS live the container flock floor refuses (never silent co-write)')
+test('sliceLiveContainer: FAIL-CLOSED — ps throw → {determined:false} after retries (never "clear" on a failed probe)', () => {
+  const r = sliceLiveContainer('/store/s1', { runningIds: () => { throw new Error('docker down') }, attempts: 2, backoffMs: 1 })
+  assert.deepEqual(r, { id: null, determined: false }, 'lost the oracle → undetermined (caller REFUSES), never a silent GRANT of "clear" that would let a co-write through')
+})
+
+test('sliceLiveContainer: FAIL-CLOSED at the INSPECT grain — a per-container inspect timeout → undetermined, not "no match"', () => {
+  const r = sliceLiveContainer('/store/s1', {
+    runningIds: () => ['aaa'],
+    mountSourceOf: () => { throw new Error('inspect timeout') },   // can't rule THIS container out → must NOT conclude "clear"
+    attempts: 2, backoffMs: 1,
+  })
+  assert.deepEqual(r, { id: null, determined: false }, 'an inspect timeout on a candidate is undetermined — it might be the one on our slice (Pierre: the fail-open leaks at the inspect grain otherwise)')
 })

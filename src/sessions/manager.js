@@ -89,8 +89,12 @@ export function saveNames(mrcDir, names) {
  * so surfacing a foreign-repo adversary would resume it from THIS repo's (wrong/empty/co-resident) volume.
  * Each row: { uuid, lastUpdated, preview, adversary, summonedBy }.
  */
-export function getResumableSessions(mrcDir, { exclude = null } = {}) {
-  const repoPath = dirname(mrcDir)
+export function getResumableSessions(mrcDir, { exclude = null, repoPath } = {}) {
+  // #5 BUG-2: repoPath is REQUIRED — NOT defaulted to dirname(mrcDir). In store-mode mrcDir is the SLICE, so
+  // dirname(mrcDir) = the store ROOT, and the containment filter below then matches ZERO adversary records →
+  // every Pierre silently loses its adversary flag (exactly how this bug hid past static review). A missed call
+  // site must CRASH here, loud, not filter everyone out quietly. Callers all have the real repoPath in hand.
+  if (repoPath == null) throw new Error('getResumableSessions: repoPath is required (store-mode mrcDir is the slice, not the repo — dirname would silently drop every adversary record)')
   const sessions = getSessions(mrcDir, { exclude }).map((s) => ({ ...s, adversary: false, summonedBy: null }))
   const seen = new Set(sessions.map((s) => s.uuid))
   const advRows = []
@@ -111,8 +115,8 @@ export function getResumableSessions(mrcDir, { exclude = null } = {}) {
 }
 
 /** Resolve a name or list number to a UUID. Returns UUID or null. */
-export function resolve(mrcDir, query, { exclude = null } = {}) {
-  const sessions = getResumableSessions(mrcDir, { exclude })   // D2: include adversaries so `sessions resume <#>` matches the picker + a raw adversary uuid resolves (D10 confirmIfAdversary still guards the resume path in mrc.js)
+export function resolve(mrcDir, query, { exclude = null, repoPath } = {}) {
+  const sessions = getResumableSessions(mrcDir, { exclude, repoPath })   // D2: include adversaries so `sessions resume <#>` matches the picker + a raw adversary uuid resolves (D10 confirmIfAdversary still guards the resume path in mrc.js). #5: repoPath threaded (required) so store-mode surfaces adversaries.
   const names = loadNames(mrcDir)
 
   // Try as a number
@@ -188,8 +192,8 @@ export function listSessions(mrcDir, { exclude = null } = {}) {
 }
 
 /** Name a session. */
-export function nameSession(mrcDir, name, target = '1', { exclude = null } = {}) {
-  const uuid = resolve(mrcDir, target, { exclude })   // #5: the #N target indexes the SAME excluded list the picker shows
+export function nameSession(mrcDir, name, target = '1', { exclude = null, repoPath } = {}) {
+  const uuid = resolve(mrcDir, target, { exclude, repoPath })   // #5: the #N target indexes the SAME excluded list the picker shows; repoPath (required) so store-mode adversary rows resolve
   if (!uuid) {
     process.stderr.write(`Session not found: ${target}\nRun 'mrc sessions ls' to list available sessions.\n`)
     process.exit(1)

@@ -30,12 +30,12 @@ function setup() {
   const rec = join(process.env.HOME, '.local/share/mrc/session-meta')
   fs.utimesSync(join(mrcDir, 'normal-uuid.jsonl'), new Date('2026-06-15T00:00:00Z'), new Date('2026-06-15T00:00:00Z'))
   fs.utimesSync(join(rec, 'adv-here.json'), new Date('2026-06-01T00:00:00Z'), new Date('2026-06-01T00:00:00Z'))
-  return { mrcDir }
+  return { mrcDir, repo }   // #5: repoPath is now a REQUIRED arg (no dirname default), so tests pass the real repo
 }
 
 test('getResumableSessions: surfaces a THIS-repo adversary, FILTERS a foreign-repo one, dedups the normal session', () => {
-  const { mrcDir } = setup()
-  const rows = getResumableSessions(mrcDir)
+  const { mrcDir, repo } = setup()
+  const rows = getResumableSessions(mrcDir, { repoPath: repo })
   const byId = Object.fromEntries(rows.map((r) => [r.uuid, r]))
   assert.ok(byId['normal-uuid'], 'the normal .mrc session is listed')
   assert.equal(byId['normal-uuid'].adversary, false, 'the normal session is not flagged adversary')
@@ -47,12 +47,12 @@ test('getResumableSessions: surfaces a THIS-repo adversary, FILTERS a foreign-re
 })
 
 test('resolve: shares the merged order — `sessions resume <#>` reaches the appended adversary, and a raw adversary uuid resolves', () => {
-  const { mrcDir } = setup()
+  const { mrcDir, repo } = setup()
   // rows = [ normal-uuid (from .mrc), adv-here (appended) ] → #1, #2
-  assert.equal(resolve(mrcDir, '1'), 'normal-uuid', '#1 is the normal session')
-  assert.equal(resolve(mrcDir, '2'), 'adv-here', '#2 reaches the appended adversary — the picker and `sessions resume <#>` can not diverge')
-  assert.equal(resolve(mrcDir, 'adv-here'), 'adv-here', 'a raw adversary uuid resolves (D10 confirmIfAdversary still guards the resume in mrc.js)')
-  assert.equal(resolve(mrcDir, 'adv-foreign'), null, 'a foreign-repo adversary uuid does NOT resolve here')
+  assert.equal(resolve(mrcDir, '1', { repoPath: repo }), 'normal-uuid', '#1 is the normal session')
+  assert.equal(resolve(mrcDir, '2', { repoPath: repo }), 'adv-here', '#2 reaches the appended adversary — the picker and `sessions resume <#>` can not diverge')
+  assert.equal(resolve(mrcDir, 'adv-here', { repoPath: repo }), 'adv-here', 'a raw adversary uuid resolves (D10 confirmIfAdversary still guards the resume in mrc.js)')
+  assert.equal(resolve(mrcDir, 'adv-foreign', { repoPath: repo }), null, 'a foreign-repo adversary uuid does NOT resolve here')
 })
 
 // The LOAD-BEARING containment invariant (Pierre): the inline confirm is intent-safety, NOT the gate — the re-cage
@@ -67,17 +67,29 @@ test('adversary rows carry a real timestamp (record mtime) and sort most-recent-
   saveSessionRecord('adv-new', { repoPath: repo, summonedBy: 's2', adversary: true })
   // Make adv-old ancient; adv-new keeps its ~now mtime.
   fs.utimesSync(join(process.env.HOME, '.local/share/mrc/session-meta/adv-old.json'), new Date(1000), new Date(1000))
-  const adv = getResumableSessions(mrcDir).filter((r) => r.adversary)
+  const adv = getResumableSessions(mrcDir, { repoPath: repo }).filter((r) => r.adversary)
   assert.deepEqual(adv.map((r) => r.uuid), ['adv-new', 'adv-old'], 'most-recently-summoned adversary first (not undated at the bottom)')
   assert.ok(adv[0].recencyMs > 0 && adv[0].lastUpdated, 'a real timestamp is stamped from the record mtime (was 0 → blank date + always-last)')
   assert.equal(adv[1].recencyMs, 1000, 'the ancient record keeps its own mtime')
 })
 
+test('BUG-2: store-mode surfaces adversaries — mrcDir is the SLICE (dirname≠repo), repoPath passed explicitly', () => {
+  const repo = fs.mkdtempSync(join(os.tmpdir(), 'mrc-repoStore-'))
+  // the SLICE lives OUTSIDE the repo (store-mode): dirname(sliceDir) is the store root, NOT repo — the old
+  // dirname(mrcDir) default would filter this adversary out. With repoPath passed, it surfaces.
+  const sliceDir = fs.mkdtempSync(join(os.tmpdir(), 'mrc-store-slice-'))
+  saveSessionRecord('adv-store', { repoPath: repo, summonedBy: 'sx', adversary: true, slot: 1 })
+  const rows = getResumableSessions(sliceDir, { repoPath: repo })
+  assert.ok(rows.find((r) => r.uuid === 'adv-store' && r.adversary), 'the adversary surfaces in store-mode when the REAL repoPath is passed (not dirname of the slice)')
+  // and the fail-loud contract: a missed call site (no repoPath) THROWS, never silently drops the adversary
+  assert.throws(() => getResumableSessions(sliceDir), /repoPath is required/, 'no repoPath → loud throw, not a silent empty adversary list')
+})
+
 test('containment invariant: every resolve path to an adversary yields a uuid the mrc.js re-cage recognizes', () => {
-  const { mrcDir } = setup()
+  const { mrcDir, repo } = setup()
   saveNames(mrcDir, { 'adv-here': 'redteam-pierre' })   // so the by-NAME resolve path is asserted too (Pierre), not just covered by construction
   for (const [path, q] of [['by-number', '2'], ['by-uuid', 'adv-here'], ['by-name', 'redteam-pierre']]) {
-    const uuid = resolve(mrcDir, q)
+    const uuid = resolve(mrcDir, q, { repoPath: repo })
     assert.equal(uuid, 'adv-here', `${path} resolves the adversary`)
     assert.equal(isAdversarySession(uuid), true, `${path}: the resolved uuid triggers the mrc.js:423 re-cage (cageAdversary defaults ON) — a bypassed confirm still reopens CAGED, not uncaged`)
   }

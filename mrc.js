@@ -13,7 +13,7 @@ import { setVerbose, dbg } from './src/output.js'
 import { readMrcrc, loadEnv, parseArgs, sanitizeRepoConfig } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
 import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer } from './src/docker.js'
-import { resolveStoreMode, storeCtx, mrcStoreDir, sessionStoreDir, forkSliceDir, migrateToStore } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable
+import { resolveStoreMode, storeCtx, mrcStoreDir, sessionStoreDir, migrateAndNormalize } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable
 import { rosterMemberSessionIds } from './src/commands/team.js'   // #5 PICKABLE⟺MIGRATED: the roster's memberSessionId exclude, shared by the picker + the migration
 import { processSandboxignores } from './src/sandboxignore.js'
 import { findFreePort } from './src/ports.js'
@@ -186,13 +186,29 @@ dbg(`OpenAI key: ${openaiKey ? `set (${openaiKey.length} chars)` : 'NOT SET'}`)
 // bridges the activation edge). Plain/user ctx (a subcommand/auto-resume is never a member/adversary). Returns
 // { dir, exclude }: dir = the migrated repoId slice (store-mode) or repo/.mrc (legacy); exclude = the roster's
 // memberSessionId set (PICKABLE⟺MIGRATED — the picker shows ONLY sessions the launch can resolve).
+// #5 (Pierre): the liveness probe is a SYNCHRONOUS docker call that can block a couple seconds on a loaded Colima,
+// and a bare launch hits it ~twice — a silent multi-second stall reads as a hang (the exact thing we spent this
+// session chasing). Show a transient TTY note during the block, then clear the line. Non-TTY (daemon/json) skips it.
+function probeSliceLive(slice) {
+  const tty = process.stderr.isTTY
+  const msg = '  ⏳ checking the memory store…'
+  if (tty) { try { process.stderr.write(msg) } catch {} }
+  const r = sliceLiveContainer(slice)
+  if (tty) { try { process.stderr.write('\r' + ' '.repeat(msg.length) + '\r') } catch {} }
+  return r
+}
+
 function preBuildSessionStore(repoPath) {
   const { id, labels } = imageIdAndLabels()
   const storeMode = resolveStoreMode(id, () => labels).storeMode
   // exclude ONLY in store-mode → the LEGACY picker/resume stays byte-identical to today (the whole relocation is
   // inert until a rebuilt image flips the capability). In store-mode the SAME set feeds the migration (PICKABLE⟺MIGRATED).
   const exclude = storeMode ? rosterMemberSessionIds(repoPath) : null
-  const dir = sessionStoreDir({ storeMode, ctx: { isMember: false, isSolo: false, adversary: false, repoPath }, legacyDir: resolve(repoPath, '.mrc'), migrate: true, exclude })
+  // #5 Finding-1: a subcommand (pick/ls/name/resume) is READ-ONLY — it must not mtime-rewrite a slice a live
+  // container is using. Inject the ceiling probe so migrateAndNormalize skips the normalize WRITE when the slice is
+  // live or unverifiable (still migrates copy-if-absent, still lists — the repair defers to a later idle launch).
+  const isLive = (slice) => { const p = probeSliceLive(slice); return !!(p.id || !p.determined) }
+  const dir = sessionStoreDir({ storeMode, ctx: { isMember: false, isSolo: false, adversary: false, repoPath }, legacyDir: resolve(repoPath, '.mrc'), migrate: true, exclude, isLive })
   return { dir, exclude }
 }
 
@@ -200,7 +216,7 @@ function preBuildSessionStore(repoPath) {
 if (remaining[0] === 'pick') {
   const repoPath = resolve(remaining[1] || '.')
   const { dir: mrcDir, exclude } = preBuildSessionStore(repoPath)
-  const result = await pick(mrcDir, { exclude })
+  const result = await pick(mrcDir, { exclude, repoPath })   // #5: repoPath (required) so store-mode surfaces adversary rows (mrcDir is the slice, not the repo)
   if (!result) process.exit(0)
   config.allowWeb = true
   if (result === 'NEW') {
@@ -248,7 +264,7 @@ if (remaining[0] === 'sessions') {
       const repoPath = resolve(sessionsArgs[2] || '.')
       if (!name) { console.error('Usage: mrc sessions name <name> [#] [path]'); process.exit(1) }
       const { dir, exclude } = preBuildSessionStore(repoPath)
-      nameSession(dir, name, num, { exclude })
+      nameSession(dir, name, num, { exclude, repoPath })   // #5: repoPath required (store-mode)
       process.exit(0)
     }
     case 'resume': {
@@ -256,7 +272,7 @@ if (remaining[0] === 'sessions') {
       const repoPath = resolve(sessionsArgs[1] || '.')
       if (!query) { console.error('Usage: mrc sessions resume <name-or-#> [path]'); process.exit(1) }
       const { dir, exclude } = preBuildSessionStore(repoPath)
-      const uuid = resolveSession(dir, query, { exclude })
+      const uuid = resolveSession(dir, query, { exclude, repoPath })   // #5: repoPath required (store-mode)
       if (!uuid) { console.error(`Session not found: ${query}`); process.exit(1) }
       if (!(await confirmIfAdversary(dir, uuid))) {   // D10: adversary resume is deliberate on every path, not just the picker
         // Print WHY before exiting — a bare exit(0) reads as success to automation. Distinguish "human said no"
@@ -273,7 +289,7 @@ if (remaining[0] === 'sessions') {
     case 'pick': {
       const repoPath = resolve(sessionsArgs[0] || '.')
       const { dir, exclude } = preBuildSessionStore(repoPath)
-      const result = await pick(dir, { exclude })
+      const result = await pick(dir, { exclude, repoPath })   // #5: repoPath required (store-mode)
       if (!result) process.exit(0)
       config.allowWeb = true
       if (result === 'NEW') config.newSession = true
@@ -606,31 +622,37 @@ const legacyDir = resolve(repoPath, '.mrc')
 let mrcDir = storeActive
   ? mrcStoreDir(storeCtx({ solo: config.solo, memberCtx, cagedAdversary, adversarySlot, repoPath }))
   : legacyDir
-// #5 GATE-3 CEILING (best-effort, plain/solo only), FORK-BEFORE-MIGRATE: if this repo's slice is ALREADY live in a
-// running container (a cp'd repo opened twice, or the same repo opened concurrently), don't contend — the container
-// flock floor would refuse. Fork THIS launch onto its OWN side slice so both run clean. EPHEMERAL: .mrc-id is
-// untouched, so the repo re-adopts its normal slice on the next solo open ("memory travels on cp" preserved). The
-// concurrent session starts FRESH (reset resume → never --resume a uuid absent from the empty fork slice) in a NAMED
-// slice printed below. MEMBERS are excluded: a member has a unique (org,handle) slice by construction, so it never
-// self-contends, and forking one would fork its identity — a member contends only on a genuine double-launch, which
-// the floor refuses. TOCTOU (two launches both docker-run before either is probed) is backstopped by the flock floor.
-let forkedForConcurrency = false
+// #5 GATE-3 CEILING (plain/solo only) — FAIL-CLOSED REFUSE, not fork-to-blank. A silent blank fork IS the "mrc lost
+// my history" panic (the owner's own report), so instead of forking a concurrent opener onto empty memory, REFUSE:
+// two sessions writing one slice corrupt each other. The probe RETRIES then reports {id, determined}; we refuse on a
+// live peer (id) OR an unproven-idle slice (!determined — docker wedged), never GRANTing "clear" on a failed probe
+// (the fail-open sin). Interactive → loud message + --force-store override; non-interactive (daemon/json/no-TTY) →
+// clean-fail with a distinct exit code (never silently run automation against contended/empty memory). MEMBERS are
+// excluded (unique (org,handle) slice → no self-contention). The container floor backstops the ceiling's TOCTOU.
+// [Interim COARSE per-slice guard, banked as a UX regression vs legacy multi-instance; the per-UUID coexist redesign
+// lets two same-repo sessions share the slice on disjoint transcripts, replacing the refuse.]
+const EXIT_STORE_BUSY = 69   // EX_UNAVAILABLE — distinct so automation can detect "memory store in use", not a generic failure
+let forcedOntoLiveSlice = false
 if (storeActive && launchIsPlainOrSolo) {
-  const liveId = sliceLiveContainer(mrcDir)
-  if (liveId) {
-    mrcDir = forkSliceDir()
-    forkedForConcurrency = true
-    config.resumeSession = undefined
-    config.newSession = true
-    console.error(`  ! mrc: this repo's memory store is already in use by a live session (container ${liveId.slice(0, 12)}).`)
-    console.error(`    To avoid corrupting it, THIS session uses a separate store:`)
-    console.error(`      ${mrcDir}`)
-    console.error(`    Your repo identity is unchanged — open this repo alone and it rejoins its normal memory.`)
+  const probe = probeSliceLive(mrcDir)
+  if (probe.id || !probe.determined) {
+    const why = probe.id ? `is already in use by a live session (container ${probe.id.slice(0, 12)})` : `could not be verified free — Docker is unresponsive`
+    if (!config.forceStore) {
+      const nonInteractive = config.daemon || config.json || !process.stdin.isTTY
+      console.error(`\n  ⚠ mrc: this repo's memory store ${why}.`)
+      console.error(`  Two sessions writing one memory store corrupt each other's transcripts, so mrc won't open a second.`)
+      console.error(nonInteractive
+        ? `  Close the other session and retry.  (exit ${EXIT_STORE_BUSY})\n`
+        : `  → Close the other session and retry, or pass --force-store to open on it anyway (you accept the risk).\n`)
+      process.exit(EXIT_STORE_BUSY)
+    }
+    forcedOntoLiveSlice = true   // --force-store: the human accepted the co-write risk → proceed, but SKIP the normalize write-race (never mtime-rewrite a live agent's transcripts)
   }
 }
-// Migrate legacy → the slice ONLY when we did NOT fork. A fork is ephemeral + empty by design (cp-concurrent gets no
-// memory), and skipping migration here is what makes a forking launch never read or write the contended slice.
-if (storeActive && !forkedForConcurrency && migrateOpts.migrate) migrateToStore(legacyDir, mrcDir, migrateOpts)
+// Migrate legacy → the slice (copy-if-absent is safe on any slice — never touches an existing/live file). The
+// normalize WRITE is skipped when forced onto a live slice (Finding-1). On the clean path it repairs clobbered mtimes
+// BEFORE the container mounts /mrc (its --continue reads on-disk mtime) and BEFORE resolveSessionId.
+if (storeActive && migrateOpts.migrate) migrateAndNormalize(legacyDir, mrcDir, { ...migrateOpts, skipNormalize: forcedOntoLiveSlice })
 if (storeActive) volumes.push('-v', `${mrcDir}:/mrc`)
 
 // #5: the member resume-vs-fresh decision (deferred here from the member block so it reads the POST-build store dir).

@@ -224,6 +224,7 @@ export function parseArgs(argv) {
       case '--daemon': config.daemon = true; break
       case '-j': case '--json': config.json = true; break
       case '-w': case '--web': config.allowWeb = true; break
+      case '--force-store': config.forceStore = true; break   // #5: open even when the repo's memory store is in use by a live session (accept the co-write risk)
       case '--colima-cpu':
         if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.colimaCpu = argv[++i]
         break

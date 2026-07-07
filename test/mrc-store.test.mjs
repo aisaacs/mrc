@@ -4,7 +4,7 @@
 // or a summoned adversary. sliceKeyFor takes an injected repoStoreId so "a member never reads .mrc-id" is a test.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, readFileSync, realpathSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, symlinkSync, rmSync, readFileSync, realpathSync, utimesSync, statSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { existsSync as existsSyncT } from 'node:fs'
 import { join } from 'node:path'
@@ -257,6 +257,75 @@ test('migrateToStore INCLUDE (member): copies ONLY the member\'s own transcript 
     assert.ok(existsSyncT(join(legacy, 'member-me.jsonl')) && existsSyncT(join(legacy, 'member-other.jsonl')), 'legacy originals intact')
     // idempotent
     assert.equal(migrateToStore(legacy, slice, { include: new Set(['member-me']) }).alreadyDone, true, 'sentinel → idempotent')
+  } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
+})
+
+// ---------- BUG-1: mtime not clobbered on migrate (Fix B) + repaired on an already-migrated slice (Fix C) ----------
+import { normalizeSliceMtimes, migrateAndNormalize } from '../src/mrc-store.js'
+test('BUG-1 Fix B: migrateToStore preserves the SOURCE mtime (copyFileSync alone would stamp NOW → recency collapse)', () => {
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
+  const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'plain')
+  try {
+    const old = new Date('2020-03-04T05:06:07Z')
+    writeFileSync(join(legacy, 'a.jsonl'), '{"type":"user","timestamp":"2020-03-04T05:06:07Z"}\n')
+    utimesSync(join(legacy, 'a.jsonl'), old, old)
+    migrateToStore(legacy, slice, {})
+    const ms = statSync(join(slice, 'a.jsonl')).mtimeMs
+    assert.ok(Math.abs(ms - old.getTime()) < 2000, `copy carries the source mtime (${new Date(ms).toISOString()}), not NOW`)
+  } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
+})
+
+test('BUG-1 Fix C: normalizeSliceMtimes repairs a clobbered mtime to MAX(legacy, slice-lastTs) — never NOW, Q2-safe', () => {
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
+  const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'plain')
+  try {
+    mkdirSync(slice, { recursive: true })
+    const now = new Date()
+    // x: migrated-only — legacy mtime + slice lastTs both OLD; slice mtime CLOBBERED to NOW → must repair to OLD
+    writeFileSync(join(legacy, 'x.jsonl'), '{"type":"user","timestamp":"2021-06-01T00:00:00Z"}\n')
+    utimesSync(join(legacy, 'x.jsonl'), new Date('2021-06-01T00:00:00Z'), new Date('2021-06-01T00:00:00Z'))
+    writeFileSync(join(slice, 'x.jsonl'), '{"type":"user","timestamp":"2021-06-01T00:00:00Z"}\n')
+    utimesSync(join(slice, 'x.jsonl'), now, now)
+    // y (Q2): opened IN-SLICE after migration — legacy is STALE, but the slice transcript has a NEWER lastTs; slice
+    // mtime also clobbered to NOW. MAX(stale-legacy, newer-slice-lastTs) must pick the newer ts, NOT demote to legacy.
+    writeFileSync(join(legacy, 'y.jsonl'), '{"type":"user","timestamp":"2021-01-01T00:00:00Z"}\n')
+    utimesSync(join(legacy, 'y.jsonl'), new Date('2021-01-01T00:00:00Z'), new Date('2021-01-01T00:00:00Z'))
+    writeFileSync(join(slice, 'y.jsonl'), '{"type":"user","timestamp":"2021-01-01T00:00:00Z"}\n{"type":"user","timestamp":"2022-12-31T00:00:00Z"}\n')
+    utimesSync(join(slice, 'y.jsonl'), now, now)
+
+    normalizeSliceMtimes(slice, legacy)
+    const mx = statSync(join(slice, 'x.jsonl')).mtimeMs, my = statSync(join(slice, 'y.jsonl')).mtimeMs
+    assert.ok(Math.abs(mx - Date.parse('2021-06-01T00:00:00Z')) < 2000, `x repaired to its real recency, not NOW (got ${new Date(mx).toISOString()})`)
+    assert.ok(mx < now.getTime() - 60_000, 'x is NOT left at the clobbered NOW')
+    assert.ok(Math.abs(my - Date.parse('2022-12-31T00:00:00Z')) < 2000, `Q2: y kept its NEWER slice-lastTs, not demoted to the stale legacy mtime (got ${new Date(my).toISOString()})`)
+    // idempotent: own sentinel → second call is a no-op
+    assert.equal(normalizeSliceMtimes(slice, legacy).alreadyDone, true, 'mtime sentinel → one-time')
+  } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
+})
+
+test('Finding-1: migrateAndNormalize skipNormalize — migrates (copy-if-absent) but NEVER runs the mtime WRITE on a live slice', () => {
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
+  const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'plain')
+  try {
+    writeFileSync(join(legacy, 'a.jsonl'), '{"type":"user","timestamp":"2020-01-01T00:00:00Z"}\n')
+    utimesSync(join(legacy, 'a.jsonl'), new Date('2020-01-01T00:00:00Z'), new Date('2020-01-01T00:00:00Z'))
+    migrateAndNormalize(legacy, slice, { skipNormalize: true })
+    assert.ok(existsSyncT(join(slice, 'a.jsonl')), 'migrate still ran (copy-if-absent is safe on a live slice)')
+    assert.ok(!existsSyncT(join(slice, '.mrc-mtimes-normalized')), 'skipNormalize → the mtime WRITE was skipped (no sentinel) — never mtime-race a live agent; the repair defers to an idle launch')
+  } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
+})
+
+test('Finding-2: normalizeSliceMtimes does NOT stamp the sentinel on a FAILED run (retry-safe, no-silent-failure)', () => {
+  const r = normalizeSliceMtimes('/no/such/slice-xyz', '/no/such/legacy')
+  assert.equal(r.failed, true, 'an unlistable slice → failed (retry next time), NOT a silent success that freezes the clobber forever')
+  // contrast: an UNHELPABLE file (no legacy source + no parseable ts → ms=0) is SKIPPED, not a failure → sentinel commits
+  const legacy = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-legacy-')))
+  const slice = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-slice-'))), 'plain')
+  try {
+    mkdirSync(slice, { recursive: true })
+    writeFileSync(join(slice, 'no-ts.jsonl'), 'not-json no timestamp\n')
+    assert.equal(normalizeSliceMtimes(slice, legacy).failed, false, 'a no-recency file is unhelpable, NOT a failure')
+    assert.equal(normalizeSliceMtimes(slice, legacy).alreadyDone, true, 'so the sentinel DID commit (nothing failed) — no needless re-scan')
   } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
 })
 

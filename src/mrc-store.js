@@ -12,7 +12,7 @@
 // (the SAME boundary its -pierre-N config volume already isolates on); anything unsure → an isolated per-session
 // floor. repoId is NEVER a fall-through default — that would leak the user's history to a member or a red-team
 // (the exact fail-open both first drafts had, closed here by making repoId a positive grant, never the else).
-import { openSync, writeSync, closeSync, readFileSync, writeFileSync, mkdirSync, realpathSync, renameSync, lstatSync, copyFileSync, readdirSync, existsSync } from 'node:fs'
+import { openSync, writeSync, closeSync, readFileSync, writeFileSync, mkdirSync, realpathSync, renameSync, lstatSync, copyFileSync, readdirSync, existsSync, statSync, utimesSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, sep, dirname } from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
@@ -140,10 +140,14 @@ export function forkSliceDir() { return sliceDir(forkSliceKey()) }
 // picker); a MEMBER carries ONLY its own transcript in (`include`-scoped) so it RESUMES rather than re-starting. An
 // ADVERSARY is never store-mode (gated fully legacy upstream) so its pierre-vol history is untouched. One place
 // launch/subcommand → session-store dir.
-export function sessionStoreDir({ storeMode, ctx, legacyDir, migrate = false, exclude = null, include = null }) {
+export function sessionStoreDir({ storeMode, ctx, legacyDir, migrate = false, exclude = null, include = null, isLive = null }) {
   if (!storeMode) return legacyDir
   const slice = mrcStoreDir(ctx)
-  if (migrate) migrateToStore(legacyDir, slice, { exclude, include })
+  // #5 BUG-1: repair clobbered mtimes right after migrate, before any read. Finding-1: `isLive` (injected docker
+  // probe — mrc-store has no docker dep) gates the normalize WRITE off when a live container holds the slice, so a
+  // read-only `mrc pick`/`ls` while another session runs lists the (possibly-still-clobbered) slice but never
+  // mtime-races the live agent; the repair lands on a later idle launch instead.
+  if (migrate) migrateAndNormalize(legacyDir, slice, { exclude, include, skipNormalize: isLive ? !!isLive(slice) : false })
   return slice
 }
 
@@ -181,14 +185,64 @@ export function migrateToStore(legacyDir, sliceDir, { exclude = null, include = 
     const dst = join(sliceDir, f)
     if (existsSync(dst)) { skipped++; continue }                                          // copy-if-absent: idempotent + never clobber newer store data with older repo data
     try {
+      const src = join(legacyDir, f)
       const tmp = `${dst}.${process.pid}.mig.tmp`
-      copyFileSync(join(legacyDir, f), tmp)
+      copyFileSync(src, tmp)
       renameSync(tmp, dst)                                                                // atomic per-file — a partial copy is a .tmp, the dst appears whole or not at all
+      // #5 BUG-1 FIX: copyFileSync stamps the dst mtime = NOW, which collapses getSessions' recency (max(mtime,ts)
+      // → NOW dominates every real ts → picker order + auto-resume "newest" break) AND breaks `claude --continue`
+      // (resumes by file mtime). Preserve the SOURCE mtime so the copy carries the transcript's true recency.
+      try { const st = statSync(src); utimesSync(dst, st.atime, st.mtime) } catch {}
       migrated++
     } catch { /* a file that raced/vanished → skip; without a sentinel a re-run retries it */ }
   }
   try { const stmp = `${sentinel}.${process.pid}.tmp`; writeFileSync(stmp, ''); renameSync(stmp, sentinel) } catch {}   // SENTINEL LAST + atomic → an interrupt before here = no sentinel = clean re-entry
   return { migrated, skipped }
+}
+
+const MTIME_SENTINEL = '.mrc-mtimes-normalized'
+// #5 BUG-1 REPAIR: an ALREADY-migrated slice (pre-fix) has clobbered mtimes (all = the copy time) AND the migrate
+// sentinel set, so migrateToStore no-ops and Fix-B (preserve-on-copy) never heals it. Repair ONCE: set each slice
+// transcript's mtime to its TRUE recency = MAX(legacy-source-mtime if the non-destructive original still exists,
+// the slice file's OWN last in-transcript timestamp). Two safety properties: (1) it NEVER reads the CURRENT
+// (clobbered = NOW) slice mtime, so the bug can't launder itself through the repair; (2) MAX takes the newer REAL
+// signal, so a session opened in-slice AFTER migration (stale legacy mtime, but recent slice-lastTs because its new
+// turns are IN the slice transcript) is NOT demoted. Own sentinel → one-time; order-independent with migrate.
+export function normalizeSliceMtimes(sliceDir, legacyDir) {
+  const marker = join(sliceDir, MTIME_SENTINEL)
+  if (existsSync(marker)) return { normalized: 0, alreadyDone: true }
+  let files
+  try { files = readdirSync(sliceDir).filter(f => f.endsWith('.jsonl')) } catch { return { normalized: 0, failed: true } }   // couldn't even list → DON'T stamp, retry next time
+  let normalized = 0, failed = false
+  for (const f of files) {
+    const dst = join(sliceDir, f)
+    let ms = 0
+    try { ms = statSync(join(legacyDir, f)).mtimeMs } catch {}                 // the intact legacy source's mtime, if it survives (non-destructive migration keeps it)
+    try {                                                                      // the slice file's OWN last in-transcript ts — authoritative content recency, immune to any mtime pollution
+      let lastTs = ''
+      for (const line of readFileSync(dst, 'utf8').split('\n')) { if (!line) continue; try { const o = JSON.parse(line); if (o.timestamp) lastTs = o.timestamp } catch {} }
+      const tsMs = Date.parse(lastTs) || 0
+      if (tsMs > ms) ms = tsMs
+    } catch {}
+    if (ms > 0) { try { const d = new Date(ms); utimesSync(dst, d, d); normalized++ } catch { failed = true } }   // a utimes that THREW (transient EPERM/rotation) is retry-worthy; ms=0 (no derivable recency) is unhelpable, NOT a failure
+  }
+  // #5 Finding-2 (Pierre): stamp the sentinel ONLY when nothing FAILED. normalize's inputs (legacy-mtime, in-
+  // transcript ts) are stable → re-running is idempotent + convergent, so retry is free; but a sentinel written over
+  // a run where every utimes failed would freeze the slice clobbered FOREVER, silently — the no-silent-failure sin.
+  if (!failed) { try { const tmp = `${marker}.${process.pid}.tmp`; writeFileSync(tmp, ''); renameSync(tmp, marker) } catch {} }
+  return { normalized, failed }
+}
+
+// #5: migrate THEN repair mtimes — the ONE unit every store-dir consumer must run so no read (host getSessions,
+// resolveSessionId, OR the container's on-disk `claude --continue`) ever sees a clobbered recency. Called from BOTH
+// sessionStoreDir (subcommands + the pre-build auto-resume) AND the launch (before /mrc mounts + before resolveSessionId).
+export function migrateAndNormalize(legacyDir, sliceDir, opts = {}) {
+  const r = migrateToStore(legacyDir, sliceDir, opts)   // copy-if-absent + sentinel-guarded → safe on a live slice (never touches an existing/live file)
+  // #5 Finding-1 (Pierre): normalize is a WRITE (utimesSync rewrites EXISTING transcripts' mtimes) — it must NOT
+  // run on a slice a live container is using (it would race the live agent's appends). The caller sets skipNormalize
+  // from the ceiling liveness probe (live OR undetermined → skip). The repair simply defers to a later idle launch.
+  if (!opts.skipNormalize) normalizeSliceMtimes(sliceDir, legacyDir)
+  return r
 }
 
 export function storeCtx({ solo, memberCtx, cagedAdversary, adversarySlot, repoPath, sessionId }) {

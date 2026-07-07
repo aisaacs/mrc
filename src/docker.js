@@ -123,30 +123,48 @@ export function nextInstanceSlot(repoPath, { listMountedVolumes } = {}) {
   return { slot: r.slot, others: used.size + (r.sawClaim ? 1 : 0) }
 }
 
-/** #5 GATE-3 CEILING probe: is a RUNNING mrc container already mounting host slice `sliceHostDir` at /mrc? Returns
- *  its container id, else null. The host CAN'T flock-probe (no flock(1) on macOS, no flock(2) in Node), so container
- *  liveness is the host-side oracle — and it's SHARPER than a flock-probe would be: `docker ps` reports only running
- *  containers (a crashed/killed owner drops off automatically — no stale marker to reap), it works for --daemon (a
- *  detached container still shows after the host exits), and the /mrc mount exists from `docker run` time, so it
- *  catches an owner even in its pre-flock startup window. Match by the /mrc BIND mount's Source (a bind carries
- *  .Source, NOT .Name — .Name is for named volumes, cf. nextInstanceSlot), by BASENAME (the slice key), which is
- *  invariant to Colima's host-path remapping. NOT by the mrc.repo label: a cp'd repo at a DIFFERENT path shares the
- *  SAME slice, and two unrelated sessions share the mrc label while mounting different slices — the SLICE is the
- *  identity. On any docker error → null (fail toward NOT forking; the container flock floor still backstops co-write). */
-export function sliceLiveContainer(sliceHostDir, { runningIds, mountSourceOf } = {}) {
+/** #5 GATE-3 CEILING probe: is a RUNNING mrc container already mounting host slice `sliceHostDir` at /mrc?
+ *  Returns { id, determined }: id = a live container on this slice (or null), determined = whether the probe
+ *  could actually PROVE the answer. This is the host-side liveness oracle (the host can't flock-probe — no flock(1)
+ *  on macOS, no flock(2) in Node) and it's SHARPER than a flock-probe: `docker ps` reports only running containers
+ *  (a crashed owner drops off — no stale marker), it works for --daemon, and the /mrc mount exists from `docker run`
+ *  time so it catches a pre-flock-startup owner. Match by the /mrc BIND mount's Source (bind → .Source, not .Name),
+ *  by BASENAME (the slice key) — Colima-remap-invariant, and the SLICE not the mrc.repo label (a cp'd repo shares
+ *  the slice at a different path; unrelated sessions share the label on different slices).
+ *
+ *  FAIL-CLOSED (Pierre): a docker `ps` throw OR a per-container inspect timeout must NOT be read as "clear" — that's
+ *  the fail-open sin (an 8s timeout under a loaded Colima → falsely "no live container" → co-write). Instead RETRY
+ *  the whole probe a few times (a genuine live container is still there; a transient timeout clears), and if it still
+ *  can't decide → { id:null, determined:false } so the caller can refuse/skip rather than assume idle. A clean
+ *  `ps → []` (or a full sweep with no match) IS a determination → { id:null, determined:true } → normal launch. */
+// LIVENESS_TIMEOUT_MS (Pierre): a liveness PING, not the adversary path — a healthy `docker ps` answers sub-second,
+// so 2s per attempt (× a few retries) keeps a loaded-but-ALIVE Colima answering inside budget instead of a false
+// "unresponsive" REFUSE on a zero-contention launch. ADV_DOCKER_TIMEOUT_MS (8s) is sized for a different job.
+const LIVENESS_TIMEOUT_MS = 2_000
+export function sliceLiveContainer(sliceHostDir, { runningIds, mountSourceOf, attempts = 3, backoffMs = 200, timeoutMs = LIVENESS_TIMEOUT_MS } = {}) {
   const want = basename(sliceHostDir)
-  try {
-    const ids = runningIds
-      ? runningIds()
-      : execFileSync('docker', ['ps', '-q', '--filter', 'label=mrc=1'], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim().split('\n').filter(Boolean)
-    for (const id of ids) {
-      let src
-      if (mountSourceOf) src = mountSourceOf(id)
-      else { try { src = execFileSync('docker', ['inspect', '--format', '{{range .Mounts}}{{if eq .Destination "/mrc"}}{{.Source}}{{end}}{{end}}', id], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim() } catch { src = '' } }
-      if (src && basename(src) === want) return id
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    let undetermined = false
+    try {
+      const ids = runningIds
+        ? runningIds()
+        : execFileSync('docker', ['ps', '-q', '--filter', 'label=mrc=1'], { encoding: 'utf8', timeout: timeoutMs }).trim().split('\n').filter(Boolean)
+      for (const id of ids) {
+        let src
+        if (mountSourceOf) src = mountSourceOf(id)
+        else {
+          try { src = execFileSync('docker', ['inspect', '--format', '{{range .Mounts}}{{if eq .Destination "/mrc"}}{{.Source}}{{end}}{{end}}', id], { encoding: 'utf8', timeout: timeoutMs }).trim() }
+          catch { undetermined = true; break }   // an inspect timeout must NOT count as "no match" — this container might be the one on our slice
+        }
+        if (src && basename(src) === want) return { id, determined: true }
+      }
+      if (!undetermined) return { id: null, determined: true }   // clean full sweep, no match → PROVEN clear
+    } catch { undetermined = true }                              // ps threw → couldn't even list
+    if (undetermined && attempt < attempts - 1) {                // short backoff, then retry (a real peer persists; a transient timeout clears)
+      try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, backoffMs) } catch {}
     }
-  } catch { return null }
-  return null
+  }
+  return { id: null, determined: false }   // retries exhausted without a determination → caller must fail-closed
 }
 
 /** Build the Docker image if needed. */
