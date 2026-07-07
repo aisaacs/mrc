@@ -1529,18 +1529,23 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   return { server, control, sessions, pairings, engine, worker, subscribeEvents, broadcastEvent, noteDashboardActivity: () => { lastDashboardHit = Date.now() }, _caffeine: () => ({ working: anyWorking(), tracked: lastActivityAt.size, holding: !!caffeine, off: caffeineOff }), stop: () => { clearInterval(stallTimer); if (relayRetryTimer) clearTimeout(relayRetryTimer); releaseCaffeine(); worker.stop(); stopAllTg(); try { server.close(); control.close() } catch {} ; if (electSingleton) { try { unlinkSync(daemonLockPath) } catch {} } }, _relayBound: () => relayBound, _activePairingFor: activePairingFor, _daemonLockPath: () => daemonLockPath, deliver, _pruneDeadRooms: pruneDeadRooms }
 }
 
+// The daemon's boot-time .env load — EXTRACTED + GATED so it's unit-testable (drive it with a scriptDir you control)
+// and a test spawn can opt out. Loads .env (so media members get their generation keys in-process) UNLESS
+// MRC_DAEMON_SKIP_DOTENV is set — a test that spawns the REAL daemon sets it so boot never resolves the developer's
+// .env / 1Password (which would prompt Touch ID or, in a stripped subprocess env, hang the suite). Production leaves it
+// unset → keys load exactly as before. Returns { loaded } so a caller/test can see whether the reach happened.
+export async function maybeLoadDaemonEnv(scriptDir) {
+  if (process.env.MRC_DAEMON_SKIP_DOTENV) return { loaded: false }
+  try { const { loadEnv } = await import('../config.js'); return { loaded: true, key: loadEnv(scriptDir) } } catch { return { loaded: false } }
+}
+
 // Direct invocation (mrc spawns this detached): node room-daemon.js <port> <controlPort> [notifyPort]
 if (import.meta.url === `file://${process.argv[1]}`) {
   const { readFileSync, writeFileSync, mkdirSync } = await import('node:fs')
   const { join } = await import('node:path')
   const { homedir } = await import('node:os')
   const { findFreePort } = await import('../ports.js')
-  // Load .env so media members (designer/sound/composer) have their generation keys in-process.
-  // A test that spawns this daemon sets MRC_DAEMON_SKIP_DOTENV=1 so boot never reaches for the developer's real
-  // .env / 1Password (which would prompt Touch ID or hang the suite). Production leaves it unset → keys load as before.
-  if (!process.env.MRC_DAEMON_SKIP_DOTENV) {
-    try { const { loadEnv } = await import('../config.js'); loadEnv(fileURLToPath(new URL('../../', import.meta.url))) } catch {}
-  }
+  await maybeLoadDaemonEnv(fileURLToPath(new URL('../../', import.meta.url)))
   // #21b: stamp = hash of the whole src/ tree (same fn the launcher uses), so the daemon's reported
   // version changes when ANY reachable module is edited — not just room-daemon.js. Must match
   // pair.js's daemonVersion() exactly or `waitUpVersion` never matches after a restart.
