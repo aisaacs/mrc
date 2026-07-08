@@ -4,7 +4,7 @@
 // Called by entrypoint.sh after the firewall is up.
 // Handles: plugin seeding, config restore, symlinks, hooks, statusline.
 //
-import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, readdirSync, cpSync, rmSync, unlinkSync, renameSync, lstatSync, statSync, appendFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, readlinkSync, readdirSync, cpSync, rmSync, unlinkSync, renameSync, lstatSync, statSync, appendFileSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
 
@@ -248,16 +248,21 @@ if (STORE_MOUNTED && !ADVERSARY) try {
     process.exit(1)
   }
 } else try {
-  let alreadyLinked = false
-  try { alreadyLinked = lstatSync(PROJECT_STORE).isSymbolicLink() } catch {}
-
-  if (!alreadyLinked) {
+  // LEGACY: the project store is a symlink to /workspace/.mrc. CRITICAL (#13 de-activation): "already linked" must
+  // mean linked to /workspace/.mrc SPECIFICALLY, not merely "is a symlink". A prior STORE-mode launch left the
+  // symlink pointing at /mrc (MRC_STORE_MOUNT); on de-activation — an adoptable / unmigrated / opted-out repo now
+  // running legacy, which #13 makes the COMMON path — /mrc is NOT mounted, so that stale link DANGLES. The old
+  // `isSymbolicLink()`-only check read it as already-linked and skipped the retarget → the session read nothing and
+  // started FRESH ("wiped"), even though its transcripts sit in /workspace/.mrc. So: retarget any link that doesn't
+  // point at /workspace/.mrc. Drop the stale LINK only (never its target — /mrc's slice, or the legacy dir).
+  let linkedTo = null
+  try { const st = lstatSync(PROJECT_STORE); if (st.isSymbolicLink()) linkedTo = readlinkSync(PROJECT_STORE) } catch {}
+  if (linkedTo !== MRC_LOCAL) {
     mkdirSync(MRC_LOCAL, { recursive: true })
     mkdirSync(dirname(PROJECT_STORE), { recursive: true })
-    if (existsSync(PROJECT_STORE)) {
-      cpSync(PROJECT_STORE, MRC_LOCAL, { recursive: true })
-      rmSync(PROJECT_STORE, { recursive: true, force: true })
-    }
+    let cur; try { cur = lstatSync(PROJECT_STORE) } catch {}
+    if (cur && cur.isSymbolicLink()) unlinkSync(PROJECT_STORE)                                          // stale/wrong link (e.g. → /mrc from a prior store launch) → drop the LINK, never its target
+    else if (cur && existsSync(PROJECT_STORE)) { cpSync(PROJECT_STORE, MRC_LOCAL, { recursive: true }); rmSync(PROJECT_STORE, { recursive: true, force: true }) }   // a real legacy dir → migrate into /workspace/.mrc
     symlinkSync(MRC_LOCAL, PROJECT_STORE)
   }
 } catch (e) {

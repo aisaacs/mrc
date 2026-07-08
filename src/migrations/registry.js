@@ -139,7 +139,15 @@ export function storeActivation(sliceDir, imageStore, { metaRoot } = {}) {
   if (isOptedOut(sliceDir, { metaRoot })) return { active: false, reason: 'opted-out' }
   const s = sliceMigrationState(sliceDir, { metaRoot })
   if (s.corrupt) return { active: false, reason: 'record-corrupt' }
-  if (s.recordLost) return { active: false, reason: 'record-lost' }
+  if (s.recordLost) {
+    // record-lost splits by RECOVERABILITY so the launcher can act: ADOPTABLE (an earlier-mrc migration — the #001
+    // sentinel, no higher-layout signature) can be adopted with one confirm; STRANDED (data but no sentinel, or a
+    // higher signature) needs manual recovery. The launcher STOPS an adoptable repo and offers to adopt rather than
+    // silently opening a DIVERGING legacy session (the owner's bar — a naive user must not be dropped into a split).
+    let files = []; try { files = readdirSync(sliceDir) } catch {}
+    const hasSentinel = files.includes('.mrc-store-migrated-v2') || files.includes('.mrc-store-migrated')
+    return { active: false, reason: (hasSentinel && !sliceHigherSignature(sliceDir)) ? 'adoptable' : 'stranded' }
+  }
   if (!s.migrated) return { active: false, reason: 'unmigrated' }
   if (Number(imageStore.cap) >= Number(s.layoutLevel)) return { active: true, reason: 'migrated', layoutLevel: s.layoutLevel }
   return { active: false, reason: 'capability-shortfall', layoutLevel: s.layoutLevel }

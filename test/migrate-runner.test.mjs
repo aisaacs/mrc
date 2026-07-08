@@ -378,13 +378,34 @@ test('#13 storeActivation: migrated at a HIGHER layout than the image can drive 
     assert.equal(a.active, false); assert.equal(a.reason, 'capability-shortfall'); assert.equal(a.layoutLevel, 3)
   } finally { w.done() }
 })
-test('#13 storeActivation: record-lost / corrupt → inactive (fail-closed to legacy)', () => {
+test('#13 storeActivation: recordLost + #001 sentinel (no higher sig) → ADOPTABLE (launcher offers to adopt)', () => {
   const w = ws()
-  writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n'); writeFileSync(join(w.slice, '.mrc-store-migrated-v2'), '')   // data, no record
+  writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n'); writeFileSync(join(w.slice, '.mrc-store-migrated-v2'), '')   // an earlier-mrc migration, no host record
   try {
-    assert.equal(storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }).reason, 'record-lost')
-    mkdirSync(join(w.metaRoot, basename(w.slice)), { recursive: true })
-    writeFileSync(join(w.metaRoot, basename(w.slice), mig001.id), 'not json {{')
+    assert.equal(storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }).reason, 'adoptable')
+  } finally { w.done() }
+})
+test('#13 storeActivation: recordLost with NO sentinel → STRANDED (needs manual recovery, not a silent legacy open)', () => {
+  const w = ws()
+  writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n')   // data, no sentinel, no record
+  try {
+    assert.equal(storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }).reason, 'stranded')
+  } finally { w.done() }
+})
+test('#13 storeActivation: recordLost + sentinel + a HIGHER-layout signature → STRANDED (not adoptable — could misread)', () => {
+  const w = ws()
+  writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n'); writeFileSync(join(w.slice, '.mrc-store-migrated-v2'), '')
+  writeFileSync(join(w.slice, '.mrc-store-layout-2'), '')   // evidence of a layout beyond #001
+  try {
+    assert.equal(storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }).reason, 'stranded')
+  } finally { w.done() }
+})
+test('#13 storeActivation: corrupt record → record-corrupt (fail-closed to legacy)', () => {
+  const w = ws()
+  writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n')
+  mkdirSync(join(w.metaRoot, basename(w.slice)), { recursive: true })
+  writeFileSync(join(w.metaRoot, basename(w.slice), mig001.id), 'not json {{')
+  try {
     assert.equal(storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }).reason, 'record-corrupt')
   } finally { w.done() }
 })
@@ -417,8 +438,9 @@ test('#13 memberStoreActive: a member slice with NO host record → ACTIVE (layo
   const w = ws()
   writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n'); writeFileSync(join(w.slice, '.mrc-store-migrated-v2'), '')   // sentinel, no record = recordLost
   try {
-    // storeActivation would DENY this (record-lost), but a member must stay active (it never runs `mrc migrate`).
-    assert.equal(storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }).reason, 'record-lost')
+    // storeActivation would DENY this (active:false — it's adoptable/recordLost), but a member must stay active
+    // (it never runs `mrc migrate`; the member relocate keeps its slice populated).
+    assert.equal(storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }).active, false)
     assert.equal(memberStoreActive(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }), true)
   } finally { w.done() }
 })

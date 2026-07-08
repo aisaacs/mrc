@@ -266,11 +266,13 @@ if (remaining[0] === 'pick') {
 // keep-context) — but never an accident, so we confirm on the non-picker `sessions resume` path. The
 // resume-recage at mrc.js already re-applies the cage; this adds the consent gate in front of it. A
 // non-TTY caller can't answer, so it fails safe (NO). (The picker's own TUI confirm is D2, tracked.)
-async function askYesNo(q) {
-  if (!process.stdin.isTTY) return false
+async function askYesNo(q, { defaultYes = false } = {}) {
+  if (!process.stdin.isTTY) return false   // non-TTY always fails safe to NO (callers gate on interactivity separately)
   const rl = createInterface({ input: process.stdin, output: process.stderr })
-  try { return /^y(es)?$/i.test((await new Promise((r) => rl.question(`${q} [y/N] `, r))).trim()) }
-  finally { rl.close() }
+  try {
+    const ans = (await new Promise((r) => rl.question(`${q} [${defaultYes ? 'Y/n' : 'y/N'}] `, r))).trim()
+    return defaultYes ? !/^n(o)?$/i.test(ans) : /^y(es)?$/i.test(ans)   // defaultYes: blank/anything-but-no → yes
+  } finally { rl.close() }
 }
 async function confirmIfAdversary(mrcDir, uuid) {
   if (!isAdversarySession(uuid)) return true
@@ -668,10 +670,63 @@ let storeActive, activation = null
 if (!imageStoreCapable) storeActive = false
 else if (isMemberLaunch) storeActive = memberStoreActive(prospectiveSlice, store)   // #13: members bypass the RECORD gate but NOT capability-as-version (Pierre #13-review)
 else { activation = storeActivation(prospectiveSlice, store, {}); storeActive = launchIsPlainOrSolo && activation.active }
+// #13 POPULATED-SLICE GATE (owner's bar, Pierre taxonomy): NO repo with populated store memory silently opens
+// LEGACY — that hides/diverges the slice, a footgun a naive user can't see. STOP unless legacy is the user's
+// EXPLICIT choice (opted-out) or the only remedy is a REBUILD (image-not-capable / capability-shortfall) — those
+// stay a NOTICE below. GATE {adoptable, stranded, record-corrupt}: adoptable → offer to ADOPT now ([Y/n]);
+// stranded/corrupt (can't auto-adopt) → an explicit LEGACY escape (default NO). Interactive prompts; non-interactive
+// REFUSES (never diverge in automation). Runs BEFORE the container, so an accepted adopt flips this launch to store.
+if (launchIsPlainOrSolo && activation && ['adoptable', 'stranded', 'record-corrupt'].includes(activation.reason)) {
+  const interactive = !!process.stdin.isTTY && !config.daemon && !config.json
+  if (activation.reason === 'adoptable') {
+    if (!interactive) {
+      console.error(`  ✗ This repo was migrated by an earlier mrc but isn't in the store ledger yet — refusing to open a DIVERGING legacy session non-interactively.\n    Adopt it once, then every future launch works:  mrc migrate up ${repoPath}`)
+      process.exit(1)
+    }
+    if (await askYesNo('  ⚠ This repo was migrated by an earlier mrc but is NOT in the store ledger yet. Opening it in LEGACY splits new work from that store memory. Adopt it into the store now (recommended)?', { defaultYes: true })) {
+      const migRes = await runMigrate('up', repoPath, { yes: true, deps: {
+        repoContainers: (p) => repoLiveContainers(p), sliceLive: (s) => sliceLiveContainer(s), store, confirm: () => true, log: (m) => console.error(m),
+      } })
+      if (migRes && migRes.ok) {
+        activation = storeActivation(prospectiveSlice, store, {})   // adopted → now active → this launch is store-mode
+        storeActive = activation.active
+      } else if (migRes && migRes.refused === 'diverged') {
+        // can't auto-adopt (fork) — same explicit LEGACY escape as stranded (Pierre: don't harder-block a diverged
+        // repo than a stranded one), default NO.
+        if (await askYesNo(`  Couldn't auto-adopt — repo/.mrc and the store have FORKED (heal losslessly with \`mrc migrate reconcile ${repoPath}\`). Open in LEGACY anyway for now (store memory stays hidden; new work stays in repo/.mrc)?`)) {
+          console.error('  Opening in LEGACY (not adopted) — reconcile when ready.')
+        } else process.exit(1)
+      } else if (migRes && ['repo-live', 'slice-live', 'undetermined'].includes(migRes.refused)) {
+        console.error(`  ✗ Another mrc session is open on this repo (or a copy sharing its memory). Close it, then \`mrc migrate up ${repoPath}\` — or open a different conversation.`)
+        process.exit(1)
+      } else {
+        console.error('  ✗ Adoption did not complete (see above). Resolve it, then re-run.')
+        process.exit(1)
+      }
+    } else {
+      console.error('  Opening in LEGACY for this launch only (NOT adopted) — new conversations stay in repo/.mrc; run `mrc migrate up` when ready. You\'ll be asked again next launch.')
+    }
+  } else {
+    // stranded / record-corrupt — populated slice, can't auto-adopt. Explicit LEGACY escape (default NO); refuse non-TTY.
+    const hint = activation.reason === 'record-corrupt'
+      ? `its migration record is CORRUPT (inspect ~/.local/share/mrc/migration-meta/)`
+      : `its store memory can't be auto-adopted — recover with \`mrc migrate reconcile ${repoPath}\` or \`mrc migrate status ${repoPath}\``
+    if (!interactive) {
+      console.error(`  ✗ This repo has store memory that needs recovery — ${hint}. Refusing to open a diverging legacy session non-interactively.`)
+      process.exit(1)
+    }
+    if (await askYesNo(`  ⚠ This repo has store memory but ${hint}. Opening LEGACY leaves that store memory HIDDEN. Open in LEGACY anyway?`)) {
+      console.error('  Opening in LEGACY (store memory stays hidden until you recover it).')
+    } else {
+      console.error('  Not opening — recover first, then re-run.')
+      process.exit(1)   // match the diverged-adoptable decline (:698): declining to launch is NOT success for a caller
+    }
+  }
+}
 const storeExclude = storeActive ? rosterMemberSessionIds(repoPath) : null   // store-active only → legacy resolveSessionId is identical to today
-// #13 + #5 DE-ACTIVATION AMNESIA: a plain/solo launch that ends up LEGACY while a populated store slice exists would
-// silently show only the frozen repo/.mrc snapshot. Surface it loudly, with a reason-accurate message: capability-
-// absent → rebuild; unmigrated → run `mrc migrate up`; opted-out/shortfall/stranded → the tailored note. Best-effort.
+// #13 + #5 NOTICE (only the non-gated LEGACY reasons — the GATE above already prompted for {adoptable, stranded,
+// record-corrupt} and printed their message, so those never reach here). Reasons handled below: image-not-capable /
+// capability-shortfall → rebuild; unmigrated → run `mrc migrate up`; opted-out → the user's own detach. Best-effort.
 if (launchIsPlainOrSolo && !storeActive) {
   const reason = activation ? activation.reason : (adversaryIdentity ? 'adversary' : 'image-not-capable')
   try {
@@ -689,9 +744,10 @@ if (launchIsPlainOrSolo && !storeActive) {
       console.error(`  ! mrc: this repo is OPTED OUT of the host memory store (legacy repo/.mrc). Re-opt-in with:  mrc migrate up ${repoPath}`)
     } else if (reason === 'capability-shortfall') {
       console.error(`  ! mrc: this repo's store slice is at layout ${activation.layoutLevel} but THIS image can't drive it — running LEGACY. Rebuild a newer image:  docker rmi mister-claude && mrc ${repoPath}`)
-    } else if (reason === 'record-lost' || reason === 'record-corrupt') {
-      console.error(`  ! mrc: this repo's store migration record is ${reason === 'record-lost' ? 'MISSING (data present, record lost)' : 'CORRUPT'} — running LEGACY (fail-closed). Inspect:  mrc migrate status ${repoPath}`)
     }
+    // NOTICE-only cases (legacy is the user's explicit choice, or the only remedy is a rebuild): image-not-capable /
+    // capability-shortfall / opted-out / unmigrated (above). The POPULATED-SLICE reasons {adoptable, stranded,
+    // record-corrupt} are handled by the GATE above (interactive prompt / non-interactive refuse) — never here.
   } catch {}
 }
 // #5 migration scope on LAUNCH is now MEMBER-ONLY: a member brings ONLY its own transcript into its (org,handle)
