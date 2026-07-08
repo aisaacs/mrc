@@ -71,6 +71,15 @@ A cheap "sentinel present + file-count matches" check is exactly the *green that
 - **sha256** every legacy file against its slice copy — identical or **FAIL**.
 - On a shared slice, additionally **flag any `repo/.mrc` content that is NOT in the slice** (a divergent sharer: another copy's own conversations, or same-id-different-bytes that a copy-if-absent skipped) → surface *"your `repo/.mrc` has content not in the shared store — another working copy may share it,"* **never a silent pass.**
 
+### 5b. Adoption uses a LOSS-DETECTION gate, not byte-equality (live-door finding, 2026-07-08)
+Byte-equal `verify()` is right **immediately after a fresh copy** (slice == legacy by construction). But **adopting** a pre-framework slice (the old auto-migrate's output: data + in-slice sentinel, no host record) that has since been **used** is different — the slice has legitimately **evolved**, and exact-equality would false-strand every actively-used repo. So adoption asks *"is the slice a lossless superset of what was migrated?"*, per data-type (`verifyAdopt`):
+- **transcript `.jsonl`** (incl. nested `<uuid>/` subagent leaves): the slice must exist and legacy lines must be a **prefix** of the slice's (append-only losslessness; a **continued** conversation is longer). `legacy-ahead` / `forked` (shared prefix then diverge) / `missing` → **FAIL → reconciler**. Prefix, *not* set-containment — a transcript is an **ordered log**; reorder ≠ lossless.
+- **`session-names`**: per-**KEY** containment — every legacy `uuid` must still be a key in the slice; the **value may change** (a **rename** is a first-class in-store op, benign). A dropped `uuid` = a lost name → **FAIL**.
+- **`names-migrated` / `security-migrated`**: one-time **state markers** — content legitimately differs → presence-only.
+- **living files (`memory/`, `session-summaries/`)**: present-and-edited is **expected** (the slice is authoritative; `repo/.mrc` is the frozen, retained snapshot). Present → OK; **missing → FAIL**.
+
+**Known boundary (stated, not a bug):** the "shrank vs the frozen snapshot" INFO on living files is a **size heuristic** — it catches the common truncation shape (size-down) and surfaces it non-blockingly, but a same-size content **replacement**, or a truncate-then-refill, is **undetectable by construction**. For freely-edited markdown the slice is authoritative and free-form content is not verifiable; the INFO catches the common case, it does **not** certify living-file content.
+
 ### 6. The reconciler (heals a split — a separate mechanism from migration)
 On a store launch, per conversation, compare the slice vs the `repo/.mrc` fallback:
 - **Prefix** (one file is a clean byte-prefix of the other — continued in one store only, the common case): take the **longer**. Lossless.

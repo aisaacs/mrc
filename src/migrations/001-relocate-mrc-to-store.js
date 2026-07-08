@@ -66,4 +66,68 @@ export default {
     checks.unshift({ ok: pass, msg: `byte-verified ${verified}/${plan.manifest.length} migrated file(s) legacy↔store${pass ? '' : ' — INTEGRITY FAILURE (see below)'}` })
     return { pass, checks }
   },
+
+  // ADOPTION gate (live-door finding, 2026-07-08). Byte-equality `verify` is the right check RIGHT AFTER a fresh
+  // copy (slice == legacy by construction) — but WRONG for ADOPTING an already-migrated slice that has since been
+  // USED: session-names grows, memory/ is edited, a continued conversation's transcript gets longer. Exact-equality
+  // flags all that legitimate store-era evolution as "divergence" and would strand every actively-used repo (dietV2:
+  // only session-names(superset) + names-migrated(marker) differ — no loss). So adoption uses LOSS-DETECTION, not
+  // equality: the question is "did the slice LOSE any pre-migration content?", not "is it identical?".
+  //   • transcript .jsonl : slice must exist AND legacy lines must be a PREFIX of slice lines (slice-AHEAD = lossless
+  //     superset → OK). legacy-AHEAD (repo/.mrc grew under a later LEGACY launch) or FORKED (shared prefix then
+  //     diverge) = a real split → FAIL → reconciler. MISSING = lost history → FAIL.
+  //   • session-names / names-migrated / security-migrated : SET files — every legacy line must still be present in
+  //     the slice (superset OK; a DROPPED entry = a lost name → FAIL). Order-independent.
+  //   • memory/ + session-summaries/ + anything else living : present-and-edited is EXPECTED (the slice is
+  //     authoritative, repo/.mrc is the frozen pre-migration snapshot, retained non-destructively). Present → OK;
+  //     MISSING → FAIL (lost). Content divergence is surfaced as info, never a block.
+  // A genuine split still routes to the reconciler; only benign evolution passes. Fresh-migrate keeps strict verify().
+  verifyAdopt(ctx) {
+    const { legacyDir: L, sliceDir: S } = ctx
+    const plan = planMigration(L, { exclude: ctx.exclude, include: ctx.include })
+    // session-names is a real SET of user data (uuid=name) that must not lose entries. names-migrated / security-migrated
+    // are one-time STATE MARKERS whose content legitimately differs (a flag/version), so they get presence-only (the
+    // living-file branch), NOT set-preservation — treating a marker as preservable data false-strands (dietV2's real case).
+    const isSetFile = (rel) => rel === 'session-names'
+    // split on \n then DROP trailing empties (the file-final newline yields a trailing '' that isn't a line) so a
+    // legacy transcript that ends in \n is a clean prefix of a slice that continued past it.
+    const readLines = (f) => { try { const a = readFileSync(f, 'utf8').split('\n'); while (a.length && a[a.length - 1] === '') a.pop(); return a } catch { return null } }
+    const isPrefix = (a, b) => { if (!a || !b || a.length > b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true }
+    const checks = []; let pass = true, okCount = 0, evolved = 0
+    for (const rel of plan.manifest) {
+      const lf = join(L, rel), sf = join(S, rel)
+      if (!existsSync(sf)) { pass = false; checks.push({ ok: false, kind: 'missing', file: rel, msg: `${rel} is in repo/.mrc but MISSING from the store — pre-migration content lost` }); continue }
+      if (sha256(lf) === sha256(sf)) { okCount++; continue }                                     // identical → fine
+      if (rel.endsWith('.jsonl')) {
+        const la = readLines(lf), sa = readLines(sf)
+        if (isPrefix(la, sa)) { okCount++; evolved++; continue }                                  // slice-AHEAD (lossless superset) → fine
+        pass = false
+        const kind = isPrefix(sa, la) ? 'legacy-ahead' : 'forked'
+        checks.push({ ok: false, kind, file: rel, msg: `${rel} — repo/.mrc and the store have FORKED history (a legacy launch wrote after migration); needs the reconciler, not a blind adopt` })
+        continue
+      }
+      if (isSetFile(rel)) {
+        // session-names is `<uuid>=<name>`. Check per-KEY, NOT per-line (Pierre): a RENAME (<uuid>=old → <uuid>=new,
+        // a first-class in-store op — there's a /rename skill) changes the VALUE, so per-line containment would
+        // false-strand it as "lost." Every legacy KEY (uuid) must still be present as a key in the slice (value MAY
+        // differ = rename, benign); a legacy key absent = a DROPPED name = FAIL. The transcript itself is verified
+        // independently by the prefix rule, so accepting a metadata value change here is correct, not lax.
+        const keyOf = (line) => { const i = line.indexOf('='); return i < 0 ? line : line.slice(0, i) }
+        const sliceKeys = new Set((readLines(sf) || []).filter(Boolean).map(keyOf))
+        const lost = (readLines(lf) || []).filter(Boolean).map(keyOf).filter(k => !sliceKeys.has(k))
+        if (lost.length === 0) { okCount++; evolved++; continue }                                 // every legacy uuid still named (values may have changed) → fine
+        pass = false
+        checks.push({ ok: false, kind: 'entries-lost', file: rel, msg: `${rel} — ${lost.length} legacy session name(s) DROPPED from the store version (uuid no longer named)` })
+        continue
+      }
+      // living file (memory/, session-summaries/, markers): present-and-edited is EXPECTED, not loss. But a SHRUNK
+      // file could be a legitimate edit-down OR a truncation we can't prove apart — so don't fail (false-strand) and
+      // don't silently pass (hides loss): SURFACE a non-blocking INFO (Pierre Q2). The retained repo/.mrc snapshot is
+      // the concrete thing to diff against.
+      okCount++; evolved++
+      try { const ls = statSync(lf).size, ss = statSync(sf).size; if (ss < ls) checks.push({ ok: true, kind: 'shrank', file: rel, msg: `${rel} is smaller in the store (${ss}B) than at migration (${ls}B) — expected if you edited it down; check if unexpected (frozen copy in repo/.mrc)` }) } catch {}
+    }
+    checks.unshift({ ok: pass, kind: 'summary', msg: `adoption loss-check: ${okCount}/${plan.manifest.length} legacy file(s) present-and-not-lost (${evolved} evolved in-store)${pass ? '' : ' — POTENTIAL LOSS / FORK (see below)'}` })
+    return { pass, checks }
+  },
 }

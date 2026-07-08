@@ -163,15 +163,103 @@ test('ADOPTION-B: a byte-identical adopted slice → records #001 WITH provenanc
     assert.equal(st.migrated, true); assert.equal(st.recordLost, false); assert.equal(st.layoutLevel, 0)
   } finally { w.done() }
 })
-test('ADOPTION-B: a DIVERGED slice (legacy edited under a legacy launch) FAILS verify → reconcile, NOT recorded', () => {
+test('ADOPTION-B: a genuinely FORKED slice (legacy grew a NEW line the slice lacks) FAILS → reconcile, NOT recorded', () => {
   const w = ws()
   seedMigratedSlice(w)
-  writeFileSync(join(w.legacy, `${U1}.jsonl`), 'a\nEDITED-UNDER-LEGACY\n')   // legacy diverged from the slice = the split incident
+  writeFileSync(join(w.legacy, `${U1}.jsonl`), 'a\nEDITED-UNDER-LEGACY\n')   // legacy forked from the slice (slice still 'a\n') = the split incident
   try {
     const res = tryAdopt(w.legacy, w.slice, { metaRoot: w.metaRoot })
     assert.equal(res.adopted, false); assert.equal(res.reconcile, true)
     assert.equal(res.verify.pass, false)
-    assert.equal(existsSync(join(w.metaRoot, basename(w.slice), mig001.id)), false, 'a diverged slice is NEVER blind-stamped')
+    assert.ok(res.verify.checks.some(c => c.kind === 'legacy-ahead' || c.kind === 'forked'))
+    assert.equal(existsSync(join(w.metaRoot, basename(w.slice), mig001.id)), false, 'a forked slice is NEVER blind-stamped')
+  } finally { w.done() }
+})
+
+// ── LIVE-DOOR FINDING (2026-07-08): adoption is LOSS-DETECTION, not byte-equality — an actively-USED slice evolved ──
+test('ADOPTION loss-gate: a SLICE-AHEAD transcript (legacy is a prefix; slice continued in-store) ADOPTS clean', () => {
+  const w = ws()
+  seedMigratedSlice(w)
+  writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\nCONTINUED-IN-STORE\n')   // slice grew (legacy 'a\n' is a prefix) — lossless
+  try {
+    const v = mig001.verifyAdopt({ legacyDir: w.legacy, sliceDir: w.slice })
+    assert.equal(v.pass, true, `slice-ahead must pass: ${JSON.stringify(v.checks)}`)
+    const res = tryAdopt(w.legacy, w.slice, { metaRoot: w.metaRoot })
+    assert.equal(res.adopted, true, 'an actively-used repo adopts, not strands')
+  } finally { w.done() }
+})
+test('ADOPTION loss-gate: session-names SUPERSET (more names added in-store) + a differing marker → ADOPTS (dietV2\'s real case)', () => {
+  const w = ws()
+  writeFileSync(join(w.legacy, `${U1}.jsonl`), 'a\n'); writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n')
+  writeFileSync(join(w.legacy, 'session-names'), `${U1}=diet\n`)
+  writeFileSync(join(w.slice, 'session-names'), `${U1}=diet\n${U2}=overhaul\n`)   // slice grew a name
+  writeFileSync(join(w.legacy, 'names-migrated'), 'v1-legacy\n')
+  writeFileSync(join(w.slice, 'names-migrated'), 'v1-slice0\n')                    // marker differs, same size (dietV2 shape)
+  writeFileSync(join(w.slice, '.mrc-store-migrated-v2'), '')
+  try {
+    const v = mig001.verifyAdopt({ legacyDir: w.legacy, sliceDir: w.slice })
+    assert.equal(v.pass, true, `dietV2-shape must pass: ${JSON.stringify(v.checks)}`)
+    assert.equal(tryAdopt(w.legacy, w.slice, { metaRoot: w.metaRoot }).adopted, true)
+  } finally { w.done() }
+})
+test('ADOPTION loss-gate: a RENAMED session (same uuid, new name in-store) ADOPTS — per-KEY, not per-line (Pierre)', () => {
+  const w = ws()
+  writeFileSync(join(w.legacy, `${U1}.jsonl`), 'a\n'); writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n')
+  writeFileSync(join(w.legacy, 'session-names'), `${U1}=old-name\n`)
+  writeFileSync(join(w.slice, 'session-names'), `${U1}=renamed-in-store\n`)         // same uuid, value changed = a rename
+  writeFileSync(join(w.slice, '.mrc-store-migrated-v2'), '')
+  try {
+    const v = mig001.verifyAdopt({ legacyDir: w.legacy, sliceDir: w.slice })
+    assert.equal(v.pass, true, `a rename must adopt, not strand: ${JSON.stringify(v.checks)}`)
+    assert.equal(tryAdopt(w.legacy, w.slice, { metaRoot: w.metaRoot }).adopted, true)
+  } finally { w.done() }
+})
+test('ADOPTION loss-gate: a DROPPED session-name (uuid no longer named in the slice) → FAIL (real loss)', () => {
+  const w = ws()
+  writeFileSync(join(w.legacy, `${U1}.jsonl`), 'a\n'); writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n')
+  writeFileSync(join(w.legacy, 'session-names'), `${U1}=diet\n${U2}=important\n`)
+  writeFileSync(join(w.slice, 'session-names'), `${U1}=diet\n`)                     // slice DROPPED the U2 uuid entirely
+  writeFileSync(join(w.slice, '.mrc-store-migrated-v2'), '')
+  try {
+    const v = mig001.verifyAdopt({ legacyDir: w.legacy, sliceDir: w.slice })
+    assert.equal(v.pass, false)
+    assert.ok(v.checks.some(c => c.kind === 'entries-lost' && c.file === 'session-names'))
+  } finally { w.done() }
+})
+test('ADOPTION loss-gate: a SHRUNK living file (edited-down memory) passes but SURFACES a non-blocking INFO (Pierre Q2)', () => {
+  const w = ws()
+  writeFileSync(join(w.legacy, `${U1}.jsonl`), 'a\n'); writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n')
+  mkdirSync(join(w.legacy, 'memory')); mkdirSync(join(w.slice, 'memory'))
+  writeFileSync(join(w.legacy, 'memory', 'MEMORY.md'), '# a long frozen snapshot with lots of content\n')
+  writeFileSync(join(w.slice, 'memory', 'MEMORY.md'), '# trimmed\n')                // smaller in the slice
+  try {
+    const v = mig001.verifyAdopt({ legacyDir: w.legacy, sliceDir: w.slice })
+    assert.equal(v.pass, true, 'shrink is not a failure')
+    assert.ok(v.checks.some(c => c.ok === true && c.kind === 'shrank' && c.file === 'memory/MEMORY.md'), 'but it surfaces an INFO')
+  } finally { w.done() }
+})
+test('ADOPTION loss-gate: a MISSING transcript (in legacy, absent from slice) → FAIL (lost history)', () => {
+  const w = ws()
+  writeFileSync(join(w.legacy, `${U1}.jsonl`), 'a\n'); writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n')
+  writeFileSync(join(w.legacy, `${U2}.jsonl`), 'lost conversation\n')               // never made it to the slice
+  writeFileSync(join(w.slice, '.mrc-store-migrated-v2'), '')
+  try {
+    const v = mig001.verifyAdopt({ legacyDir: w.legacy, sliceDir: w.slice })
+    assert.equal(v.pass, false)
+    assert.ok(v.checks.some(c => c.kind === 'missing' && c.file === `${U2}.jsonl`))
+  } finally { w.done() }
+})
+test('ADOPTION loss-gate: an edited memory/ file (present, differs) is EXPECTED, not loss → passes; a MISSING one fails', () => {
+  const w = ws()
+  writeFileSync(join(w.legacy, `${U1}.jsonl`), 'a\n'); writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n')
+  mkdirSync(join(w.legacy, 'memory')); mkdirSync(join(w.slice, 'memory'))
+  writeFileSync(join(w.legacy, 'memory', 'MEMORY.md'), '# frozen snapshot\n')
+  writeFileSync(join(w.slice, 'memory', 'MEMORY.md'), '# frozen snapshot\n+ edited in-store\n')   // living file, edited
+  try {
+    assert.equal(mig001.verifyAdopt({ legacyDir: w.legacy, sliceDir: w.slice }).pass, true, 'edited memory is not loss')
+    rmSync(join(w.slice, 'memory', 'MEMORY.md'))
+    const v = mig001.verifyAdopt({ legacyDir: w.legacy, sliceDir: w.slice })
+    assert.equal(v.pass, false); assert.ok(v.checks.some(c => c.kind === 'missing' && c.file === 'memory/MEMORY.md'))
   } finally { w.done() }
 })
 

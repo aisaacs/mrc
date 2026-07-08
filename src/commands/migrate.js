@@ -31,6 +31,9 @@ import mig001 from '../migrations/001-relocate-mrc-to-store.js'
 import { mrcStoreDir, storeCtx, planMigration } from '../mrc-store.js'
 
 const sha256 = (f) => { try { return createHash('sha256').update(readFileSync(f)).digest('hex') } catch { return null } }
+// A verify result's FAILING per-FILE checks — excludes the leading summary check (ok:false when the whole verify
+// failed, but it's not a file). Counting it as a file was the "3 files" vs actual-2 miscount the live door surfaced.
+const failedFiles = (v) => (v && v.checks || []).filter(c => c.ok === false && c.file)
 
 // The plain/USER slice for a repo — the migrate front door. A repo is a front door that resolves to the user's own
 // repoId slice (never a member/adversary slice: `mrc migrate` is a plain-user act). Uses the SAME lattice as launch
@@ -134,10 +137,14 @@ export function tryAdopt(legacyDir, sliceHostDir, { metaRoot, mod = mig001, excl
   const sig = adoptionSignature(sliceHostDir)
   if (!sig.has001Sentinel) return { adopted: false, reason: 'no-sentinel' }
   if (sig.higherSignature) return { adopted: false, reason: 'higher-signature', deny: true }        // (A) evidence of a layout beyond #001 → DENY
-  const verify = mod.verify({ legacyDir, sliceDir: sliceHostDir, exclude, include })                 // (B) verify-then-record
+  // (B) verify-then-record. Adoption uses the LOSS-DETECTION gate (verifyAdopt) — an already-USED slice has evolved
+  // (session-names grew, memory/ edited, continued transcripts longer); byte-equality would false-strand it. Only a
+  // genuine split (fork / legacy-ahead / lost content) fails → reconciler. (Falls back to strict verify if a future
+  // migration doesn't define verifyAdopt.)
+  const verify = (mod.verifyAdopt || mod.verify)({ legacyDir, sliceDir: sliceHostDir, exclude, include })
   if (!verify.pass) return { adopted: false, reason: 'verify-failed', verify, reconcile: true }       // diverged/dropped → reconciler
   const record = recordMigration(sliceHostDir, mod, { metaRoot, adopted: true, from: 'in-slice-sentinel', verifiedByteIdentical: true })   // (C) provenance
-  return { adopted: true, record }
+  return { adopted: true, record, verify }
 }
 
 // ── decideUp — the pure `up` decision from slice state (deny states handled BEFORE pendingMigrations, which throws) ──
@@ -256,8 +263,17 @@ async function runUp(repoPath, legacyDir, sliceHostDir, { deps: d, log, metaRoot
     // Pre-framework slice (sentinel, no host record — the already-migrated repos). VERIFY-then-record.
     log('  ◎ This repo was migrated by an earlier mrc; adopting it into the migration ledger (verifying byte-identity first)…')
     const res = tryAdopt(legacyDir, sliceHostDir, { metaRoot })
-    if (res.adopted) { log('  ✓ Adopted — #001 recorded (verified byte-identical). Your memory is under the ledger now.'); return { ok: true, adopted: true } }
-    if (res.reconcile) { log(`  ⚠ Adoption BLOCKED — repo/.mrc and the store slice have DIVERGED (${res.verify.checks.filter(c => c.ok === false).length} file(s) differ/missing). This is the mixed-mode split; it needs the reconciler, not a blind stamp. Run \`mrc migrate status\` for detail (reconciler: task #14).`); return { ok: false, refused: 'diverged' } }
+    if (res.adopted) {
+      log('  ✓ Adopted — #001 recorded (verified no pre-migration content lost). Your memory is under the ledger now.')
+      for (const c of (res.verify && res.verify.checks || []).filter(c => c.ok && c.kind === 'shrank')) log(`      ℹ ${c.msg}`)
+      return { ok: true, adopted: true }
+    }
+    if (res.reconcile) {
+      const bad = failedFiles(res.verify)
+      log(`  ⚠ Adoption BLOCKED — repo/.mrc and the store slice have genuinely FORKED (${bad.length} file(s) lost or diverged). This is the mixed-mode split; it needs the reconciler, not a blind stamp (reconciler: task #14).`)
+      for (const c of bad.slice(0, 8)) log(`      • ${c.msg}`)
+      return { ok: false, refused: 'diverged' }
+    }
     log('  ✗ Can\'t adopt this slice automatically (no clear #001 evidence). Leaving it as-is; inspect it manually.')
     return { ok: false, refused: res.reason }
   }
@@ -275,8 +291,9 @@ async function runUp(repoPath, legacyDir, sliceHostDir, { deps: d, log, metaRoot
   const verify = mod.verify({ legacyDir, sliceDir: sliceHostDir, manifest: upRes.manifest, refused: upRes.refused })
   if (!verify.pass) {
     // INVARIANT 8: do NOT record on a failed verify. Surface it; a divergent sharer / drop routes to the reconciler.
-    log(`  ✗ Migration verify FAILED — ${verify.checks.filter(c => c.ok === false).length} file(s) differ or are missing. NOT recording it. repo/.mrc is untouched (non-destructive).`)
-    for (const c of verify.checks.filter(c => c.ok === false).slice(0, 8)) log(`      • ${c.msg}`)
+    const bad = failedFiles(verify)
+    log(`  ✗ Migration verify FAILED — ${bad.length} file(s) differ or are missing. NOT recording it. repo/.mrc is untouched (non-destructive).`)
+    for (const c of bad.slice(0, 8)) log(`      • ${c.msg}`)
     return { ok: false, refused: 'verify-failed', verify }
   }
   const record = recordMigration(sliceHostDir, mod, { metaRoot, manifest: upRes.manifest })     // host-only, atomic, AFTER verify
