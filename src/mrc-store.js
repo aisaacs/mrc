@@ -139,22 +139,12 @@ export function mrcStoreDir(ctx, opts) { return sliceDir(sliceKeyFor(ctx, opts))
 export const forkSliceKey = () => `fork-${randomUUID()}`
 export function forkSliceDir() { return sliceDir(forkSliceKey()) }
 
-// Orchestrator: the effective session-store dir for a launch or a subcommand. LEGACY → the repo's .mrc unchanged.
-// STORE-MODE → the slice (mrcStoreDir(ctx)), migrating legacy→slice FIRST (before any read/resolve) when `migrate`:
-// plain/solo carry their whole repo/.mrc in (`exclude`-scoped, minus @members, keeping PICKABLE⟺MIGRATED with the
-// picker); a MEMBER carries ONLY its own transcript in (`include`-scoped) so it RESUMES rather than re-starting. An
-// ADVERSARY is never store-mode (gated fully legacy upstream) so its pierre-vol history is untouched. One place
-// launch/subcommand → session-store dir.
-export function sessionStoreDir({ storeMode, ctx, legacyDir, migrate = false, exclude = null, include = null, isLive = null }) {
-  if (!storeMode) return legacyDir
-  const slice = mrcStoreDir(ctx)
-  // #5 BUG-1: repair clobbered mtimes right after migrate, before any read. Finding-1: `isLive` (injected docker
-  // probe — mrc-store has no docker dep) gates the normalize WRITE off when a live container holds the slice, so a
-  // read-only `mrc pick`/`ls` while another session runs lists the (possibly-still-clobbered) slice but never
-  // mtime-races the live agent; the repair lands on a later idle launch instead.
-  if (migrate) migrateAndNormalize(legacyDir, slice, { exclude, include, skipWrite: isLive ? !!isLive(slice) : false })
-  return slice
-}
+// (#13: `sessionStoreDir` — the old orchestrator that resolved the session-store dir AND silently migrated legacy→slice
+// when `migrate` — was DELETED. Every caller (the launch, the auto-resume guard, the pick/ls/resume subcommands) now
+// decides store-vs-legacy via storeActivation and MIGRATES ONLY through the explicit `mrc migrate` runner. Keeping a
+// dead, exported, migrate-capable, naturally-named read helper around is how the silent auto-migrate came back a third
+// time (Pierre): a maintainer reaching for "the session's store dir" would silently re-arm it. migrateAndNormalize
+// stays — the member launch still include-scoped-relocates through it. See mrc.js preBuildSessionStore + the launch.)
 
 // Build the slice ctx from a launch's resolved state. EVERY signal is coerced EXPLICIT so the lattice never hits
 // its floor by accident (an unset field → the wrong grant/floor): `adversary` from the HOST-set caged flag (never
@@ -305,9 +295,10 @@ export function normalizeSliceMtimes(sliceDir, legacyDir) {
   return { normalized, failed }
 }
 
-// #5: migrate THEN repair mtimes — the ONE unit every store-dir consumer must run so no read (host getSessions,
-// resolveSessionId, OR the container's on-disk `claude --continue`) ever sees a clobbered recency. Called from BOTH
-// sessionStoreDir (subcommands + the pre-build auto-resume) AND the launch (before /mrc mounts + before resolveSessionId).
+// #5: migrate THEN repair mtimes — the ONE unit that relocates legacy→slice + fixes recency so no read (host
+// getSessions, resolveSessionId, OR the container's on-disk `claude --continue`) sees a clobbered mtime. #13: the ONLY
+// remaining caller on the launch path is the MEMBER include-scoped relocate (mrc.js); the `mrc migrate` runner drives
+// the plain/solo path. (It was formerly also called by sessionStoreDir + the pre-build auto-resume — both removed.)
 export function migrateAndNormalize(legacyDir, sliceDir, opts = {}) {
   // #5 Finding-1 (Pierre) + v2: BOTH steps WRITE the slice. The v2 sentinel bump means a v1 slice RE-migrates (subdir
   // recovery) — no longer the no-op it was — and normalize rewrites mtimes. Neither may run while a live container

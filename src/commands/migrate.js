@@ -22,13 +22,13 @@
 //   VERIFY-THEN-RECORD — run #001's byte-honest verify(legacy↔slice) as the GATE: PASS → adopt, FAIL → route to the
 //   reconciler (a diverged slice must never be blind-stamped "done"). (C) the adopted record carries PROVENANCE
 //   ({adopted, from, verifiedByteIdentical}) so an auditor distinguishes adopted from freshly-migrated.
-import { join, basename, resolve } from 'node:path'
+import { join, basename, dirname, resolve } from 'node:path'
 import { homedir } from 'node:os'
-import { createHash } from 'node:crypto'
-import { openSync, writeSync, closeSync, readFileSync, unlinkSync, mkdirSync, readdirSync, existsSync, writeFileSync, renameSync } from 'node:fs'
-import { MIGRATIONS, sliceMigrationState, recordMigration, LAYOUT_MARKER_RE, layoutMarkersOf } from '../migrations/registry.js'
+import { createHash, randomUUID } from 'node:crypto'
+import { openSync, writeSync, closeSync, readFileSync, unlinkSync, mkdirSync, readdirSync, existsSync, copyFileSync, appendFileSync, statSync } from 'node:fs'
+import { MIGRATIONS, sliceMigrationState, recordMigration, sliceHigherSignature, recordOptOut, clearOptOut, isOptedOut } from '../migrations/registry.js'
 import mig001 from '../migrations/001-relocate-mrc-to-store.js'
-import { mrcStoreDir, storeCtx, planMigration } from '../mrc-store.js'
+import { mrcStoreDir, storeCtx, planMigration, normalizeSliceMtimes } from '../mrc-store.js'
 
 const sha256 = (f) => { try { return createHash('sha256').update(readFileSync(f)).digest('hex') } catch { return null } }
 // A verify result's FAILING per-FILE checks — excludes the leading summary check (ok:false when the whole verify
@@ -116,18 +116,10 @@ export function imageCanDrive(store, migration) {
 // verify(legacy↔slice) → reconciler, even independent of any marker. So a higher layout is caught by marker OR
 // by structure. A marker-LESS, structure-preserving level-2 is impossible under the lint (it'd have no way to be
 // level-2 without either a marker or a restructure).
-const KNOWN_001_CONTROL = new Set(['.mrc-store-migrated', '.mrc-store-migrated-v2', '.mrc-mtimes-normalized', '.mrc-migrate.log'])
-const isControl = (f) => f.startsWith('.mrc-') || f.startsWith('.oxcl') || f.endsWith('.lock')
-const isTransientControl = (f) => f.startsWith('.oxcl') || f.endsWith('.lock')
 export function adoptionSignature(sliceHostDir) {
   let files = []; try { files = readdirSync(sliceHostDir) } catch {}
-  const control = files.filter(isControl)
-  const has001Sentinel = control.includes('.mrc-store-migrated-v2') || control.includes('.mrc-store-migrated')
-  const declared = layoutMarkersOf()
-  const higherSignature =
-    files.some(f => LAYOUT_MARKER_RE.test(f) || declared.has(f)) ||                     // (1)+(2) reserved namespace / declared markers
-    control.some(f => !KNOWN_001_CONTROL.has(f) && !isTransientControl(f))              // (3) fail-safe: unknown durable control → over-strand
-  return { has001Sentinel, higherSignature }
+  const has001Sentinel = files.includes('.mrc-store-migrated-v2') || files.includes('.mrc-store-migrated')
+  return { has001Sentinel, higherSignature: sliceHigherSignature(sliceHostDir) }   // the ONE detector, shared with memberStoreActive
 }
 
 // tryAdopt — guardrails A (downward-only) + B (verify-then-record) + C (provenance). Returns the outcome; the
@@ -144,13 +136,14 @@ export function tryAdopt(legacyDir, sliceHostDir, { metaRoot, mod = mig001, excl
   const verify = (mod.verifyAdopt || mod.verify)({ legacyDir, sliceDir: sliceHostDir, exclude, include })
   if (!verify.pass) return { adopted: false, reason: 'verify-failed', verify, reconcile: true }       // diverged/dropped → reconciler
   const record = recordMigration(sliceHostDir, mod, { metaRoot, adopted: true, from: 'in-slice-sentinel', verifiedByteIdentical: true })   // (C) provenance
+  try { normalizeSliceMtimes(sliceHostDir, legacyDir) } catch {}   // fresh-migrate normalizes via #001.up; adoption must too (a pre-mtime-fix slice has clobbered recency)
   return { adopted: true, record, verify }
 }
 
 // ── decideUp — the pure `up` decision from slice state (deny states handled BEFORE pendingMigrations, which throws) ──
 // Actions: 'halt' (corrupt / higher-signature / record-lost-no-sentinel → manual), 'adopt' (sentinel, no record, no
 // higher sig → verify-then-adopt), 'migrate' (fresh/partial with pending work), 'noop' (nothing pending).
-export function decideUp(legacyDir, sliceHostDir, { metaRoot } = {}) {
+export function decideUp(legacyDir, sliceHostDir, { metaRoot, init = false } = {}) {
   const st = sliceMigrationState(sliceHostDir, { metaRoot })
   if (st.corrupt) return { action: 'halt', reason: 'corrupt-record' }
   const sig = adoptionSignature(sliceHostDir)
@@ -160,7 +153,15 @@ export function decideUp(legacyDir, sliceHostDir, { metaRoot } = {}) {
     return { action: 'adopt' }
   }
   const pending = MIGRATIONS.filter(m => !st.ran.has(m.id) && (typeof m.isPending === 'function' ? m.isPending({ legacyDir, sliceDir: sliceHostDir }) : true))
-  if (pending.length === 0) return { action: 'noop', reason: st.migrated ? 'already-migrated' : 'nothing-pending' }
+  if (pending.length === 0) {
+    if (st.migrated) return { action: 'noop', reason: 'already-migrated' }
+    // Fresh repo with NO memory to relocate. Model A (Pierre): opting an EMPTY repo into the store is an EXPLICIT,
+    // RECORDED act (`--init`) — it keeps #13's invariant (store-active ⟺ a host record), so no recordLost-mint (D1a's
+    // class) and no launch-coupled auto (which "empty ⟹ auto-store" would reintroduce, on a racy + clone-forgeable
+    // "empty" gate). Without --init a bare `up` stays a noop (no surprise slice on a random dir) and points at --init.
+    if (init) return { action: 'init', pending: MIGRATIONS.filter(m => !st.ran.has(m.id)) }
+    return { action: 'noop', reason: 'nothing-pending' }
+  }
   return { action: 'migrate', pending }
 }
 
@@ -182,6 +183,97 @@ export function decideDetach(legacyDir, sliceHostDir, { force = false } = {}) {
   const born = storeBornContent(legacyDir, sliceHostDir)
   if (born.length && !force) return { action: 'refuse', born }
   return { action: 'detach', born }
+}
+
+// ── #14: THE RECONCILER (heals a split — the counterpart to the runner's diverged-refusal) ────────────────────
+// A split is repo/.mrc (the frozen migration snapshot, or content a LEGACY launch wrote after migration) diverging
+// from the store slice. verifyAdopt REFUSES to adopt a diverged repo (never a blind stamp); the reconciler is how
+// that repo gets UNIFIED — losslessly where safe, surfaced-and-pickable where not — after which adoption records it.
+// Per-transcript, legacy vs slice (append-only ordered logs):
+//   • in-sync / slice-ahead (legacy ⊑ slice) → NOTHING (the slice already has it all).
+//   • legacy-ahead (slice ⊑ legacy — repo/.mrc grew past the slice) → EXTEND: slice ← legacy (lossless; slice ⊂ legacy).
+//   • diverged (neither is a prefix — both got unique turns after the split) → PROMOTE the legacy fork to a NEW
+//     pickable session (`<newuuid>.jsonl` + a `session-names` entry "…(legacy fork <date>)"); the slice KEEPS its own
+//     version at the original uuid. BOTH appear in `mrc pick`; the human chooses by reading. Never a silent drop,
+//     never an auto-merge of two realities, never a `.conflict` dead-letter (invisible to the picker = theater).
+//   • missing-in-slice (legacy transcript never made it) → COPY-IN.
+//   • session-names → UNION legacy keys the slice lacks (a name is never dropped). Living memory/ → slice authoritative
+//     (present) or copy-in (missing) — reconcile heals unrecoverable TRANSCRIPT history, not free-form memory content.
+const fileLines = (f) => { try { const a = readFileSync(f, 'utf8').split('\n'); while (a.length && a[a.length - 1] === '') a.pop(); return a } catch { return null } }
+const linePrefix = (a, b) => { if (!a || !b || a.length > b.length) return false; for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false; return true }
+const nameKey = (line) => { const i = line.indexOf('='); return i < 0 ? line : line.slice(0, i) }
+// does ANY slice .jsonl byte-equal `legacyFile`? (an already-promoted legacy fork lands as a NEW uuid byte-equal to
+// the legacy transcript) — makes the diverged→fork action IDEMPOTENT so a re-plan after apply converges to empty.
+const sliceHasByteEqual = (sliceHostDir, legacyFile) => {
+  const want = sha256(legacyFile); if (!want) return false
+  try { for (const f of readdirSync(sliceHostDir)) if (f.endsWith('.jsonl') && sha256(join(sliceHostDir, f)) === want) return true } catch {}
+  return false
+}
+
+// IDEMPOTENT by construction: after applyReconcile, planReconcile MUST return zero ACTIONS (that empty re-plan is
+// runReconcile's record gate). So every action's post-state re-plans to no-action: extend→slice==legacy; copy-in→
+// present; merge-names→emitted only on a MISSING KEY (not a byte-diff), so a superset re-plans clean; promote-fork→
+// emitted only if legacy's content isn't ALREADY byte-present as a slice fork. `infos` are NON-blocking surfacings
+// (they do NOT gate the record): a living file present-but-SHRUNK vs the snapshot (parity with adoption's shrink
+// INFO — no-silent-failure), and a DIVERGED nested subagent leaf (see below). infos persist across re-plans and are
+// deliberately kept OUT of `actions` so they never block convergence.
+export function planReconcile(legacyDir, sliceHostDir, { exclude = null, include = null } = {}) {
+  const plan = planMigration(legacyDir, { exclude, include })
+  const actions = [], infos = []
+  const sizeOf = (f) => { try { return statSync(f).size } catch { return 0 } }
+  for (const rel of plan.manifest) {
+    const lf = join(legacyDir, rel), sf = join(sliceHostDir, rel)
+    if (!rel.endsWith('.jsonl')) {
+      if (!existsSync(sf)) { actions.push({ rel, kind: 'copy-in' }); continue }
+      if (rel === 'session-names') {                                          // union on a MISSING KEY (idempotent), not a byte-diff
+        const sliceKeys = new Set((fileLines(sf) || []).map(nameKey))
+        if ((fileLines(lf) || []).some(l => l && !sliceKeys.has(nameKey(l)))) actions.push({ rel, kind: 'merge-names' })
+      } else if (sha256(lf) !== sha256(sf) && sizeOf(sf) < sizeOf(lf)) {
+        infos.push({ rel, kind: 'shrank', legacyBytes: sizeOf(lf), sliceBytes: sizeOf(sf) })   // living file present-but-smaller (parity w/ adoption)
+      }
+      // names-migrated/security-migrated markers + living memory/: slice authoritative; only SURFACE a shrink.
+      continue
+    }
+    if (!existsSync(sf)) { actions.push({ rel, kind: 'copy-in' }); continue }
+    if (sha256(lf) === sha256(sf)) continue
+    const la = fileLines(lf), sa = fileLines(sf)
+    if (linePrefix(la, sa)) continue                                         // slice-ahead → noop
+    if (linePrefix(sa, la)) { actions.push({ rel, kind: 'extend' }); continue }   // legacy-ahead → slice ← legacy (lossless)
+    // DIVERGED. A TOP-LEVEL transcript is a user conversation → promote its legacy fork to a pickable session. A
+    // NESTED `<uuid>/sub.jsonl` is an internal SUBAGENT artifact — promoting it to a top-level pickable session would
+    // surface a subagent as a user conversation (Pierre). So DON'T: its legacy fork stays in repo/.mrc (non-destructive)
+    // and we SURFACE it (info), rather than mis-promote. (extend/copy-in above already handle the recoverable nested cases.)
+    if (rel.includes('/')) { infos.push({ rel, kind: 'diverged-subagent' }); continue }
+    if (!sliceHasByteEqual(sliceHostDir, lf)) actions.push({ rel, kind: 'promote-fork', uuid: rel.replace(/\.jsonl$/, '') })  // diverged (unless already forked)
+  }
+  return { actions, infos }
+}
+
+// Apply a reconcile plan to the slice. Injected `now`/`newId` for deterministic tests. Returns what it did.
+export function applyReconcile(legacyDir, sliceHostDir, plan, { now = () => new Date(), newId = randomUUID } = {}) {
+  const res = { copied: 0, extended: 0, promoted: [], mergedNames: 0 }
+  const nameFor = (uuid) => {
+    for (const dir of [sliceHostDir, legacyDir]) {
+      try { for (const l of readFileSync(join(dir, 'session-names'), 'utf8').split('\n')) if (l && nameKey(l) === uuid) return l.slice(l.indexOf('=') + 1) } catch {}
+    }
+    return uuid.slice(0, 8)
+  }
+  const stamp = (() => { try { return now().toISOString().slice(0, 10) } catch { return 'fork' } })()
+  for (const a of plan.actions) {
+    const lf = join(legacyDir, a.rel), sf = join(sliceHostDir, a.rel)
+    if (a.kind === 'copy-in') { mkdirSync(dirname(sf), { recursive: true }); copyFileSync(lf, sf); res.copied++ }
+    else if (a.kind === 'extend') { copyFileSync(lf, sf); res.extended++ }                       // slice ⊂ legacy → overwrite is lossless
+    else if (a.kind === 'promote-fork') {
+      const nid = newId(); copyFileSync(lf, join(sliceHostDir, `${nid}.jsonl`))                   // legacy fork → a NEW pickable uuid; slice keeps its own
+      try { appendFileSync(join(sliceHostDir, 'session-names'), `${nid}=${nameFor(a.uuid)} (legacy fork ${stamp})\n`) } catch {}
+      res.promoted.push({ from: a.uuid, to: nid })
+    } else if (a.kind === 'merge-names') {
+      const sliceKeys = new Set((fileLines(sf) || []).map(nameKey))
+      const add = (fileLines(lf) || []).filter(l => l && !sliceKeys.has(nameKey(l)))
+      if (add.length) { try { appendFileSync(sf, add.map(l => l + '\n').join('')); res.mergedNames += add.length } catch {} }
+    }
+  }
+  return res
 }
 
 // ── INVARIANT 7: status (honest state) ───────────────────────────────────────────────────────────────────────
@@ -213,6 +305,7 @@ export async function runMigrate(sub, repoPath, opts = {}) {
   const sliceHostDir = d.sliceHostDir || repoSliceDir(resolve(repoPath))
   const metaRoot = d.metaRoot   // undefined in prod → registry uses the real host meta root
   const yes = !!opts.yes
+  const init = !!opts.init
 
   if (sub === 'status') {
     const rep = statusReport(legacyDir, sliceHostDir, { metaRoot })
@@ -231,28 +324,29 @@ export async function runMigrate(sub, repoPath, opts = {}) {
     }
 
     if (sub === 'detach') return await runDetach(legacyDir, sliceHostDir, { ...opts, deps: d, log })
-    if (sub === 'up') return await runUp(repoPath, legacyDir, sliceHostDir, { ...opts, deps: d, log, metaRoot, yes })
-    log(`  ✗ Unknown migrate command: ${sub}. Use: up | status | detach.`)
+    if (sub === 'reconcile') return await runReconcile(repoPath, legacyDir, sliceHostDir, { ...opts, deps: d, log, metaRoot, yes })
+    if (sub === 'up') return await runUp(repoPath, legacyDir, sliceHostDir, { ...opts, deps: d, log, metaRoot, yes, init })
+    log(`  ✗ Unknown migrate command: ${sub}. Use: up | status | detach | reconcile.`)
     return { ok: false, refused: 'unknown-subcommand' }
   } finally { lock.release() }
 }
 
-async function runUp(repoPath, legacyDir, sliceHostDir, { deps: d, log, metaRoot, yes }) {
-  const decision = decideUp(legacyDir, sliceHostDir, { metaRoot })
+async function runUp(repoPath, legacyDir, sliceHostDir, { deps: d, log, metaRoot, yes, init = false }) {
+  const decision = decideUp(legacyDir, sliceHostDir, { metaRoot, init })
   if (decision.action === 'halt') {
     log(haltMessage(decision.reason, sliceHostDir))
     return { ok: false, halted: decision.reason }
   }
   if (decision.action === 'noop') {
-    log(decision.reason === 'already-migrated'
-      ? '  ✓ This repo\'s memory is already migrated — nothing to do.'
-      : '  ✓ Nothing to migrate here (no legacy .mrc memory to relocate).')
+    if (decision.reason === 'already-migrated') { log('  ✓ This repo\'s memory is already migrated — nothing to do.'); return { ok: true, noop: true, reason: decision.reason } }
+    // Fresh repo, nothing to relocate. Point at the EXPLICIT opt-in (Model A) — bare `up` never surprise-mints a slice.
+    log(`  ✓ No memory to relocate here. To start THIS repo in the store from its first conversation, run:  mrc migrate up --init ${repoPath}`)
     return { ok: true, noop: true, reason: decision.reason }
   }
 
   // INVARIANT 3: capability — every migration we'd apply must be drivable by the running image.
   const store = d.store || { storeMode: false, cap: 0 }
-  const mods = decision.action === 'adopt' ? [mig001] : decision.pending
+  const mods = (decision.action === 'adopt') ? [mig001] : decision.pending
   const blocked = mods.filter(m => !imageCanDrive(store, m))
   if (blocked.length) {
     log(`  ✗ This image can't drive ${blocked.map(m => m.id).join(', ')} (store capability ${store.cap || 0}).\n    Rebuild a store-capable image first:  docker rmi mister-claude && mrc ${repoPath}`)
@@ -264,13 +358,14 @@ async function runUp(repoPath, legacyDir, sliceHostDir, { deps: d, log, metaRoot
     log('  ◎ This repo was migrated by an earlier mrc; adopting it into the migration ledger (verifying byte-identity first)…')
     const res = tryAdopt(legacyDir, sliceHostDir, { metaRoot })
     if (res.adopted) {
+      clearOptOut(sliceHostDir, { metaRoot })   // adopting is opting back IN — clear any prior detach opt-out
       log('  ✓ Adopted — #001 recorded (verified no pre-migration content lost). Your memory is under the ledger now.')
       for (const c of (res.verify && res.verify.checks || []).filter(c => c.ok && c.kind === 'shrank')) log(`      ℹ ${c.msg}`)
       return { ok: true, adopted: true }
     }
     if (res.reconcile) {
       const bad = failedFiles(res.verify)
-      log(`  ⚠ Adoption BLOCKED — repo/.mrc and the store slice have genuinely FORKED (${bad.length} file(s) lost or diverged). This is the mixed-mode split; it needs the reconciler, not a blind stamp (reconciler: task #14).`)
+      log(`  ⚠ Adoption BLOCKED — repo/.mrc and the store slice have genuinely FORKED (${bad.length} file(s) lost or diverged). This is the mixed-mode split; it needs healing, not a blind stamp. Run:  mrc migrate reconcile ${repoPath}`)
       for (const c of bad.slice(0, 8)) log(`      • ${c.msg}`)
       return { ok: false, refused: 'diverged' }
     }
@@ -278,16 +373,20 @@ async function runUp(repoPath, legacyDir, sliceHostDir, { deps: d, log, metaRoot
     return { ok: false, refused: res.reason }
   }
 
-  // action === 'migrate' — fresh/partial. PREVIEW (invariant 6) → CONFIRM (unless --yes) → up → verify → record.
+  // action === 'migrate' (relocate real memory) OR 'init' (opt an EMPTY repo in — 0 files, `--init` IS the consent).
+  // Both: PREVIEW (invariant 6) → CONFIRM (unless --yes / --init) → up → verify → record.
+  const isInit = decision.action === 'init'
   const mod = decision.pending[0]   // ordered; #001 is the only one today. (Loop generalizes when #002 lands.)
-  const prev = mod.preview ? mod.preview({ legacyDir, sliceDir: sliceHostDir }) : {}
-  const preExisting = slicePrePopulated(sliceHostDir)
-  log(renderPreview(mod, prev, { legacyDir, sliceHostDir, preExisting }))
-  if (!yes) {
+  if (isInit) log(`\n  Initialize ${repoPath} in the host memory store (#001) — this repo has no memory to relocate; new conversations will live in the store slice.\n`)
+  else {
+    const prev = mod.preview ? mod.preview({ legacyDir, sliceDir: sliceHostDir }) : {}
+    log(renderPreview(mod, prev, { legacyDir, sliceHostDir, preExisting: slicePrePopulated(sliceHostDir) }))
+  }
+  if (!yes && !isInit) {
     const ok = d.confirm ? await d.confirm('  Proceed with the migration?') : false
     if (!ok) { log('  Aborted (no changes made).'); return { ok: false, refused: 'declined' } }
   }
-  const upRes = mod.up({ legacyDir, sliceDir: sliceHostDir })                                  // non-destructive copy
+  const upRes = mod.up({ legacyDir, sliceDir: sliceHostDir })                                  // non-destructive copy (0 files for --init)
   const verify = mod.verify({ legacyDir, sliceDir: sliceHostDir, manifest: upRes.manifest, refused: upRes.refused })
   if (!verify.pass) {
     // INVARIANT 8: do NOT record on a failed verify. Surface it; a divergent sharer / drop routes to the reconciler.
@@ -296,9 +395,12 @@ async function runUp(repoPath, legacyDir, sliceHostDir, { deps: d, log, metaRoot
     for (const c of bad.slice(0, 8)) log(`      • ${c.msg}`)
     return { ok: false, refused: 'verify-failed', verify }
   }
-  const record = recordMigration(sliceHostDir, mod, { metaRoot, manifest: upRes.manifest })     // host-only, atomic, AFTER verify
-  log(`  ✓ Migrated ${upRes.migrated} file(s) (verified byte-identical), recorded ${mod.id}. repo/.mrc is retained (non-destructive).`)
-  return { ok: true, migrated: upRes.migrated, record }
+  const record = recordMigration(sliceHostDir, mod, { metaRoot, manifest: upRes.manifest, ...(isInit ? { init: true } : {}) })   // host-only, atomic, AFTER verify
+  clearOptOut(sliceHostDir, { metaRoot })   // migrating/init is opting IN — clear any prior detach opt-out
+  log(isInit
+    ? `  ✓ Initialized ${repoPath} in the host store (recorded ${mod.id}). New conversations live in the store from now on.`
+    : `  ✓ Migrated ${upRes.migrated} file(s) (verified byte-identical), recorded ${mod.id}. repo/.mrc is retained (non-destructive).`)
+  return { ok: true, migrated: upRes.migrated, init: isInit, record }
 }
 
 async function runDetach(legacyDir, sliceHostDir, { deps: d, log, force = false, yes = false }) {
@@ -316,6 +418,65 @@ async function runDetach(legacyDir, sliceHostDir, { deps: d, log, force = false,
   ;(d.recordOptOut || recordOptOut)(sliceHostDir, { metaRoot: d.metaRoot })
   log(`  ✓ Opted out of the memory store for this repo. Launches will read legacy repo/.mrc again. The slice is PRESERVED (not deleted); re-run \`mrc migrate up\` to opt back in.${decision.born.length ? ' (--force-detach: store-born content stays in the slice, not visible to legacy launches.)' : ''}`)
   return { ok: true, detached: true }
+}
+
+// #14: `mrc migrate reconcile` — heal a split, then adopt. Plans the per-transcript actions, previews them (so the
+// human sees exactly what merges vs what becomes a new pickable fork), applies (a slice WRITE — already behind the
+// lock + live-container preflight in runMigrate), then RECORDS the adoption (the repo is now consistent → no loss).
+// After a diverged `up` refusal, this is the path forward. Non-destructive to repo/.mrc; slice-forks are additive.
+async function runReconcile(repoPath, legacyDir, sliceHostDir, { deps: d, log, metaRoot, yes }) {
+  if (!existsSync(sliceHostDir)) { log('  ✓ Nothing to reconcile — this repo has no store slice yet. Run `mrc migrate up` first.'); return { ok: true, noop: true } }
+  // The RECORD gate is a fork-aware, CONVERGENT re-plan: after applyReconcile every legacy transcript is present in
+  // the slice (extended / copied / already-forked), so a re-plan returns ZERO actions — THAT is "unified, no loss."
+  // We record on the empty re-plan, NOT via verifyAdopt (which would re-flag the DELIBERATE fork divergence at the
+  // original uuid). recordAdopted stamps #001 with reconcile provenance.
+  const recordUnified = (forks) => {
+    normalizeSliceMtimes(sliceHostDir, legacyDir)
+    const rec = recordMigration(sliceHostDir, mig001, { metaRoot, adopted: true, from: 'reconcile', reconciled: true, forks: forks || [] })
+    clearOptOut(sliceHostDir, { metaRoot })
+    return rec
+  }
+  const plan = planReconcile(legacyDir, sliceHostDir)
+  const surfaceInfos = (infos) => {
+    for (const i of infos || []) {
+      if (i.kind === 'shrank') log(`      ℹ ${i.rel} is smaller in the store (${i.sliceBytes}B) than at migration (${i.legacyBytes}B) — expected if edited down; check if unexpected (frozen copy in repo/.mrc).`)
+      else if (i.kind === 'diverged-subagent') log(`      ℹ ${i.rel} (a subagent transcript) diverged; its legacy version is kept in repo/.mrc (not promoted to a top-level session).`)
+    }
+  }
+  const alreadyMigrated = sliceMigrationState(sliceHostDir, { metaRoot }).migrated
+  if (plan.actions.length === 0) {
+    surfaceInfos(plan.infos)
+    if (alreadyMigrated) { log('  ✓ Nothing to reconcile — repo/.mrc and the store are already consistent and adopted.'); return { ok: true, noop: true, adopted: true } }
+    recordUnified([])   // consistent (lossless superset by construction) but unrecorded → record the adoption
+    log('  ✓ Nothing to reconcile — repo/.mrc and the store are already consistent; adoption recorded.')
+    return { ok: true, noop: true, adopted: true }
+  }
+  const byKind = plan.actions.reduce((m, a) => { m[a.kind] = (m[a.kind] || 0) + 1; return m }, {})
+  log('')
+  log(`  Reconcile plan for ${repoPath}:`)
+  if (byKind['extend']) log(`    • ${byKind['extend']} conversation(s) where repo/.mrc is AHEAD of the store → the store takes the longer version (lossless).`)
+  if (byKind['promote-fork']) log(`    • ${byKind['promote-fork']} conversation(s) genuinely FORKED → the repo/.mrc version becomes a NEW pickable session "(legacy fork)"; the store keeps its own. You choose in \`mrc pick\`.`)
+  if (byKind['copy-in']) log(`    • ${byKind['copy-in']} conversation/file(s) missing from the store → copied in.`)
+  if (byKind['merge-names']) log(`    • session names union-merged (no name dropped).`)
+  log('    repo/.mrc is untouched (non-destructive); store forks are additive (nothing is overwritten except a strictly-longer log).')
+  log('')
+  if (!yes) {
+    const ok = d.confirm ? await d.confirm('  Apply this reconcile and adopt the repo?') : false
+    if (!ok) { log('  Aborted (no changes made).'); return { ok: false, refused: 'declined' } }
+  }
+  const applied = applyReconcile(legacyDir, sliceHostDir, plan, {})
+  const remaining = planReconcile(legacyDir, sliceHostDir)   // fork-aware convergent re-plan = the record gate
+  const forks = applied.promoted.map(p => p.to)
+  log(`  ✓ Reconciled: ${applied.extended} extended, ${applied.copied} copied-in, ${applied.promoted.length} forked-to-pickable${applied.mergedNames ? `, ${applied.mergedNames} name(s) merged` : ''}.`)
+  if (forks.length) log(`    New pickable "(legacy fork)" session(s) in \`mrc pick\`: ${forks.map(f => f.slice(0, 8)).join(', ')}`)
+  surfaceInfos(remaining.infos)   // living-file shrink / diverged-subagent notes (non-blocking, parity with adoption)
+  if (remaining.actions.length === 0) {
+    recordUnified(applied.promoted)
+    log('  ✓ Adopted — the repo is unified and under the ledger now.')
+    return { ok: true, reconciled: applied, adopted: true }
+  }
+  log(`  ⚠ Reconciled, but ${remaining.actions.length} action(s) did not settle (a write failed?) — NOT recording. Inspect \`mrc migrate status\`. (repo/.mrc is untouched.)`)
+  return { ok: true, reconciled: applied, adopted: false, remaining: remaining.actions }
 }
 
 // slice is pre-populated with memory (may be a SHARED slice — a sibling copy migrated first). Surfaced in preview.
@@ -361,17 +522,5 @@ function haltMessage(reason, sliceHostDir) {
   return `  ✗ HALTED: ${reason}.`
 }
 
-// ── OPT-OUT marker (consumed by the capability-as-version activation, task #13) ───────────────────────────────
-// Host-only, in the slice's migration-meta dir (a dotfile → sliceMigrationState skips it, so it never looks like a
-// migration record). INERT until #13's activation reads it; kept here so detach has a durable, tamper-proof landing
-// spot on the SAME trust tier as the records. (#13 will make resolveStoreMode honor it → legacy for this slice.)
-const optOutMetaDir = (sliceHostDir, metaRoot) => join(metaRoot || join(homedir(), '.local', 'share', 'mrc', 'migration-meta'), basename(sliceHostDir))
-export function recordOptOut(sliceHostDir, { metaRoot } = {}) {
-  const dir = optOutMetaDir(sliceHostDir, metaRoot); mkdirSync(dir, { recursive: true })
-  const file = join(dir, '.opted-out'), tmp = `${file}.${process.pid}.tmp`
-  writeFileSync(tmp, JSON.stringify({ optedOut: true, at: new Date().toISOString() }) + '\n'); renameSync(tmp, file)
-  return file
-}
-export function isOptedOut(sliceHostDir, { metaRoot } = {}) {
-  try { return existsSync(join(optOutMetaDir(sliceHostDir, metaRoot), '.opted-out')) } catch { return false }
-}
+// OPT-OUT marker helpers (recordOptOut / clearOptOut / isOptedOut) now live in migrations/registry.js — the same
+// trust tier + meta dir as the records, and where storeActivation reads them. `homedir` is no longer needed here.

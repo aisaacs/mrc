@@ -13,9 +13,10 @@ import { setVerbose, dbg } from './src/output.js'
 import { readMrcrc, loadEnv, parseArgs, sanitizeRepoConfig } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
 import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer, heldUuids, repoLiveContainers } from './src/docker.js'
-import { resolveStoreMode, storeCtx, mrcStoreDir, sessionStoreDir, migrateAndNormalize, noticePopulatedSliceOnLegacy } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable
+import { resolveStoreMode, storeCtx, mrcStoreDir, migrateAndNormalize, noticePopulatedSliceOnLegacy } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable
 import { rosterMemberSessionIds } from './src/commands/team.js'   // #5 PICKABLE⟺MIGRATED: the roster's memberSessionId exclude, shared by the picker + the migration
 import { runMigrate, repoSliceDir } from './src/commands/migrate.js'   // #12: the explicit, guarded `mrc migrate` runner (replaces the silent auto-migrate)
+import { storeActivation, memberStoreActive } from './src/migrations/registry.js'   // #13: launch-time activation (capability-as-version + explicit-migration-gated)
 import { processSandboxignores } from './src/sandboxignore.js'
 import { findFreePort } from './src/ports.js'
 import { startClipboardProxy } from './src/proxies/clipboard-proxy.js'
@@ -144,8 +145,8 @@ if (remaining[0] === 'status') {
 // adopts / detaches per the 8 invariants. `up` (default) migrates or adopts; `status` reports honestly; `detach`
 // opts a repo out (refuse-by-default on store-born content). See src/commands/migrate.js.
 if (remaining[0] === 'migrate') {
-  const sub = ['up', 'status', 'detach'].includes(remaining[1]) ? remaining[1] : 'up'
-  const migRepo = resolve((['up', 'status', 'detach'].includes(remaining[1]) ? remaining[2] : remaining[1]) || '.')
+  const sub = ['up', 'status', 'detach', 'reconcile'].includes(remaining[1]) ? remaining[1] : 'up'
+  const migRepo = resolve((['up', 'status', 'detach', 'reconcile'].includes(remaining[1]) ? remaining[2] : remaining[1]) || '.')
   // Capability from the EXISTING image (deny-unless-proven; no build here — rebuild is the user's explicit act).
   const { id: existingImage, labels: existingLabels } = imageIdAndLabels()
   const store = resolveStoreMode(existingImage, () => existingLabels)
@@ -156,7 +157,7 @@ if (remaining[0] === 'migrate') {
     confirm: (q) => askYesNo(q),
     log: (m) => console.error(m),
   }
-  const res = await runMigrate(sub, migRepo, { yes: config.yes, force: config.forceDetach, deps })
+  const res = await runMigrate(sub, migRepo, { yes: config.yes, force: config.forceDetach, init: config.init, deps })
   process.exit(res && res.ok ? 0 : 1)
 }
 
@@ -233,16 +234,17 @@ function probeHeldUuids() {
 
 function preBuildSessionStore(repoPath) {
   const { id, labels } = imageIdAndLabels()
-  const storeMode = resolveStoreMode(id, () => labels).storeMode
-  // exclude ONLY in store-mode → the LEGACY picker/resume stays byte-identical to today (the whole relocation is
-  // inert until a rebuilt image flips the capability). In store-mode the SAME set feeds the migration (PICKABLE⟺MIGRATED).
-  const exclude = storeMode ? rosterMemberSessionIds(repoPath) : null
-  // #5 Finding-1: a subcommand (pick/ls/name/resume) is READ-ONLY — it must not mtime-rewrite a slice a live
-  // container is using. Inject the ceiling probe so migrateAndNormalize skips the normalize WRITE when the slice is
-  // live or unverifiable (still migrates copy-if-absent, still lists — the repair defers to a later idle launch).
-  const isLive = (slice) => { const p = probeSliceLive(slice); return !!(p.id || !p.determined) }
-  const dir = sessionStoreDir({ storeMode, ctx: { isMember: false, isSolo: false, adversary: false, repoPath }, legacyDir: resolve(repoPath, '.mrc'), migrate: true, exclude, isLive })
-  return { dir, exclude }
+  const store = resolveStoreMode(id, () => labels)
+  const legacyDir = resolve(repoPath, '.mrc')
+  // #13: the pre-build read (auto-resume guard + pick/ls/name/resume) must NOT migrate — migration is `mrc migrate`-
+  // only now (the silent auto-migrate is GONE; migrating here writes the sentinel but no host record → recordLost →
+  // the launch would then warn the WRONG reason). Read the SLICE only when the repo is store-ACTIVATED (a host
+  // record + capability + not opted-out — the SAME storeActivation the launch uses, so pre-build and launch agree);
+  // otherwise read LEGACY. Read-only: an already-migrated slice was normalized at `mrc migrate` time.
+  if (!store.storeMode) return { dir: legacyDir, exclude: null }
+  const slice = mrcStoreDir(storeCtx({ solo: false, memberCtx: null, cagedAdversary: false, repoPath }))
+  const active = storeActivation(slice, store, {}).active
+  return { dir: active ? slice : legacyDir, exclude: active ? rosterMemberSessionIds(repoPath) : null }
 }
 
 // --- Subcommand: mrc pick ---
@@ -648,34 +650,55 @@ if (!adversaryVolume) volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-
 // DESTRUCTIVELY drop its un-migrated real-dir transcripts (container-setup's rmSync of a real-dir PROJECT_STORE,
 // which the repo/.mrc→slice migration never touches). Defer the adv-slice until it has its own migration. So
 // store-mode applies to plain / solo / member only; an adversary keeps today's pierre-vol behavior.
-const storeActive = store.storeMode && !adversaryIdentity   // #5 SEC: identity, not cage — an UNCAGED adversary must NOT get the user's /mrc slice (Pierre t7)
-const storeExclude = storeActive ? rosterMemberSessionIds(repoPath) : null   // store-active only → legacy resolveSessionId is identical to today
-const isMemberLaunch = !!memberCtx && config.solo !== true                   // a REAL team member; solo is mechanically a member but keys on repoId + migrates like plain
+const isMemberLaunch = !!memberCtx && config.solo !== true                   // a REAL team member; solo is mechanically a member but keys on repoId
 const launchIsPlainOrSolo = !cagedAdversary && !isMemberLaunch
-// #5 DE-ACTIVATION AMNESIA (Pierre t5): a capability-ABSENT (legacy) launch of a repo that already has store-era memory
-// would SILENTLY show only the frozen pre-migration snapshot in repo/.mrc — hiding every store-born conversation (no
-// reverse bridge). Surface it loudly (repoId slice + team-member m-<hash> slices). Read-only + best-effort; never blocks.
-if (!store.storeMode && !adversaryIdentity && launchIsPlainOrSolo) {
+const imageStoreCapable = store.storeMode && !adversaryIdentity              // #5 SEC: identity, not cage — an UNCAGED adversary must NOT get the user's /mrc slice (Pierre t7)
+const legacyDir = resolve(repoPath, '.mrc')
+// #5: the INTENDED slice PATH (pure resolution; no migration). Resolved for any store-capable launch so #13's
+// activation check + the mount can use it.
+const prospectiveSlice = imageStoreCapable
+  ? mrcStoreDir(storeCtx({ solo: config.solo, memberCtx, cagedAdversary, adversarySlot, repoPath }))
+  : null
+// #13: STORE-MODE ACTIVATION is now EXPLICIT-migration-gated for the user's own plain/solo repo — the silent
+// auto-migrate is GONE. A plain/solo repo activates store-mode ONLY if it was migrated via `mrc migrate` (a host
+// record) AND the image capability can drive its layout AND it's not opted out (storeActivation, capability-as-
+// version). Unmigrated/opted-out/shortfall → LEGACY, with a loud, accurate warning below. A MEMBER launch (team-
+// internal, never human-run `mrc migrate`) keeps its own capability-gated store-mode + include-scoped relocate.
+let storeActive, activation = null
+if (!imageStoreCapable) storeActive = false
+else if (isMemberLaunch) storeActive = memberStoreActive(prospectiveSlice, store)   // #13: members bypass the RECORD gate but NOT capability-as-version (Pierre #13-review)
+else { activation = storeActivation(prospectiveSlice, store, {}); storeActive = launchIsPlainOrSolo && activation.active }
+const storeExclude = storeActive ? rosterMemberSessionIds(repoPath) : null   // store-active only → legacy resolveSessionId is identical to today
+// #13 + #5 DE-ACTIVATION AMNESIA: a plain/solo launch that ends up LEGACY while a populated store slice exists would
+// silently show only the frozen repo/.mrc snapshot. Surface it loudly, with a reason-accurate message: capability-
+// absent → rebuild; unmigrated → run `mrc migrate up`; opted-out/shortfall/stranded → the tailored note. Best-effort.
+if (launchIsPlainOrSolo && !storeActive) {
+  const reason = activation ? activation.reason : (adversaryIdentity ? 'adversary' : 'image-not-capable')
   try {
-    const memberKeys = (rosterMemberSessionIds(repoPath) || []).map(id => `m-${id}`)
-    const notice = noticePopulatedSliceOnLegacy(repoPath, { extraSliceKeys: memberKeys })
-    if (notice) console.error(`  ! mrc: ${notice}`)
+    if (reason === 'image-not-capable') {
+      const memberKeys = (rosterMemberSessionIds(repoPath) || []).map(id => `m-${id}`)
+      const notice = noticePopulatedSliceOnLegacy(repoPath, { extraSliceKeys: memberKeys })
+      if (notice) console.error(`  ! mrc: ${notice}`)
+    } else if (reason === 'unmigrated') {
+      console.error('  ┌─────────────────────────────────────────────────────────────────────────')
+      console.error('  │ ⚠  This repo\'s memory is NOT relocated to the host store — running LEGACY (repo/.mrc).')
+      console.error('  │    Relocate it out of the repo when ready (recommended, non-destructive):')
+      console.error(`  │        mrc migrate up ${repoPath}`)
+      console.error('  └─────────────────────────────────────────────────────────────────────────')
+    } else if (reason === 'opted-out') {
+      console.error(`  ! mrc: this repo is OPTED OUT of the host memory store (legacy repo/.mrc). Re-opt-in with:  mrc migrate up ${repoPath}`)
+    } else if (reason === 'capability-shortfall') {
+      console.error(`  ! mrc: this repo's store slice is at layout ${activation.layoutLevel} but THIS image can't drive it — running LEGACY. Rebuild a newer image:  docker rmi mister-claude && mrc ${repoPath}`)
+    } else if (reason === 'record-lost' || reason === 'record-corrupt') {
+      console.error(`  ! mrc: this repo's store migration record is ${reason === 'record-lost' ? 'MISSING (data present, record lost)' : 'CORRUPT'} — running LEGACY (fail-closed). Inspect:  mrc migrate status ${repoPath}`)
+    }
   } catch {}
 }
-// #5 migration scope: plain/solo brings its whole repo/.mrc (minus @member transcripts) into the repoId slice; a
-// MEMBER brings ONLY its own transcript into its (org,handle) slice, so it RESUMES on the first store launch rather
-// than re-starting (owner directive: no member re-start). Include-scoped → no sibling transcript bleeds into a member slice.
-const migrateOpts = launchIsPlainOrSolo ? { migrate: true, exclude: storeExclude }
-  : isMemberLaunch ? { migrate: true, include: new Set([memberCtx.sessionId]) }
-  : { migrate: false }
-const legacyDir = resolve(repoPath, '.mrc')
-// #5: resolve the INTENDED slice PATH first — do NOT migrate yet (mrcStoreDir is pure path resolution). Migration
-// is deferred until AFTER the GATE-3 fork check so a forking launch NEVER touches the contended slice — not even
-// the sentinel-existsSync read migrate would do — honoring GATE-3's "don't touch a slice another container owns"
-// literally, and decoupling the fork case from the migration's own two-process concurrency-safety.
-let mrcDir = storeActive
-  ? mrcStoreDir(storeCtx({ solo: config.solo, memberCtx, cagedAdversary, adversarySlot, repoPath }))
-  : legacyDir
+// #5 migration scope on LAUNCH is now MEMBER-ONLY: a member brings ONLY its own transcript into its (org,handle)
+// slice so it RESUMES (owner directive: no member re-start). Plain/solo NO LONGER migrates on launch (#13 — that's
+// `mrc migrate`'s job); a plain/solo storeActive launch mounts an ALREADY-migrated slice.
+const migrateOpts = isMemberLaunch ? { migrate: true, include: new Set([memberCtx.sessionId]) } : { migrate: false }
+let mrcDir = storeActive ? prospectiveSlice : legacyDir
 // #5 per-UUID COEXIST replaces the coarse per-slice refuse (owner chose coexist). Two same-repo sessions MAY run
 // concurrently; they collide only if they'd --resume the SAME transcript, which the RESUME held-check (below, after
 // the member block) prevents by picking a non-colliding conversation. The container per-UUID flock is the last-line

@@ -4,14 +4,14 @@
 // #001 sentinel + no record must DENY, never adopt-down-to-0).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, existsSync, rmSync, readdirSync, readFileSync } from 'node:fs'
 import { join, basename } from 'node:path'
 import { tmpdir } from 'node:os'
 import {
   preflightLive, imageCanDrive, adoptionSignature, tryAdopt, decideUp, decideDetach,
-  storeBornContent, statusReport, acquireSliceLock, runMigrate,
+  storeBornContent, statusReport, acquireSliceLock, runMigrate, planReconcile, applyReconcile,
 } from '../src/commands/migrate.js'
-import { sliceMigrationState, recordMigration, assertLayoutMarkerConvention } from '../src/migrations/registry.js'
+import { sliceMigrationState, recordMigration, assertLayoutMarkerConvention, storeActivation, memberStoreActive, recordOptOut, clearOptOut, isOptedOut } from '../src/migrations/registry.js'
 import mig001 from '../src/migrations/001-relocate-mrc-to-store.js'
 
 const U1 = '11111111-1111-1111-1111-111111111111', U2 = '22222222-2222-2222-2222-222222222222'
@@ -290,12 +290,273 @@ test('decideUp: corrupt record → halt (deny handled before pendingMigrations t
     assert.equal(dec.action, 'halt'); assert.equal(dec.reason, 'corrupt-record')
   } finally { w.done() }
 })
+// ── #13 EMPTY-REPO opt-in (Model A, Pierre): store-active ⟺ an explicit host record; empty needs --init, never auto ──
+test('decideUp: fresh EMPTY repo (nothing to relocate), no --init → noop (bare up never surprise-mints a slice)', () => {
+  const w = ws()   // empty legacy, empty slice, no record
+  try {
+    const dec = decideUp(w.legacy, w.slice, { metaRoot: w.metaRoot })
+    assert.equal(dec.action, 'noop'); assert.equal(dec.reason, 'nothing-pending')
+  } finally { w.done() }
+})
+test('decideUp: fresh EMPTY repo + --init → init (explicit opt-in records #001, relocates 0)', () => {
+  const w = ws()
+  try {
+    const dec = decideUp(w.legacy, w.slice, { metaRoot: w.metaRoot, init: true })
+    assert.equal(dec.action, 'init'); assert.equal(dec.pending[0].id, mig001.id)
+  } finally { w.done() }
+})
+test('runMigrate up --init: an empty repo → records #001 (host record) → store-ACTIVE, no recordLost (D1a\'s class avoided)', async () => {
+  const w = ws()   // truly empty repo
+  try {
+    const res = await runMigrate('up', '/repo', {
+      init: true,
+      deps: { legacyDir: w.legacy, sliceHostDir: w.slice, metaRoot: w.metaRoot, lockRoot: w.lockRoot,
+        repoContainers: () => 0, sliceLive: () => ({ id: null, determined: true }), store: { storeMode: true, cap: 1 }, log: () => {} },
+    })
+    assert.equal(res.ok, true); assert.equal(res.init, true)
+    const st = sliceMigrationState(w.slice, { metaRoot: w.metaRoot })
+    assert.equal(st.migrated, true, 'a host RECORD exists — so the next launch activates store-mode, never recordLost')
+    assert.equal(st.ran.get(mig001.id).init, true)
+    // the invariant: storeActivation now sees a record → active (NOT the recordLost path Model B would have hit)
+    assert.equal(storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }).active, true)
+  } finally { w.done() }
+})
+test('runMigrate up (no --init): an empty repo → noop, points at --init (never a silent store-state change)', async () => {
+  const w = ws()
+  const logs = []
+  try {
+    const res = await runMigrate('up', '/repo', {
+      deps: { legacyDir: w.legacy, sliceHostDir: w.slice, metaRoot: w.metaRoot, lockRoot: w.lockRoot,
+        repoContainers: () => 0, sliceLive: () => ({ id: null, determined: true }), store: { storeMode: true, cap: 1 }, log: (m) => logs.push(m) },
+    })
+    assert.equal(res.ok, true); assert.equal(res.noop, true)
+    assert.equal(sliceMigrationState(w.slice, { metaRoot: w.metaRoot }).migrated, false, 'NO record written on a bare up of an empty repo')
+    assert.ok(logs.some(l => /--init/.test(l)), 'points the user at the explicit opt-in')
+  } finally { w.done() }
+})
+
 test('decideUp: data + no record + no sentinel → halt (can\'t prove layout)', () => {
   const w = ws()
   writeFileSync(join(w.slice, `${U1}.jsonl`), 'orphan\n')   // slice has data but NO sentinel, NO record
   try {
     const dec = decideUp(w.legacy, w.slice, { metaRoot: w.metaRoot })
     assert.equal(dec.action, 'halt'); assert.equal(dec.reason, 'record-lost-no-sentinel')
+  } finally { w.done() }
+})
+
+// ── #13: storeActivation (capability-as-version + explicit-migration-gated; the silent auto-migrate is GONE) ───
+test('#13 storeActivation: a non-store-capable image → inactive (image-not-capable)', () => {
+  const w = ws()
+  try {
+    const a = storeActivation(w.slice, { storeMode: false, cap: 0 }, { metaRoot: w.metaRoot })
+    assert.equal(a.active, false); assert.equal(a.reason, 'image-not-capable')
+  } finally { w.done() }
+})
+test('#13 storeActivation: UNMIGRATED (no host record) → inactive (unmigrated) — no silent auto-migrate', () => {
+  const w = ws()
+  writeFileSync(join(w.legacy, `${U1}.jsonl`), 'a\n')   // legacy has memory, but nothing was migrated
+  try {
+    const a = storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot })
+    assert.equal(a.active, false); assert.equal(a.reason, 'unmigrated')
+  } finally { w.done() }
+})
+test('#13 storeActivation: MIGRATED (host record) + capable → ACTIVE (mounts the already-migrated slice)', () => {
+  const w = ws()
+  seedMigratedSlice(w, { withRecord: true })
+  try {
+    const a = storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot })
+    assert.equal(a.active, true); assert.equal(a.reason, 'migrated'); assert.equal(a.layoutLevel, 0)
+  } finally { w.done() }
+})
+test('#13 storeActivation: migrated at a HIGHER layout than the image can drive → capability-shortfall (LEGACY)', () => {
+  const w = ws()
+  writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n')
+  mkdirSync(join(w.metaRoot, basename(w.slice)), { recursive: true })
+  writeFileSync(join(w.metaRoot, basename(w.slice), '003-future'), JSON.stringify({ id: '003-future', layoutLevel: 3 }))
+  try {
+    const a = storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot })
+    assert.equal(a.active, false); assert.equal(a.reason, 'capability-shortfall'); assert.equal(a.layoutLevel, 3)
+  } finally { w.done() }
+})
+test('#13 storeActivation: record-lost / corrupt → inactive (fail-closed to legacy)', () => {
+  const w = ws()
+  writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n'); writeFileSync(join(w.slice, '.mrc-store-migrated-v2'), '')   // data, no record
+  try {
+    assert.equal(storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }).reason, 'record-lost')
+    mkdirSync(join(w.metaRoot, basename(w.slice)), { recursive: true })
+    writeFileSync(join(w.metaRoot, basename(w.slice), mig001.id), 'not json {{')
+    assert.equal(storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }).reason, 'record-corrupt')
+  } finally { w.done() }
+})
+test('#13 opt-out: detach marks it → storeActivation inactive (opted-out); a re-up clears it → active again', () => {
+  const w = ws()
+  seedMigratedSlice(w, { withRecord: true })
+  try {
+    assert.equal(isOptedOut(w.slice, { metaRoot: w.metaRoot }), false)
+    recordOptOut(w.slice, { metaRoot: w.metaRoot })
+    assert.equal(isOptedOut(w.slice, { metaRoot: w.metaRoot }), true)
+    const a = storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot })
+    assert.equal(a.active, false); assert.equal(a.reason, 'opted-out')   // opted-out beats migrated
+    clearOptOut(w.slice, { metaRoot: w.metaRoot })
+    assert.equal(isOptedOut(w.slice, { metaRoot: w.metaRoot }), false)
+    assert.equal(storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }).active, true)
+  } finally { w.done() }
+})
+test('#13 opt-out marker is a DOTFILE → never pollutes the migration record set (sliceMigrationState ignores it)', () => {
+  const w = ws()
+  seedMigratedSlice(w, { withRecord: true })
+  try {
+    recordOptOut(w.slice, { metaRoot: w.metaRoot })
+    const st = sliceMigrationState(w.slice, { metaRoot: w.metaRoot })
+    assert.equal(st.migrated, true); assert.equal(st.ran.has('.opted-out'), false); assert.equal(st.corrupt, false)
+  } finally { w.done() }
+})
+
+// ── #13 MEMBER belt: members bypass the RECORD gate but NOT capability-as-version (Pierre #13-review) ─────────
+test('#13 memberStoreActive: a member slice with NO host record → ACTIVE (layout-0 floor; teams unbroken)', () => {
+  const w = ws()
+  writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n'); writeFileSync(join(w.slice, '.mrc-store-migrated-v2'), '')   // sentinel, no record = recordLost
+  try {
+    // storeActivation would DENY this (record-lost), but a member must stay active (it never runs `mrc migrate`).
+    assert.equal(storeActivation(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }).reason, 'record-lost')
+    assert.equal(memberStoreActive(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }), true)
+  } finally { w.done() }
+})
+test('#13 memberStoreActive: a member slice recorded at a HIGHER layout than the image can drive → INACTIVE (fail-closed)', () => {
+  const w = ws()
+  writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n')
+  mkdirSync(join(w.metaRoot, basename(w.slice)), { recursive: true })
+  writeFileSync(join(w.metaRoot, basename(w.slice), '002-x'), JSON.stringify({ id: '002-x', layoutLevel: 2 }))
+  try {
+    assert.equal(memberStoreActive(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }), false, 'cap 1 < layout 2 → legacy, no misread')
+    assert.equal(memberStoreActive(w.slice, { storeMode: true, cap: 2 }, { metaRoot: w.metaRoot }), true, 'cap 2 >= layout 2 → active')
+  } finally { w.done() }
+})
+test('#13 memberStoreActive corner (Pierre): a member slice with a HIGHER-layout SIGNATURE + no record → INACTIVE (not floored to 0)', () => {
+  const w = ws()
+  writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n'); writeFileSync(join(w.slice, '.mrc-store-migrated-v2'), '')
+  writeFileSync(join(w.slice, '.mrc-store-layout-2'), '')   // a future member-layout marker, no host record
+  try {
+    assert.equal(memberStoreActive(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }), false, 'higher signature → deny, never floor-to-0 misread')
+  } finally { w.done() }
+})
+test('#13 memberStoreActive: non-capable image → inactive; corrupt record → inactive', () => {
+  const w = ws()
+  mkdirSync(join(w.metaRoot, basename(w.slice)), { recursive: true })
+  writeFileSync(join(w.metaRoot, basename(w.slice), mig001.id), 'not json {{')
+  try {
+    assert.equal(memberStoreActive(w.slice, { storeMode: false, cap: 0 }, { metaRoot: w.metaRoot }), false)
+    assert.equal(memberStoreActive(w.slice, { storeMode: true, cap: 1 }, { metaRoot: w.metaRoot }), false, 'corrupt → deny')
+  } finally { w.done() }
+})
+
+// ── #14 THE RECONCILER: heal a split (extend / promote-fork / copy-in / merge-names), idempotent, then adopt ──
+const RID = () => 'ffffffff-ffff-4fff-8fff-ffffffffffff'   // deterministic fork uuid for tests
+test('#14 planReconcile: legacy-ahead → extend; slice-ahead → noop; diverged → promote-fork; missing → copy-in', () => {
+  const w = ws()
+  // legacy-ahead (repo/.mrc grew): legacy [a,b,c], slice [a,b]
+  writeFileSync(join(w.legacy, `${U1}.jsonl`), 'a\nb\nc\n'); writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\nb\n')
+  // slice-ahead (continued in store): legacy [a], slice [a,x]
+  writeFileSync(join(w.legacy, `${U2}.jsonl`), 'a\n'); writeFileSync(join(w.slice, `${U2}.jsonl`), 'a\nx\n')
+  // diverged: legacy [p,q], slice [p,r]
+  const U3 = '33333333-3333-3333-3333-333333333333'
+  writeFileSync(join(w.legacy, `${U3}.jsonl`), 'p\nq\n'); writeFileSync(join(w.slice, `${U3}.jsonl`), 'p\nr\n')
+  // missing in slice
+  const U4 = '44444444-4444-4444-4444-444444444444'
+  writeFileSync(join(w.legacy, `${U4}.jsonl`), 'only-in-legacy\n')
+  try {
+    const kinds = Object.fromEntries(planReconcile(w.legacy, w.slice).actions.map(a => [a.rel, a.kind]))
+    assert.equal(kinds[`${U1}.jsonl`], 'extend')
+    assert.equal(kinds[`${U2}.jsonl`], undefined, 'slice-ahead is a noop')
+    assert.equal(kinds[`${U3}.jsonl`], 'promote-fork')
+    assert.equal(kinds[`${U4}.jsonl`], 'copy-in')
+  } finally { w.done() }
+})
+test('#14 applyReconcile then re-plan → EMPTY (idempotent: extend settles, fork becomes byte-present, no re-fork)', () => {
+  const w = ws()
+  writeFileSync(join(w.legacy, `${U1}.jsonl`), 'a\nb\nc\n'); writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\nb\n')          // legacy-ahead
+  const U3 = '33333333-3333-3333-3333-333333333333'
+  writeFileSync(join(w.legacy, `${U3}.jsonl`), 'p\nq\n'); writeFileSync(join(w.slice, `${U3}.jsonl`), 'p\nr\n')             // diverged
+  writeFileSync(join(w.legacy, 'session-names'), `${U1}=one\n${U3}=three\n`); writeFileSync(join(w.slice, 'session-names'), `${U1}=one\n`)   // missing key U3
+  try {
+    const plan = planReconcile(w.legacy, w.slice)
+    const applied = applyReconcile(w.legacy, w.slice, plan, { newId: RID })
+    assert.equal(applied.extended, 1); assert.equal(applied.promoted.length, 1)
+    // the legacy fork is now a NEW pickable session, byte-equal to the legacy transcript
+    assert.ok(existsSync(join(w.slice, `${RID()}.jsonl`)))
+    assert.match(readFileSync(join(w.slice, 'session-names'), 'utf8'), /legacy fork/)
+    assert.match(readFileSync(join(w.slice, 'session-names'), 'utf8'), new RegExp(`${U3}=three`))   // union-merged, no name dropped
+    // slice kept its OWN diverged version at the original uuid
+    assert.equal(readFileSync(join(w.slice, `${U3}.jsonl`), 'utf8'), 'p\nr\n')
+    // RE-PLAN converges to empty → the record gate
+    assert.equal(planReconcile(w.legacy, w.slice).actions.length, 0, 'reconcile is idempotent (no re-fork on re-plan)')
+  } finally { w.done() }
+})
+test('#14 runMigrate reconcile: a diverged repo → heals + ADOPTS (records #001 w/ reconcile provenance); 2nd run is noop', async () => {
+  const w = ws()
+  seedMigratedSlice(w)   // byte-identical base
+  // introduce a fork: legacy transcript diverges from the slice
+  writeFileSync(join(w.legacy, `${U1}.jsonl`), 'a\nLEGACY-FORK\n'); writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\nSTORE-FORK\n')
+  try {
+    const res = await runMigrate('reconcile', '/repo', {
+      yes: true,
+      deps: {
+        legacyDir: w.legacy, sliceHostDir: w.slice, metaRoot: w.metaRoot, lockRoot: w.lockRoot,
+        repoContainers: () => 0, sliceLive: () => ({ id: null, determined: true }),
+        store: { storeMode: true, cap: 1 }, log: () => {},
+      },
+    })
+    assert.equal(res.ok, true); assert.equal(res.adopted, true); assert.equal(res.reconciled.promoted.length, 1)
+    const st = sliceMigrationState(w.slice, { metaRoot: w.metaRoot })
+    assert.equal(st.migrated, true); assert.equal(st.ran.get(mig001.id).reconciled, true)
+    // a promoted "(legacy fork)" session is now pickable
+    assert.match(readFileSync(join(w.slice, 'session-names'), 'utf8'), /legacy fork/)
+    // 2nd reconcile: already unified → noop, no double-fork
+    const before = readdirSync(w.slice).filter(f => f.endsWith('.jsonl')).length
+    const res2 = await runMigrate('reconcile', '/repo', {
+      yes: true,
+      deps: { legacyDir: w.legacy, sliceHostDir: w.slice, metaRoot: w.metaRoot, lockRoot: w.lockRoot, repoContainers: () => 0, sliceLive: () => ({ id: null, determined: true }), store: { storeMode: true, cap: 1 }, log: () => {} },
+    })
+    assert.equal(res2.noop, true)
+    assert.equal(readdirSync(w.slice).filter(f => f.endsWith('.jsonl')).length, before, 'no duplicate fork on a 2nd reconcile')
+  } finally { w.done() }
+})
+test('#14 reconcile INFO parity: a SHRUNK living memory file surfaces an info (not an action; does not block record)', () => {
+  const w = ws()
+  writeFileSync(join(w.legacy, `${U1}.jsonl`), 'a\n'); writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n')
+  mkdirSync(join(w.legacy, 'memory')); mkdirSync(join(w.slice, 'memory'))
+  writeFileSync(join(w.legacy, 'memory', 'MEMORY.md'), '# a long frozen snapshot with content\n')
+  writeFileSync(join(w.slice, 'memory', 'MEMORY.md'), '# short\n')   // present but smaller
+  try {
+    const plan = planReconcile(w.legacy, w.slice)
+    assert.equal(plan.actions.length, 0, 'a shrunk living file is NOT an action (never blocks convergence)')
+    assert.ok(plan.infos.some(i => i.kind === 'shrank' && i.rel === 'memory/MEMORY.md'), 'but it surfaces a shrink INFO (parity with adoption)')
+  } finally { w.done() }
+})
+test('#14 nested SUBAGENT diverged → info, NOT a top-level promote-fork (a subagent is not a pickable session)', () => {
+  const w = ws()
+  writeFileSync(join(w.legacy, `${U1}.jsonl`), 'a\n'); writeFileSync(join(w.slice, `${U1}.jsonl`), 'a\n')
+  mkdirSync(join(w.legacy, U1)); mkdirSync(join(w.slice, U1))
+  writeFileSync(join(w.legacy, U1, 'sub.jsonl'), 'p\nLEGACY\n'); writeFileSync(join(w.slice, U1, 'sub.jsonl'), 'p\nSTORE\n')   // diverged nested leaf
+  try {
+    const plan = planReconcile(w.legacy, w.slice)
+    assert.equal(plan.actions.some(a => a.kind === 'promote-fork'), false, 'a nested subagent leaf is NOT promoted to a top-level pickable')
+    assert.ok(plan.infos.some(i => i.kind === 'diverged-subagent' && i.rel === `${U1}/sub.jsonl`), 'it is surfaced instead')
+    // and no session-names "(legacy fork)" entry is minted for it
+    applyReconcile(w.legacy, w.slice, plan, { newId: RID })
+    assert.equal(existsSync(join(w.slice, `${RID()}.jsonl`)), false, 'no top-level fork transcript minted for a subagent leaf')
+  } finally { w.done() }
+})
+test('#14 reconcile preflight: a live slice REFUSES (it writes the slice — same guard as up)', async () => {
+  const w = ws()
+  seedMigratedSlice(w)
+  writeFileSync(join(w.legacy, `${U1}.jsonl`), 'a\nLEGACY\n')
+  try {
+    const res = await runMigrate('reconcile', '/repo', {
+      yes: true,
+      deps: { legacyDir: w.legacy, sliceHostDir: w.slice, metaRoot: w.metaRoot, lockRoot: w.lockRoot, repoContainers: () => 0, sliceLive: () => ({ id: 'live', determined: true }), store: { storeMode: true, cap: 1 }, log: () => {} },
+    })
+    assert.equal(res.ok, false); assert.equal(res.refused, 'slice-live')
   } finally { w.done() }
 })
 

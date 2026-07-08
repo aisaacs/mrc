@@ -227,6 +227,7 @@ export function parseArgs(argv) {
       case '--force-store': config.forceStore = true; break   // #5: open even when the repo's memory store is in use by a live session (accept the co-write risk)
       case '-y': case '--yes': config.yes = true; break        // #12 mrc migrate: waive the CONSENT prompt (NEVER safety — lock/preflight/capability still run)
       case '--force-detach': config.forceDetach = true; break  // #12 mrc migrate detach: opt out even when store-born content would be stranded (loud; slice preserved)
+      case '--init': config.init = true; break                 // #13 mrc migrate up --init: opt an EMPTY repo (no memory to relocate) into the store — records #001 (Model A, deliberate, no auto)
       case '--colima-cpu':
         if (argv[i + 1] && !argv[i + 1].startsWith('-')) config.colimaCpu = argv[++i]
         break

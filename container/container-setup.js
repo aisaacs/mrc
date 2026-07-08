@@ -121,16 +121,29 @@ if (existsSync(VA_SRC)) {
     }
   }
 
-  // Migrate config file: video-frames.json → video-analysis.json
-  const legacyCfg = join(MRC_LOCAL, 'video-frames.json')
-  const newCfg = join(MRC_LOCAL, 'video-analysis.json')
-  if (existsSync(legacyCfg) && !existsSync(newCfg)) {
-    cpSync(legacyCfg, newCfg)
-    rmSync(legacyCfg)
+  // The video-analysis CONFIG lives in /workspace/.mrc (agent/user-editable). A CAGED adversary has /workspace
+  // mounted READ-ONLY (MRC_ADVERSARY_FW), so ANY write here EROFS-crashes container-setup and takes the whole
+  // adversary session down — a fresh repo (no pre-existing video-analysis.json) is the trigger. The adversary
+  // doesn't need this config, so SKIP the /workspace/.mrc writes when caged; the COMMAND symlink goes into the rw
+  // config volume (CLAUDE_DIR), so it's safe either way. (Gate on FW/:ro, not adversary IDENTITY — an uncaged
+  // adversary has a rw /workspace and can seed normally.)
+  const CAGED_RO = !!process.env.MRC_ADVERSARY_FW
+  linkOrMigrate(join(VA_SRC, 'command.md'), join(CLAUDE_DIR, 'commands', 'video-analysis.md'))   // rw config vol → always
+  if (!CAGED_RO) {
+    // The FW gate skips the KNOWN :ro container (the cage). The try/catch is defense against the CLASS (Pierre): if
+    // a FUTURE mount ever gives some other container /workspace/.mrc :ro without MRC_ADVERSARY_FW, an EROFS here must
+    // NOT kill container-setup — warn (fail-LOUD, so it's diagnosable, not a mystery crash) and CONTINUE. Only EROFS
+    // is tolerated; any other write error still surfaces.
+    try {
+      const legacyCfg = join(MRC_LOCAL, 'video-frames.json')
+      const newCfg = join(MRC_LOCAL, 'video-analysis.json')
+      if (existsSync(legacyCfg) && !existsSync(newCfg)) { cpSync(legacyCfg, newCfg); rmSync(legacyCfg) }   // migrate old name → new
+      copyIfAbsent(join(VA_SRC, 'defaults.json'), newCfg)                                                  // seed default config
+    } catch (e) {
+      if (e && e.code === 'EROFS') console.error(`  ! mrc: /workspace/.mrc is read-only — skipping the video-analysis config seed (${e.path || ''}). Continuing.`)
+      else throw e
+    }
   }
-
-  linkOrMigrate(join(VA_SRC, 'command.md'), join(CLAUDE_DIR, 'commands', 'video-analysis.md'))
-  copyIfAbsent(join(VA_SRC, 'defaults.json'), newCfg)
 }
 
 // 1c. Seed Codex slash command.

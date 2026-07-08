@@ -34,6 +34,19 @@ export const MIGRATIONS = [mig001]
 // ADOPT-A from a naming heuristic into a by-construction guarantee.
 export const LAYOUT_MARKER_RE = /^\.mrc-store-layout-\d+$/
 export function layoutMarkersOf(list = MIGRATIONS) { return new Set(list.map(m => m && m.layoutMarker).filter(Boolean)) }
+
+// Does the slice show a layout NEWER than #001? (a `.mrc-store-layout-<N>` reserved-namespace marker, a registered
+// migration's declared marker, or ANY other durable control file outside the #001 baseline → fail-safe over-detect).
+// The ONE detector shared by adoption's higher-signature guard AND memberStoreActive's floor (so they can't drift).
+const KNOWN_001_CONTROL = new Set(['.mrc-store-migrated', '.mrc-store-migrated-v2', '.mrc-mtimes-normalized', '.mrc-migrate.log'])
+const isControlFile = (f) => f.startsWith('.mrc-') || f.startsWith('.oxcl') || f.endsWith('.lock')
+const isTransientControl = (f) => f.startsWith('.oxcl') || f.endsWith('.lock')
+export function sliceHigherSignature(sliceDir) {
+  let files = []; try { files = readdirSync(sliceDir) } catch {}
+  const declared = layoutMarkersOf()
+  return files.some(f => LAYOUT_MARKER_RE.test(f) || declared.has(f)) ||
+    files.filter(isControlFile).some(f => !KNOWN_001_CONTROL.has(f) && !isTransientControl(f))
+}
 export function assertLayoutMarkerConvention(list = MIGRATIONS) {
   for (const m of list) {
     if (Number(m.layoutLevel) >= 1 && !(m.layoutMarker && LAYOUT_MARKER_RE.test(m.layoutMarker))) {
@@ -94,6 +107,62 @@ export function recordMigration(sliceDir, mod, { metaRoot, ...extra } = {}) {
   const file = join(dir, mod.id), tmp = `${file}.${process.pid}.tmp`
   writeFileSync(tmp, JSON.stringify(rec, null, 2) + '\n'); renameSync(tmp, file)
   return rec
+}
+
+// ── OPT-OUT marker (from `mrc migrate detach`; consumed by storeActivation below) ────────────────────────────
+// Host-only, a DOTFILE in the slice's migration-meta dir (sliceMigrationState skips `.`-files, so it never looks
+// like a migration record). A repo opts OUT of the store here (detach); a later `mrc migrate up` opts back in by
+// removing it. Same trust tier as the records — never in the container-writable /mrc mount.
+export function recordOptOut(sliceDir, { metaRoot } = {}) {
+  const dir = metaDir(sliceDir, metaRoot); mkdirSync(dir, { recursive: true })
+  const file = join(dir, '.opted-out'), tmp = `${file}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify({ optedOut: true, at: new Date().toISOString() }) + '\n'); renameSync(tmp, file)
+  return file
+}
+export function clearOptOut(sliceDir, { metaRoot } = {}) {
+  try { const f = join(metaDir(sliceDir, metaRoot), '.opted-out'); if (existsSync(f)) { renameSync(f, `${f}.cleared`); return true } } catch {}
+  return false
+}
+export function isOptedOut(sliceDir, { metaRoot } = {}) {
+  try { return existsSync(join(metaDir(sliceDir, metaRoot), '.opted-out')) } catch { return false }
+}
+
+// ── #13: LAUNCH-TIME store activation (capability-as-version + explicit-migration-gated) ──────────────────────
+// Store-mode for the user's OWN plain/solo repo is a GRANT, DENY-UNLESS-PROVEN — it REPLACES the silent
+// auto-migrate. It activates ONLY when: (a) the image is store-capable, (b) the repo was EXPLICITLY migrated via
+// `mrc migrate` — a HOST RECORD, not the container-writable in-slice sentinel, (c) image capability >= the slice's
+// layoutLevel (a COMPARISON, so a future layout needs a newer image), and (d) not opted out. Every other case →
+// LEGACY, with a `reason` the launcher turns into a loud, accurate warning. corrupt/recordLost fail CLOSED (the
+// accessors already deny). Migration itself happens ONLY in the runner now — never as a launch side effect.
+export function storeActivation(sliceDir, imageStore, { metaRoot } = {}) {
+  if (!imageStore || !imageStore.storeMode) return { active: false, reason: 'image-not-capable' }
+  if (isOptedOut(sliceDir, { metaRoot })) return { active: false, reason: 'opted-out' }
+  const s = sliceMigrationState(sliceDir, { metaRoot })
+  if (s.corrupt) return { active: false, reason: 'record-corrupt' }
+  if (s.recordLost) return { active: false, reason: 'record-lost' }
+  if (!s.migrated) return { active: false, reason: 'unmigrated' }
+  if (Number(imageStore.cap) >= Number(s.layoutLevel)) return { active: true, reason: 'migrated', layoutLevel: s.layoutLevel }
+  return { active: false, reason: 'capability-shortfall', layoutLevel: s.layoutLevel }
+}
+
+// #13 MEMBER belt (Pierre #13-review): a team member BYPASSES the record requirement (it's team-launched, a human
+// never runs `mrc migrate` for it) — but it must NOT bypass the CAPABILITY-as-version check (the ADOPT-A shape: a
+// bare bypass is a future misread). A member slice is layout-0 today (relocation-only, include-scoped). We can't use
+// sliceLayoutLevel here — a member slice has the in-slice sentinel but NO host record → recordLost → Infinity → it
+// would fail-close EVERY member (break teams). So: no framework record → treat as the layout-0 member FLOOR (the
+// current reality); a PRESENT record at a higher layout the image can't drive → fail closed; a CORRUPT record →
+// deny. A no-op today (cap 1 >= 0); the day a member slice ever carries a layout≥1 record, it fails to legacy
+// instead of misreading. This is the "enforce the invariant, don't hope it" close.
+export function memberStoreActive(sliceDir, imageStore, { metaRoot } = {}) {
+  if (!imageStore || !imageStore.storeMode) return false
+  const s = sliceMigrationState(sliceDir, { metaRoot })
+  if (s.corrupt) return false
+  // Pierre #13-review corner: the no-record floor is layout-0 ONLY if the slice shows no HIGHER layout SIGNATURE.
+  // A member slice carrying a `.mrc-store-layout-2` marker but no host record would otherwise floor to 0 and misread
+  // its layout-2 data. Fold the tripwire into the floor with the SAME machinery adoption uses. No-op today.
+  if (!s.migrated && sliceHigherSignature(sliceDir)) return false
+  const layout = s.migrated ? s.layoutLevel : 0
+  return Number(imageStore.cap) >= Number(layout)
 }
 
 // FAIL-CLOSED accessors (Pierre): both deny states — `corrupt` (present-but-unreadable record) AND `recordLost` (data
