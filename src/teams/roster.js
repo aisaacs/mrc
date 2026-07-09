@@ -249,6 +249,12 @@ export function parseRoster(input, { repo, rng } = {}) {
         first, backend, handle,
         role, roleLabel: def.label,
         team: teamName, lead, tier, territory, mount, personaDef, repo: memberRepo,
+        // #49 multi-repo (Mouth B): stamp crossRepo AT THE MINT — the one place BOTH roots are visible (the team
+        // repoPath + the resolved memberRepo). It then rides the member object into EVERY consumer: both blob
+        // constructors (memberArgv for a live member AND room-daemon's worker blob) and execWorker's config-vol
+        // keying — so a cross-repo member is org-scoped on the LIVE and WORKER paths alike. Computing it only in
+        // memberArgv left the worker blob born without it → an un-org-scoped, cross-org-colliding config vol.
+        crossRepo: String(memberRepo) !== String(repoPath),
         ...(cage ? { cage } : {}),
         ...(backendNote ? { backendNote } : {}),
       }

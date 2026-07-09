@@ -14,7 +14,7 @@ import { readMrcrc, loadEnv, parseArgs, sanitizeRepoConfig } from './src/config.
 import { ensureDocker } from './src/colima.js'
 import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer, heldUuids, repoLiveContainers } from './src/docker.js'
 import { resolveStoreMode, storeCtx, mrcStoreDir, migrateAndNormalize, noticePopulatedSliceOnLegacy } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable
-import { rosterMemberSessionIds } from './src/commands/team.js'   // #5 PICKABLE⟺MIGRATED: the roster's memberSessionId exclude, shared by the picker + the migration
+import { rosterMemberSessionIds, memberConfigVolName } from './src/commands/team.js'   // #5 PICKABLE⟺MIGRATED: the roster's memberSessionId exclude, shared by the picker + the migration; #49 multi-repo: the ONE config-vol keying helper (org-scoped when cross-repo), shared with execWorker so they can't drift
 import { runMigrate, repoSliceDir } from './src/commands/migrate.js'   // #12: the explicit, guarded `mrc migrate` runner (replaces the silent auto-migrate)
 import { storeActivation, memberStoreActive } from './src/migrations/registry.js'   // #13: launch-time activation (capability-as-version + explicit-migration-gated)
 import { processSandboxignores } from './src/sandboxignore.js'
@@ -589,7 +589,10 @@ volumes.push(...processSandboxignores(repoPath))
 let volName
 let adversarySlot = 0
 if (memberCtx) {
-  volName = volumeName(`${repoPath}#${memberCtx.member.handle}`, 1)
+  // #49 multi-repo (Mouth B): org-scoped ONLY when the member lives in a SHARED foreign repo (crossRepo, stamped
+  // authoritatively in the --member-def blob) — else `${repoPath}#${handle}`, byte-identical to today (repoPath IS
+  // member.repo inside the inner). Shared helper so this can never drift from the worker path's keying.
+  volName = memberConfigVolName(memberCtx.member, repoPath, memberCtx.org)
 } else if (adversaryVolume) {
   // Dedicated per-repo Pierre config-volume pool (mrc-config-<hash>-pierre-N) via a race-free O_EXCL claim, so
   // a summoned adversary NEVER mounts the user's login/config and its transcript can't be auto-resumed by a

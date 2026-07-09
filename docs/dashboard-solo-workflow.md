@@ -362,6 +362,32 @@ is built + Docker-verified together when the owner wants cross-repo live: the co
 `member.repo` + teardown label/record + the human-adds-repos flow (dashboard/CLI over `addAuthorizedRepo`) +
 the caged per-session Pierre.
 
+**Inc 3 — the UNCAGED-live-member enablement: BUILT (unit-green, Pierre-reviewed, wire-verify pending). Host-side
+only → `mrc rooms restart` + relaunch, NO docker rebuild.** The chosen architecture is a SINGLE SEAM (arch A):
+`memberArgv` launches the inner `mrc` in `member.repo` (argv[1]), so every `repoPath`-derived file door (workspace
+mount, `.mrc`, sandboxignore, `legacyDir`, the store slice) resolves to the member's own repo *by construction* —
+identity stays the TEAM org, which rides the host-set `--member-def` blob, never `basename(member.repo)` (the
+PINNED invariant below, re-verified). The five sites:
+1. **`memberWorkspaceVolumes`** mounts `member.repo` (own-repo → byte-identical). `memberLaunch` roots persona-write
+   AND mount at `member.repo` so they can't disagree.
+2. **Config-vol key** via one shared helper `memberConfigVolName` (used by the live path AND `execWorker`, so they
+   can't drift). Keyed `${org}#${repo}#${handle}` ONLY when cross-repo, else `${repoPath}#${handle}` — Pierre's
+   scoping: kills the cross-org `~/.claude` credential-share (two orgs sharing a repo + a colliding handle from the
+   name pool would otherwise share one login vol) WHILE keeping own-repo members byte-identical (zero re-login).
+   `crossRepo` is stamped authoritatively into the blob in the OUTER (the only place the team repo is visible).
+3. **`memberArgv`** launches in `member.repo` + stamps `crossRepo`.
+4. **Teardown/status** disambiguates on `mrc.project=<org>` (the authoritative identity label, already on every
+   member container) via the shared `memberDockerFilter`, NOT `mrc.repo` (a cross-repo member's `mrc.repo=member.repo`
+   would miss it; `mrc.repo` was only ever a per-org proxy). Strictly more correct AND dissolves the same-handle kill
+   hazard.
+5. **`mrc team repos add|ls|rm <repo>`** (`reposAction`) — the human control plane over `addAuthorizedRepo`; never a
+   session verb. Reads the org WITHOUT `parseRoster` (which throws on the very unauthorized member you're adding).
+A foreign repo's `.mrcrc` **cannot** widen egress — belt-0 (`sanitizeRepoConfig`, an allowlist) strips `--web`/
+`ALLOW_WEB` before the merge, and it runs against the inner's `repoHint` = `member.repo` (door-tested). The cross-repo
+**worker** tier (non-Claude, `ALLOW_WEB=1` + untrusted foreign prompt) is threaded coherently but its live
+wire-verification rides the deferred worker-cage epic. Wire-test recipe: `claude-scripts/mouthb-wiretest-setup.sh`.
+Still deferred to the cage epic (tasks #4/#8): the **caged per-session Pierre** as a cross-repo member.
+
 **PINNED — the org-stability CONTAINMENT invariant (Pierre; load-bearing, fail-closed, not a wire-time
 surprise).** A cross-repo member juggles TWO roots: `member.repo` (FILES — workspace mount + config-vol + `.mrc`
 transcript key) and the TEAM org (IDENTITY — `memberSessionId = sha1(team-org\0handle)` + room membership). The

@@ -131,6 +131,12 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
         handle: m.handle, first: m.first, role: m.role, team: m.team, lead: !!m.lead,
         backend: m.backend, tier: m.tier || (m.backend === 'claude' ? 'live' : 'worker'),
         territory: m.territory, mount: m.mount, org: orgId, repo: m.repo || repo || null,   // #49 Inc 2: a member's OWN repo (multi-repo) survives; else the org repo
+        // #49 multi-repo (Mouth B): PRESERVE the minted crossRepo so it survives the engine's member projection —
+        // else spawnWorkerInvoke's `{...member}` worker blob loses it and a cross-repo worker's config-vol collapses
+        // to the un-org-scoped, cross-org-colliding key. Belt-recompute from the engine's OWN two roots (the
+        // member's repo vs the org repo) if a caller passed a mint-less member, so this holds without depending on
+        // the caller having stamped it. `repo` here is the org repo (defineOrg arg) — the same root the mint used.
+        crossRepo: m.crossRepo != null ? !!m.crossRepo : !!(m.repo && repo && String(m.repo) !== String(repo)),
         sessionId: prev?.sessionId ?? null,   // keep an existing live binding across a re-define
       })
     }

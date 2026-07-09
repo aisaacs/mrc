@@ -3,8 +3,12 @@
 // brake/resume FIFO, and worker queueing. Driven through parseRoster so roster->engine is covered.
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import os from 'node:os'
+import { join } from 'node:path'
 import { createRoomEngine } from '../src/teams/room-engine.js'
 import { parseRoster, teamRoomId, leadsRoomId } from '../src/teams/roster.js'
+import { addAuthorizedRepo, _authPathForTest } from '../src/teams/repo-auth.js'
 
 function seededRng(seed = 1) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x100000000 } }
 
@@ -594,4 +598,28 @@ test('engine: setStatus — strict-numeric, identity-from-session, lead-preferre
   // the session name is length-capped here (escaped at display, not stored-escaped)
   h.engine.setStatus(h.sid(arch), { context: 1, name: 'x'.repeat(200) })
   assert.equal(mstatus(arch).name.length, 80)
+})
+
+// #49 multi-repo (Mouth B) — the engine's member PROJECTION must preserve crossRepo, else spawnWorkerInvoke's
+// `{...member}` worker blob drops it and a cross-repo WORKER's config-vol collapses to the naive cross-org
+// key. Drive it end-to-end: parse a roster with an authorized cross-repo WORKER (codex → tier worker) →
+// defineOrg → the engine's stored member (memberByHandle, exactly what the worker invoker spreads) carries
+// crossRepo=true; an own-repo member carries false.
+test('#49 defineOrg preserves crossRepo on the member projection (so the worker blob inherits it)', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-eng-mr-')))
+  const foreign = join(root, 'foreign'); fs.mkdirSync(foreign)
+  const org = `test-eng-mr-${process.pid}`
+  try {
+    addAuthorizedRepo(org, foreign)
+    const norm = parseRoster({ project: org, teams: [{ name: 't', members: [
+      { name: 'own',  role: 'engineer', backend: 'claude' },
+      { name: 'away', role: 'engineer', backend: 'codex', repo: foreign },   // a cross-repo WORKER (non-claude → tier worker)
+    ] }] }, { repo: root })
+    const engine = createRoomEngine({ send: () => {}, append: () => {}, notify: () => {}, now: () => 1 })
+    engine.defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
+    const own = engine.memberByHandle(norm.members.find((m) => m.first === 'own' || m.role === 'engineer' && m.backend === 'claude').handle, norm.org)
+    const away = engine.memberByHandle(norm.members.find((m) => m.backend === 'codex').handle, norm.org)
+    assert.equal(away.crossRepo, true, 'cross-repo worker member keeps crossRepo=true through the engine projection')
+    assert.equal(own.crossRepo, false, 'own-repo member keeps crossRepo=false')
+  } finally { fs.rmSync(root, { recursive: true, force: true }); try { fs.unlinkSync(_authPathForTest(org)) } catch {} }
 })

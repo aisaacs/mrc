@@ -7,10 +7,13 @@ import os from 'node:os'
 import fs from 'node:fs'
 import { join } from 'node:path'
 import { parseRoster, validateRoster } from '../src/teams/roster.js'
-import { addAuthorizedRepo, _authPathForTest } from '../src/teams/repo-auth.js'
+import { addAuthorizedRepo, removeAuthorizedRepo, loadAuthorizedRepos, _authPathForTest } from '../src/teams/repo-auth.js'
+import { volumeName } from '../src/docker.js'
+import { readMrcrc, sanitizeRepoConfig } from '../src/config.js'
 import {
   memberSessionId, memberWorkspaceVolumes, memberEnv, personaForMember, writePersonaFile, orgDef, memberLaunch, cleanWorkerOutput,
   rosterFromDef, addMemberToRoster, removeMemberFromRoster, writeTeamFile,
+  memberConfigVolName, memberArgv, memberDockerFilter, reposAction,
 } from '../src/commands/team.js'
 
 test('removeMemberFromRoster drops the member and any team left empty', () => {
@@ -251,11 +254,156 @@ test('memberLaunch assembles env + territorial volumes + a stable session id', (
   const repo = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-team-')))
   try {
     fs.mkdirSync(join(repo, 'client', 'src'), { recursive: true })   // the engineer's territory must exist (guard)
-    const n = norm(); const w = find(n, 'engineer')
+    const n = norm()
+    // #49: a member's launch roots at member.repo (persona-write + mount). In production the inner is launched
+    // with repoPath === member.repo; the shared norm() is parsed against '/tmp/shop', so pin the member's repo to
+    // the real temp dir this test operates on (mirrors the production invariant repoPath === member.repo).
+    const w = { ...find(n, 'engineer'), repo }
     const launch = memberLaunch(n, w, repo)
     assert.match(launch.sessionId, UUID_RE)
     assert.ok(launch.workspaceVolumes.some((x) => x.endsWith('client/src:/workspace/client/src')))
     assert.ok(launch.envFlags.some((x) => x.startsWith('MRC_PERSONA_FILE=')))
     assert.match(launch.persona, /You are @Ludivine/)
   } finally { fs.rmSync(repo, { recursive: true, force: true }) }
+})
+
+// ─── #49 multi-repo "Mouth B": a member living in a DIFFERENT authorized repo ───────────────────────────
+
+// Pierre regressor #1: the config-vol cross-org credential-share. member.repo is NOT org-unique once repos are
+// shared, so two orgs that both authorize /srv/shared and each draw the same handle would collide on
+// `${repo}#${handle}` and SHARE one ~/.claude. The org-scoped key must keep them DISTINCT — AND own-repo members
+// must stay byte-identical (no gratuitous re-login). Both halves, or it's half a test.
+test('#49 memberConfigVolName: two orgs sharing a repo + the SAME handle get DISTINCT config vols (no cross-org ~/.claude share)', () => {
+  const shared = '/srv/shared', handle = 'apolline/claude'
+  const mA = { repo: shared, handle, crossRepo: true }
+  const mB = { repo: shared, handle, crossRepo: true }
+  const volA = memberConfigVolName(mA, '/home/alice/teamA', 'orgA')
+  const volB = memberConfigVolName(mB, '/home/bob/teamB', 'orgB')
+  assert.notEqual(volA, volB, 'two orgs, one shared repo, colliding handle → the vols MUST differ (org folded into the key)')
+  // and neither is the naive colliding key that WOULD have been shared
+  const collidingKey = volumeName(`${shared}#${handle}`, 1)
+  assert.notEqual(volA, collidingKey)
+  assert.notEqual(volB, collidingKey)
+})
+test('#49 memberConfigVolName: an OWN-repo member is BYTE-IDENTICAL to today (crossRepo false → `${repo}#${handle}`), zero re-login', () => {
+  const repo = '/home/alice/proj', handle = 'ludivine/claude'
+  // crossRepo explicitly false (blob-stamped) AND the fallback (repo === repoPath) must both give today's key.
+  const today = volumeName(`${repo}#${handle}`, 1)
+  assert.equal(memberConfigVolName({ repo, handle, crossRepo: false }, repo, 'proj'), today)
+  assert.equal(memberConfigVolName({ repo, handle }, repo, 'proj'), today, 'no crossRepo field + repo===repoPath → own-repo → byte-identical')
+  // two DIFFERENT orgs, each own-repo (distinct team repos), same handle → still distinct (the repo is a faithful proxy here)
+  assert.notEqual(memberConfigVolName({ repo: '/a', handle }, '/a', 'orgA'), memberConfigVolName({ repo: '/b', handle }, '/b', 'orgB'))
+})
+// Pierre (worker-path finding): a cross-repo WORKER reaches memberConfigVolName with repoPath===member.repo (the
+// daemon launches `_worker-exec --repo member.repo`, so execWorker collapses repoPath to member.repo). The
+// repo-compare fallback would then say "own-repo" → the NAIVE colliding key. The AUTHORITATIVE crossRepo (stamped
+// at the mint, carried through the worker blob) must OVERRIDE the fallback → org-scoped. This is the test that
+// would have caught the worker-tier hole: it drives the exact shape (crossRepo:true, repoPath===member.repo).
+test('#49 memberConfigVolName: a cross-repo WORKER (crossRepo:true, repoPath===member.repo) is STILL org-scoped, not the naive colliding key', () => {
+  const shared = '/srv/shared', handle = 'apolline/claude'
+  const wA = memberConfigVolName({ repo: shared, handle, crossRepo: true }, shared, 'orgA')   // repoPath === member.repo (the collapse)
+  const wB = memberConfigVolName({ repo: shared, handle, crossRepo: true }, shared, 'orgB')
+  assert.notEqual(wA, wB, 'two orgs, cross-repo WORKERS, shared repo, colliding handle → DISTINCT config vols (org overrides the fallback)')
+  assert.notEqual(wA, volumeName(`${shared}#${handle}`, 1), 'NOT the naive `${repo}#${handle}` the repo-compare fallback would have picked')
+})
+// And the mint really stamps crossRepo, so the worker blob (a plain spread of the member) inherits it — the fix's
+// root cause. Prove it end-to-end: parse a roster with an authorized cross-repo member → member.crossRepo === true;
+// an own-repo member → false. (This is what makes room-daemon's `{...member}` worker blob org-scoped for free.)
+test('#49 the MINT stamps member.crossRepo (so BOTH blob constructors + execWorker inherit it)', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-mint-')))
+  const foreign = join(root, 'foreign'); fs.mkdirSync(foreign)
+  const org = `test-mint-${process.pid}`
+  try {
+    const mk = (members) => parseRoster({ project: org, teams: [{ name: 't', members }] }, { repo: root })
+    assert.equal(mk([{ name: 'own', role: 'engineer', backend: 'claude' }]).members[0].crossRepo, false, 'own-repo member → crossRepo false')
+    addAuthorizedRepo(org, foreign)
+    assert.equal(mk([{ name: 'x', role: 'engineer', backend: 'claude', repo: foreign }]).members[0].crossRepo, true, 'authorized cross-repo member → crossRepo true')
+  } finally { fs.rmSync(root, { recursive: true, force: true }); try { fs.unlinkSync(_authPathForTest(org)) } catch {} }
+})
+
+// Pierre regressor #2: the teardown must find a cross-repo member by mrc.project=<RAW org>, never mrc.repo (a
+// cross-repo container is labelled mrc.repo=member.repo, which no team-repo filter would match).
+test('#49 memberDockerFilter: disambiguates on mrc.project=<RAW org>, never mrc.repo', () => {
+  const f = memberDockerFilter('acme.prod', 'apolline/claude')
+  assert.ok(f.includes('label=mrc.project=acme.prod'), 'filters on the RAW org via mrc.project (no slug)')
+  assert.ok(f.includes('label=mrc.member=apolline/claude'), 'and the specific handle')
+  assert.ok(!f.some((x) => /mrc\.repo/.test(x)), 'NEVER mrc.repo — a cross-repo member carries mrc.repo=member.repo')
+  // no handle → the #41 live-set probe (any member of the org)
+  const any = memberDockerFilter('acme.prod')
+  assert.ok(any.includes('label=mrc.member') && any.includes('label=mrc.project=acme.prod'))
+  assert.ok(!any.some((x) => /mrc\.member=/.test(x)), 'no handle → any-member (no =value)')
+})
+
+// The single seam (arch A): the inner launches IN member.repo, and crossRepo is stamped AUTHORITATIVELY into the
+// --member-def blob (the inner can't recompute it — argv[1] is member.repo, the team home isn't visible). The
+// org in the blob is the TEAM org, never basename(member.repo).
+test('#49 memberArgv: own-repo member launches in repoPath, crossRepo=false in the blob', () => {
+  const teamRepo = '/home/alice/team'
+  const m = { handle: 'ludivine/claude', repo: teamRepo }
+  const argv = memberArgv(teamRepo, m, '/home/alice/team/.mrc/team.runtime.json', 'myorg')
+  assert.equal(argv[1], teamRepo, 'inner launches in the team repo')
+  const def = JSON.parse(Buffer.from(argv[argv.indexOf('--member-def') + 1], 'base64').toString('utf8'))
+  assert.equal(def.crossRepo, false)
+  assert.equal(def.org, 'myorg')
+})
+test('#49 memberArgv: cross-repo member launches in member.repo, crossRepo=true, org stays the TEAM org (never basename(member.repo))', () => {
+  const teamRepo = '/home/alice/team', foreign = '/srv/shared'
+  const m = { handle: 'apolline/claude', repo: foreign }
+  const argv = memberArgv(teamRepo, m, '/home/alice/team/.mrc/team.runtime.json', 'myorg')
+  assert.equal(argv[1], foreign, 'inner launches IN the authorized foreign repo (the single seam)')
+  const def = JSON.parse(Buffer.from(argv[argv.indexOf('--member-def') + 1], 'base64').toString('utf8'))
+  assert.equal(def.crossRepo, true, 'crossRepo stamped authoritatively (host-computed, blob-carried)')
+  assert.equal(def.org, 'myorg', 'org is the TEAM org — NOT basename(/srv/shared)=shared')
+  assert.notEqual(def.org, 'shared')
+})
+
+// memberWorkspaceVolumes mounts the member's OWN repo (its authorized member.repo), not the team home.
+test('#49 memberWorkspaceVolumes: a cross-repo member mounts member.repo, not the passed repoPath', () => {
+  const teamRepo = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-team-')))
+  const foreign = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-foreign-')))
+  try {
+    const v = memberWorkspaceVolumes({ mount: 'rw', territory: '.', repo: foreign }, teamRepo)
+    assert.deepEqual(v, ['-v', `${foreign}:/workspace`], 'mounts the member.repo, ignoring the team repoPath arg')
+    // own-repo member (no .repo) still mounts the passed repoPath — byte-identical to today
+    assert.deepEqual(memberWorkspaceVolumes({ mount: 'rw', territory: '.' }, teamRepo), ['-v', `${teamRepo}:/workspace`])
+  } finally { fs.rmSync(teamRepo, { recursive: true, force: true }); fs.rmSync(foreign, { recursive: true, force: true }) }
+})
+
+// Pierre regressor #3: a foreign repo's .mrcrc must NOT be able to widen a cross-repo member's egress. belt-0
+// (sanitizeRepoConfig) is an allowlist — `--web`/ALLOW_WEB are not in it — and mrc.js runs it against the inner's
+// repoHint (= member.repo). Seed a foreign .mrcrc WITH --web and prove it's DROPPED (not merely absent).
+test('#49 belt-0 door: a foreign repo .mrcrc `--web` / ALLOW_WEB is DROPPED (no cross-repo egress escalation)', () => {
+  const foreign = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-foreign-mrcrc-')))
+  try {
+    fs.writeFileSync(join(foreign, '.mrcrc'), '--web\n--no-sound\nALLOW_WEB=1\n')
+    const { flags: raw, envs: rawEnvs } = readMrcrc(join(foreign, '.mrcrc'))
+    assert.ok(raw.includes('--web'), 'sanity: the foreign file really does request --web')
+    const { flags, envs } = sanitizeRepoConfig(raw, rawEnvs)
+    assert.ok(!flags.includes('--web') && !flags.includes('-w'), '--web is stripped by belt-0 (egress is never cedeable via a repo .mrcrc)')
+    assert.ok(!('ALLOW_WEB' in envs), 'ALLOW_WEB env is refused too')
+    assert.ok(flags.includes('--no-sound'), 'the benign local-UX flag survives (files+secrets+local-UX are cedeable; egress is not)')
+  } finally { fs.rmSync(foreign, { recursive: true, force: true }) }
+})
+
+// Site 5: the HUMAN authorize control-plane (reposAction) over the host-only per-org set. A session can never
+// call this — it's the CLI/dashboard path. Exercised against the real record with a scratch org + cleanup.
+test('#49 reposAction: ls empty → add (realpaths + broad-guards) → ls shows it → rm → ls empty', () => {
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-repos-')))
+  const other = join(root, 'otherrepo'); fs.mkdirSync(other)
+  const org = `test-repos-${process.pid}`
+  try {
+    assert.deepEqual(reposAction('ls', org, null).repos, [], 'starts empty (fail-closed default)')
+    const add = reposAction('add', org, other)
+    assert.equal(add.ok, true); assert.equal(add.added, other); assert.ok(add.repos.includes(other))
+    assert.deepEqual([...loadAuthorizedRepos(org)], [other], 'persisted to the host record')
+    // broad-guard surfaces as a clean error, not a throw
+    const bad = reposAction('add', org, os.homedir())
+    assert.equal(bad.ok, false); assert.match(bad.error, /home directory/)
+    // missing arg → usage error, not a crash
+    assert.equal(reposAction('add', org, null).ok, false)
+    const rm = reposAction('rm', org, other)
+    assert.equal(rm.ok, true); assert.deepEqual(rm.repos, [])
+    assert.equal(reposAction('rm', org, other).ok, false, 'removing a non-member → ok:false (idempotent, honest)')
+    assert.equal(reposAction('bogus', org, other).ok, false, 'unknown subcommand → error')
+  } finally { fs.rmSync(root, { recursive: true, force: true }); try { fs.unlinkSync(_authPathForTest(org)) } catch {} }
 })

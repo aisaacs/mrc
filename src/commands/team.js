@@ -18,7 +18,8 @@ import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from '
 import { homedir } from 'node:os'
 import { join, resolve, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { parseRoster, validateRoster, findRoster, RESERVED_SOLO_ORG_RE } from '../teams/roster.js'
+import { parseRoster, validateRoster, findRoster, RESERVED_SOLO_ORG_RE, assertSafeProjectName, sanitizeProjectName } from '../teams/roster.js'
+import { addAuthorizedRepo, removeAuthorizedRepo, loadAuthorizedRepos } from '../teams/repo-auth.js'   // #49 multi-repo: the human control-plane over the per-org authorized-repo set (never a session verb)
 import { soloRoster, SOLO_HANDLE } from '../teams/solo.js'
 import { canonicalMountSource, canonicalWriteTarget } from '../mount-guard.js'   // #49: realpath-canonical mount/write containment (no symlink escape)
 import { buildPersona } from '../teams/personas.js'
@@ -52,17 +53,42 @@ export { memberSessionId }   // shared impl: src/teams/session-id.js (no raw-NUL
 // and the territory use canonicalMountSource (must exist — a missing territory throws, caught legibly at
 // roster-validate, Pierre trap #2).
 export function memberWorkspaceVolumes(member, repoPath) {
+  // #49 multi-repo (Mouth B): mount the member's OWN repo. member.repo is the authorized, realpath-canonical
+  // value the mint gate stamped (resolveMemberRepo, roster.js:251); it DEFAULTS to repoPath, so an own-repo
+  // member is byte-identical to today. A cross-repo member mounts its authorized foreign repo — never the team
+  // home. Falling back to repoPath keeps a member-less caller (tests) working.
+  const root = member.repo || repoPath
   const vols = []
   if (member.mount === 'rw' && member.territory === '.') {
-    vols.push('-v', `${canonicalMountSource(repoPath, '.')}:/workspace`)
+    vols.push('-v', `${canonicalMountSource(root, '.')}:/workspace`)
   } else {
-    vols.push('-v', `${canonicalMountSource(repoPath, '.')}:/workspace:ro`)
-    vols.push('-v', `${canonicalWriteTarget(repoPath, '.mrc')}:/workspace/.mrc`)
+    vols.push('-v', `${canonicalMountSource(root, '.')}:/workspace:ro`)
+    vols.push('-v', `${canonicalWriteTarget(root, '.mrc')}:/workspace/.mrc`)
     if (member.mount === 'rw' && member.territory !== '.') {
-      vols.push('-v', `${canonicalMountSource(repoPath, member.territory)}:/workspace/${member.territory}`)
+      vols.push('-v', `${canonicalMountSource(root, member.territory)}:/workspace/${member.territory}`)
     }
   }
   return vols
+}
+
+// #49 multi-repo (Mouth B): the member's dedicated ~/.claude config-volume name — the ONE place the key is
+// computed, so the live-member path (mrc.js) and the worker path (execWorker) can NEVER drift apart. Keying:
+//   • own-repo member (crossRepo false): `${repoPath}#${handle}` — BYTE-IDENTICAL to today, zero re-login. A
+//     team's home repo is already a faithful per-org proxy (two orgs have different home repos → distinct keys).
+//   • cross-repo member (lives in a SHARED foreign repo): `${org}#${repo}#${handle}` — the repo alone is NOT an
+//     org-proxy once repos are shared, so two orgs that both authorize /srv/shared and each draw the same handle
+//     (`apolline/claude` from the shared name pool) would collide on `${repo}#${handle}` and SHARE one ~/.claude
+//     = a cross-org OAuth/credential leak. Folding the org in makes the key injective across orgs (the same
+//     isolation repo-auth.js keys per-org). `crossRepo` is authoritative-from-blob (memberArgv stamps it in the
+//     OUTER where the team repo is known; the inner can't recompute it — argv[1] IS member.repo). A member-set
+//     roster can't forge a collision: to share a repo it must be AUTHORIZED, and an authorized foreign repo is
+//     crossRepo=true → org-scoped regardless of the flag.
+// (KNOWN pre-existing edge, deliberately NOT fixed here: two team.jsons in ONE own-repo dir, both crossRepo=false,
+//  same handle → same key. It predates this epic and fixing it would force universal re-login; documented, separate.)
+export function memberConfigVolName(member, repoPath, org) {
+  const crossRepo = member.crossRepo != null ? !!member.crossRepo : !!(member.repo && String(member.repo) !== String(repoPath))
+  const key = crossRepo ? `${org}#${member.repo || repoPath}#${member.handle}` : `${repoPath}#${member.handle}`
+  return volumeName(key, 1)
 }
 
 // Container env that marks this session as a team member + points at its persona file.
@@ -115,24 +141,34 @@ export function cleanWorkerOutput(out) {
 // across turns. (This is the one path that needs Docker — validated via the rebuild recipe.)
 export async function execWorker(norm, member, repoPath, prompt) {
   loadEnv(dirname(MRC_JS))   // populate OPENAI_API_KEY etc. (team dispatch runs before mrc.js loads .env)
+  // #49 multi-repo (Mouth B): the worker path has NO inner-launch seam (it's a direct docker exec in the OUTER),
+  // so member.repo is threaded EXPLICITLY at every file/secret site. The daemon launches `_worker-exec --repo
+  // member.repo`, so repoPath IS member.repo here → for an own-repo member `root` === repoPath → BYTE-IDENTICAL.
+  // The config-vol keys through the ONE shared helper, and — CRUCIAL — crossRepo rides the member from the MINT
+  // (roster.js) through room-daemon's worker blob to here, so `member.crossRepo` is authoritative EVEN THOUGH
+  // repoPath===member.repo collapses the repo-compare: a cross-repo worker is org-scoped, closing the cross-org
+  // config-vol collision on the worker tier too (not just the live path). What STAYS deferred for the worker is
+  // the CAGE/egress axis only — ALLOW_WEB=1 + untrusted foreign prompt = the worker-cage epic — NOT isolation.
+  const root = member.repo || repoPath
+  const org = member.org || norm?.org
   const name = `${personaSlug(member.handle)}.exec-prompt`
   // #49 (Pierre trap #4): canonicalize the write target; mkdir its DIRNAME + write THE RETURN (both from the
   // guard — a raw-join mkdir would follow a symlinked `.mrc`).
-  const promptPath = canonicalWriteTarget(repoPath, join('.mrc', 'teams', name))
+  const promptPath = canonicalWriteTarget(root, join('.mrc', 'teams', name))
   mkdirSync(dirname(promptPath), { recursive: true })
   writeFileSync(promptPath, prompt)
   const containerPromptFile = `/workspace/.mrc/teams/${name}`
-  const vols = [...memberWorkspaceVolumes(member, repoPath)]
-  const volName = volumeName(`${repoPath}#${member.handle}`, 1)
+  const vols = [...memberWorkspaceVolumes(member, root)]
+  const volName = memberConfigVolName(member, repoPath, org)   // ONE keying helper — no drift vs the live path
   vols.push('-v', `${volName}:/home/coder/.claude`, '-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)
   const env = [
     '-e', `MRC_AGENT=${member.backend}`, '-e', `MRC_MEMBER_HANDLE=${member.handle}`,
     '-e', `MRC_TEAM=${member.team}`, '-e', `MRC_ROLE=${member.role}`,
     '-e', `MRC_EXEC_PROMPT_FILE=${containerPromptFile}`, '-e', 'ALLOW_WEB=1',
   ]
-  const openai = repoEnvKey(repoPath, 'OPENAI_API_KEY')   // per-repo .env first, then global
+  const openai = repoEnvKey(root, 'OPENAI_API_KEY')   // the AUTHORIZED repo's .env first, then global (like media.js)
   if (openai) env.push('-e', `OPENAI_API_KEY=${openai}`)
-  const r = runWorkerExec({ repoPath, envFlags: env, volumes: vols, allowWeb: true })   // #48: { text, ok }
+  const r = runWorkerExec({ repoPath: root, envFlags: env, volumes: vols, allowWeb: true })   // #48: { text, ok }
   return { text: cleanWorkerOutput(r.text), ok: r.ok }
 }
 
@@ -246,9 +282,18 @@ export function resolveMemberIdentity(config, norm, handle) {
 // is the AUTHORITATIVE team org (norm.org at team-up / def.org on relaunch) — the label the daemon keyed its
 // sessionIndex on — so the inner computes the SAME sessionId and binds to the right org even if the on-disk roster
 // was re-tampered in the relaunch TOCTOU window.
+// #49 multi-repo (Mouth B): the inner launches in member.repo (the authorized, realpath-canonical value the mint
+// gate stamped) — the SINGLE seam that makes a cross-repo member coherent by construction. Inside the inner,
+// repoPath === member.repo, so every repoPath-derived FILE door (workspace mount, .mrc, sandboxignore, legacyDir,
+// the store slice) resolves to the member's own repo automatically; identity stays the TEAM org (this blob's
+// `org`, never basename(member.repo)). `crossRepo` is stamped AT THE MINT (roster.js) and rides the member here;
+// we PREFER that authoritative value and only compute it as a legacy belt for a mint-less member (tests) — so the
+// inner keys its config-vol org-scoped without re-deriving it (it can't: argv[1] is member.repo, the team home
+// isn't visible downstream). The mint is the single source; this belt agrees with it (same formula).
 export function memberArgv(repoPath, member, rosterPath, org) {
-  const def = Buffer.from(JSON.stringify({ ...member, org }), 'utf8').toString('base64')
-  return [MRC_JS, repoPath, '--member', member.handle, '--roster', rosterPath, '--member-def', def]
+  const crossRepo = member.crossRepo != null ? !!member.crossRepo : !!(member.repo && String(member.repo) !== String(repoPath))
+  const def = Buffer.from(JSON.stringify({ ...member, org, crossRepo }), 'utf8').toString('base64')
+  return [MRC_JS, member.repo || repoPath, '--member', member.handle, '--roster', rosterPath, '--member-def', def]
 }
 
 // Is a recorded process still alive? (signal 0 = existence check; EPERM still means it exists.)
@@ -293,32 +338,44 @@ function killHostPlumbingForSock(sock) {
   if (pids.length) { const t = setTimeout(() => { for (const pid of pids) { try { process.kill(pid, 0); process.kill(pid, 'SIGKILL') } catch {} } }, 600); t.unref?.() }
   return pids.length > 0
 }
-// Stop the actual member: kill its container by the mrc.member (+repo) label. Killing the dtach master
+// Stop the actual member: kill its container by the mrc.member (+project) label. Killing the dtach master
 // tears down the terminal/sh but the detached `docker run` container can keep running — so this is the
 // LOAD-BEARING member stop, not a backstop (Roland #1).
-function dockerKillMember(repo, handle) {
-  // Require BOTH labels. Handles are deterministic (first/backend), so two projects can share one (each
-  // with an @apolline/claude); matching mrc.member=<handle> alone — if repo were unknown — would kill the
-  // OTHER project's same-handled container. Fail SAFE: skip + log rather than a repo-wide kill-by-handle
-  // (Roland R-dtach-1). repo is normally set by setMemberLaunch, so this only guards a degraded record.
-  if (!repo) { try { console.error(`[#34] dockerKillMember: no repo for @${handle} — skipping (won't risk a cross-project kill-by-handle)`) } catch {}; return }
+function dockerKillMember(org, handle) {
+  // Require BOTH labels. Handles are deterministic (first/backend), so two ORGS can share one (each with an
+  // @apolline/claude); matching mrc.member=<handle> alone — if the org were unknown — would kill the OTHER
+  // org's same-handled container. Fail SAFE: skip + log rather than an org-wide kill-by-handle. #49 multi-repo
+  // (Mouth B): disambiguate on mrc.project=<ORG> — the AUTHORITATIVE identity (set from the --member-def blob,
+  // mrc.js:1077, not the member-writable roster) — NOT mrc.repo. mrc.repo was only ever a per-org PROXY; a
+  // cross-repo member's container is labelled mrc.repo=member.repo, so a mrc.repo filter can't find it, while
+  // mrc.project IS the org and matches it. This is strictly more correct AND dissolves the same-handle hazard.
+  if (!org) { try { console.error(`[#34] dockerKillMember: no org for @${handle} — skipping (won't risk a cross-org kill-by-handle)`) } catch {}; return }
   try {
-    const ids = execFileSync('docker', ['ps', '-q', '--filter', `label=mrc.member=${handle}`, '--filter', `label=mrc.repo=${repo}`], { encoding: 'utf8' }).split('\n').map((s) => s.trim()).filter(Boolean)
+    const ids = execFileSync('docker', ['ps', '-q', ...memberDockerFilter(org, handle)], { encoding: 'utf8' }).split('\n').map((s) => s.trim()).filter(Boolean)
     for (const id of ids) { try { execFileSync('docker', ['kill', id], { stdio: 'ignore' }) } catch {} }
   } catch {}
 }
+// #49 multi-repo (Mouth B): the `docker ps` filter selecting an org's member container(s) — the ONE place the
+// disambiguator is chosen, exported so a test asserts it's mrc.project=<RAW org> (identity) never mrc.repo (a
+// per-org proxy that a cross-repo member's mrc.repo=member.repo would fail to match). handle present → one
+// member; absent → any member of the org (the #41 live-set probe). Raw org on both sides (no slug), matching
+// the authoritative mrc.project label (mrc.js:1077).
+export function memberDockerFilter(org, handle) {
+  return ['--filter', handle ? `label=mrc.member=${handle}` : 'label=mrc.member', '--filter', `label=mrc.project=${org}`]
+}
 // #41 detection: the set of member handles whose mrc.member CONTAINER is live — the durable, master-state-
 // independent "member up" signal (a container can outlive its master). One `docker ps` per org per poll.
-// Requires the repo label so two projects sharing a handle don't cross-count (same fail-safe as the kill).
+// #49 multi-repo: keyed on mrc.project=<ORG> (not mrc.repo) so two orgs sharing a handle don't cross-count AND
+// a cross-repo member (mrc.repo=member.repo) is still detected (same fix + fail-safe as the kill).
 let _dockerProbeWarned = false
-function dockerMemberHandles(repo) {
-  if (!repo) return new Set()
+function dockerMemberHandles(org) {
+  if (!org) return new Set()
   try {
     // `docker ps --format` exposes a label via the `.Label "k"` METHOD; `.Labels` here is a comma-joined
     // STRING (NOT the map it is under `docker inspect`), so `index .Labels "k"` throws "cannot index
     // slice/array with type string" → non-zero exit → (pre-fix) a silently-empty Set → every container
     // reads absent → all terminals blank. Use the ps-correct `.Label` (matches room-daemon.js's scan).
-    const out = execFileSync('docker', ['ps', '--filter', 'label=mrc.member', '--filter', `label=mrc.repo=${repo}`, '--format', '{{.Label "mrc.member"}}'], { encoding: 'utf8' })
+    const out = execFileSync('docker', ['ps', ...memberDockerFilter(org), '--format', '{{.Label "mrc.member"}}'], { encoding: 'utf8' })
     return new Set(out.split('\n').map((s) => s.trim()).filter(Boolean))
   } catch (e) {
     // No-silent-failure: a broken probe (bad template, docker unreachable) must NOT masquerade as "zero
@@ -462,7 +519,7 @@ export function launchedMemberHandles(org) {
 // launch is within the build grace. One `docker ps` per call (the container probe).
 export function memberTtyds(org, { repo, onlineHandles, withinGrace } = {}) {
   const mems = (loadLaunches()[org] || {}).members || {}
-  const liveContainers = dockerMemberHandles(repo)
+  const liveContainers = dockerMemberHandles(org)   // #49 multi-repo: probe by mrc.project=<org>, not repo (cross-repo members carry mrc.repo=member.repo). `repo` kept in the signature for caller compat.
   const out = {}
   for (const [h, info] of Object.entries(mems)) {
     const state = classifyTerminal(info, { containerAlive: liveContainers.has(h), online: onlineHandles?.has(h), withinGrace })
@@ -482,7 +539,7 @@ export function killTeamSession(org) {
   for (const handle of Object.keys(mems)) {
     const sock = memberSock(org, handle)
     if (killHostPlumbingForSock(sock)) any = true
-    dockerKillMember(rec.repo, handle)
+    dockerKillMember(org, handle)   // #49 multi-repo: kill by mrc.project=<org>, not rec.repo (finds a cross-repo member's container)
     try { unlinkSync(sock) } catch {}
   }
   // #41: clear the launch record on an INTENTIONAL stop (matches the dashboard "Stop team" path), so a
@@ -608,10 +665,9 @@ export function writeTeamFile(repo, roster) {
 // label, unlink the socket, drop from the registry. The kill-first half of the Relaunch recovery, so it
 // must be drift-proof + idempotent against an orphaned-live container.
 export function killMember(org, handle) {
-  const rec = loadLaunches()[org] || {}
   const sock = memberSock(org, handle)
   killHostPlumbingForSock(sock)
-  dockerKillMember(rec.repo, handle)
+  dockerKillMember(org, handle)   // #49 multi-repo: kill by mrc.project=<org>, not rec.repo (finds a cross-repo member's container)
   try { unlinkSync(sock) } catch {}
   removeMemberLaunch(org, handle)
   return true
@@ -663,6 +719,48 @@ export function materializeRoster(rosterInput, repoHint) {
   return { norm, rosterPath }
 }
 
+// #49 multi-repo: resolve an org NAME from a team dir WITHOUT parseRoster. parseRoster runs resolveMemberRepo,
+// which THROWS on a not-yet-authorized cross-repo member — and `mrc team repos add` is precisely how you authorize
+// it (chicken-and-egg). So read only the project/org label, defaulting to the sanitized basename — the SAME org
+// derivation parseRoster uses (roster.js:152-153), minus the member.repo resolution.
+function readOrgName(repoPath, rosterFlag) {
+  const path = rosterFlag || findRoster(repoPath)
+  if (path) {
+    try {
+      const d = JSON.parse(readFileSync(path, 'utf8'))
+      const ex = d.project || d.org
+      if (ex) return assertSafeProjectName(ex, 'project')
+    } catch {}
+  }
+  return sanitizeProjectName(basename(repoPath)) || 'org'
+}
+
+// #49 multi-repo: the HUMAN control-plane over an org's authorized-repo set (repo-auth.js). PURE over the
+// host-only record — NEVER a session-callable verb: a session may REQUEST a repo (an @user inbox item), but a
+// human AUTHORIZES it here (dashboard CSRF / this CLI). Returns a result the CLI renders + exits on. The floor's
+// own guards apply (addAuthorizedRepo realpaths + broad-guards `/`/$HOME → throws, surfaced as a clean error).
+export function reposAction(sub, org, repoArg) {
+  const list = () => [...loadAuthorizedRepos(org)]
+  switch ((sub || 'ls').toLowerCase()) {
+    case 'ls': case 'list':
+      return { ok: true, action: 'ls', org, repos: list() }
+    case 'add': {
+      if (!repoArg) return { ok: false, action: 'add', org, error: 'usage: mrc team repos add <repo> [team-path]' }
+      let added; try { added = addAuthorizedRepo(org, repoArg) } catch (e) { return { ok: false, action: 'add', org, error: String(e?.message || e) } }
+      return { ok: true, action: 'add', org, added, repos: list() }
+    }
+    case 'rm': case 'remove': {
+      if (!repoArg) return { ok: false, action: 'rm', org, error: 'usage: mrc team repos rm <repo> [team-path]' }
+      const removed = removeAuthorizedRepo(org, repoArg)
+      return removed
+        ? { ok: true, action: 'rm', org, removed: repoArg, repos: list() }
+        : { ok: false, action: 'rm', org, error: `"${repoArg}" was not in org "${org}"'s authorized set`, repos: list() }
+    }
+    default:
+      return { ok: false, action: sub, org, error: `unknown: mrc team repos ${sub} (use: add | ls | rm)` }
+  }
+}
+
 export async function teamCommand(argv) {
   const sub = argv[0] || 'status'
   const rest = argv.slice(1)
@@ -682,6 +780,9 @@ export async function teamCommand(argv) {
   mrc team define  [path] [--roster f | --preset name]   define rooms WITHOUT launching
   mrc team presets                       list the ready-made team presets
   mrc team new --preset <name> [path]    write a team.json from a preset
+  mrc team repos   [ls]  [team-path]     list repos this org's members may live in (multi-repo)
+  mrc team repos   add <repo> [team-path]   authorize a repo (HUMAN act; a member can then set "repo":"…")
+  mrc team repos   rm  <repo> [team-path]   revoke an authorized repo
 
 Roster (team.json in the repo, or --roster <file>, or --preset <name>):
   { "org":"shop", "teams":[ { "name":"client", "territory":"client",
@@ -836,6 +937,25 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
       return
     }
 
+    case 'repos': {
+      // `mrc team repos [ls]` | `mrc team repos add <repo> [team-path]` | `mrc team repos rm <repo> [team-path]`
+      // The HUMAN authorizes which repos an org's members may live in (a session can only REQUEST one). The org is
+      // read from the team dir WITHOUT parseRoster (which would throw on the very unauthorized member you're adding).
+      const action = (positional[0] || 'ls').toLowerCase()
+      const isLs = action === 'ls' || action === 'list'
+      const repoArg = isLs ? null : positional[1]
+      const teamPath = resolve((isLs ? positional[1] : positional[2]) || '.')
+      const org = flag('--org') ? assertSafeProjectName(flag('--org'), 'org') : readOrgName(teamPath, rosterFlag)
+      const r = reposAction(action, org, repoArg ? resolve(repoArg) : null)
+      if (!r.ok) { console.error(`  ✗ ${r.error}`); process.exit(1) }
+      if (r.action === 'add') console.log(`  ✓ Authorized ${r.added} for org "${org}". A member may now declare "repo": "${r.added}" (authorizing is a human act — a session can only request one).`)
+      else if (r.action === 'rm') console.log(`  ✓ Removed ${r.removed} from org "${org}"'s authorized repos.`)
+      console.log(`  Cross-repos authorized for org "${org}" (${r.repos.length}):`)
+      if (!r.repos.length) console.log(`    (none — members use the org's own repo; add one with \`mrc team repos add <repo>\`)`)
+      else for (const p of r.repos) console.log(`    • ${p}`)
+      return
+    }
+
     default:
       console.error(`Unknown team command: ${sub}. Try: mrc team help`)
       process.exit(1)
@@ -845,11 +965,16 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
 // Build the launch wiring for a single member (called from mrc.js when --member is set). Returns
 // { envFlags, volumes, sessionId, persona } — pure given the roster/member; writes the persona file.
 export function memberLaunch(norm, member, repoPath) {
+  // #49 multi-repo (Mouth B): a member's launch is rooted at its OWN repo — persona-write AND workspace-mount both
+  // resolve to member.repo (the authorized value), so they can never disagree. For an own-repo member member.repo
+  // === repoPath → byte-identical to today. In the inner the passed repoPath IS member.repo anyway; keying both off
+  // member.repo makes the coherence explicit rather than resting on the caller passing the matching repoPath.
+  const root = member.repo || repoPath
   const persona = personaForMember(norm, member)
-  const personaPath = writePersonaFile(repoPath, member, persona)
+  const personaPath = writePersonaFile(root, member, persona)
   return {
     envFlags: memberEnv(member, personaPath),
-    workspaceVolumes: memberWorkspaceVolumes(member, repoPath),
+    workspaceVolumes: memberWorkspaceVolumes(member, root),
     // #49-SEC: the sessionId (→ daemon bind) keys on `member.org`, which the caller sets AUTHORITATIVELY — the
     // host-set --member-def blob for a team member (immune to a re-tampered on-disk roster), or the repo-derived
     // soloRoster org for solo. NO `|| norm.org` backstop: a roster-parsed org must NEVER backstop a missing
