@@ -30,6 +30,21 @@ function runningColimaCpus() {
   return null
 }
 
+/** RAM (GB) of the running Colima VM (or null) — to warn when it's smaller than what we'd start now. A VM first
+ * started small (old default / 8GB floor / manual) stays small; a memory-starved VM OOM-kills containers (exit 137,
+ * e.g. a summoned Pierre) under heavy load (many mrc sessions + container-spawning wire-tests). */
+function runningColimaMemoryGb() {
+  try {
+    const out = execFileSync('colima', ['list', '--json'], { encoding: 'utf8' })
+    for (const line of out.split('\n')) {
+      if (!line.trim()) continue
+      let o; try { o = JSON.parse(line) } catch { continue }
+      if ((o.status === 'Running' || o.name === 'default') && Number(o.memory)) return Math.round(Number(o.memory) / 1073741824)
+    }
+  } catch {}
+  return null
+}
+
 /**
  * Ensure Docker is available. On macOS, starts Colima if needed.
  * Returns true if we started Colima (so we can stop it on exit).
@@ -56,6 +71,14 @@ export async function ensureDocker(verbose, { colimaCpu, colimaMemory } = {}) {
         console.log(`  ⚠ Colima VM is running with ${have} CPUs but ${want} are available — room/workflow`)
         console.log(`    concurrency is capped (min(16, cpus-2)). Colima can't resize a live VM; to use all`)
         console.log(`    cores: 'colima stop' then relaunch mrc (restarts the VM, ending running sessions).`)
+      }
+      const wantMem = parseInt(colimaMemory, 10) || detectMemory()
+      const haveMem = runningColimaMemoryGb()
+      if (haveMem && wantMem && haveMem < wantMem - 1) {   // -1 slack for byte→GB rounding
+        console.log(`  ⚠ Colima VM is running with ~${haveMem}GB RAM but ${wantMem}GB are available — heavy container`)
+        console.log(`    load (many mrc sessions + container-spawning wire-tests) can OOM-kill a container (exit 137,`)
+        console.log(`    e.g. a summoned Pierre). Colima can't resize a live VM; to raise it: close sessions, then`)
+        console.log(`    'colima stop' and relaunch mrc (or pass --colima-memory N / set it in ~/.mrcrc).`)
       }
       return false  // already running
     } catch {
