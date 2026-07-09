@@ -8,7 +8,7 @@ import { join, dirname } from 'node:path'
 import { createHash } from 'node:crypto'
 import { canonicalWriteTarget } from '../mount-guard.js'   // #49: symlink-safe asset write target
 import { stripMentions } from './names.js'
-import { repoEnvKey } from '../config.js'
+import { memberRepoEnvKey } from '../config.js'   // #49 cross-repo (Pierre Q4): member-secret MINT (denies a caged member's repo .env)
 import { HAIKU_MODEL } from '../constants.js'
 
 // role -> media kind. The ROLE decides what gets made; the backend just names the provider.
@@ -143,12 +143,12 @@ export async function generateMedia(member, { items = [], fetchFn, room, now } =
   // Rate cap — bound a runaway generation loop in this room before any paid call.
   if (!withinRateCap(room, typeof now === 'number' ? now : Date.now())) return { text: `[@${member.first}: throttled — too many ${kind} generations in this room in the last minute. Give it a moment, then ask again.]`, ok: false }
   // Art-director pass: clean the prompt + filename, and skip messages that are just feedback.
-  const adKey = repoEnvKey(member.repo, 'MRC_SESSION_NAMING_ANTHROPIC_API_KEY') || repoEnvKey(member.repo, 'ANTHROPIC_API_KEY')
+  const adKey = memberRepoEnvKey(member, 'MRC_SESSION_NAMING_ANTHROPIC_API_KEY') || memberRepoEnvKey(member, 'ANTHROPIC_API_KEY')
   const ad = await artDirect(raw, kind, { apiKey: adKey, fetchFn })
   if (ad?.skip) return { text: `[@${member.first}: that read as feedback, not a new ${kind} request — start with "make/generate …" when you want a new asset.]`, ok: false }
   const prompt = (ad?.prompt) || raw
   const fileBase = slug(ad?.name || prompt)
-  const apiKey = repoEnvKey(member.repo, KEY_FOR[kind])   // per-repo .env first, then the global key
+  const apiKey = memberRepoEnvKey(member, KEY_FOR[kind])   // per-repo .env first, then the global key (caged member → denied)
   // Gemini can't emit real alpha (it paints a fake transparency checkerboard). For a cut-out asset,
   // ask for a solid magenta background and chroma-key it to true transparency ourselves.
   const CHROMA = { r: 255, g: 0, b: 255 }

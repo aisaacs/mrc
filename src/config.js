@@ -2,6 +2,7 @@ import { readFileSync, existsSync } from 'node:fs'
 import { execFileSync } from 'node:child_process'
 import { join } from 'node:path'
 import { dbg } from './output.js'
+import { cageReadsRepoEnv } from './teams/cage.js'   // #49 cross-repo (Pierre Q4): the caged-member repo-secret gate (one-way import; cage.js has no config dep)
 
 /** Parse a .mrcrc file into flags and env vars (KEY=VALUE lines). */
 // #34: quote-aware whitespace tokenizer so a multi-token .mrcrc flag LINE parses as separate argv tokens.
@@ -149,6 +150,18 @@ export function repoEnvKey(repo, name) {
     }
   }
   return process.env[name] || ''
+}
+
+/** #49 cross-repo (Pierre Q4) — THE member-secret MINT. Every member.repo/.env read for a MEMBER goes through
+ *  here so the caged-member denial is enforced ONCE at the source: a caged member whose profile sets
+ *  `repoEnv:'none'` (the adversary cage) gets '' — never its repo's secrets, foreign or own — because a caged
+ *  adversary holding a secret is an exfil primitive even behind the SNI seal (transcript / room reply / encoded
+ *  to the one egress host). An uncaged member (member.cage unset) reads normally. Route every member-secret
+ *  reader (execWorker, media) through this, so a FUTURE reader inherits the denial by construction (don't rely on
+ *  "caged ⟹ claude ⟹ worker-tier readers unreachable" — Pierre: that holds only for PINNED-egress profiles). */
+export function memberRepoEnvKey(member, name) {
+  if (member && member.cage && !cageReadsRepoEnv(member.cage)) return ''   // caged-deny: no repo secret for this member
+  return repoEnvKey(member?.repo, name)
 }
 
 /** Like repoEnvKey but STRICT: reads ONLY the repo's own .env / .mrc/.env — NO process.env fallback.

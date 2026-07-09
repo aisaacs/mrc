@@ -445,6 +445,10 @@ if (config.member) {
   catch (e) { console.error(`  ✗ Refusing to launch: ${e?.message || e}.`); process.exit(1) }
   if (!member) { console.error(`  ✗ No member "${config.member}" in the roster${rosterPath ? ` (${rosterPath})` : ''}.`); process.exit(1) }
   if (member.tier !== 'live') { console.error(`  ✗ @${member.handle} is a ${member.backend} worker — workers are invoked on demand, not launched as a session.`); process.exit(1) }
+  // #49 (4b Phase-1, Pierre item #5): FAIL-CLOSED — a member.cage is parse-accepted but NOT yet enforced at launch
+  // (applyCage + the seal land in Phase-2). Refuse rather than launch a "caged" member with full privileges + a
+  // false adversary:false record (a silent uncage). This gate is REMOVED when Phase-2 wires the cage enforcement.
+  { const { memberCageLaunchGate } = await import('./src/teams/cage.js'); const g = memberCageLaunchGate(member); if (!g.ok) { console.error(`  ✗ Refusing to launch: ${g.reason}`); process.exit(1) } }
   const launch = memberLaunch(norm, member, repoPath)
   memberCtx = { norm, member, org: member.org, rosterPath, ...launch }
   config.rooms = true   // a member is always a room participant

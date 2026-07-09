@@ -5,8 +5,14 @@
 // summon by construction). The container-lifetime BEHAVIOR (fails-closed, reap) is Inc 2/3 + a wire rebuild.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { CAGE_PROFILES, resolveCageProfile, assertCageAllowed, applyCage, applyCageDials, sealFreshness, deriveEgressToken } from '../src/teams/cage.js'
+import { CAGE_PROFILES, resolveCageProfile, assertCageAllowed, applyCage, applyCageDials, sealFreshness, deriveEgressToken, cageReadsRepoEnv, cagedRoomVolumes, resolvedVolIsUserLogin, memberCageLaunchGate } from '../src/teams/cage.js'
 import { parseRoster } from '../src/teams/roster.js'
+import { memberRepoEnvKey } from '../src/config.js'
+import { volumeName } from '../src/docker.js'
+import { memberConfigVolName, execWorker } from '../src/commands/team.js'
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 const CTX = {
   repoPath: '/home/me/proj', nonce: 'abc123nonce', secret: 'S3CR3T', sealPort: 9443,
@@ -126,4 +132,76 @@ test('parser gate: an unknown cage profile is REJECTED at parse', () => {
   assert.throws(() => parseRoster({ teams: [{ name: 't', members: [
     { name: 'x', role: 'engineer', backend: 'claude', cage: 'whitelist' },
   ] }] }, { repo: '/tmp/r' }), /unknown cage profile/)
+})
+
+// ─── #49 cross-repo × cage — Q4: a caged member reads NO repo .env (kill-matrix item #2) ───
+// The adversary profile carries repoEnv:'none'; cageReadsRepoEnv is the single decision source; config.memberRepoEnvKey
+// is the mint every member-secret reader (execWorker, media) routes through, so the denial is enforced ONCE at the source.
+test('#49 Q4 cageReadsRepoEnv: adversary DENIES, no-cage ALLOWS, unknown FAIL-CLOSED', () => {
+  assert.equal(CAGE_PROFILES.adversary.repoEnv, 'none')
+  assert.equal(cageReadsRepoEnv('adversary'), false, 'the adversary cage denies repo .env')
+  assert.equal(cageReadsRepoEnv(undefined), true, 'no cage → reads normally (uncaged members unchanged)')
+  assert.equal(cageReadsRepoEnv('bogus-unknown'), false, 'unknown/unready cage name → DENY (fail-closed, via the mint gate)')
+})
+test('#49 Q4 memberRepoEnvKey chokepoint: an UNCAGED member reads its repo .env; a CAGED (adversary) member is DENIED even with the secret right there', () => {
+  const repo = mkdtempSync(join(tmpdir(), 'mrc-cageenv-'))
+  try {
+    writeFileSync(join(repo, '.env'), 'GEMINI_API_KEY=super-secret-123\n')
+    assert.equal(memberRepoEnvKey({ repo, cage: undefined }, 'GEMINI_API_KEY'), 'super-secret-123', 'uncaged member reads the real secret')
+    assert.equal(memberRepoEnvKey({ repo, cage: 'adversary' }, 'GEMINI_API_KEY'), '', 'CAGED member is denied at the chokepoint — no foreign/own repo secret into a cage')
+  } finally { rmSync(repo, { recursive: true, force: true }) }
+})
+
+// ─── #49 cross-repo × cage — item #4: a caged member's /rooms is its OWN room(s), never roomsRoot, fail-closed ───
+test('#49 item4 cagedRoomVolumes: mounts EACH own room (plural) individually as /rooms/<rid>:ro, never roomsRoot', () => {
+  const root = '/home/me/.local/share/mrc/rooms'
+  const v = cagedRoomVolumes(['r-aaa', 'r-bbb'], root, () => true)
+  assert.deepEqual(v, ['-v', `${root}/r-aaa:/rooms/r-aaa:ro`, '-v', `${root}/r-bbb:/rooms/r-bbb:ro`])
+  assert.ok(!v.some((x) => x === `${root}:/rooms:ro`), 'NEVER the whole roomsRoot tree (the cross-session disclosure)')
+})
+test('#49 item4 cagedRoomVolumes: FAIL-CLOSED on empty/invalid — returns [] (no /rooms mount), never roomsRoot', () => {
+  const root = '/home/me/rooms'
+  assert.deepEqual(cagedRoomVolumes([], root), [], 'empty membership → no /rooms mount')
+  assert.deepEqual(cagedRoomVolumes(undefined, root), [], 'undefined → []')
+  assert.deepEqual(cagedRoomVolumes(['r-x'], root, () => false), [], 'room dir absent → skipped (fail-closed), not roomsRoot')
+})
+test('#49 item4 cagedRoomVolumes: a `..` in a room id is REJECTED (subdir-of-root guard)', () => {
+  const root = '/home/me/rooms'
+  assert.deepEqual(cagedRoomVolumes(['../../etc', 'r-ok'], root, () => true), ['-v', `${root}/r-ok:/rooms/r-ok:ro`], 'the escaping id is dropped, the real one survives')
+})
+
+// ─── #49 cross-repo × cage — item #3: a caged launch must never resolve to the USER's login vol ───
+test('#49 item3 resolvedVolIsUserLogin: the user login FAMILY trips it; a member vol + the pierre pool do NOT', () => {
+  const repo = '/home/me/proj'
+  assert.equal(resolvedVolIsUserLogin(volumeName(repo), repo, volumeName), true, 'slot-1 login vol → REFUSE')
+  assert.equal(resolvedVolIsUserLogin(volumeName(repo, 2), repo, volumeName), true, 'slot-N login vol → REFUSE')
+  // a legitimately-caged CROSS-REPO member vol (a DIFFERENT hash) must NOT trip it (else the cage can never launch)
+  const memberVol = memberConfigVolName({ repo: '/srv/shared', handle: 'apolline/claude', crossRepo: true }, '/srv/shared', 'orgA')
+  assert.equal(resolvedVolIsUserLogin(memberVol, repo, volumeName), false, 'org-scoped member vol is not the user login')
+  // the pierre-slot pool vol (…-pierre-N, not -<digits>) must NOT trip it either
+  assert.equal(resolvedVolIsUserLogin(`${volumeName(repo, 1)}-pierre-3`, repo, volumeName), false, 'the pierre pool vol is a legit caged vol, not the login')
+})
+
+// ─── #49 cross-repo × cage — item #5: FAIL-CLOSED deferral (a caged member is REFUSED at launch in Phase-1) ───
+// roster.js parse-ACCEPTS member.cage (validated); the launch does not yet ENFORCE it (Phase-2). So the launch
+// MUST refuse a caged member, never run it uncaged with a false adversary:false record (the silent-uncage bug).
+test('#49 item5 memberCageLaunchGate: a caged member is REFUSED (fail-closed) until Phase-2 wires enforcement; uncaged passes', () => {
+  const caged = memberCageLaunchGate({ handle: 'x/claude', cage: 'adversary' })
+  assert.equal(caged.ok, false, 'a declared cage that the launch cannot yet enforce → REFUSE (never launch uncaged)')
+  assert.match(caged.reason, /does not YET enforce|silent uncage|adversary:false/i)
+  assert.equal(memberCageLaunchGate({ handle: 'y/claude' }).ok, true, 'an uncaged member launches normally')
+  assert.equal(memberCageLaunchGate({ handle: 'z/claude', cage: false }).ok, true, 'cage:false is uncaged')
+})
+// Pierre note verified: cageReadsRepoEnv('contained') is FALSE today (fail-closed — contained is un-mintable via
+// resolveCageProfile's readiness gate), NOT true. It flips to reading its OWN repo .env only when the contained
+// tier ships (classifier:true) — a conscious grant then, not an accident now.
+test('#49 cageReadsRepoEnv(contained) is fail-closed FALSE until the tier ships', () => {
+  assert.equal(cageReadsRepoEnv('contained'), false)
+})
+// item #5 TWIN: the worker-exec path is symmetric — a caged worker REFUSES (short-circuits before any docker),
+// so a future worker-compatible cage tier can't ship silently uncaged with ALLOW_WEB=1 on the worker side.
+test('#49 item5-twin execWorker: a caged worker member is REFUSED (ok:false), never launched uncaged', async () => {
+  const r = await execWorker(null, { handle: 'w/codex', cage: 'adversary', backend: 'codex' }, '/tmp/x', 'do a thing')
+  assert.equal(r.ok, false, 'caged worker → graceful refuse, before loadEnv/docker')
+  assert.match(r.text, /refused/i)
 })

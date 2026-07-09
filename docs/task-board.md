@@ -79,6 +79,13 @@ nod (security/isolation) · **[superseded]** don't build.
 - **#34** — dashboard admin panel (daemon status/controls); low priority.
 - **#9 / #10** — caffeine objectives: daemon-mode host caffeine; host-observed container CPU as the
   leading-edge solo-grind signal.
+- **#66 [backlog] — resolve the Telegram bot token's `op://` reference so 1Password refs work.** The daemon
+  reads `MRC_TELEGRAM_BOT_TOKEN` via `repoEnvKeyStrict`, which SKIPS any `op://` value — a detached daemon has
+  no TTY for the `op` CLI Touch-ID prompt — so a 1Password-referenced token reads as "not configured" and the
+  bridge never starts (today: put the LITERAL token in `<repo>/.env`). Fix: resolve the `op://` ref at solo/team
+  **launch** (TTY + `op` session present) and thread the resolved value to the daemon per-org — `tgTokenFor`
+  already falls back to a `tgToken[org]` map, so wire that. Keeps `op://` in the file; daemon still gets a usable
+  token. Low-risk secret-plumbing (Pierre-glance for the per-org isolation, not a new inbound surface).
 
 ---
 

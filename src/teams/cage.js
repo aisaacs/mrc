@@ -17,6 +17,7 @@
 // NORMAL. Here, recordFields DERIVES the keystone from the resolved profile — a caging profile ALWAYS
 // records `adversary:true` — so classifySession can never read the wrong bit for a caged member again.
 import { createHash, createHmac } from 'node:crypto'
+import { resolve } from 'node:path'
 
 // #49 (4b, Pierre note-3 hardening): the egress client-auth token is DERIVED from MRC_ROOM_SECRET, not the
 // secret itself. The caged container can READ this token (it's in its own HTTPS_PROXY env, and a proxy URL is
@@ -49,6 +50,11 @@ export const CAGE_PROFILES = {
     hostBridges: false,      // clipboard + notify blocked
     roomsScope: 'own',       // only its own room dir, read-only
     mrcVisibility: 'readable', // TODAY's behavior (#55 masking is a separate, owner-gated change)
+    repoEnv: 'none',         // #49 cross-repo (Pierre Q4): NEVER read member.repo/.env — a caged adversary holding a
+                             // (foreign or own) repo secret is an exfil primitive even behind the SNI seal (it can
+                             // leave via the transcript, a room reply, or encoded to the one permitted egress host).
+                             // Gate the member-secret MINT (config.memberRepoEnvKey), fail-closed, so every current
+                             // AND future reader inherits the denial — not a per-consumer check.
     identity: 'adversary',   // record keystone + MRC_ADVERSARY
     ready: { transport: true, classifier: true },
   },
@@ -63,6 +69,7 @@ export const CAGE_PROFILES = {
     hostBridges: true,
     roomsScope: 'own',
     mrcVisibility: 'readable',
+    repoEnv: 'own',          // a contained (non-adversary) member may read its OWN repo's .env (future looser tier)
     identity: 'contained',   // NOT the adversary keystone — this is the tier that needs classifyContainment
     ready: { transport: true, classifier: false },
   },
@@ -78,6 +85,62 @@ export function resolveCageProfile(name) {
     throw new Error(`cage profile "${name}" is not shippable yet (transport:${!!p.ready?.transport} classifier:${!!p.ready?.classifier}) — it stays un-mintable until both axes are ready.`)
   }
   return p
+}
+
+// #49 cross-repo (Pierre Q4): may a member under this cage read its repo's .env secrets? THE SINGLE decision
+// source — config.memberRepoEnvKey (the member-secret mint) consults this, so every reader inherits the answer
+// by construction. No cage → reads normally (uncaged members are unchanged). A KNOWN profile → its repoEnv dial
+// (`'none'` denies). An unknown/unready cage name → DENY (fail-closed; routed through resolveCageProfile so the
+// mint's readiness gate applies here too). The decision lives with the profile, not at each drinker.
+export function cageReadsRepoEnv(cageName) {
+  if (!cageName) return true
+  try { return resolveCageProfile(cageName).repoEnv !== 'none' } catch { return false }
+}
+
+// #49 cross-repo × cage (Pierre item #4): the /rooms mount for a CAGED member — its OWN rooms ONLY. roomsScope='own'
+// must NEVER mount the whole roomsRoot() tree: for an adversary that's a cross-session intel harvest (every other
+// session's thread.log/consensus.md). The member's rooms come from AUTHORITATIVE MEMBERSHIP (roomIds), NOT config.room
+// and NOT a single-room assumption — a member can be in more than one. Each is mounted `..`-guarded as /rooms/<rid>:ro
+// individually; an empty/invalid set FAILS CLOSED (returns [] → the caller mounts NO /rooms, like mrc.js:972's "can't
+// read a brief"), NEVER falling back to roomsRoot. Pure + injectable (roomsRootPath + exists) → unit-testable, zero fs.
+export function cagedRoomVolumes(roomIds, roomsRootPath, exists = () => true) {
+  const root = String(roomsRootPath)
+  const vols = []
+  for (const rid of (Array.isArray(roomIds) ? roomIds : [])) {
+    if (!rid) continue
+    const roomPath = resolve(root, String(rid))
+    if (roomPath.startsWith(root + '/') && exists(roomPath)) vols.push('-v', `${roomPath}:/rooms/${rid}:ro`)   // subdir-of-root guard defeats a `..` in rid
+  }
+  return vols   // [] on empty/all-invalid → mount NO /rooms (fail-closed); the caller must NEVER substitute roomsRoot
+}
+
+// #49 cross-repo × cage (Pierre item #3): the fail-closed login-vol predicate. A caged launch's resolved config
+// volume must NEVER be the USER's own login volume (`~/.claude` with their OAuth). The launcher asserts
+// `cageActive && resolvedVolIsUserLogin(...)` → REFUSE, so a wiring reorder that dropped a caged launch onto the
+// user's login vol halts the launch instead of mounting the owner's login RW into a red-team. The user-login
+// FAMILY is `mrc-config-<hash(repoPath)>` (slot 1) and `…-<N>` (slot >1). It EXCLUDES the pierre pool
+// (`…-pierre-N` — not `-<digits>`) and any member vol (a DIFFERENT hash: repo#handle / org#repo#handle), which
+// is why those legitimately caged vols don't trip it. Pure + injectable (volumeNameFn) → unit-testable, no docker.
+export function resolvedVolIsUserLogin(resolvedVol, repoPath, volumeNameFn) {
+  if (!resolvedVol || !repoPath) return false
+  const base = volumeNameFn(repoPath)                                   // slot-1 login vol
+  if (resolvedVol === base) return true
+  const esc = base.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return new RegExp('^' + esc + '-\\d+$').test(resolvedVol)             // slot-N login vol (…-2, …-3); NOT -pierre-N, NOT a member hash
+}
+
+// #49 (4b Phase-1, Pierre item #5) — the FAIL-CLOSED deferral gate. roster.js parse-ACCEPTS a member.cage
+// (validates the profile + backend), but the member-LAUNCH path does not yet ENFORCE it (workspace-ro, the SNI
+// seal, the restricted /rooms mount, and the adversary:true record are all Phase-2 wiring). Parse-accepts +
+// launch-ignores = a member declared "caged" that launches with FULL privileges and records adversary:false — a
+// SILENT UNCAGE, verbatim the bug this module's header exists to close. So until Phase-2 wires enforcement, a
+// caged member is REFUSED at launch, never run uncaged. The launcher calls this right after resolving memberCtx.
+// Returns { ok } | { ok:false, reason }. Phase-2 REMOVES this gate (the launch enforces the cage via applyCage).
+export function memberCageLaunchGate(member) {
+  if (member && member.cage) {
+    return { ok: false, reason: `@${member.handle || '?'} declares cage "${member.cage}", but the team-member launch path does not YET enforce it (the applyCage + seal wiring lands in 4b Phase-2). Refusing to launch it UNCAGED with a false adversary:false record — remove the cage, or wait for the Phase-2 rebuild.` }
+  }
+  return { ok: true }
 }
 
 // Parser gate (used by roster.js): may this backend carry this cage profile? A host-enforced profile (the

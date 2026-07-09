@@ -20,13 +20,14 @@ import { join, resolve, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { parseRoster, validateRoster, findRoster, RESERVED_SOLO_ORG_RE, assertSafeProjectName, sanitizeProjectName } from '../teams/roster.js'
 import { addAuthorizedRepo, removeAuthorizedRepo, loadAuthorizedRepos } from '../teams/repo-auth.js'   // #49 multi-repo: the human control-plane over the per-org authorized-repo set (never a session verb)
+import { memberCageLaunchGate } from '../teams/cage.js'   // #49 (4b Pierre item #5 twin): fail-closed worker-exec cage gate
 import { soloRoster, SOLO_HANDLE } from '../teams/solo.js'
 import { canonicalMountSource, canonicalWriteTarget } from '../mount-guard.js'   // #49: realpath-canonical mount/write containment (no symlink escape)
 import { buildPersona } from '../teams/personas.js'
 import { makeHandle } from '../teams/names.js'
 import { PRESETS, listPresets, buildPreset } from '../teams/presets.js'
 import { runWorkerExec, volumeName } from '../docker.js'
-import { loadEnv, repoEnvKey } from '../config.js'
+import { loadEnv, memberRepoEnvKey } from '../config.js'   // #49 cross-repo (Pierre Q4): member-secret MINT (caged member → no repo .env)
 import { findFreePort } from '../ports.js'
 import { loadLaunches, saveLaunch, setMemberLaunch, removeMemberLaunch, removeLaunch } from '../rooms.js'
 
@@ -140,6 +141,13 @@ export function cleanWorkerOutput(out) {
 // Memory substrate: a stable per-member codex/claude config volume persists the backend's own state
 // across turns. (This is the one path that needs Docker — validated via the rebuild recipe.)
 export async function execWorker(norm, member, repoPath, prompt) {
+  // #49 (4b Pierre item #5 TWIN): FAIL-CLOSED, symmetric with mrc.js's live-member gate. The worker-exec path
+  // never applies the cage (no applyCage here; it sets ALLOW_WEB=1 below), so a caged worker must REFUSE, not
+  // launch silently uncaged with full egress. Latent today (assertCageAllowed rejects pinned+non-claude, contained
+  // un-mintable → no cage is both worker-parse-acceptable AND mintable), but this makes "a caged member/worker
+  // refuses until its launch path enforces the cage" a TWO-path invariant, so a future worker-compatible tier
+  // can't ship uncaged on this twin. Graceful { ok:false } (the daemon's worker invoker records ✕, doesn't crash).
+  { const g = memberCageLaunchGate(member); if (!g.ok) return { text: `(refused: ${g.reason})`, ok: false } }
   loadEnv(dirname(MRC_JS))   // populate OPENAI_API_KEY etc. (team dispatch runs before mrc.js loads .env)
   // #49 multi-repo (Mouth B): the worker path has NO inner-launch seam (it's a direct docker exec in the OUTER),
   // so member.repo is threaded EXPLICITLY at every file/secret site. The daemon launches `_worker-exec --repo
@@ -166,7 +174,7 @@ export async function execWorker(norm, member, repoPath, prompt) {
     '-e', `MRC_TEAM=${member.team}`, '-e', `MRC_ROLE=${member.role}`,
     '-e', `MRC_EXEC_PROMPT_FILE=${containerPromptFile}`, '-e', 'ALLOW_WEB=1',
   ]
-  const openai = repoEnvKey(root, 'OPENAI_API_KEY')   // the AUTHORIZED repo's .env first, then global (like media.js)
+  const openai = memberRepoEnvKey(member, 'OPENAI_API_KEY')   // the AUTHORIZED repo's .env first, then global; a caged member is denied (chokepoint)
   if (openai) env.push('-e', `OPENAI_API_KEY=${openai}`)
   const r = runWorkerExec({ repoPath: root, envFlags: env, volumes: vols, allowWeb: true })   // #48: { text, ok }
   return { text: cleanWorkerOutput(r.text), ok: r.ok }
