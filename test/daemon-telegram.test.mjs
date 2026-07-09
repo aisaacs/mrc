@@ -1,16 +1,23 @@
 // Integration test for the LIVE Telegram inbound path through the daemon (#12 step 3): token
 // discovery → bridge → classify→execute (pending/confirm/authorized/unauthorized) + update_id dedup,
 // with an injected fetch standing in for Telegram. The trust gate (from.id) is exercised end-to-end.
-import test from 'node:test'
+import test, { afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import net from 'node:net'
 import os from 'node:os'
 import fs from 'node:fs'
-import { startRoomDaemon } from '../src/proxies/room-daemon.js'
+import { startRoomDaemon as _startRoomDaemon } from '../src/proxies/room-daemon.js'
 import { findFreePort } from '../src/ports.js'
 import { parseRoster, leadsRoomId } from '../src/teams/roster.js'
 import { memberSessionId } from '../src/teams/session-id.js'
 import { saveSessionRecord } from '../src/session-record.js'
+
+// TEARDOWN DISCIPLINE (see daemon-classify.test.mjs): a test that throws before its daemon.stop() leaks the
+// relay/control servers + rolling retry timer + (on macOS) the caffeinate child, and node --test wedges at exit.
+// Shadow the factory to register every in-process daemon and stop them all after each test, pass or throw.
+const _liveDaemons = new Set()
+function startRoomDaemon(opts) { const d = _startRoomDaemon(opts); if (d) _liveDaemons.add(d); return d }
+afterEach(() => { for (const d of _liveDaemons) { try { d.stop?.() } catch {} } _liveDaemons.clear() })
 
 // Build a register frame for a member the way `mrc team up` launches it: a host record with a secret
 // (deterministic from the id) plus that secret on the wire, so R1 admits it and R2/F3b binds it 'normal'.

@@ -3,7 +3,7 @@
 // classifies each from the HOST RECORD (not the register frame) and surfaces the verdict on `status`.
 // This locks Gate 3's DAEMON half; the container half (record never mounted → an adversary can't forge
 // 'normal') still needs the live rebuild.
-import test from 'node:test'
+import test, { afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import net from 'node:net'
 import os from 'node:os'
@@ -12,7 +12,18 @@ import { spawn } from 'node:child_process'
 
 // Isolate HOME BEFORE importing anything that reads homedir() (session-record's recordDir()).
 process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-classify-home-`)
-const { startRoomDaemon, acquireDaemonSingleton } = await import('../src/proxies/room-daemon.js')
+const { startRoomDaemon: _startRoomDaemon, acquireDaemonSingleton } = await import('../src/proxies/room-daemon.js')
+
+// TEARDOWN DISCIPLINE (root-cause fix for the macOS process-exit hang): the daemon holds a relay server, a
+// control server, a rolling scheduleRelayRetry timer, and (on macOS) a caffeinate child — none unref'd. A test
+// that throws BEFORE its `daemon.stop()` leaks all of them, and `node --test` waits on open handles at exit →
+// the whole runner wedges after the last test (exactly what :374 did on darwin: caffeineOff=false → assert
+// throws → stop() skipped → hang). So shadow the factory to register every IN-PROCESS daemon and stop them all
+// after each test, regardless of pass/throw. In-process only by design: the #40 subprocess daemon self-cleans
+// via its own finally, and double-stop is safe (stop() try/catch's server.close, releaseCaffeine no-ops on null).
+const _liveDaemons = new Set()
+function startRoomDaemon(opts) { const d = _startRoomDaemon(opts); if (d) _liveDaemons.add(d); return d }
+afterEach(() => { for (const d of _liveDaemons) { try { d.stop?.() } catch {} } _liveDaemons.clear() })
 const { saveSessionRecord } = await import('../src/session-record.js')
 const { findFreePort } = await import('../src/ports.js')
 
@@ -350,7 +361,7 @@ test('F3b: a normal session WITHOUT a secret on record cannot summon (secret-pre
   try { s.sock.destroy() } catch {}
 })
 
-test('#caffeine: bumps only on a token INCREASE — not first frame, decrease (compaction), phantom, or reconnect', async () => {
+test('#caffeine: bumps only on a token INCREASE — not first frame, decrease (compaction), phantom, or reconnect', async (t) => {
   process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-caf-`)
   process.env.MRC_CAFFEINE_IDLE_MS = '250'   // short idle window so the test observes release fast
   const NORM = 'caf-normal-uuid'
@@ -358,6 +369,12 @@ test('#caffeine: bumps only on a token INCREASE — not first frame, decrease (c
   const port = await findFreePort(20100)
   const controlPort = await findFreePort(port + 1)
   const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+
+  // HERMETIC config-gate (Pierre's split): assert the platform DEFAULT on a FRESH daemon, BEFORE any activity —
+  // no spawn is in play, so this never depends on whether /usr/bin/caffeinate exists. (The old post-bump
+  // `off===true` assertion coupled to the ENOENT latch at room-daemon.js:308/:311: a caffeinate-less Mac flips
+  // caffeineOff=true on the spawn error → the darwin default would false-fail. This asserts the real contract.)
+  assert.equal(daemon._caffeine().off, process.platform !== 'darwin', 'caffeine config-gate: OFF iff not macOS (asserted pre-activity → hermetic, no binary dependency)')
 
   const n = client(port); await n.ready; n.send({ type: 'register', sessionId: NORM, repo: 'p', label: 'p' })
   const p = client(port); await p.ready; p.send({ type: 'register', sessionId: 'caf-phantom-uuid', repo: 'e', label: 'e' })
@@ -371,7 +388,19 @@ test('#caffeine: bumps only on a token INCREASE — not first frame, decrease (c
   n.send({ type: 'status', tokens: 5300 }); await sleep(50)
   const c = daemon._caffeine()
   assert.equal(c.working, true, 'a small token increase marks the session working (per-turn resolution)')
-  assert.equal(c.off, true, 'caffeinate OFF on the non-macOS test host (fail-open, no real spawn)')
+  // REAL spawn-path coverage (Pierre's split): on macOS a genuine activity bump must SPAWN caffeinate → holding.
+  // This is the honest exercise of room-daemon.js:301 that the old `off===true` assert never gave. GUARDED so a
+  // missing/unspawnable binary (ENOENT latches caffeineOff=true → off flips) degrades to "not covered here",
+  // never a false red — and on Linux (off=true) it's skipped, correct: there is no spawn path off darwin.
+  // Pierre's kicker: a SKIPPED guard goes green having covered NOTHING, so "22/22" alone is not proof :301 ran.
+  // Emit a diagnostic EVERY run so the output states, non-silently, whether the spawn path was exercised or skipped
+  // — a green bar can then never masquerade as coverage. Acceptance = seeing "EXERCISED" on the owner's Mac.
+  if (process.platform === 'darwin' && !c.off) {
+    assert.equal(c.holding, true, 'on macOS a real activity bump spawns caffeinate (holding) — exercises the :301 spawn path')
+    t.diagnostic('caffeine :301 spawn path EXERCISED — holding===true asserted on darwin (coverage FIRED, not skipped)')
+  } else {
+    t.diagnostic(`caffeine :301 spawn path NOT exercised here — platform=${process.platform} off=${c.off} (guard skipped; a green run does NOT prove :301)`)
+  }
 
   // PHANTOM tokens (even increasing) → excluded ('unknown'), never tracked.
   p.send({ type: 'status', tokens: 100 }); p.send({ type: 'status', tokens: 9000 }); await sleep(50)

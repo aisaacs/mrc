@@ -1,16 +1,23 @@
 // Socket-level integration test for team rooms on the real daemon: boots startRoomDaemon, defines an
 // org over the control socket, connects member relay sockets, and exercises directed @delivery, the
 // @user inbox round-trip, and brake/resume — over the actual newline-JSON wire protocol.
-import test from 'node:test'
+import test, { afterEach } from 'node:test'
 import assert from 'node:assert/strict'
 import net from 'node:net'
 import os from 'node:os'
 import fs from 'node:fs'
-import { startRoomDaemon } from '../src/proxies/room-daemon.js'
+import { startRoomDaemon as _startRoomDaemon } from '../src/proxies/room-daemon.js'
 import { findFreePort } from '../src/ports.js'
 import { parseRoster, teamRoomId } from '../src/teams/roster.js'
 import { memberSessionId } from '../src/teams/session-id.js'
 import { saveSessionRecord } from '../src/session-record.js'
+
+// TEARDOWN DISCIPLINE (see daemon-classify.test.mjs): a test that throws before its daemon.stop() leaks the
+// relay/control servers + rolling retry timer + (on macOS) the caffeinate child, and node --test wedges at exit.
+// Shadow the factory to register every in-process daemon and stop them all after each test, pass or throw.
+const _liveDaemons = new Set()
+function startRoomDaemon(opts) { const d = _startRoomDaemon(opts); if (d) _liveDaemons.add(d); return d }
+afterEach(() => { for (const d of _liveDaemons) { try { d.stop?.() } catch {} } _liveDaemons.clear() })
 
 // A real member launched by `mrc team up` always has a TAMPER-PROOF host record with a secret (mrc.js
 // writes it pre-launch, keyed by memberSessionId). R2/F3b bind requires classifySession 'normal' AND a

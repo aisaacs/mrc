@@ -299,6 +299,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       // regardless of any assertion unless it's on AC with an external display — so a reliable overnight unattended
       // run needs the lid OPEN or the charger IN. (Documented; not detectable from the daemon to correct in code.)
       const child = spawn('caffeinate', ['-i', '-w', String(process.pid)], { stdio: 'ignore' })
+      child.unref()   // don't let the assertion child keep the daemon's event loop alive: a daemon that means to
+                      // exit (idle-shutdown/stop) must not be wedged by its own caffeinate holder. -w still self-releases
+                      // on daemon death; releaseCaffeine()'s kill() still fires; the on('exit')/on('error') handlers
+                      // still run (unref only drops loop-keepalive, not event delivery). Also kills the unit-test
+                      // process-exit hang: a caffeinate spawned by a test that then throws before stop() no longer
+                      // holds node --test open (the leak Pierre pinned — the servers are handled by afterEach teardown).
       caffeine = child
       // ENOENT = the binary is genuinely absent → retrying every turn is pointless fork-churn, so latch caffeineOff.
       // ANY OTHER errno (EAGAIN fork-hiccup under memory pressure, etc.) is TRANSIENT → leave caffeineOff false so
