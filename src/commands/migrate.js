@@ -134,7 +134,12 @@ export function tryAdopt(legacyDir, sliceHostDir, { metaRoot, mod = mig001, excl
   // genuine split (fork / legacy-ahead / lost content) fails → reconciler. (Falls back to strict verify if a future
   // migration doesn't define verifyAdopt.)
   const verify = (mod.verifyAdopt || mod.verify)({ legacyDir, sliceDir: sliceHostDir, exclude, include })
-  if (!verify.pass) return { adopted: false, reason: 'verify-failed', verify, reconcile: true }       // diverged/dropped → reconciler
+  if (!verify.pass) {
+    // no-legacy (empty repo/.mrc) is NOT a fork — there's nothing to RECONCILE, only a record to recover. Route it
+    // distinctly so the launcher gives accurate guidance ("recover the record") instead of the diverged-fork hint.
+    const noLegacy = verify.checks && verify.checks.some(c => c.kind === 'no-legacy')
+    return { adopted: false, reason: noLegacy ? 'no-legacy' : 'verify-failed', verify, reconcile: !noLegacy }
+  }
   const record = recordMigration(sliceHostDir, mod, { metaRoot, adopted: true, from: 'in-slice-sentinel', verifiedByteIdentical: true })   // (C) provenance
   try { normalizeSliceMtimes(sliceHostDir, legacyDir) } catch {}   // fresh-migrate normalizes via #001.up; adoption must too (a pre-mtime-fix slice has clobbered recency)
   return { adopted: true, record, verify }
@@ -362,6 +367,10 @@ async function runUp(repoPath, legacyDir, sliceHostDir, { deps: d, log, metaRoot
       log('  ✓ Adopted — #001 recorded (verified no pre-migration content lost). Your memory is under the ledger now.')
       for (const c of (res.verify && res.verify.checks || []).filter(c => c.ok && c.kind === 'shrank')) log(`      ℹ ${c.msg}`)
       return { ok: true, adopted: true }
+    }
+    if (res.reason === 'no-legacy') {   // empty repo/.mrc — nothing to verify against; NOT a fork, so don't point at reconcile
+      log(`  ⚠ Adoption BLOCKED — repo/.mrc is empty or absent, so the store slice can't be verified (a migration level can't be proven with zero evidence). Recover the host migration record, or run \`mrc migrate up\` from a checkout that still has its repo/.mrc.`)
+      return { ok: false, refused: 'no-legacy' }
     }
     if (res.reconcile) {
       const bad = failedFiles(res.verify)

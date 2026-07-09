@@ -176,6 +176,22 @@ test('ADOPTION-B: a genuinely FORKED slice (legacy grew a NEW line the slice lac
   } finally { w.done() }
 })
 
+test('ADOPTION V4 (Pierre): an EMPTY legacy (user deleted repo/.mrc after migrate) → verifyAdopt FAILS, NO false verifiedByteIdentical stamp', () => {
+  const w = ws()
+  seedMigratedSlice(w)   // populated slice + #001 sentinel → adoptable; legacy currently mirrors it
+  for (const f of readdirSync(w.legacy)) rmSync(join(w.legacy, f), { recursive: true, force: true })   // user rm'd repo/.mrc ("memory's in the store now") → empty legacy manifest
+  try {
+    const v = mig001.verifyAdopt({ legacyDir: w.legacy, sliceDir: w.slice })
+    assert.equal(v.pass, false, 'an empty legacy verifies NOTHING → must NOT vacuously pass (the loop ran 0 times)')
+    assert.ok(v.checks.some(c => c.kind === 'no-legacy'), 'surfaces the no-legacy reason, not a vacuous 0/0 summary pass')
+    const res = tryAdopt(w.legacy, w.slice, { metaRoot: w.metaRoot })
+    assert.equal(res.adopted, false, 'no blind adopt when there is nothing to prove byte-identity against')
+    assert.equal(res.reason, 'no-legacy', 'distinct reason (not a fork) → launcher gives "recover the record", not "reconcile"')
+    assert.equal(res.reconcile, false, 'an empty legacy is NOT a fork — nothing to reconcile')
+    assert.equal(existsSync(join(w.metaRoot, basename(w.slice), mig001.id)), false, 'NO record written → no false verifiedByteIdentical:true / no latent #002 double-apply (Pierre V4)')
+  } finally { w.done() }
+})
+
 // ── LIVE-DOOR FINDING (2026-07-08): adoption is LOSS-DETECTION, not byte-equality — an actively-USED slice evolved ──
 test('ADOPTION loss-gate: a SLICE-AHEAD transcript (legacy is a prefix; slice continued in-store) ADOPTS clean', () => {
   const w = ws()

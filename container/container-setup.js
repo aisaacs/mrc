@@ -204,7 +204,8 @@ const ADVERSARY = !!process.env.MRC_ADVERSARY
 // behavior (adversary: a real dir in its config vol; normal: symlink to /workspace/.mrc). MUST equal src/mrc-store's
 // mount path; container-setup owns MRC_STORE_MOUNT.
 // #5 ADVERSARY-EXCLUDED: an adversary NEVER follows a /mrc mount. The host already keeps /mrc unmounted for an
-// adversary (mrc.js storeActive = store.storeMode && !cagedAdversary) because its transcripts live in its own
+// adversary (post-#13: mrc.js gates the /mrc mount on adversaryIdentity = cagedAdversary || resumeIsAdversary — the
+// IDENTITY axis, not the cage bit — and plain/solo storeActive is record-gated via storeActivation) because its transcripts live in its own
 // pierre config-vol as a REAL DIR that the repo/.mrc→slice migration never touches — so the store branch's
 // real-dir rmSync (below) would DESTROY its un-migrated history. `&& !ADVERSARY` is belt-and-suspenders: even if
 // a future host regression mounts /mrc for an adversary, the container refuses it and stays on the pierre-vol

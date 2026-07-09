@@ -85,6 +85,16 @@ export default {
   verifyAdopt(ctx) {
     const { legacyDir: L, sliceDir: S } = ctx
     const plan = planMigration(L, { exclude: ctx.exclude, include: ctx.include })
+    // GUARD (Pierre V4): an EMPTY legacy manifest verifies NOTHING — the loop below runs zero times, `pass` stays
+    // vacuously true, and tryAdopt would stamp verifiedByteIdentical:true having byte-checked 0 files. That is a
+    // false provenance LIE now, and latent #002 double-apply: a level-≥1 slice whose layout marker was deleted
+    // (higherSignature can't see it) with repo/.mrc also deleted would adopt at level-0 → a future #002 re-applies
+    // over higher-layout data. We can't prove a level with zero evidence, so DON'T: fail the adopt → route to
+    // stranded/manual recovery. (An adoptable slice is populated by construction — recordLost ⟹ sliceHasData — so
+    // an empty manifest means the user deleted repo/.mrc; normal migrate RETAINS it, so real adoption is unaffected.)
+    if (plan.manifest.length === 0) {
+      return { pass: false, checks: [{ ok: false, kind: 'no-legacy', msg: 'repo/.mrc is empty or absent — nothing to verify the store slice against; adoption cannot prove byte-identity or the migration level (manual recovery: run `mrc migrate up` from a checkout that still has its repo/.mrc, or recover the host record)' }] }
+    }
     // session-names is a real SET of user data (uuid=name) that must not lose entries. names-migrated / security-migrated
     // are one-time STATE MARKERS whose content legitimately differs (a flag/version), so they get presence-only (the
     // living-file branch), NOT set-preservation — treating a marker as preservable data false-strands (dietV2's real case).

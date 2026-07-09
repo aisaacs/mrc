@@ -690,6 +690,12 @@ if (launchIsPlainOrSolo && activation && ['adoptable', 'stranded', 'record-corru
       if (migRes && migRes.ok) {
         activation = storeActivation(prospectiveSlice, store, {})   // adopted → now active → this launch is store-mode
         storeActive = activation.active
+      } else if (migRes && migRes.refused === 'no-legacy') {
+        // empty repo/.mrc — nothing to verify the slice against (Pierre V4). NOT a fork, so give the accurate remedy
+        // (recover the record), not the reconcile hint. Same explicit LEGACY escape, default NO.
+        if (await askYesNo(`  Couldn't auto-adopt — repo/.mrc is empty/absent, so the store slice can't be verified (recover the host record, or run \`mrc migrate up\` from a checkout that still has its .mrc). Open in LEGACY anyway for now (store memory stays hidden)?`)) {
+          console.error('  Opening in LEGACY (not adopted) — recover the record when ready.')
+        } else process.exit(1)
       } else if (migRes && migRes.refused === 'diverged') {
         // can't auto-adopt (fork) — same explicit LEGACY escape as stranded (Pierre: don't harder-block a diverged
         // repo than a stranded one), default NO.
