@@ -975,7 +975,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       buf += d; let i
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue
-        let f; try { f = JSON.parse(line) } catch { continue }
+        let f; try { f = JSON.parse(line) } catch { try { sock.destroy() } catch {}; return }   // guard-3 belt: a non-JSON line is a protocol violation → DROP the connection, never skip-and-keep-reading (so a cross-protocol HTTP preamble can't be walked to a smuggled JSON body). The relay's state-changers already sit behind the register-secret gate; this belts a future unauth action.
         if (f.type === 'ping') { try { sock.write(JSON.stringify({ type: 'pong', version }) + '\n') } catch {} }   // #51: liveness echo — proves to the channel that THIS listener is the daemon (not a reused clip/notify port)
         else if (f.type === 'register' && f.sessionId) {
           // R1/#44: authenticate the socket. If this sessionId has a recorded secret, the wire secret MUST match
@@ -1148,7 +1148,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       buf += d; let i
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue
-        let f; try { f = JSON.parse(line) } catch { continue }
+        let f; try { f = JSON.parse(line) } catch { try { sock.destroy() } catch {}; return }   // guard-3 belt: a non-JSON line DROPS the connection — an HTTP preamble from a cross-protocol no-cors POST dies on its first line, never walked to a smuggled control frame. (Unix socket makes this unreachable-by-browser; this belts any future TCP reintroduction + host-local probes.)
         const reply = (o) => { try { sock.write(JSON.stringify(o) + '\n') } catch {} }
         if (f.action === 'status') {
           reply({
