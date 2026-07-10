@@ -13,7 +13,7 @@ import { readMrcrc, sanitizeRepoConfig } from '../src/config.js'
 import {
   memberSessionId, memberWorkspaceVolumes, memberEnv, personaForMember, writePersonaFile, orgDef, memberLaunch, cleanWorkerOutput,
   rosterFromDef, addMemberToRoster, removeMemberFromRoster, writeTeamFile,
-  memberConfigVolName, memberArgv, memberDockerFilter, reposAction,
+  memberConfigVolName, memberArgv, memberDockerFilter, reposAction, memberTtydSock,
 } from '../src/commands/team.js'
 
 test('removeMemberFromRoster drops the member and any team left empty', () => {
@@ -25,6 +25,23 @@ test('removeMemberFromRoster drops the member and any team left empty', () => {
   assert.equal(r1.teams.find((t) => t.name === 'client').members.length, 1, 'Vespa removed')
   const r2 = removeMemberFromRoster(r1, 'solo/claude')
   assert.ok(!r2.teams.find((t) => t.name === 'solo'), 'empty team dropped')
+})
+
+test('guard-4 memberTtydSock: ALWAYS ends in .sock (ttyd unix-mode lever) and NEVER overflows sun_path', () => {
+  // The `.sock` suffix is the ONLY thing that makes ttyd bind a unix socket instead of TCP 0.0.0.0:7681 (CSWSH).
+  // A normal name stays human-readable; an over-long name is hashed but MUST still end in .sock AND fit the cap —
+  // else bind() fails and ttyd silently network-exposes the terminal. Both properties are load-bearing.
+  const normal = memberTtydSock('shop', 'vespa/claude')
+  assert.ok(normal.endsWith('.ttyd.sock'), 'normal name keeps the readable .ttyd.sock leaf')
+  assert.ok(normal.includes('shop-vespa-claude'), 'normal name is the readable slug (not hashed)')
+
+  const longOrg = 'a'.repeat(120), longHandle = 'b'.repeat(120) + '/claude'
+  const hashed = memberTtydSock(longOrg, longHandle)
+  assert.ok(hashed.endsWith('.sock'), 'an over-long name STILL ends in .sock (stays a unix socket, never TCP)')
+  assert.ok(Buffer.byteLength(hashed) <= 100, `hashed path fits sun_path (${Buffer.byteLength(hashed)} bytes)`)
+  assert.ok(!hashed.includes('a'.repeat(120)), 'the overflowing slug was replaced, not embedded')
+  // deterministic — teardown must re-derive the SAME path or it leaks the socket
+  assert.equal(memberTtydSock(longOrg, longHandle), hashed, 'the hashed leaf is stable for the same org+handle')
 })
 
 test('writeTeamFile PRESERVES the personas block across a daemon roster-sync (#51)', () => {

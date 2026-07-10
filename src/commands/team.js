@@ -15,6 +15,7 @@ import { spawn, execFileSync, spawnSync } from 'node:child_process'
 import { memberSessionId } from '../teams/session-id.js'
 import { atomicWriteFileSync } from '../rooms.js'
 import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, chmodSync } from 'node:fs'
+import { createHash } from 'node:crypto'   // guard-4: hash an over-long ttyd socket leaf so it fits sun_path (never TCP-falls-back)
 import { homedir } from 'node:os'
 import { join, resolve, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -457,7 +458,22 @@ const sockSlug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').repl
 const memberSock = (org, handle) => join(socketDir(), `${sockSlug(org)}-${sockSlug(handle)}.dtach`)
 // guard-4: ttyd LISTENS on this per-member UNIX SOCKET (not a TCP port) — a browser can't open a unix socket, so
 // the Cross-Site WebSocket Hijack dies at the transport; the dashboard proxies /ttyd/<org>/<handle> to it same-origin.
-export const memberTtydSock = (org, handle) => join(socketDir(), `${sockSlug(org)}-${sockSlug(handle)}.ttyd`)
+// The `.sock` suffix is LOAD-BEARING: ttyd/libwebsockets enters unix-socket mode ONLY when `-i <path>` ends in
+// `.sock` (a bare name → treated as a NETWORK INTERFACE → "iface DOESN'T EXIST" → NO socket → ttyd SILENTLY binds
+// its default TCP 0.0.0.0:7681 = a network-reachable `-W` writable terminal, the exact CSWSH guard-4 kills → the
+// dashboard proxy 404s → a forever-black terminal). This ttyd does NOT honor a `unix:` prefix, so the suffix is the
+// only lever. The path LENGTH is equally load-bearing (Pierre): macOS caps a unix socket path (sun_path) at ~104
+// bytes; if `<slug>-<slug>.ttyd.sock` would overflow, bind() fails → the SAME silent TCP-0.0.0.0 fallback, for long
+// names only. So an over-long name is hashed to a short, stable, `.sock`-suffixed leaf that ALWAYS fits — we fail
+// INTO a unix socket, never into TCP. Deterministic (sha1(org\0handle)) so every teardown re-derives the same path.
+const SUN_PATH_MAX = 100   // conservative vs the macOS ~104-byte sun_path cap (leaves margin for the NUL terminator)
+export const memberTtydSock = (org, handle) => {
+  const dir = socketDir()
+  const readable = join(dir, `${sockSlug(org)}-${sockSlug(handle)}.ttyd.sock`)
+  if (Buffer.byteLength(readable) <= SUN_PATH_MAX) return readable
+  const h = createHash('sha1').update(`${org}\0${handle}`).digest('hex').slice(0, 16)   // 28-char leaf, always fits
+  return join(dir, `m-${h}.ttyd.sock`)
+}
 
 // #34: a member runs inside a persistent `dtach -n` MASTER (holds the session detached so it survives the
 // browser disconnecting / a console switch / the dashboard closing — what tmux used to do), with a thin
