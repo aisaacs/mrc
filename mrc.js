@@ -169,6 +169,14 @@ if (remaining[0] === 'rooms' || remaining[0] === 'room') {
   process.exit(0)
 }
 
+// --- Subcommand: mrc dashboard — the command-and-control center. A top-level alias for `mrc rooms dashboard`
+// (the dashboard is the primary surface now, not a sub-feature of `rooms`; see docs/dashboard-ux.md). ---
+if (remaining[0] === 'dashboard') {
+  const { roomsCommand } = await import('./src/commands/rooms.js')
+  await roomsCommand(['dashboard', ...remaining.slice(1)])
+  process.exit(0)
+}
+
 // --- Subcommand: mrc team (assemble/launch a team of agents from a roster; no API key) ---
 if (remaining[0] === 'team') {
   const { teamCommand } = await import('./src/commands/team.js')
