@@ -47,6 +47,14 @@ nod (security/isolation) · **[superseded]** don't build.
 ## Deferred queue (real, parked)
 
 **Security / cage:**
+- **#67 [deferred] — caged cross-repo Increment-3: `ensureSeal` + detached (`-d`) launch.** Inc-1 shipped
+  the caged cross-repo member on the attached `docker run --rm -it` path (container lifetime === dtach-master
+  lifetime; PTY-close → HUP → `--rm`, with an inline SNI fail-safe so no orphan). Inc-3 hardens the
+  **detached** launch: a pre-flight `ensureSeal` that proves egress is pinned + workspace `:ro` + no
+  bridges BEFORE the agent process starts (not just as a launch-arg contract), and the seal-kill-matrix
+  for the `-d` codepath (an orphaned detached container must fail closed, not run uncaged). Likely
+  container-side (`entrypoint.sh` seal-check) → **needs a rebuild**. Charter-pinned; the Inc-1 fail-closed
+  gates stand as its guard until then.
 - **#13 [deferred, real hazard]** — worker cage: gate `ALLOW_WEB` task-workers through SNI/`HTTPS_PROXY`.
   The non-Claude worker path runs web-open with untrusted prompt text and no proxy — a live exfil
   surface. Must be caged before any hands-off worker use.
