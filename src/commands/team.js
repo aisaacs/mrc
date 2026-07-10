@@ -505,6 +505,30 @@ function spawnMemberSession(org, handle, port, shellCmd) {
   return { sock, dtachPid: master.pid, ttydSock, ttydPid: ttyd.pid, containerId: null }
 }
 
+// guard-4 launch-time DURABILITY invariant (Pierre): ttyd is a HOST binary (brew/system), OUTSIDE mrc's control —
+// a future `brew upgrade ttyd` could change `-i <path>` handling and silently reintroduce the TCP-0.0.0.0:7681
+// fallback we caught on 1.7.7, INVISIBLE to the unit suite (the failure is host-version-dependent). A one-time
+// wire-test proves today's ttyd, not tomorrow's. So VERIFY BY CONSTRUCTION at every launch: the `.ttyd.sock` MUST
+// materialize shortly after spawn — its PRESENCE is proof ttyd entered unix-socket mode; a TCP-fallback ttyd creates
+// NO socket, whatever the cause (unknown suffix, ENAMETOOLONG, bind failure). If it doesn't appear, KILL the ttyd
+// (so nothing lingers on 0.0.0.0) and throw → the caller flags the member orphaned + logs loud. A black terminal +
+// a real error ALWAYS beats a silent network-exposed writable terminal. (Deps injected for tests.)
+// COMPLEMENT (Pierre): this is the always-on runtime catch for the OBSERVED failure (fall-back-with-no-socket). It
+// does NOT prove "unix ONLY" — an improbable future dual-bind ttyd (socket AND 7681) would create the socket + pass
+// here. `claude-scripts/ttyd-notcp.sh` (lsof) stays the UPGRADE-time belt for that edge; they prove different negatives.
+export async function assertTtydUnixSocket(ttydPid, ttydSock, { timeoutMs = 3000, stepMs = 100, exists = existsSync, kill = process.kill, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  const deadline = Date.now() + timeoutMs
+  for (;;) {
+    if (exists(ttydSock)) return true
+    if (Date.now() >= deadline) break
+    await sleep(stepMs)
+  }
+  if (ttydPid) { try { kill(ttydPid, 'SIGKILL') } catch {} }   // no unix socket → NOT unix mode → kill so no TCP listener lingers on 0.0.0.0
+  const err = new Error(`ttyd did not create its unix socket ${basename(ttydSock)} within ${timeoutMs}ms — the host ttyd isn't binding a unix socket (needs ttyd >= 1.7 honoring '-i <path>.sock', or the socket path is too long). It may have fallen back to a TCP listener; killed it.`)
+  err.code = 'TTYD_NO_UNIX_SOCKET'   // a DETERMINISTIC orphan — the caller distinguishes it from a transient one (Relaunch re-fails until the host ttyd is fixed)
+  throw err
+}
+
 // #34: launch each live member as its own persistent dtach session + ttyd viewer. Reuses a member's
 // existing session if its dtach master is still alive (idempotent relaunch). Returns the registry map.
 async function launchMembers(norm, repoPath, rosterPath, live) {
@@ -522,13 +546,26 @@ async function launchMembers(norm, repoPath, rosterPath, live) {
     already = false
     const port = await findFreePort(nextPort); nextPort = port + 1
     try {
-      members[m.handle] = spawnMemberSession(norm.org, m.handle, port, memberShellCmd(repoPath, m, rosterPath, norm.org))
+      const entry = spawnMemberSession(norm.org, m.handle, port, memberShellCmd(repoPath, m, rosterPath, norm.org))
+      // guard-4: fail LOUD if ttyd didn't actually bind a unix socket (a host ttyd change → TCP-0.0.0.0 fallback).
+      // Throws (after SIGKILLing the ttyd) → the boundary catch flags this member orphaned, never a silent open port.
+      await assertTtydUnixSocket(entry.ttydPid, entry.ttydSock)
+      members[m.handle] = entry
     } catch (e) {
-      // The unlink-guard throw (or any spawn failure) must fail LOUD-but-CONTAINED: log + flag this one
-      // member, never abort the whole team launch or crash the daemon's launch subprocess (#28 backstop
+      // The unlink-guard throw / the guard-4 no-socket throw / any spawn failure must fail LOUD-but-CONTAINED: log +
+      // flag this one member, never abort the whole team launch or crash the daemon's launch subprocess (#28 backstop
       // is last-resort; this is the explicit boundary catch).
-      console.error(`  ⚠ @${m.handle} not launched: ${e?.message || e}`)
-      members[m.handle] = { ...(prev || {}), sock: memberSock(norm.org, m.handle), orphaned: true }
+      if (e && e.code === 'TTYD_NO_UNIX_SOCKET') {
+        // guard-4 (Pierre): a no-socket failure is a VIEWER failure, not a SESSION failure — the dtach master is
+        // ALIVE and reachable via the native console. And it's DETERMINISTIC: Relaunch re-spawns the same broken
+        // ttyd → re-fails until the ROOT cause (host ttyd version / path length) is fixed. So point at both, and
+        // stamp orphanReason so the dashboard can show "console door, don't Relaunch" instead of a dead-end Relaunch.
+        console.error(`  ⚠ @${m.handle}'s TERMINAL can't start — ${e.message}\n     The SESSION is alive: reach it now with \`mrc team console ${m.handle}\`. Relaunch won't help until the host ttyd is fixed.`)
+        members[m.handle] = { ...(prev || {}), sock: memberSock(norm.org, m.handle), orphaned: true, orphanReason: 'ttyd-no-unix-socket' }
+      } else {
+        console.error(`  ⚠ @${m.handle} not launched: ${e?.message || e}`)
+        members[m.handle] = { ...(prev || {}), sock: memberSock(norm.org, m.handle), orphaned: true }
+      }
     }
   }
   return { members, already }

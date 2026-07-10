@@ -13,7 +13,7 @@ import { readMrcrc, sanitizeRepoConfig } from '../src/config.js'
 import {
   memberSessionId, memberWorkspaceVolumes, memberEnv, personaForMember, writePersonaFile, orgDef, memberLaunch, cleanWorkerOutput,
   rosterFromDef, addMemberToRoster, removeMemberFromRoster, writeTeamFile,
-  memberConfigVolName, memberArgv, memberDockerFilter, reposAction, memberTtydSock,
+  memberConfigVolName, memberArgv, memberDockerFilter, reposAction, memberTtydSock, assertTtydUnixSocket,
 } from '../src/commands/team.js'
 
 test('removeMemberFromRoster drops the member and any team left empty', () => {
@@ -42,6 +42,22 @@ test('guard-4 memberTtydSock: ALWAYS ends in .sock (ttyd unix-mode lever) and NE
   assert.ok(!hashed.includes('a'.repeat(120)), 'the overflowing slug was replaced, not embedded')
   // deterministic — teardown must re-derive the SAME path or it leaks the socket
   assert.equal(memberTtydSock(longOrg, longHandle), hashed, 'the hashed leaf is stable for the same org+handle')
+})
+
+test('guard-4 assertTtydUnixSocket: socket present → ok + no kill; absent → SIGKILL ttyd + throw (never a silent TCP fallback)', async () => {
+  // Durability invariant vs a future ttyd upgrade: the .ttyd.sock appearing on disk IS the proof ttyd entered
+  // unix mode. Present → serve. Absent (TCP fallback / bind fail) → kill the ttyd so nothing lingers on 0.0.0.0.
+  let killed = null
+  await assert.doesNotReject(assertTtydUnixSocket(999, '/x/y.ttyd.sock',
+    { exists: () => true, kill: (p, s) => { killed = [p, s] }, timeoutMs: 50, sleep: () => Promise.resolve() }))
+  assert.equal(killed, null, 'a ttyd that DID bind its unix socket is never killed')
+
+  await assert.rejects(
+    assertTtydUnixSocket(4242, '/x/y.ttyd.sock',
+      { exists: () => false, kill: (p, s) => { killed = [p, s] }, timeoutMs: 20, stepMs: 2, sleep: () => Promise.resolve() }),
+    /did not create its unix socket/,
+    'no unix socket within the window → throws loud')
+  assert.deepEqual(killed, [4242, 'SIGKILL'], 'a ttyd with no unix socket (TCP fallback) is SIGKILLed, not left listening')
 })
 
 test('writeTeamFile PRESERVES the personas block across a daemon roster-sync (#51)', () => {
