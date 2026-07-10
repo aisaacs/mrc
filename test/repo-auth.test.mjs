@@ -2,7 +2,7 @@
 // HOST-ONLY file, so tests use a unique per-run org and clean it up. Real temp repos (realpath resolves them).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveMemberRepo, addAuthorizedRepo, removeAuthorizedRepo, loadAuthorizedRepos, resolveOrgRoot, recordActivatedRoot, isActivatedRoot, clearActivatedRoots, _activatedPathForTest, _authPathForTest } from '../src/teams/repo-auth.js'
+import { resolveMemberRepo, addAuthorizedRepo, removeAuthorizedRepo, loadAuthorizedRepos, resolveOrgRoot, resolveOrgRootForOrg, pinnedOrgRoot, clearOrgRoot, recordActivatedRoot, isActivatedRoot, clearActivatedRoots, _rootPathForTest, _activatedPathForTest, _authPathForTest } from '../src/teams/repo-auth.js'
 import { mkdtempSync, mkdirSync, rmSync, realpathSync, symlinkSync, unlinkSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join, sep } from 'node:path'
@@ -139,6 +139,52 @@ test('resolveOrgRoot: WRITE-ONCE beats trust — a DIFFERING root is refused eve
 // root). Activation (the define-time `.env` read + TG bridge + writeTeamFile) fires iff realpath(def.repo) is in
 // the org's recorded set — a VALUE match, not a name-keyed boolean, so a delete→recreate to a different root can
 // never inherit activation (the removeorg-doesn't-purge vector). Host-only, hex-keyed (injective).
+// ── GUARD #1 — the write-once PIN RECORD + chokepoint. resolveOrgRoot is only as strong as every caller passing
+// the stored pin; the chokepoint LOADS it internally so no ingress (defineOrg/launchteam/relaunchmember/activate/
+// boot) can pass a null pin for a pinned org and silently re-root. The record write is O_EXCL (write-once under
+// concurrency); the EEXIST loser re-loads + validates through the existing-pin branch.
+test('pin chokepoint: FIRST trusted call pins + persists; a later DIFFERENT root is refused even trusted (un-forgettable write-once)', () => {
+  const s = scratch()
+  try {
+    assert.equal(pinnedOrgRoot(s.org), null)                                        // no pin yet
+    assert.equal(resolveOrgRootForOrg(s.org, s.orgRepo, { trusted: true }), s.orgRepo)   // first-pin persists
+    assert.equal(pinnedOrgRoot(s.org), s.orgRepo)
+    // a later call passing a DIFFERENT repo — the chokepoint loads the stored pin, so it CANNOT re-root, trusted or not
+    assert.throws(() => resolveOrgRootForOrg(s.org, s.other, { trusted: true }), /refusing to re-root/)
+    assert.throws(() => resolveOrgRootForOrg(s.org, s.other, { trusted: false }), /refusing to re-root/)
+    // the SAME root (any spelling) is idempotent
+    assert.equal(resolveOrgRootForOrg(s.org, s.orgRepo, { trusted: false }), s.orgRepo)
+  } finally { s.cleanup(); try { unlinkSync(_rootPathForTest(s.org)) } catch {} }
+})
+
+test('pin chokepoint: an UNTRUSTED first call cannot establish a pin and persists NOTHING', () => {
+  const s = scratch()
+  try {
+    assert.throws(() => resolveOrgRootForOrg(s.org, s.orgRepo, { trusted: false }), /untrusted define cannot establish/)
+    assert.equal(pinnedOrgRoot(s.org), null, 'nothing persisted — an attacker root never enters durable state')
+  } finally { s.cleanup(); try { unlinkSync(_rootPathForTest(s.org)) } catch {} }
+})
+
+test('pin chokepoint: clearOrgRoot lets a deliberate delete→recreate re-pin (a human act, not a wire re-root)', () => {
+  const s = scratch()
+  try {
+    resolveOrgRootForOrg(s.org, s.orgRepo, { trusted: true })
+    clearOrgRoot(s.org)                                              // removeorg (human delete)
+    assert.equal(pinnedOrgRoot(s.org), null)
+    assert.equal(resolveOrgRootForOrg(s.org, s.other, { trusted: true }), s.other)   // recreate → a NEW root is fine
+  } finally { s.cleanup(); try { unlinkSync(_rootPathForTest(s.org)) } catch {} }
+})
+
+test('pin record is HOST-ONLY + hex-keyed injective (slug-colliding orgs get distinct pins)', () => {
+  const s = scratch()
+  try {
+    const p = _rootPathForTest(s.org)
+    assert.ok(p.startsWith(join(homedir(), '.local', 'share', 'mrc')) && !p.includes(s.orgRepo), 'host-only, never in a repo')
+    const orgA = `acme.prod-${process.pid}`, orgB = `acme_prod-${process.pid}`
+    assert.notEqual(_rootPathForTest(orgA), _rootPathForTest(orgB))
+  } finally { s.cleanup(); try { unlinkSync(_rootPathForTest(s.org)) } catch {} }
+})
+
 test('activation record: missing → NOT activated (fail-closed: a never-confirmed root stays inert)', () => {
   const s = scratch()
   try { assert.equal(isActivatedRoot(s.org, s.orgRepo), false) } finally { s.cleanupActivation() }
@@ -172,6 +218,24 @@ test('activation record: clearActivatedRoots purges (the removeorg hygiene path)
     clearActivatedRoots(s.org)
     assert.equal(isActivatedRoot(s.org, s.orgRepo), false)
   } finally { s.cleanupActivation() }
+})
+
+test('$HOME align-RESTRICTIVE (Pierre): pin PERMITS $HOME (mount), activate SKIPS it — mrc team up ~ never reads ~/.env', () => {
+  // The coherent rule: pin permits the broad root (the MOUNT choice), activate refuses to auto-read a broad root's
+  // secrets. The `mrc team up ~` break is fixed by SKIP-not-throw, WITHOUT widening the .env read to $HOME. This is
+  // the invariant — "pins, mounts, does NOT activate, does NOT read ~/.env" — not "both permit".
+  const home = realpathSync(homedir())
+  const org = `test-homerestrict-${process.pid}`
+  try {
+    assert.equal(resolveOrgRoot(null, homedir(), { trusted: true }), home)   // pin $HOME → allowed (mount)
+    assert.equal(recordActivatedRoot(org, homedir()), null)                  // activate $HOME → SKIPPED (null), no throw
+    assert.equal(isActivatedRoot(org, homedir()), false)                     // → NOT activated → its .env is never read
+    // `/` is skipped too (never thrown from the activate path), and a real project DOES activate
+    assert.equal(recordActivatedRoot(org, sep), null)
+    const proj = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-hr-')))
+    try { assert.equal(recordActivatedRoot(org, proj), proj); assert.equal(isActivatedRoot(org, proj), true) }
+    finally { rmSync(proj, { recursive: true, force: true }) }
+  } finally { try { unlinkSync(_activatedPathForTest(org)) } catch {} }
 })
 
 test('activation record: hex-keyed injective — slug-colliding orgs do NOT share activation', () => {

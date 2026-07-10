@@ -41,6 +41,17 @@ function resolveRepoOrThrow(repoPath, label = 'repo') {
   return real
 }
 
+// The canonical form of a TRUSTED org root (a CLI argv the human typed, or a picker create). Unlike
+// resolveRepoOrThrow it ALLOWS `$HOME` (the `mrc ~` exemption — the human's explicit launch choice; only `/` is
+// never legitimate) and requires the path to EXIST (realpathSync throws ENOENT → throw-closed). SHARED by
+// resolveOrgRoot's trusted first-pin AND recordActivatedRoot so pin and activate can NEVER disagree about a value
+// (the $HOME pin-but-can't-activate contradiction Pierre found): both accept exactly the same trusted roots.
+function canonicalTrustedRoot(repoPath, label = 'root') {
+  const real = realpathSync(String(repoPath))   // throws ENOENT on a non-existent path → throw-closed
+  if (real === sep) throw new Error(`refusing to pin the filesystem root ("/") as a project ${label} — never a legitimate project`)
+  return real
+}
+
 // The org's authorized-repo set (realpaths). A missing/unreadable record = the EMPTY set (fail-closed: nothing
 // cross-repo is authorized until a human adds it — so a cross-repo member is refused by default).
 export function loadAuthorizedRepos(org) {
@@ -122,10 +133,40 @@ export function resolveOrgRoot(pinnedRoot, requestedRepo, { trusted = false } = 
     return pinnedReal
   }
   if (!trusted) throw new Error(`no root is pinned for this project and an untrusted define cannot establish one — a root is set by a human act (picker create / CLI argv), never a raw wire frame`)
-  const real = realpathSync(String(requestedRepo))   // trusted first-pin: the human's own launch choice (mrc ~ allowed); must exist on disk
-  if (real === sep) throw new Error(`refusing to pin the filesystem root ("/") as a project root — never a legitimate project`)
-  return real
+  return canonicalTrustedRoot(requestedRepo, 'root')   // trusted first-pin: realpath, $HOME allowed (mrc ~), `/` refused, ENOENT throws
 }
+
+// The write-once PIN RECORD + the CHOKEPOINT every org-root ingress calls. resolveOrgRoot is only as strong as
+// its caller passing the stored pin (Pierre): any ingress that passed `pinnedRoot=null` for an already-pinned org
+// on a trusted path would drop into first-pin and RE-ROOT freely. So the pin is loaded HERE, internally — no
+// caller (defineOrg / launchteam / relaunchmember / activate / boot-reload) ever handles it, so none can forget
+// it. The record is DEDICATED + host-only (never the mutable orgDef, which defineOrg overwrites wholesale) and
+// hex-keyed (injective). It's persisted WRITE-ONCE under concurrency via O_EXCL (`wx`): two racing trusted
+// first-pins can't both win with different roots — the create loser (EEXIST) re-loads and validates through the
+// EXISTING-pin branch (match-or-throw), never proceeding on its own resolve.
+const rootDir = () => join(homedir(), '.local', 'share', 'mrc', 'org-roots')
+const rootPath = (org) => join(rootDir(), `${Buffer.from(String(org), 'utf8').toString('hex')}.json`)
+
+export function pinnedOrgRoot(org) {
+  try { const v = JSON.parse(readFileSync(rootPath(org), 'utf8')); return (typeof v === 'string' && v) ? v : null } catch { return null }   // missing/torn → null (a torn crash-write is re-pinnable, never a silent re-root of a live project)
+}
+
+export function resolveOrgRootForOrg(org, requestedRepo, { trusted = false } = {}) {
+  const pin = pinnedOrgRoot(org)
+  const root = resolveOrgRoot(pin, requestedRepo, { trusted })   // existing-pin → match-or-throw; else trusted-only first-pin (throws untrusted)
+  if (pin) return root                                           // already pinned + matched → nothing to persist
+  mkdirSync(rootDir(), { recursive: true })
+  try { writeFileSync(rootPath(org), JSON.stringify(root), { flag: 'wx' }); return root }   // atomic create-only (O_EXCL)
+  catch (e) {
+    if (e && e.code === 'EEXIST') return resolveOrgRoot(pinnedOrgRoot(org), requestedRepo, { trusted })   // lost the race → validate against the winner's pin
+    throw e
+  }
+}
+
+// Clear an org's pin — the removeorg (deliberate human delete) path, so a delete→recreate can re-pin a NEW root
+// (a human act, never a wire re-root of a live project). Idempotent.
+export function clearOrgRoot(org) { try { unlinkSync(rootPath(org)) } catch {} }
+export const _rootPathForTest = rootPath
 
 // GUARD #1 — the ACTIVATION record. Pinning a root (resolveOrgRoot) is separate from ACTIVATING it: the
 // define-time consumers of def.repo (the `.env` read + Telegram bridge, writeTeamFile) fire ONLY after a trusted
@@ -147,9 +188,16 @@ export function isActivatedRoot(org, repoPath) {
 }
 
 // Record a root as human-activated for an org (a TRUSTED act: CLI `team up`, or the dashboard's explicit activate
-// confirm). Realpaths + broad-guards the value (never confirm `/` or `$HOME` as a root), atomic write. Idempotent.
+// confirm). ALIGN-RESTRICTIVE with the pin (Pierre): the pin PERMITS a broad root ($HOME) because that's the MOUNT
+// choice (`mrc ~` mounting home as /workspace is the human's call), but ACTIVATE is a DIFFERENT capability — it
+// unlocks the define-time `.env` read + Telegram bridge + `.mrc` write. Auto-reading the user's GLOBAL `$HOME/.env`
+// (cross-project cloud creds) would be the fattest secret surface on the box — and a browser create is "trusted"
+// only via CSRF, so a `$HOME` root is NOT always a CLI choice. So a broad root ($HOME or `/`) is SKIPPED gracefully
+// (returns null = not activated, NEVER throws → fixes the `mrc team up ~` break without reading `~/.env`); the
+// daemon logs "home-rooted — not auto-activated by design". Returns the canonical realpath if recorded, else null.
 export function recordActivatedRoot(org, repoPath) {
-  const real = resolveRepoOrThrow(repoPath, 'activated root')
+  let real; try { real = realpathSync(String(repoPath)) } catch { return null }             // non-existent → not activated (fail-safe)
+  if (real === sep || real === realpathSync(homedir())) return null                          // BROAD root: pinnable+mountable, but never auto-read its `.env`
   let set; try { set = new Set((JSON.parse(readFileSync(activatedPath(org), 'utf8')) || []).map(String)) } catch { set = new Set() }
   set.add(real)
   const p = activatedPath(org)
