@@ -2,7 +2,7 @@
 // HOST-ONLY file, so tests use a unique per-run org and clean it up. Real temp repos (realpath resolves them).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveMemberRepo, addAuthorizedRepo, removeAuthorizedRepo, loadAuthorizedRepos, _authPathForTest } from '../src/teams/repo-auth.js'
+import { resolveMemberRepo, addAuthorizedRepo, removeAuthorizedRepo, loadAuthorizedRepos, resolveOrgRoot, recordActivatedRoot, isActivatedRoot, clearActivatedRoots, _activatedPathForTest, _authPathForTest } from '../src/teams/repo-auth.js'
 import { mkdtempSync, mkdirSync, rmSync, realpathSync, symlinkSync, unlinkSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join, sep } from 'node:path'
@@ -13,7 +13,9 @@ function scratch() {
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-ra-')))
   const orgRepo = join(root, 'orgrepo'); mkdirSync(orgRepo)
   const other = join(root, 'otherrepo'); mkdirSync(other)
-  return { org, root, orgRepo, other, cleanup: () => { rmSync(root, { recursive: true, force: true }); try { unlinkSync(_authPathForTest(org)) } catch {} } }
+  return { org, root, orgRepo, other,
+    cleanup: () => { rmSync(root, { recursive: true, force: true }); try { unlinkSync(_authPathForTest(org)) } catch {} },
+    cleanupActivation: () => { rmSync(root, { recursive: true, force: true }); try { unlinkSync(_activatedPathForTest(org)) } catch {} } }
 }
 
 test('resolveMemberRepo: default (no request) → the org repo, realpath-canonical', () => {
@@ -81,6 +83,107 @@ test('cross-org isolation of the KEY: orgs whose names slug-COLLIDE get DISTINCT
     assert.equal(loadAuthorizedRepos(orgB).size, 0, 'orgB does NOT inherit orgA\'s grant (no shared set)')
     assert.throws(() => resolveMemberRepo(root, repoX, orgB), /not authorized/, 'orgB still refuses the repo orgA authorized')
   } finally { rmSync(root, { recursive: true, force: true }); try { unlinkSync(_authPathForTest(orgA)) } catch {}; try { unlinkSync(_authPathForTest(orgB)) } catch {} }
+})
+
+// ── GUARD #1 (dashboard-ux floor): the org ROOT is pinned WRITE-ONCE, and a first-pin is a privileged act ──
+// The org root is identity-defining (project = intent = root) and STRICTLY BROADER than a member-host repo (it's
+// the default rw mount + the `.env`-read root for every default-repo member), so it is NOT the member
+// authorized-set (that would over-grant a member-eligible repo into a root). Write-once: set at create, immutable.
+test('resolveOrgRoot: FIRST-pin — a TRUSTED origin (CLI argv / human-picker create) establishes the root', () => {
+  const s = scratch()
+  try {
+    // trusted first-pin returns the realpath-canonical root (a symlink spelling resolves through)
+    assert.equal(resolveOrgRoot(null, s.orgRepo, { trusted: true }), s.orgRepo)
+    const link = join(s.root, 'orglink'); symlinkSync(s.orgRepo, link)
+    assert.equal(resolveOrgRoot('', link, { trusted: true }), s.orgRepo)
+    // trusted keeps the `mrc ~` exemption — a human may root their own $HOME if they typed it
+    assert.equal(resolveOrgRoot(null, homedir(), { trusted: true }), realpathSync(homedir()))
+  } finally { s.cleanup() }
+})
+
+test('resolveOrgRoot: FIRST-pin — an UNTRUSTED wire origin can NEVER establish a root (define-time .env-read defense)', () => {
+  const s = scratch()
+  try {
+    // A raw defineOrg over the control socket must not be able to first-pin — else it reads/mounts a
+    // wire-chosen path before a human authorized it. This is the guard the value-check alone sails past.
+    assert.throws(() => resolveOrgRoot(null, s.orgRepo, { trusted: false }), /untrusted define cannot establish/)
+    assert.throws(() => resolveOrgRoot('', '/victim', { trusted: false }), /untrusted define cannot establish/)
+    assert.throws(() => resolveOrgRoot(null, '/victim'), /untrusted define cannot establish/)   // default is untrusted
+  } finally { s.cleanup() }
+})
+
+test('resolveOrgRoot: a trusted first-pin still refuses the filesystem root ("/")', () => {
+  assert.throws(() => resolveOrgRoot(null, sep, { trusted: true }), /filesystem root/)
+})
+
+test('resolveOrgRoot: WRITE-ONCE — an EXISTING pin accepts only a matching request, whoever asks', () => {
+  const s = scratch()
+  try {
+    // a request resolving to the pinned root is accepted even from an untrusted origin (it changes nothing)
+    assert.equal(resolveOrgRoot(s.orgRepo, s.orgRepo, { trusted: false }), s.orgRepo)
+    const link = join(s.root, 'orglink2'); symlinkSync(s.orgRepo, link)
+    assert.equal(resolveOrgRoot(s.orgRepo, link, { trusted: false }), s.orgRepo)   // symlink spelling still matches
+  } finally { s.cleanup() }
+})
+
+test('resolveOrgRoot: WRITE-ONCE beats trust — a DIFFERING root is refused even from a trusted origin', () => {
+  const s = scratch()
+  try {
+    // the re-root bypass: a later (even "trusted") define pointing elsewhere must NOT re-root the project
+    assert.throws(() => resolveOrgRoot(s.orgRepo, s.other, { trusted: true }), /refusing to re-root/)
+    assert.throws(() => resolveOrgRoot(s.orgRepo, '/victim', { trusted: false }), /refusing to re-root/)
+  } finally { s.cleanup() }
+})
+
+// ── GUARD #1 — the ACTIVATION record: a per-org set of CONFIRMED REALPATHS (authorized-repos applied to the
+// root). Activation (the define-time `.env` read + TG bridge + writeTeamFile) fires iff realpath(def.repo) is in
+// the org's recorded set — a VALUE match, not a name-keyed boolean, so a delete→recreate to a different root can
+// never inherit activation (the removeorg-doesn't-purge vector). Host-only, hex-keyed (injective).
+test('activation record: missing → NOT activated (fail-closed: a never-confirmed root stays inert)', () => {
+  const s = scratch()
+  try { assert.equal(isActivatedRoot(s.org, s.orgRepo), false) } finally { s.cleanupActivation() }
+})
+
+test('activation record: record → isActivatedRoot true (realpath-canonical; a symlink spelling still matches)', () => {
+  const s = scratch()
+  try {
+    recordActivatedRoot(s.org, s.orgRepo)
+    assert.equal(isActivatedRoot(s.org, s.orgRepo), true)
+    const link = join(s.root, 'actlink'); symlinkSync(s.orgRepo, link)
+    assert.equal(isActivatedRoot(s.org, link), true)   // a different spelling of the confirmed root matches
+  } finally { s.cleanupActivation() }
+})
+
+test('activation record: VALUE-BOUND — a DIFFERENT root is NOT activated (kills delete→recreate inheritance)', () => {
+  const s = scratch()
+  try {
+    recordActivatedRoot(s.org, s.orgRepo)
+    // the delete→recreate vector: org name X survives with an activation record, but a recreate to /other
+    // must NOT read as activated, because the recorded VALUE (realpath) doesn't match the new root.
+    assert.equal(isActivatedRoot(s.org, s.other), false)
+  } finally { s.cleanupActivation() }
+})
+
+test('activation record: clearActivatedRoots purges (the removeorg hygiene path)', () => {
+  const s = scratch()
+  try {
+    recordActivatedRoot(s.org, s.orgRepo)
+    assert.equal(isActivatedRoot(s.org, s.orgRepo), true)
+    clearActivatedRoots(s.org)
+    assert.equal(isActivatedRoot(s.org, s.orgRepo), false)
+  } finally { s.cleanupActivation() }
+})
+
+test('activation record: hex-keyed injective — slug-colliding orgs do NOT share activation', () => {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-act-')))
+  const repoX = join(root, 'repox'); mkdirSync(repoX)
+  const orgA = `acme.prod-${process.pid}`, orgB = `acme_prod-${process.pid}`
+  try {
+    assert.notEqual(_activatedPathForTest(orgA), _activatedPathForTest(orgB), 'slug-colliding orgs get distinct activation records')
+    recordActivatedRoot(orgA, repoX)
+    assert.equal(isActivatedRoot(orgA, repoX), true, 'orgA activated its root')
+    assert.equal(isActivatedRoot(orgB, repoX), false, 'orgB does NOT inherit orgA\'s activation')
+  } finally { rmSync(root, { recursive: true, force: true }); try { unlinkSync(_activatedPathForTest(orgA)) } catch {}; try { unlinkSync(_activatedPathForTest(orgB)) } catch {} }
 })
 
 test('loadAuthorizedRepos: missing record → empty set (fail-closed); add/remove round-trip is idempotent', () => {

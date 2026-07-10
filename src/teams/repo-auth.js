@@ -16,7 +16,7 @@
 // container) and is mutated ONLY by addAuthorizedRepo — the human control-plane path (dashboard CSRF / CLI),
 // NEVER a session-callable channel verb. A container can't read it (unmounted) and can't grow it (no verb). A
 // session may REQUEST a repo (an @user inbox item); the AUTHORIZATION is a human act. Escalate-by-asking only.
-import { realpathSync, readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs'
+import { realpathSync, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs'
 import { join, sep } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -99,4 +99,72 @@ export function resolveMemberRepo(orgRepo, requested, org) {
   throw new Error(`member repo "${requested}" (resolves to ${reqReal}) is not authorized for org "${org}" — a human must add it to the team's repos first; a session can never authorize a repo, only request one.`)
 }
 
+// GUARD #1 (dashboard-ux command-and-control floor) — the org ROOT is pinned WRITE-ONCE, and a first-pin is a
+// PRIVILEGED act. A project's root repo is identity-defining (project = org = intent) and STRICTLY BROADER than a
+// member-host repo: it is the default rw `/workspace` mount AND the `.env`-read root for every default-repo member
+// (team.js). So it is NOT folded into the cross-repo MEMBER authorized-set (resolveMemberRepo) — a flat set can't
+// tell "may host a member" from "may be the org ROOT", and unifying them promotes a member-eligible repo into a
+// root (over-grant). Instead: the root is set once at create and IMMUTABLE thereafter, never re-read from a later
+// wire frame. `pinnedRoot` = the org's already-pinned root (a realpath) or null/'' for a never-pinned org.
+//   • EXISTING pin → the request MUST realpath-match it, whoever asks (write-once beats trust; a differing root is
+//     a new project, created explicitly — never a wire mutation). This closes the defineOrg re-root bypass
+//     STRUCTURALLY, so a persisted/forged def.repo can't promote a new path to the team's rw + `.env`-read root.
+//   • FIRST pin → only a TRUSTED origin (a real human launch: a CLI argv the human typed, or the CSRF-guarded
+//     human-picker create) may establish a root. An UNTRUSTED wire frame (a raw defineOrg over the control socket)
+//     can NEVER first-pin — so it can't read/mount a wire-chosen path before a human authorized it. NOTE: this is
+//     the VALUE gate; the daemon must ALSO hold the define-time SIDE EFFECTS (ensureTgForOrg's `.env` read +
+//     bridge, writeTeamFile) inert until a trusted ACTIVATE — pinning and activating are separate (see the daemon).
+export function resolveOrgRoot(pinnedRoot, requestedRepo, { trusted = false } = {}) {
+  if (pinnedRoot != null && pinnedRoot !== '') {
+    let pinnedReal; try { pinnedReal = realpathSync(String(pinnedRoot)) } catch { pinnedReal = String(pinnedRoot) }
+    let reqReal; try { reqReal = realpathSync(String(requestedRepo)) } catch { reqReal = null }
+    if (reqReal !== pinnedReal) throw new Error(`project is rooted at ${pinnedReal}; refusing to re-root it to "${requestedRepo}" — a different root is a different project (create a new one, don't re-point this one).`)
+    return pinnedReal
+  }
+  if (!trusted) throw new Error(`no root is pinned for this project and an untrusted define cannot establish one — a root is set by a human act (picker create / CLI argv), never a raw wire frame`)
+  const real = realpathSync(String(requestedRepo))   // trusted first-pin: the human's own launch choice (mrc ~ allowed); must exist on disk
+  if (real === sep) throw new Error(`refusing to pin the filesystem root ("/") as a project root — never a legitimate project`)
+  return real
+}
+
+// GUARD #1 — the ACTIVATION record. Pinning a root (resolveOrgRoot) is separate from ACTIVATING it: the
+// define-time consumers of def.repo (the `.env` read + Telegram bridge, writeTeamFile) fire ONLY after a trusted
+// activate, never at a bare define or boot-reload. This is the authorized-repos primitive applied to the ROOT: a
+// per-org host-only set of CONFIRMED REALPATHS, hex-keyed (injective — a lossy slug would let `acme.prod` inherit
+// `acme_prod`'s activation). Activation is a VALUE match — `isActivatedRoot` iff realpath(def.repo) is recorded —
+// NOT a name-keyed boolean, so a delete→recreate to a different root can never inherit activation even if a purge
+// is missed (the removeorg-doesn't-purge vector). CLI `team up` is a trusted local-TTY frame → it records; a
+// browser create is CSRF-only → it records only on an explicit human activate gesture on the pinned root.
+const activatedDir = () => join(homedir(), '.local', 'share', 'mrc', 'activated-roots')
+const activatedPath = (org) => join(activatedDir(), `${Buffer.from(String(org), 'utf8').toString('hex')}.json`)
+
+export function isActivatedRoot(org, repoPath) {
+  let real; try { real = realpathSync(String(repoPath)) } catch { return false }   // a root that isn't on disk can't be an activated one
+  try {
+    const arr = JSON.parse(readFileSync(activatedPath(org), 'utf8'))
+    return Array.isArray(arr) && arr.map(String).includes(real)
+  } catch { return false }   // missing/unreadable record → NOT activated (fail-closed: a never-confirmed root stays inert)
+}
+
+// Record a root as human-activated for an org (a TRUSTED act: CLI `team up`, or the dashboard's explicit activate
+// confirm). Realpaths + broad-guards the value (never confirm `/` or `$HOME` as a root), atomic write. Idempotent.
+export function recordActivatedRoot(org, repoPath) {
+  const real = resolveRepoOrThrow(repoPath, 'activated root')
+  let set; try { set = new Set((JSON.parse(readFileSync(activatedPath(org), 'utf8')) || []).map(String)) } catch { set = new Set() }
+  set.add(real)
+  const p = activatedPath(org)
+  mkdirSync(activatedDir(), { recursive: true })
+  const tmp = `${p}.${process.pid}.tmp`
+  writeFileSync(tmp, JSON.stringify([...set], null, 2))
+  renameSync(tmp, p)
+  return real
+}
+
+// Purge an org's activation record — the removeorg hygiene path. Idempotent. (Value-binding means activation
+// wouldn't inherit across a delete→recreate even without this, but purge anyway so stale records don't accrete.)
+export function clearActivatedRoots(org) {
+  try { unlinkSync(activatedPath(org)) } catch {}
+}
+
+export const _activatedPathForTest = activatedPath
 export const _authPathForTest = authPath

@@ -126,10 +126,18 @@ The confusing tangle (x-pill vs. Delete vs. "Resume team") collapses to:
 Target UX: **each project is its own conversation thread in your Telegram inbox**; `@user` comments
 accumulate in that project's thread; concurrent projects are separate labeled threads.
 
-**Primary approach — one bot + Telegram topics.** A single bot (one token, set once in
-`~/.config/mrc/.env` or the store) posts into per-project **topics**, so each project reads as its own
-labeled sub-thread with no per-project token overhead. *(Verify the forum-topics bot API supports
-create/target-topic the way this needs before committing — a short check, not an assertion.)*
+**Primary approach — one bot + Telegram topics. VERIFIED viable (Bot API, July 2026):**
+- `createForumTopic` lets the bot make one topic **per project**; `sendMessage` with `message_thread_id`
+  targets it; inbound updates carry `message_thread_id`, so a reply in a project's topic **routes back
+  unambiguously**. One token, per-project threads, exactly the owner's vision.
+- **One-time human setup** (bots can't create groups): the human creates a **supergroup**, turns on
+  **Topics** (forum mode), and adds the bot as **admin with the `can_manage_topics` right** (that
+  specific right — other admin rights don't substitute; `createForumTopic` fails *silently* without it).
+  After that, per-project topics are automatic. This is the whole cost of the one-bot model.
+- **Promising lighter lead (UNVERIFIED — worth a follow-up):** the Bot API docs hint topics work in
+  **private chats** too (`message_thread_id` is "for supergroups and private chats only"; "bots can
+  create topics in private chats without admin rights"). If that holds for our bot flow, it's **one bot,
+  a plain DM, no supergroup at all** — each project a topic in the DM. Verify before relying on it.
 
 **Alternative if topics don't pan out — a small bot pool.** On first run the user creates ~5–6 bots
 once; the daemon **pools and reuses** them across projects as projects launch/tear down (the user
@@ -203,6 +211,79 @@ the same session**. So:
 3. **One-bot cross-project Telegram routing.** With a single token serving all projects, verify
    per-project isolation still holds — a reply in project A's thread/`#N` can only ever route to a
    member of project A; no cross-project inbox bleed via a forged or mis-stamped `#N`.
+
+### 10.1 The launch security floor (Pierre-hardened, build-first)
+
+Investigating surface #1 with a live Pierre turned up a **real, pre-existing hole** the create-flow
+would walk into, and four rounds of hardening. Captured here so the floor is built **before** the UX.
+
+**The hole.** The daemon's GUI launch delegates to a real `mrc team up` (good — the host-side gates
+`parseRoster`→`resolveMemberRepo`/`assertCageAllowed` and the host-set `--member-def` identity blob all
+still fire, so a container can't forge its *own* identity/mount/cage). BUT the **org's own top-level
+repo** (`data.repo` / the launch `f.repo`) hits **zero guard**: `resolveMemberRepo`'s broad-guard runs
+only for an *explicit cross-repo member*, never the org root (`roster.js:239` takes the default). The
+exemption is justified in-code as "the human typed the path" — an **argv assumption the create-flow
+deletes**, replacing a typed argv with a **free-text wire field** (`dashboard.html:1247`, posted in the
+body). Result if unguarded: a GUI/CSRF launch mounts *any* host path (e.g. `/etc`) rw **and** reads its
+`.env` secrets into the team. Host-side ≠ authorized.
+
+**Four Pierre catches (each verified at the line):**
+1. Guarding `launchteam.f.repo` alone is bypassable — the repo also rides in on `f.roster→data.repo`
+   and on the **persisted `defineOrg.f.def.repo`** (stored wholesale + `saveOrgs`, no parse), which
+   later `relaunchmember`/boot re-materialize. Gate at the **mint chokepoint**, not one handler.
+2. `rosterFromDef` is **lossy** (drops per-member `repo`/`mount`/`cage`) — so C is precisely and only
+   the **org-root** axis. One guard site.
+3. Don't fold the org root into the member **authorized-set** — root ≠ member-host (the root is the
+   default rw mount + `.env`-read root for *every* default member), so a flat set **over-grants** a
+   member-eligible repo into a root. The root is **write-once/immutable** instead: pinned at create,
+   never re-read from a later wire frame — structural, not a set-check.
+4. **Pin ≠ Activate.** `defineOrg` doesn't just validate `def.repo` — it **acts on it at define-time**:
+   `ensureTgForOrg` reads `def.repo/.env` + starts a Telegram bridge (`:439/:469`), `writeTeamFile`
+   writes into it (`:419`), and **boot re-runs the read for every persisted org** (`:599`). A value-check
+   never stops these — they consume `def.repo` directly. So the guard must hold the **side effects**
+   inert until a trusted activate.
+
+**Guard #1 — org root write-once + pin/activate separation.**
+- **Value gate — `resolveOrgRoot(pinnedRoot, requestedRepo, {trusted})` — BUILT (`repo-auth.js`), 13
+  unit tests green.** Existing pin → realpath-match or throw (write-once beats trust). First-pin →
+  *trusted* origin only (CLI argv / picker create; keeps the `mrc ~` exemption); untrusted throws;
+  refuses `/`.
+- **Side-effect gate (daemon wiring, next).** A `def.repo` consumer (`.env` read, TG bridge,
+  `writeTeamFile`) runs **only after a trusted ACTIVATE**, never at define/boot. The cases:
+  - **Untrusted first-pin** (a raw/CSRF `defineOrg{new-org}`) → **THROWS, records nothing** (this is
+    `resolveOrgRoot`'s untrusted-first-pin refusal — an attacker root must not even *persist* into
+    durable state as a fat-finger-activate-later landmine).
+  - **Trusted-but-not-yet-activated** and **grandfathered** (a root a pre-guard daemon persisted) → pin
+    stands but **inert**: no consumer runs until an explicit activate.
+  - **Activation record = a host-only sidecar of CONFIRMED REALPATHS per org** — literally the
+    `authorized-repos` primitive applied to the root: **hex-keyed** (`Buffer.from(org,'utf8').hex`, never
+    `slug` — collision = cross-org activation inheritance), **purged by `removeorg`**, and activation
+    fires **iff `realpath(def.repo)` is in the org's recorded set** — a *value* match, not a name-keyed
+    boolean. This kills the **delete→recreate** vector: `removeorg{X}` then `defineOrg{X, /victim}`
+    can't inherit activation because `/victim` ≠ the recorded realpath, even if a purge is ever missed.
+  - **CLI `team up` is genuinely trusted** (a local TTY frame a browser can't forge onto the control
+    socket) → it activates directly. **The browser create is NOT** — it arrives as the same control-
+    socket frame as a forgery, marked "human" only by the CSRF token — so browser **activation is a
+    separate explicit human gesture on the pinned root** ("Activate project rooted at /X? [Confirm]",
+    the Telegram-Confirm shape), never implied by the create POST. One gesture, trivial for a real
+    root; the friction only bites an attacker or a stale/grandfathered root.
+
+**Guard #2 — persona → host-authoritative record.** `rosterFromDef` re-reads `team.json` from the
+container-writable repo for persona text on every relaunch/addmember (`team.js:632-637`) → a peer can
+inject another member's `--append-system-prompt`. Fix mirrors identity/mount/cage: carry persona in the
+daemon def (persisted, never re-read from a mounted file). *(Moving `team.json` to the store does NOT
+fix it — the store slice is mounted rw at `/mrc`.)*
+
+**Guard #3 — authenticate the control socket (`#6`).** `control.listen` on `127.0.0.1` has no app-layer
+auth (`register` verifies a secret; the control handler doesn't). Bounded today only by the firewall
+keeping *containers* off host ports (exposure = host-local). The create-flow turns this socket into a
+durable **mount-any-path amplifier**, so host-local-only stops being acceptable — add the same secret
+handshake `register` uses. **Ships together with guard #1**, since the trusted/untrusted origin
+distinction leans on an authenticated caller.
+
+**Create-flow hardening (folds into the UX):** make the repo input a **validated directory chooser**,
+not free text — drops the first-pin severity from primary → defense-in-depth by removing the
+CSRF-sets-`repo=/etc` path at the source. The inert-pin gate holds regardless.
 
 ## 11. Open / decide-by-using
 
