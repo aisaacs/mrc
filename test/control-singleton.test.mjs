@@ -12,13 +12,13 @@ import { reconcileControlClaim } from '../src/proxies/control-singleton.js'
 
 const GRACE = 5_000
 const BACKSTOP = 172_800_000
-const base = { socketListening: false, claimExists: true, pidAlive: true, claimAgeMs: 1_000, bootGraceMs: GRACE, backstopMs: BACKSTOP }
+const base = { socketHealthy: false, claimExists: true, pidAlive: true, claimAgeMs: 1_000, bootGraceMs: GRACE, backstopMs: BACKSTOP }
 
 test('a live LISTENER on the socket → DEFER, unconditionally (the mount-oracle positive dominates)', () => {
   // connect() succeeds ⟺ a daemon is serving control → never take over, even if the claim file looks stale/dead.
-  assert.equal(reconcileControlClaim({ ...base, socketListening: true }), 'defer')
-  assert.equal(reconcileControlClaim({ ...base, socketListening: true, pidAlive: false }), 'defer')
-  assert.equal(reconcileControlClaim({ ...base, socketListening: true, claimAgeMs: BACKSTOP + 1 }), 'defer')
+  assert.equal(reconcileControlClaim({ ...base, socketHealthy: true }), 'defer')
+  assert.equal(reconcileControlClaim({ ...base, socketHealthy: true, pidAlive: false }), 'defer')
+  assert.equal(reconcileControlClaim({ ...base, socketHealthy: true, claimAgeMs: BACKSTOP + 1 }), 'defer')
 })
 
 test('no claim file + nothing listening → CLAIM (free)', () => {
@@ -52,5 +52,5 @@ test('48h backstop (pid alive, past backstop) → REAP+CLAIM even if the boot-gr
 
 test('the secondary reaper requires BOTH past-grace AND not-listening — a listener past grace still defers', () => {
   // guards against the reaper firing on a live-but-slow owner: if it IS listening, defer regardless of age/pid.
-  assert.equal(reconcileControlClaim({ ...base, socketListening: true, claimAgeMs: GRACE + 1 }), 'defer')
+  assert.equal(reconcileControlClaim({ ...base, socketHealthy: true, claimAgeMs: GRACE + 1 }), 'defer')
 })
