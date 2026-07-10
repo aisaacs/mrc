@@ -2,6 +2,7 @@
 // discovery → bridge → classify→execute (pending/confirm/authorized/unauthorized) + update_id dedup,
 // with an injected fetch standing in for Telegram. The trust gate (from.id) is exercised end-to-end.
 import test, { afterEach } from 'node:test'
+import { controlSecret } from '../src/rooms.js'
 import assert from 'node:assert/strict'
 import net from 'node:net'
 import os from 'node:os'
@@ -82,7 +83,7 @@ test('daemon telegram: /start → pending → dashboard confirm → linked; auth
   const norm = parseRoster({ org: 'anigame', repo: TMP_HOME, teams: [{ name: 'core', members: [
     { role: 'architect', backend: 'claude', name: 'roland', lead: true },
   ] }] }, {})
-  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
 
   // 1) A /start from user 555 → recorded as pending, bot replies the pairing welcome, NOT bound.
   tg.queue.push([upd(1, 555, '/start')])
@@ -145,7 +146,7 @@ test('daemon telegram step 4: question→push, reply→answer + H4 edit, stale r
   const norm = parseRoster({ org: 'shop', repo: TMP_HOME, teams: [{ name: 'core', members: [
     { role: 'architect', backend: 'claude', name: 'roland', lead: true },
   ] }] }, {})
-  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
 
   // pin user 555
   tg.queue.push([upd(1, 555, '/start')]); await sleep(200)
@@ -199,7 +200,7 @@ test('daemon #13: removeorg durably forgets a project (survives restart) and pur
   const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }), tgFetch: tg.fetchFn, tgToken: { anigame: 'BOT:TOKEN', shop: 'BOT:TOKEN', doomed: 'BOT:TOKEN' } })
 
   const norm = parseRoster({ org: 'doomed', repo: TMP_HOME, teams: [{ name: 'core', members: [{ role: 'architect', backend: 'claude', name: 'roland', lead: true }] }] }, {})
-  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
   tg.queue.push([upd(1, 555, '/start')]); await sleep(200)
   await controlCall(controlPort, { action: 'tgconfirm', org: 'doomed', fromId: 555 })
   let st = await controlCall(controlPort, { action: 'team' })
@@ -207,7 +208,7 @@ test('daemon #13: removeorg durably forgets a project (survives restart) and pur
   assert.ok(st.telegram.doomed?.pinned, 'TG linked before delete')
 
   // Delete it.
-  assert.equal((await controlCall(controlPort, { action: 'removeorg', org: 'doomed' })).ok, true)
+  assert.equal((await controlCall(controlPort, { action: 'removeorg', secret: controlSecret(), org: 'doomed' })).ok, true)
   st = await controlCall(controlPort, { action: 'team' })
   assert.ok(!st.orgs.some((o) => o.org === 'doomed'), 'org gone from status')
   assert.ok(!st.members.some((m) => m.org === 'doomed'))
@@ -216,7 +217,7 @@ test('daemon #13: removeorg durably forgets a project (survives restart) and pur
   const tgFile = `${process.env.HOME}/.local/share/mrc/room-telegram.json`
   assert.ok(!fs.existsSync(tgFile) || !(JSON.parse(fs.readFileSync(tgFile, 'utf8')).orgs || {}).doomed, 'room-telegram.json purged of the org')
   // idempotent
-  assert.equal((await controlCall(controlPort, { action: 'removeorg', org: 'doomed' })).ok, true)
+  assert.equal((await controlCall(controlPort, { action: 'removeorg', secret: controlSecret(), org: 'doomed' })).ok, true)
   daemon.stop()
   await sleep(100)
 
@@ -244,7 +245,7 @@ test('daemon #14: a global process.env token/chat_id does NOT bleed to a token-l
     const tg = fakeTelegram()
     const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }), tgFetch: tg.fetchFn })   // NO tgToken: real orgs come from their own .env only
     const def = (org, repo) => parseRoster({ org, repo, teams: [{ name: 'core', members: [{ role: 'architect', backend: 'claude', name: 'roland', lead: true }] }] }, {})
-    for (const [org, repo] of [['projA', repoA], ['projB', repoB], ['projC', repoC]]) { const n = def(org, repo); await controlCall(controlPort, { action: 'defineOrg', def: { org: n.org, repo: n.repo, members: n.members, rooms: n.rooms } }) }
+    for (const [org, repo] of [['projA', repoA], ['projB', repoB], ['projC', repoC]]) { const n = def(org, repo); await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: n.org, repo: n.repo, members: n.members, rooms: n.rooms } }) }
     await sleep(150)
     const tgv = (await controlCall(controlPort, { action: 'team' })).telegram
 
@@ -273,7 +274,7 @@ test('daemon telegram (#21/#3): two orgs sharing one bot token → only one brid
   const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }), tgFetch: tg.fetchFn, tgToken: { first: 'SHARED:TOKEN', second: 'SHARED:TOKEN' } })
   const repoA = fs.mkdtempSync(`${os.tmpdir()}/mrc-sh1-`), repoB = fs.mkdtempSync(`${os.tmpdir()}/mrc-sh2-`)
   const def = (org, repo) => parseRoster({ org, repo, teams: [{ name: 'core', members: [{ role: 'architect', backend: 'claude', name: 'roland', lead: true }] }] }, {})
-  for (const [org, repo] of [['first', repoA], ['second', repoB]]) { const n = def(org, repo); await controlCall(controlPort, { action: 'defineOrg', def: { org: n.org, repo: n.repo, members: n.members, rooms: n.rooms } }) }
+  for (const [org, repo] of [['first', repoA], ['second', repoB]]) { const n = def(org, repo); await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: n.org, repo: n.repo, members: n.members, rooms: n.rooms } }) }
   await sleep(150)
   const tgv = (await controlCall(controlPort, { action: 'team' })).telegram
   assert.equal(tgv.first.warning, null, 'the first org claims the token — runs cleanly, no warning')
@@ -293,7 +294,7 @@ test('daemon telegram: a failed outbound push is NOT silent — surfaced in the 
   }
   const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }), tgFetch, tgToken: { shop: 'BOT:TOKEN' } })
   const norm = parseRoster({ org: 'shop', repo: TMP_HOME, teams: [{ name: 'core', members: [{ role: 'architect', backend: 'claude', name: 'roland', lead: true }] }] }, {})
-  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
   queue.push([upd(1, 555, '/start')]); await sleep(150)
   await controlCall(controlPort, { action: 'tgconfirm', org: 'shop', fromId: 555 })   // welcome send also "fails", but pin still set
 
@@ -318,7 +319,7 @@ test('daemon telegram (#24): the pushed question carries the SAME #N as the dash
   const tg = fakeTelegram()
   const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }), tgFetch: tg.fetchFn, tgToken: { shop: 'BOT:TOKEN' } })
   const norm = parseRoster({ org: 'shop', repo: TMP_HOME, teams: [{ name: 'core', members: [{ role: 'architect', backend: 'claude', name: 'roland', lead: true }] }] }, {})
-  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
   tg.queue.push([upd(1, 555, '/start')]); await sleep(150)
   await controlCall(controlPort, { action: 'tgconfirm', org: 'shop', fromId: 555 })
   const sock = net.connect(port, '127.0.0.1'); await new Promise((r) => sock.on('connect', r))
@@ -350,7 +351,7 @@ test('#56 daemon send_photo: territory image → confirmed chat; no-pin / outsid
   const norm = parseRoster({ org: 'shop', repo, teams: [{ name: 'core', territory: '.', members: [
     { role: 'engineer', backend: 'claude', name: 'brigitte', territory: 'client', lead: true },
   ] }] }, {})
-  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
 
   const sp = (over = {}) => controlCall(controlPort, { action: 'sendphoto', org: 'shop', handle: 'brigitte/claude', path: 'client/shot.png', ...over })
 
@@ -425,7 +426,7 @@ test('daemon telegram (#58): an HTML push rejected on formatting falls back to P
   const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }), tgFetch: fetchFn, tgToken: { shop: 'BOT:TOKEN' } })
 
   const norm = parseRoster({ org: 'shop', repo: TMP_HOME, teams: [{ name: 'core', members: [{ role: 'architect', backend: 'claude', name: 'roland', lead: true }] }] }, {})
-  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
   tg.queue.push([upd(1, 555, '/start')]); await sleep(200)
   await controlCall(controlPort, { action: 'tgconfirm', org: 'shop', fromId: 555 })
 

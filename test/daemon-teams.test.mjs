@@ -2,6 +2,7 @@
 // org over the control socket, connects member relay sockets, and exercises directed @delivery, the
 // @user inbox round-trip, and brake/resume — over the actual newline-JSON wire protocol.
 import test, { afterEach } from 'node:test'
+import { controlSecret } from '../src/rooms.js'
 import assert from 'node:assert/strict'
 import net from 'node:net'
 import os from 'node:os'
@@ -77,7 +78,7 @@ test('daemon team rooms: define org, directed delivery, @user round-trip, brake/
   const norm = parseRoster(roster, { rng: seededRng(1) })
 
   // 1) Define the org over the control socket.
-  const def = await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  const def = await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
   assert.equal(def.ok, true)
   assert.ok(def.rooms.includes(teamRoomId('shop', 'client')))
 
@@ -142,7 +143,7 @@ test('daemon team: a stale launch record reconciles to running:false so the GUI 
   const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
   try {
     const norm = parseRoster({ org: 'shop', repo: home, teams: [{ name: 'client', members: [{ role: 'architect', backend: 'claude', lead: true }] }] }, {})
-    await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+    await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
     const launchFile = `${home}/.local/share/mrc/team-launches.json`
     const running = async () => (await controlCall(controlPort, { action: 'team' })).launch.find((l) => l.org === 'shop')?.running
 
@@ -171,7 +172,7 @@ test('daemon containment: two orgs sharing a handle bind to the RIGHT org via th
   ] }] }, { rng: seededRng(1) })
   for (const org of ['alpha', 'beta']) {
     const n = mkOrg(org)
-    const d = await controlCall(controlPort, { action: 'defineOrg', def: { org: n.org, repo: n.repo, members: n.members, rooms: n.rooms } })
+    const d = await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: n.org, repo: n.repo, members: n.members, rooms: n.rooms } })
     assert.equal(d.ok, true)
   }
 
@@ -210,7 +211,7 @@ test('daemon #11: the ask_user `kind` survives say→route→inbox so questions 
     { role: 'architect', backend: 'claude', name: 'roland', lead: true },
     { role: 'engineer', backend: 'claude', name: 'ludivine' },
   ] }] }, { rng: seededRng(1) })
-  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
 
   const eng = client(port)
   await eng.ready
@@ -254,7 +255,7 @@ test('daemon #16: the @user inbox survives a daemon restart (no loss, no resurre
   const norm = parseRoster({ org: 'shop', repo: process.env.HOME, teams: [{ name: 'core', members: [
     { role: 'architect', backend: 'claude', name: 'roland', lead: true },
   ] }] }, { rng: seededRng(1) })
-  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
 
   const lead = client(port); await lead.ready
   registerMember(lead, { sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop' })
@@ -310,7 +311,7 @@ test('#3/AUDIT: a member cannot bind under a DIFFERENT handle than its pinned se
     { role: 'critic', backend: 'claude', name: 'pierre' },
   ] }] }
   const norm = parseRoster(roster, { rng: seededRng(1) })
-  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
 
   // roland's REAL verified session (its own pinned id + secret, classifySession 'normal') claims pierre's handle
   // → a forge → REFUSED, because the bind handle is derived from the pinned id, not the wire f.memberHandle.
@@ -338,7 +339,7 @@ test('#3/AUDIT: a verified-normal NON-member cannot bind a member slot via a wir
     { role: 'critic', backend: 'claude', name: 'pierre' },
   ] }] }
   const norm = parseRoster(roster, { rng: seededRng(1) })
-  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
 
   // The ATTACKER is a verified-normal NON-member: a PLAIN conversation UUID (never sha1(org\0handle)), with its
   // OWN secret on record (every mrc session gets one → verifiedNormal true → R1 passes on its own secret). It crafts
@@ -370,7 +371,7 @@ test('#38: a register presenting a reserved memberSessionId WITHOUT a verified-m
     { role: 'critic', backend: 'claude', name: 'pierre' },
   ] }] }
   const norm = parseRoster(roster, { rng: seededRng(1) })
-  await controlCall(controlPort, { action: 'defineOrg', def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
 
   // The attacker computes pierre's PUBLIC derived id (sha1(org\0handle)) and registers with it BEFORE the real pierre
   // launches — no record on disk, so R1 has no secret to check. #38 refuses it so it can't squat the future slot.

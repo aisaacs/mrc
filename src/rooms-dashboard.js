@@ -12,7 +12,8 @@ import { join, dirname, extname } from 'node:path'
 import { spawn } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { ASSET_CONTENT_TYPES, safeAssetPath } from './safe-path.js'
-import { roomsRoot, roomDir, listRooms, readCatchups, updateCatchup, readTranscript, atomicWriteFileSync } from './rooms.js'
+import { roomsRoot, roomDir, listRooms, readCatchups, updateCatchup, readTranscript, atomicWriteFileSync, loadLaunches, controlSecret } from './rooms.js'
+import { resolveTtydRequest, ttydSecurityHeaders } from './ttyd-proxy.js'   // guard-4: ttyd unix-socket + same-origin proxy
 import { findFreePort } from './ports.js'
 import { parseRoster, validateRoster, editPersona } from './teams/roster.js'
 import { ROLES } from './teams/personas.js'
@@ -195,6 +196,42 @@ function rejectRead(req) {
   return null
 }
 
+// ── guard-4: the ttyd terminal proxy. ttyd listens on a per-member UNIX SOCKET (a browser can't open one → the
+// CSWSH dies at the transport); the dashboard proxies /ttyd/<org>/<handle> to it SAME-ORIGIN so the dashboard's
+// Origin/Host gate + frame-ancestors protect the writable terminal. resolveTtydRequest (ttyd-proxy.js) does the
+// gate→resolve(registry-KEY, SSRF-safe)→within-dir belt BEFORE any net.connect. ──
+const ttydSockDir = () => join(homedir(), '.local', 'share', 'mrc', 'sockets')   // matches team.js socketDir()
+const ttydDeps = () => ({ launches: loadLaunches(), sockDir: ttydSockDir(), originIsSelf, hostIsSelf })
+
+// Proxy a /ttyd HTTP request to the member's ttyd unix socket, injecting frame-ancestors onto the framable response.
+function proxyTtydHttp(req, res, sock, rest, search) {
+  const up = http.request({ socketPath: sock, path: '/' + rest + (search || ''), method: req.method, headers: { ...req.headers, host: 'ttyd' } }, (ur) => {
+    try { res.writeHead(ur.statusCode || 502, { ...ur.headers, ...ttydSecurityHeaders() }); ur.pipe(res) } catch { try { res.end() } catch {} }   // frame-ancestors OVERRIDES whatever ttyd emitted
+  })
+  up.on('error', () => { try { if (!res.headersSent) res.writeHead(502, ttydSecurityHeaders()); res.end() } catch {} })
+  req.pipe(up)
+}
+
+// Proxy a /ttyd WebSocket UPGRADE to the member's ttyd unix socket. Runs on the server's SEPARATE 'upgrade' event
+// (a request-handler-only gate would be silently bypassed here). Gate→resolve→belt, THEN connect; on ANY reject
+// (incl. an unknown member → null) socket.destroy() and RETURN — connect is NEVER reached. Teardown destroys BOTH
+// on either close/error. `connect`/`decide` are injectable so a test can spy that connect is never called on reject.
+export function proxyTtydUpgrade(req, socket, head, { connect = net.connect, decide = (r) => resolveTtydRequest(r, ttydDeps()) } = {}) {
+  let url; try { url = new URL(req.url, 'http://127.0.0.1') } catch { try { socket.destroy() } catch {}; return }
+  if (!url.pathname.startsWith('/ttyd/')) { try { socket.destroy() } catch {}; return }   // the dashboard has no other WS upgrades
+  const dec = decide(req)
+  if (dec.reject) { try { socket.destroy() } catch {}; return }   // gate/SSRF/belt failed → drop, NEVER connect
+  let upstream
+  const teardown = () => { try { socket.destroy() } catch {}; try { upstream?.destroy() } catch {} }
+  socket.on('error', teardown); socket.on('close', teardown)
+  upstream = connect(dec.sock, () => {
+    const line = `${req.method} /${dec.rest}${url.search} HTTP/1.1\r\n` +
+                 Object.entries(req.headers).map(([k, v]) => `${k}: ${v}\r\n`).join('') + '\r\n'
+    try { upstream.write(line); if (head && head.length) upstream.write(head); socket.pipe(upstream); upstream.pipe(socket) } catch { teardown() }
+  })
+  upstream.on('error', teardown); upstream.on('close', teardown)
+}
+
 async function handle(req, res) {
   const url = new URL(req.url, 'http://127.0.0.1')
   try {
@@ -203,6 +240,13 @@ async function handle(req, res) {
     if (req.method !== 'GET' && req.method !== 'HEAD') {
       const bad = rejectStateChange(req)
       if (bad) return sendJSON(res, bad.code, { ok: false, error: bad.error })
+    }
+    // guard-4: proxy /ttyd/<org>/<handle>/* to the member's ttyd unix socket (same-origin terminal). Its own
+    // Origin/Host gate + registry-KEY resolve + within-dir belt run inside resolveTtydRequest, before any connect.
+    if (url.pathname.startsWith('/ttyd/')) {
+      const dec = resolveTtydRequest(req, ttydDeps())
+      if (dec.reject) return sendJSON(res, dec.reject.code, { ok: false, error: dec.reject.reason })
+      return proxyTtydHttp(req, res, dec.sock, dec.rest, url.search)
     }
     // Team builder: preview (pure), save team.json to a repo, or define rooms on the daemon.
     if (req.method === 'POST' && (url.pathname === '/api/team-preview' || url.pathname === '/api/team-save' || url.pathname === '/api/team-define')) {
@@ -227,7 +271,10 @@ async function handle(req, res) {
         // team-define: push the org to the daemon so its rooms exist (does NOT launch containers).
         // Pass the raw roster too, so the daemon can later launch this defined org from the GUI.
         const def = { org: pv.org, repo: pv.repo, members: pv.members, rooms: pv.rooms }
-        return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, 'defineOrg', { def, roster: j.roster }))
+        // guard-1: the human's Build→Define (CSRF+Origin+Host-gated already) → trusted:true (first-pins the PICKED
+        // repo), activate:false (INERT — activation is the separate LAUNCH gesture). Carry the host-only secret so
+        // the daemon's capOk honors the capability (the dashboard runs in the daemon's uid → it can read the 0600 file).
+        return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, 'defineOrg', { def, roster: j.roster, trusted: true, activate: false, secret: controlSecret() }))
       })
       return
     }
@@ -277,12 +324,17 @@ async function handle(req, res) {
       req.on('end', async () => {
         let j; try { j = JSON.parse(body || '{}') } catch { return sendJSON(res, 400, { ok: false, error: 'bad json' }) }
         const cp = daemonMeta()?.controlPort
-        if (url.pathname === '/api/team-launch') return sendJSON(res, 200, await ctrl(cp, 'launchteam', { roster: j.roster, org: j.org, repo: j.repo }))
-        if (url.pathname === '/api/team-stop') return sendJSON(res, 200, await ctrl(cp, 'stopteam', { org: j.org }))
-        if (url.pathname === '/api/team-delete') return sendJSON(res, 200, await ctrl(cp, 'removeorg', { org: j.org }))   // #13: forget the project (no disk deletion)
-        if (url.pathname === '/api/team-add-member') return sendJSON(res, 200, await ctrl(cp, 'addmember', { org: j.org, team: j.team, role: j.role, backend: j.backend, territory: j.territory }))
-        if (url.pathname === '/api/team-remove-member') return sendJSON(res, 200, await ctrl(cp, 'removemember', { org: j.org, handle: j.handle }))
-        if (url.pathname === '/api/team-relaunch-member') return sendJSON(res, 200, await ctrl(cp, 'relaunchmember', { org: j.org, handle: j.handle }))   // #41: orphan recovery (kill-first → respawn)
+        // guard-1: these control-plane actions ACTIVATE / SPAWN / clear a pin — capabilities. The in-daemon dashboard
+        // (already CSRF+Origin+Host-gated) carries the host-only secret; the daemon downgrades any assertion without it.
+        const sec = controlSecret()
+        // guard-1: the human's Launch click (CSRF-gated) carries the secret; launchteam first-pins the PICKED repo +
+        // activates in one gesture (no separate Define step — fits the direct-GUI Build→Launch, keeps §0's bar).
+        if (url.pathname === '/api/team-launch') return sendJSON(res, 200, await ctrl(cp, 'launchteam', { roster: j.roster, org: j.org, repo: j.repo, secret: sec }))
+        if (url.pathname === '/api/team-stop') return sendJSON(res, 200, await ctrl(cp, 'stopteam', { org: j.org, secret: sec }))
+        if (url.pathname === '/api/team-delete') return sendJSON(res, 200, await ctrl(cp, 'removeorg', { org: j.org, secret: sec }))   // #13: forget the project (no disk deletion)
+        if (url.pathname === '/api/team-add-member') return sendJSON(res, 200, await ctrl(cp, 'addmember', { org: j.org, team: j.team, role: j.role, backend: j.backend, territory: j.territory, secret: sec }))
+        if (url.pathname === '/api/team-remove-member') return sendJSON(res, 200, await ctrl(cp, 'removemember', { org: j.org, handle: j.handle, secret: sec }))
+        if (url.pathname === '/api/team-relaunch-member') return sendJSON(res, 200, await ctrl(cp, 'relaunchmember', { org: j.org, handle: j.handle, secret: sec }))   // #41: orphan recovery (kill-first → respawn)
         if (url.pathname === '/api/kill-session') return sendJSON(res, 200, await ctrl(cp, 'killsession', { id: j.id }))
         return sendJSON(res, 404, { ok: false, error: 'unknown team action' })
       })
@@ -450,6 +502,7 @@ export async function startDashboard({ port, onActivity, subscribe } = {}) {
   // onActivity fires per request; the daemon uses it as a keep-alive so an open dashboard
   // prevents idle-shutdown (you won't lose the view mid-browse).
   const server = http.createServer((req, res) => { try { onActivity?.() } catch {} handle(req, res) })
+  server.on('upgrade', (req, socket, head) => { try { onActivity?.() } catch {} proxyTtydUpgrade(req, socket, head) })   // guard-4: WS terminal proxy (separate handler — a request-handler gate would be bypassed here)
   await new Promise((resolve, reject) => { server.once('error', reject); server.listen(free, '127.0.0.1', resolve) })
   return { server, port: free, url: `http://127.0.0.1:${free}/` }
 }

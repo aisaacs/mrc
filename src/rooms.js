@@ -1,7 +1,8 @@
 // Room-directory manager (host-side). Rooms live at ~/.local/share/mrc/rooms/<roomId>/,
 // distinct from each repo's project-local .mrc/. Each room holds consensus.md (a living shared
 // summary), thread.log (append-only transcript), and room.json (metadata).
-import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, appendFileSync, unlinkSync, renameSync, openSync, writeSync, fsyncSync, closeSync, statSync, rmSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, appendFileSync, unlinkSync, renameSync, openSync, writeSync, fsyncSync, closeSync, statSync, rmSync, chmodSync } from 'node:fs'
+import { randomBytes } from 'node:crypto'
 import { homedir } from 'node:os'
 import { join, basename, dirname } from 'node:path'
 
@@ -264,6 +265,21 @@ export function saveTgStates(map) {
 // can't take down the daemon), read by the daemon to report launch state to the dashboard.
 const launchesFile = () => join(daemonDir(), 'team-launches.json')
 export function loadLaunches() { return loadJsonFile(launchesFile(), {}) || {} }
+
+// guard-1: the host-only CONTROL-CAPABILITY secret. `trusted`/`activate` on a control frame are CAPABILITIES
+// (first-pin an org root; read its `.env` + bridge it) — NOT data a plain wire flag can assert. A frame asserting
+// them must PROVE it with this secret; the daemon downgrades an unproven assertion to false. A cross-uid local
+// process (a compromised `_www`/homebrew service reaching the 127.0.0.1 control port with a RAW frame — the belt
+// only eats HTTP preambles, not a bare non-browser JSON frame) can't read the 0600 file → can't forge trust. The
+// daemon MINTS it (mint:true); same-uid callers (CLI `mrc team up`, the in-daemon dashboard) READ it (mint:false).
+const controlSecretFile = () => join(daemonDir(), 'control-secret')
+export function controlSecret({ mint = false } = {}) {
+  try { const t = readFileSync(controlSecretFile(), 'utf8').trim(); if (/^[0-9a-f]{64}$/.test(t)) { try { chmodSync(controlSecretFile(), 0o600) } catch {}; return t } } catch {}
+  if (!mint) return null                                       // read-only caller: absent → null (assertion downgrades to false)
+  const t = randomBytes(32).toString('hex')
+  try { mkdirSync(daemonDir(), { recursive: true }); writeFileSync(controlSecretFile(), t, { mode: 0o600 }); chmodSync(controlSecretFile(), 0o600) } catch {}
+  return t
+}
 export function saveLaunch(org, info) {
   const all = loadLaunches(); all[org] = { ...info, at: Date.now() }
   try { atomicWriteFileSync(launchesFile(), JSON.stringify(all, null, 2)) } catch {}
@@ -273,8 +289,10 @@ export function removeLaunch(org) {
   try { atomicWriteFileSync(launchesFile(), JSON.stringify(all, null, 2)) } catch {}
 }
 // #34: per-member ttyd registry. A launch record is now
-//   { repo, members: { <handle>: { ttydPort, ttydPid, containerId } }, at }
-// (legacy records carrying a top-level `session`/`ttydPort` and no `members` read as "not launched" →
+//   { repo, members: { <handle>: { sock, dtachPid, ttydSock, ttydPid, containerId } }, at }
+// (guard-4: `ttydSock` is the ttyd UNIX-socket path — the dashboard proxies /ttyd/<org>/<handle> to it same-origin;
+// no `ttydPort` any more, so no browser-reachable TCP terminal listener. Legacy port-only records read as "not
+// launched" →
 // the team shows ▶ Resume and a relaunch writes the new shape; that's the soft migration.)
 export function setMemberLaunch(org, handle, info) {
   const all = loadLaunches()

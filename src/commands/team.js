@@ -14,7 +14,7 @@ import net from 'node:net'
 import { spawn, execFileSync, spawnSync } from 'node:child_process'
 import { memberSessionId } from '../teams/session-id.js'
 import { atomicWriteFileSync } from '../rooms.js'
-import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync } from 'node:fs'
+import { mkdirSync, writeFileSync, existsSync, readFileSync, unlinkSync, chmodSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, resolve, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -29,7 +29,7 @@ import { PRESETS, listPresets, buildPreset } from '../teams/presets.js'
 import { runWorkerExec, volumeName } from '../docker.js'
 import { loadEnv, memberRepoEnvKey } from '../config.js'   // #49 cross-repo (Pierre Q4): member-secret MINT (caged member → no repo .env)
 import { findFreePort } from '../ports.js'
-import { loadLaunches, saveLaunch, setMemberLaunch, removeMemberLaunch, removeLaunch } from '../rooms.js'
+import { loadLaunches, saveLaunch, setMemberLaunch, removeMemberLaunch, removeLaunch, controlSecret } from '../rooms.js'
 
 const MRC_JS = fileURLToPath(new URL('../../mrc.js', import.meta.url))
 const daemonMetaPath = () => join(homedir(), '.local', 'share', 'mrc', 'room-daemon.json')
@@ -211,7 +211,10 @@ export async function pushOrg(norm) {
   const { ensureRoomDaemon } = await import('./pair.js')
   const portBase = Number(process.env.MRC_PORT_BASE) || 7722
   const daemon = await ensureRoomDaemon({ relayPort: portBase, notifyPort: 0 })   // #50: ensureRoomDaemon takes relayPort (the fixed constant), not portBase
-  const r = await controlCall(daemon.controlPort, { action: 'defineOrg', def: orgDef(norm) })
+  // guard-1: CLI `team up`/`define` is a human terminal act → it MAY first-pin the argv the human typed AND activate.
+  // Prove the capability with the host-only secret (read the 0600 file — same-uid; a cross-uid process can't) so a
+  // raw wire frame can't assert trusted/activate. The daemon (up first via ensureRoomDaemon) has minted it.
+  const r = await controlCall(daemon.controlPort, { action: 'defineOrg', def: orgDef(norm), trusted: true, activate: true, secret: controlSecret() })
   return { ok: !!r?.ok, controlPort: daemon.controlPort, daemonPort: daemon.port, rooms: r?.rooms || [], error: r?.error }
 }
 
@@ -452,6 +455,9 @@ const memberShellCmd = (repoPath, m, rosterPath, org) =>
 const socketDir = () => join(homedir(), '.local', 'share', 'mrc', 'sockets')
 const sockSlug = (s) => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '')
 const memberSock = (org, handle) => join(socketDir(), `${sockSlug(org)}-${sockSlug(handle)}.dtach`)
+// guard-4: ttyd LISTENS on this per-member UNIX SOCKET (not a TCP port) — a browser can't open a unix socket, so
+// the Cross-Site WebSocket Hijack dies at the transport; the dashboard proxies /ttyd/<org>/<handle> to it same-origin.
+export const memberTtydSock = (org, handle) => join(socketDir(), `${sockSlug(org)}-${sockSlug(handle)}.ttyd`)
 
 // #34: a member runs inside a persistent `dtach -n` MASTER (holds the session detached so it survives the
 // browser disconnecting / a console switch / the dashboard closing — what tmux used to do), with a thin
@@ -461,6 +467,7 @@ const memberSock = (org, handle) => join(socketDir(), `${sockSlug(org)}-${sockSl
 function spawnMemberSession(org, handle, port, shellCmd) {
   const sock = memberSock(org, handle)
   mkdirSync(dirname(sock), { recursive: true })
+  try { chmodSync(dirname(sock), 0o700) } catch {}   // guard-4: the socket dir is 0700 — the LOAD-BEARING perm (no other local user can traverse to a member's ttyd/dtach socket, whatever its own mode)
   // #41 unlink-guard (defense-in-depth, AT THE SOURCE — covers every caller incl. addMember): NEVER unlink
   // a socket whose dtach master is still alive. The old unconditional unlink, hit on a relaunch re-entry,
   // orphaned the live master — its container keeps running + reads "ready" but the terminal becomes forever
@@ -471,10 +478,15 @@ function spawnMemberSession(org, handle, port, shellCmd) {
   // persistent master: holds the member detached, eager-started (runs even before a browser attaches).
   const master = spawn('dtach', ['-n', sock, '-E', '-r', 'winch', 'sh', '-c', shellCmd], { detached: true, stdio: 'ignore', env })
   master.unref()
-  // viewer: ttyd attaches to the dtach session; a reconnect re-attaches the SAME session.
-  const ttyd = spawn('ttyd', ['-W', '-i', '127.0.0.1', '-p', String(port), 'dtach', '-a', sock, '-E', '-r', 'winch'], { detached: true, stdio: 'ignore', env })
+  // viewer: ttyd attaches to the dtach session; a reconnect re-attaches the SAME session. guard-4: ttyd listens on
+  // a UNIX SOCKET (`-i <ttydSock>`) — NOT a TCP port (`-p` is GONE, so NO browser-reachable TCP listener survives);
+  // the dashboard proxies it same-origin.
+  const ttydSock = memberTtydSock(org, handle)
+  try { unlinkSync(ttydSock) } catch {}   // safe: we hold this member's dtach master (checked above) → this ttyd sock is ours-stale
+  const ttyd = spawn('ttyd', ['-W', '-i', ttydSock, 'dtach', '-a', sock, '-E', '-r', 'winch'], { detached: true, stdio: 'ignore', env })
   ttyd.unref()
-  return { sock, dtachPid: master.pid, ttydPort: port, ttydPid: ttyd.pid, containerId: null }
+  try { chmodSync(ttydSock, 0o600) } catch {}   // belt (best-effort; ttyd binds async so this may pre-empt — dir-0700 above is the real gate)
+  return { sock, dtachPid: master.pid, ttydSock, ttydPid: ttyd.pid, containerId: null }
 }
 
 // #34: launch each live member as its own persistent dtach session + ttyd viewer. Reuses a member's
@@ -538,7 +550,10 @@ export function memberTtyds(org, { repo, onlineHandles, withinGrace } = {}) {
   const out = {}
   for (const [h, info] of Object.entries(mems)) {
     const state = classifyTerminal(info, { containerAlive: liveContainers.has(h), online: onlineHandles?.has(h), withinGrace })
-    out[h] = { ttydPort: info.ttydPort, ttydUrl: info.ttydPort ? `http://127.0.0.1:${info.ttydPort}/` : null, state }
+    // guard-4: the terminal URL is now the SAME-ORIGIN proxy path (`/ttyd/<org>/<handle>/`) the dashboard serves —
+    // NOT a `http://127.0.0.1:<port>/` TCP URL (that residual would re-expose the CSWSH). Relative → resolves
+    // against the dashboard's own origin, so the dashboard's Origin/Host gate + frame-ancestors protect it.
+    out[h] = { ttydUrl: info.ttydSock ? `/ttyd/${encodeURIComponent(org)}/${encodeURIComponent(h)}/` : null, state }
   }
   return out
 }
@@ -556,6 +571,7 @@ export function killTeamSession(org) {
     if (killHostPlumbingForSock(sock)) any = true
     dockerKillMember(org, handle)   // #49 multi-repo: kill by mrc.project=<org>, not rec.repo (finds a cross-repo member's container)
     try { unlinkSync(sock) } catch {}
+    try { unlinkSync(memberTtydSock(org, handle)) } catch {}   // guard-4: also reap the ttyd unix socket (killHostPlumbingForSock already killed ttyd via its `dtach -a` cmdline match)
   }
   // #41: clear the launch record on an INTENTIONAL stop (matches the dashboard "Stop team" path), so a
   // deliberately-`down`ed team reads launchable immediately instead of a stale `building`/`starting` for
@@ -601,7 +617,7 @@ export async function startSoloSession(repoPath) {
   if (!res.ok) return { ok: false, error: res.error || 'daemon unreachable' }
   const existing = (loadLaunches()[norm.org] || {}).members || {}
   const prev = existing[SOLO_HANDLE]
-  if (sessionAlive(prev)) return { ok: true, sock: prev.sock, ttydPort: prev.ttydPort, already: true }   // idempotent relaunch
+  if (sessionAlive(prev)) return { ok: true, sock: prev.sock, already: true }   // idempotent relaunch
   // #41 guard: never spawn over a live-but-unservable master (that orphans it). Recovery is a dashboard Relaunch.
   if (masterAliveForSock(memberSock(norm.org, SOLO_HANDLE))) return { ok: false, error: 'a solo session master is already live but unservable — Relaunch from the dashboard (it stops the stale master first)' }
   // THIN outer (Pierre seam-a): do NOT start Colima or build the image here — the INNER `mrc --member` is a
@@ -613,7 +629,7 @@ export async function startSoloSession(repoPath) {
   try { info = spawnMemberSession(norm.org, SOLO_HANDLE, port, soloShellCmd(repoPath)) }
   catch (e) { return { ok: false, error: String(e?.message || e) } }
   saveLaunch(norm.org, { repo: repoPath, members: { [SOLO_HANDLE]: info } })
-  return { ok: true, sock: info.sock, ttydPort: info.ttydPort }
+  return { ok: true, sock: info.sock }
 }
 
 // Reconstruct a PINNED team.json from a normalized org def — every member keeps its assigned name —
@@ -684,6 +700,7 @@ export function killMember(org, handle) {
   killHostPlumbingForSock(sock)
   dockerKillMember(org, handle)   // #49 multi-repo: kill by mrc.project=<org>, not rec.repo (finds a cross-repo member's container)
   try { unlinkSync(sock) } catch {}
+  try { unlinkSync(memberTtydSock(org, handle)) } catch {}   // guard-4: reap the ttyd unix socket too
   removeMemberLaunch(org, handle)
   return true
 }
@@ -859,14 +876,14 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
       const r = await startTeamSession(norm, repoPath, { rosterPath: path })
       if (!r.ok) { console.error(`  ✗ ${r.error}`); process.exit(1) }
       console.log(r.already
-        ? '  ◎ team already running — its member terminals are up:'
-        : `  ◎ Launched ${live.length} member(s), each in its own ttyd terminal:`)
+        ? '  ◎ team already running — its member terminals are up in the dashboard Console:'
+        : `  ◎ Launched ${live.length} member(s), each with its own terminal in the dashboard Console:`)
       for (const m of live) {
-        const port = r.members?.[m.handle]?.ttydPort
-        const url = port ? `http://127.0.0.1:${port}/` : '(no terminal)'
-        console.log(`      @${m.first}/${m.backend}  (${m.roleLabel}${m.lead ? ', lead' : ''}, ${m.team})  →  ${url}`)
+        console.log(`      @${m.first}/${m.backend}  (${m.roleLabel}${m.lead ? ', lead' : ''}, ${m.team})`)
       }
-      console.log('\n  Each member terminal is embedded in the dashboard Console (mrc rooms dashboard).')
+      // guard-4: terminals are served ONLY same-origin behind the dashboard proxy now (ttyd listens on a unix
+      // socket, no TCP port) — a stray page can no longer reach them directly. Open them via the dashboard.
+      console.log('\n  Open them:  mrc dashboard   (each terminal is embedded there — no direct URL by design).')
       console.log('  Each member accepts the one-time Channels prompt on first launch.')
       return
     }

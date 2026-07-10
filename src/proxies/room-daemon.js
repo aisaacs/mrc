@@ -13,7 +13,7 @@ import { homedir } from 'node:os'
 import { join, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { ensureRoom, appendThread, appendTranscript, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadLaunches, removeLaunch, loadTgStates, saveTgStates, loadInbox, saveInbox, loadUserPrefs, saveUserPrefs, roomsRoot, removeRoomDir } from '../rooms.js'
+import { ensureRoom, appendThread, appendTranscript, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadLaunches, removeLaunch, loadTgStates, saveTgStates, loadInbox, saveInbox, loadUserPrefs, saveUserPrefs, roomsRoot, removeRoomDir, controlSecret } from '../rooms.js'
 import { createRoomEngine } from '../teams/room-engine.js'
 import { createWorkerRunner, workerLogPath, parseWorkerLog } from '../teams/worker-runner.js'
 import { memberSessionId } from '../teams/session-id.js'
@@ -25,6 +25,7 @@ import { canonicalWriteTarget } from '../mount-guard.js'   // #49: realpath-cano
 import { resolveTerritoryImage } from '../safe-path.js'   // #56: shared dual-containment (repo + territory) image guard
 import { leadsRoomId } from '../teams/roster.js'
 import { repoEnvKeyStrict } from '../config.js'
+import { resolveOrgRootForOrg, recordActivatedRoot, isActivatedRoot, clearOrgRoot, clearActivatedRoots } from '../teams/repo-auth.js'   // guard-1: write-once org root + pin/activate separation
 
 const MRC_JS = fileURLToPath(new URL('../../mrc.js', import.meta.url))
 
@@ -409,14 +410,24 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   }
   rebuildSessionIndex()
   try { engine.restoreInbox(loadInbox()) } catch {}   // #16: restore the @user inbox AFTER orgs/rooms exist (sets inboxSeq past max id → no collision)
-  function defineOrg(def) {
+  // guard-1: the org root is pinned WRITE-ONCE (the chokepoint loads the pin internally — no caller can pass a
+  // null pin and re-root), and the define-time SIDE EFFECTS (the `.env` read + Telegram bridge in ensureTgForOrg,
+  // the writeTeamFile) fire ONLY when the root is ACTIVATED. `trusted` = may first-pin (gesture-scoped: ONLY the
+  // CLI argv the human typed + the dashboard picker-CREATE — never launchteam-of-existing/relaunch/addmember/wire/
+  // boot, so a cleared pin can't be re-rooted by a background action reading orgDef.repo). `activate` = a trusted
+  // activate gesture (CLI `team up`, the dashboard Launch click) → recordActivatedRoot + run the side effects.
+  function defineOrg(def, { trusted = false, activate = false } = {}) {
+    const repo = resolveOrgRootForOrg(def.org, def.repo, { trusted })   // write-once; an untrusted first-pin THROWS before anything persists (the poisoned-define never lands)
+    def = { ...def, repo }
     engine.defineOrg(def)
     for (const r of (def.rooms || [])) ensureRoom(r.roomId, def.org || '', r.team || '')
     orgDefs.set(def.org, def); saveOrgs([...orgDefs.values()]); rebuildSessionIndex()
-    try { ensureTgForOrg(def) } catch (e) { daemonLog(`[tg] ensure ${def.org}: ${e?.message || e}`) }
-    // Keep the repo's team.json in sync with the live project. (teamMod is null during the startup
-    // restore, so we don't rewrite files on boot — only on user-initiated define/add/remove.)
-    if (teamMod && def.repo) { try { teamMod.writeTeamFile(def.repo, teamMod.rosterFromDef(def)) } catch {} }
+    if (activate) recordActivatedRoot(def.org, repo)                    // returns null for a broad $HOME root → stays NOT activated (never auto-reads ~/.env)
+    if (isActivatedRoot(def.org, repo)) {                              // the side effects run iff activated (now, or previously via a trusted activate)
+      try { ensureTgForOrg(def) } catch (e) { daemonLog(`[tg] ensure ${def.org}: ${e?.message || e}`) }
+      // Keep the repo's team.json in sync. (teamMod is null during the startup restore, so we don't rewrite on boot.)
+      if (teamMod && repo) { try { teamMod.writeTeamFile(repo, teamMod.rosterFromDef(def)) } catch {} }
+    }
     broadcastEvent({ type: 'roster', org: def.org })   // #69-B: structure changed → the dashboard re-fetches the (rare) heavy /api/teams
     return (def.rooms || []).map((r) => r.roomId)
   }
@@ -596,7 +607,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     const room = engine.getRoom(leadsRoomId(org))   // the pinned user IS the human → trusted inject
     if (room) engine.doSteer(room, 'all', d.text, { via: 'telegram' })
   }
-  for (const def of orgDefs.values()) { try { ensureTgForOrg(def) } catch {} }   // boot: bridges for restored orgs
+  for (const def of orgDefs.values()) { try { if (isActivatedRoot(def.org, def.repo)) ensureTgForOrg(def) } catch {} }   // guard-1: boot restores orgs INERT — a bridge re-binds ONLY for a previously-ACTIVATED root (a grandfathered/poisoned/never-activated root stays dark until a human activates; the .env is not re-read on the way in)
   // A team member sent a directed message into a room. Route via the engine; ack the true outcome.
   function onSay(fromId, f) {
     const ackId = f.id
@@ -1141,6 +1152,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   server.listen(port, '127.0.0.1')   // first attempt (async; 'listening' or 'error' fires)
 
   // --- control server (`mrc rooms` connects here) ---
+  const CONTROL_SECRET = controlSecret({ mint: true })   // guard-1: mint the host-only 0600 capability secret; trusted/activate + removeorg require it on the frame
+  const capOk = (f) => !!(CONTROL_SECRET && f && f.secret === CONTROL_SECRET)   // an unproven trusted/activate/removeorg assertion downgrades to false — a cross-uid RAW frame can't read the secret
   const pick = (roomId) => roomId ? pairings.get(roomId) : (pairings.size === 1 ? [...pairings.values()][0] : null)
   const control = net.createServer((sock) => {
     let buf = ''
@@ -1163,7 +1176,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         }
         // --- team controls (N-party engine rooms) ---------------------------
         if (f.action === 'defineOrg' && f.def) {
-          try { if (f.roster) orgRoster.set(f.def.org, f.roster); reply({ ok: true, rooms: defineOrg(f.def) }) } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
+          try { const rooms = defineOrg(f.def, { trusted: f.trusted === true && capOk(f), activate: f.activate === true && capOk(f) }); if (f.roster) orgRoster.set(f.def.org, f.roster); reply({ ok: true, rooms }) } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }   // guard-1: trusted/activate are CAPABILITIES — DERIVED from the host-only secret (capOk), never a bare wire flag. A cross-uid frame asserting trusted:true without the secret → downgraded → resolveOrgRootForOrg throws → no pin lands. And orgRoster.set runs ONLY after defineOrg succeeds (Pierre) — a rejected untrusted define must not leave its /victim roster in the cache for a later first-pin fallback to read.
           continue
         }
         if (f.action === 'sessions') { reply({ ok: true, sessions: listMrcContainers() }); continue }
@@ -1233,13 +1246,14 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         // its dashboard). So spawn `mrc team up` detached, logging to <repo>/.mrc/launch.log; it writes
         // the launch registry itself, which the dashboard reads via `team` status.
         if (f.action === 'launchteam') {
+          if (!capOk(f)) { reply({ ok: false, error: 'launchteam requires the control-capability secret (it ACTIVATES — reads the pinned repo\'s .env, starts its Telegram bridge, and spawns containers)' }); continue }   // guard-1 (Pierre): activate+spawn is a CAPABILITY — gate the whole launch door on the secret, like removeorg. A cross-uid raw frame (belt eats HTTP preambles, not a bare host-local frame) can't reach it.
           if (!teamMod) { reply({ ok: false, error: 'launch helpers still loading — retry in a moment' }); continue }
           const roster = f.roster || orgRoster.get(f.org)
           if (!roster) { reply({ ok: false, error: 'no roster for this org — launch from the builder, or run mrc team up' }); continue }
           try {
             const { norm, rosterPath } = teamMod.materializeRoster(roster, f.repo)
-            orgRoster.set(norm.org, roster)
-            defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
+            defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms }, { trusted: capOk(f), activate: true })   // guard-1: the LAUNCH click first-pins the human's PICKED repo (norm.repo from f.roster/f.repo, NOT orgDef.repo) + activates. trusted derived from capOk (the handler is already capOk-gated, so this is a secret-holder). A no-secret launchteam never reaches here (handler gate).
+            orgRoster.set(norm.org, roster)   // guard-1 (Pierre): AFTER defineOrg succeeds — a THROWN define (existing-pin mismatch) must NOT persist its roster into orgRoster, or a rejected op would leave poison a later first-pin fallback (orgRoster.get) could read.
             // #49 (Pierre — the enumeration's daemon-side miss): the GUI-launch log is a repo-relative write,
             // so a symlinked `.mrc` would escape. Canonicalize it (best-effort: a rejected/symlinked .mrc just
             // skips the log — the spawned `mrc team up` hits the same guards and fails closed).
@@ -1253,6 +1267,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           continue
         }
         if (f.action === 'stopteam' && f.org) {
+          if (!capOk(f)) { reply({ ok: false, error: 'stopteam requires the control-capability secret' }); continue }   // guard-1: activate/spawn/state-change capability
           if (teamMod) teamMod.killTeamSession(f.org)   // #34: kills every member's ttyd (→ container stops)
           removeLaunch(f.org); reply({ ok: true }); continue
         }
@@ -1260,6 +1275,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         // bridge, then purge ALL per-org state so it stays gone across a restart. Deletes NOTHING on
         // disk (team.json + transcripts/history untouched) — fully re-addable via `mrc team up`. Idempotent.
         if (f.action === 'removeorg' && f.org) {
+          if (!capOk(f)) { reply({ ok: false, error: 'removeorg requires the control-capability secret (destructive: clears the write-once pin)' }); continue }   // guard-1: gate the destructive delete like trusted/activate — a cross-uid frame can't clear a pin to enable a re-root
           const org = f.org
           if (teamMod) { try { teamMod.killTeamSession(org) } catch {} }   // #34: kills every member's ttyd
           removeLaunch(org)
@@ -1267,6 +1283,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           tgStates.delete(org)
           for (const k of [...tgPushed.keys()]) if (k.startsWith(org + '\x00')) tgPushed.delete(k)
           engine.removeOrg(org)                               // members/rooms/inbox/queue/orgs (idempotent)
+          try { clearOrgRoot(org); clearActivatedRoots(org) } catch {}   // guard-1: a deliberate human delete clears the write-once pin + activation, so a delete→recreate can re-pin a NEW root (value-bound activation means a stale record can't inherit anyway)
           broadcastEvent({ type: 'roster', org })             // #69-B: project removed → dashboard re-fetches
           orgDefs.delete(org); orgRoster.delete(org)
           saveOrgs([...orgDefs.values()]); persistTg(); rebuildSessionIndex()   // persist so a restart doesn't restore it
@@ -1274,6 +1291,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           reply({ ok: true }); continue
         }
         if (f.action === 'removemember' && f.org && f.handle) {
+          if (!capOk(f)) { reply({ ok: false, error: 'removemember requires the control-capability secret' }); continue }   // guard-1: activate/spawn/state-change capability
           if (!teamMod) { reply({ ok: false, error: 'launch helpers still loading — retry' }); continue }
           const def = orgDefs.get(f.org)
           if (!def) { reply({ ok: false, error: 'unknown org' }); continue }
@@ -1290,6 +1308,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           continue
         }
         if (f.action === 'relaunchmember' && f.org && f.handle) {
+          if (!capOk(f)) { reply({ ok: false, error: 'relaunchmember requires the control-capability secret' }); continue }   // guard-1: activate/spawn/state-change capability
           // #41 orphan recovery: kill-FIRST (reap the orphaned master + container by sock/label — Gate-2,
           // idempotent against an orphaned-live container) → then a fresh spawn (the unlink-guard now passes,
           // no live master). The member --continues its conversation. Destructive, so this route is
@@ -1341,6 +1360,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         // Add a member to a (possibly running) org: re-define from a PINNED roster (existing members
         // keep their names) + the new member, then launch just its terminal if the team is up.
         if (f.action === 'addmember' && f.org) {
+          if (!capOk(f)) { reply({ ok: false, error: 'addmember requires the control-capability secret' }); continue }   // guard-1: activate/spawn/state-change capability
           if (!teamMod) { reply({ ok: false, error: 'launch helpers still loading — retry' }); continue }
           const def = orgDefs.get(f.org)
           if (!def) { reply({ ok: false, error: 'unknown org' }); continue }
