@@ -97,6 +97,16 @@ export function cageReadsRepoEnv(cageName) {
   try { return resolveCageProfile(cageName).repoEnv !== 'none' } catch { return false }
 }
 
+// #49 (4b Phase-2, Pierre trap #3): does this cage profile confer ADVERSARY IDENTITY? True only when the profile's
+// identity dial is 'adversary'. The launcher extends `adversaryIdentity` with this so a caged MEMBER is an
+// adversary for the /mrc-slice gate AND the tamper-proof security record AND classifySession — exactly like a
+// summon — instead of getting the user's memory slice + a false adversary:false record (the identity-axis leak).
+// Fail-closed FALSE for no-cage / unknown / un-mintable (routed through resolveCageProfile's readiness gate).
+export function cageIsAdversary(cageName) {
+  if (!cageName) return false
+  try { return resolveCageProfile(cageName).identity === 'adversary' } catch { return false }
+}
+
 // #49 cross-repo × cage (Pierre item #4): the /rooms mount for a CAGED member — its OWN rooms ONLY. roomsScope='own'
 // must NEVER mount the whole roomsRoot() tree: for an adversary that's a cross-session intel harvest (every other
 // session's thread.log/consensus.md). The member's rooms come from AUTHORITATIVE MEMBERSHIP (roomIds), NOT config.room

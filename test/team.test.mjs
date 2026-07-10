@@ -143,6 +143,15 @@ test('memberWorkspaceVolumes: read-only member gets ro /workspace + rw .mrc', ()
   } finally { fs.rmSync(repo, { recursive: true, force: true }) }
 })
 
+test('#49 (4b) memberWorkspaceVolumes: a CAGED member gets a FULLY read-only workspace — NO rw .mrc, NO territory', () => {
+  const repo = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-mwv-cage-')))
+  try {
+    // a caged adversary member writes NOTHING into its (possibly foreign) workspace — transcript goes to the login vol
+    const v = memberWorkspaceVolumes({ mount: 'rw', territory: 'client', cage: 'adversary' }, repo)
+    assert.deepEqual(v, ['-v', `${repo}:/workspace:ro`], 'cage overrides mount/territory → just the ro workspace, no .mrc overlay')
+  } finally { fs.rmSync(repo, { recursive: true, force: true }) }
+})
+
 test('memberWorkspaceVolumes: sub-tree engineer gets ro repo + rw .mrc + rw its (existing) territory', () => {
   const repo = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-mwv-')))
   try {

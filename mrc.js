@@ -22,6 +22,7 @@ import { findFreePort } from './src/ports.js'
 import { startClipboardProxy } from './src/proxies/clipboard-proxy.js'
 import { startNotifyProxy } from './src/proxies/notify-proxy.js'
 import { startSniProxy } from './src/proxies/sni-proxy.js'   // A/#40: host SNI-pinning egress proxy for a caged adversary
+import { cageIsAdversary, cagedRoomVolumes, resolvedVolIsUserLogin } from './src/teams/cage.js'   // #49 (4b Phase-2): a caged MEMBER folds into cagedAdversary; its /rooms + login-vol guards
 import { listSessions, nameSession, resolve as resolveSession, loadNames, resolveSessionId, getSessions } from './src/sessions/manager.js'
 import { summarize, generateName } from './src/sessions/api.js'
 import { pick, ensureNamesMigrated } from './src/sessions/picker.js'
@@ -445,10 +446,12 @@ if (config.member) {
   catch (e) { console.error(`  ✗ Refusing to launch: ${e?.message || e}.`); process.exit(1) }
   if (!member) { console.error(`  ✗ No member "${config.member}" in the roster${rosterPath ? ` (${rosterPath})` : ''}.`); process.exit(1) }
   if (member.tier !== 'live') { console.error(`  ✗ @${member.handle} is a ${member.backend} worker — workers are invoked on demand, not launched as a session.`); process.exit(1) }
-  // #49 (4b Phase-1, Pierre item #5): FAIL-CLOSED — a member.cage is parse-accepted but NOT yet enforced at launch
-  // (applyCage + the seal land in Phase-2). Refuse rather than launch a "caged" member with full privileges + a
-  // false adversary:false record (a silent uncage). This gate is REMOVED when Phase-2 wires the cage enforcement.
-  { const { memberCageLaunchGate } = await import('./src/teams/cage.js'); const g = memberCageLaunchGate(member); if (!g.ok) { console.error(`  ✗ Refusing to launch: ${g.reason}`); process.exit(1) } }
+  // #49 (4b Phase-2): the member cage is now ENFORCED for an adversary-identity profile (it folds into cagedAdversary
+  // at :569 → ro workspace, sealed egress, adversary:true record, restricted /rooms, no /mrc). But a NON-adversary
+  // cage tier (contained/future) is NOT enforced on the member path yet → FAIL-CLOSED refuse it rather than launch
+  // under-caged. (An adversary cage → cageIsAdversary true → NOT refused → proceeds to the enforced path. The
+  // execWorker worker path keeps the blanket refuse — a worker can enforce NO cage.)
+  if (member.cage && !cageIsAdversary(member.cage)) { console.error(`  ✗ Refusing to launch @${member.handle}: cage "${member.cage}" is not an enforceable adversary profile on the member launch path yet — refusing rather than launching it under-caged (only the 'adversary' cage is wired in 4b Phase-2).`); process.exit(1) }
   const launch = memberLaunch(norm, member, repoPath)
   memberCtx = { norm, member, org: member.org, rosterPath, ...launch }
   config.rooms = true   // a member is always a room participant
@@ -566,7 +569,13 @@ if (config.resumeSession && isAdversarySession(config.resumeSession)) {
 // /workspace, SNI-pinned egress, no clipboard/notify, a single-room /rooms mount. Everything cage-specific is
 // gated on this one flag, so a NORMAL session's launch is byte-identical to before. --open-adversary-unsafe
 // leaves cageAdversary unset → it (and only it) stays uncaged (still daemon-classified via MRC_ADVERSARY).
-const cagedAdversary = !!(config.summonedBy || config.cageAdversary)
+// #49 (4b Phase-2): a caged team MEMBER (member.cage names an adversary-IDENTITY profile) folds into cagedAdversary
+// AT THE SOURCE — so every cagedAdversary-keyed cage feature (ro /workspace via the memberCtx branch, /mrc off,
+// allowWeb=false, the inline SNI egress seal, clip/notify blocked, the adversary:true record, honest display, the
+// mrc.adversary label) covers it BY CONSTRUCTION, no per-site hand-patch (grep cagedAdversary → every hit flips
+// together). The memberCtx-branch sites (workspace/rooms/config-vol) still differ via their own tested helpers.
+const memberCageIsAdversary = !!(memberCtx?.member?.cage && cageIsAdversary(memberCtx.member.cage))
+const cagedAdversary = !!(config.summonedBy || config.cageAdversary || memberCageIsAdversary)
 // #11 (coverage-critic): the CONFIG-VOLUME selection keys on adversary IDENTITY, not cage STATE. A recorded adversary
 // reopened with --open-adversary-unsafe is uncaged (cagedAdversary=false: rw /workspace + full egress, deliberately)
 // but is STILL an adversary — it must reattach its dedicated -pierre-N volume, NEVER the user's real login/config
@@ -644,6 +653,14 @@ if (memberCtx) {
     if (!config.newSession && !config.resumeSession && !store.storeMode) config.newSession = true
   }
   volName = volumeName(repoPath, claim.slot)
+}
+// #49 (4b Pierre item #3): FAIL-CLOSED — a CAGED launch's resolved config volume must NEVER be the user's own login
+// vol (their ~/.claude/OAuth). A member keys memberConfigVolName (org#repo#handle), a summon keys the pierre pool —
+// neither is the login family — so a match here means a wiring reorder-slip dropped a caged launch onto the owner's
+// login. Halt rather than mount the owner's login RW into a red-team.
+if (cagedAdversary && resolvedVolIsUserLogin(volName, repoPath, volumeName)) {
+  console.error(`  ✗ Refusing to launch a caged adversary: its resolved config volume (${volName}) is the USER's own login volume — mounting it would put your ~/.claude/OAuth RW into a red-team. Wiring bug; refusing rather than leaking your login.`)
+  process.exit(1)
 }
 volumes.push('-v', `${volName}:/home/coder/.claude`)
 if (!adversaryVolume) volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)   // an adversary (Pierre) is Claude-only — no codex volume (and never the user's mrc-codex-<hash> — #11: keyed on adversaryVolume so an uncaged resume doesn't mount it either)
@@ -845,20 +862,22 @@ if (openaiKey) envFlags.push('-e', 'OPENAI_API_KEY')
 if (config.agent !== 'claude') envFlags.push('-e', `MRC_AGENT=${config.agent}`)
 // belt 1: a caged adversary NEVER carries web egress — force it off before the ALLOW_WEB env is built (belt 2
 // in the firewall is the backstop; the configEnvs loop below also strips any ALLOW_WEB from a trusted ~/.mrcrc).
-if (config.summonedBy || config.cageAdversary) config.allowWeb = false
+if (cagedAdversary) config.allowWeb = false   // #49 (4b): cagedAdversary now folds in a caged MEMBER (:569), so this covers it too
 if (config.allowWeb) envFlags.push('-e', 'ALLOW_WEB=1')
 // Two-bit adversary model: MRC_ADVERSARY_FW (CAGE → firewall hardening) is set for a summon OR a re-sandboxed
 // resume, NOT --open-adversary-unsafe. MRC_ADVERSARY (IDENTITY → daemon classification, forwarded by the
 // channel register) is set whenever THIS launch is an adversary, INCLUDING --open-adversary-unsafe.
-if (config.summonedBy || config.cageAdversary) envFlags.push('-e', 'MRC_ADVERSARY_FW=1')
-if (config.summonedBy || config.resumeIsAdversary) envFlags.push('-e', 'MRC_ADVERSARY=1')
+if (cagedAdversary) envFlags.push('-e', 'MRC_ADVERSARY_FW=1')   // #49: caged member folded into cagedAdversary
+// #49: MRC_ADVERSARY on adversaryIdentity (covers summon/resume AND a caged member) — LOAD-BEARING: it fires
+// container-setup's ADVERSARY branch, which keeps the transcript in the login vol (never /workspace/.mrc under :ro).
+if (adversaryIdentity) envFlags.push('-e', 'MRC_ADVERSARY=1')
 if (config.resumeSession) envFlags.push('-e', `RESUME_SESSION=${config.resumeSession}`)
 if (config.resumeIsAuto) envFlags.push('-e', 'MRC_RESUME_IS_AUTO=1')   // #5: the host force-resolved an AUTO-continue → on a per-uuid flock-fail TOCTOU, the entrypoint routes to graceful re-run, not the explicit-resume FATAL
 if (config.newSession) envFlags.push('-e', 'NEW_SESSION=1')
 envFlags.push('-e', `CLAUDE_CODE_MAX_OUTPUT_TOKENS=${process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '128000'}`)
 envFlags.push('-e', `MRC_REPO_NAME=${basename(repoPath)}`)
 for (const env of configEnvs) {
-  if ((config.summonedBy || config.cageAdversary) && env.split('=')[0] === 'ALLOW_WEB') continue   // belt-1 complement: never carry ALLOW_WEB into a cage, even from a trusted ~/.mrcrc
+  if (cagedAdversary && env.split('=')[0] === 'ALLOW_WEB') continue   // belt-1 complement: never carry ALLOW_WEB into a cage (incl. a caged member), even from a trusted ~/.mrcrc
   envFlags.push('-e', env)
 }
 for (const key of Object.keys(process.env)) {
@@ -895,7 +914,7 @@ if (config.daemon) {
 if (!clipPort) clipPort = await findFreePort(portBase + 1)   // #50: portBase is reserved for the room relay; per-session proxies start above it
 try {
   clipboardServer = await startClipboardProxy(clipPort)
-  envFlags.push('-e', `MRC_CLIPBOARD_PORT=${clipPort}`)
+  if (!cagedAdversary) envFlags.push('-e', `MRC_CLIPBOARD_PORT=${clipPort}`)   // #49 (4b): a caged adversary/member never gets the port — belt over the firewall block (don't even hand it the proxy it can't reach)
 } catch {
   console.log('  ! Clipboard proxy failed to start (image paste won\'t work)')
 }
@@ -912,7 +931,7 @@ if (!config.noNotify) {
   if (!config.noNotify) {
     try {
       notifyServer = await startNotifyProxy(notifyPort, { noSound: config.noSound })
-      envFlags.push('-e', `MRC_NOTIFY_PORT=${notifyPort}`)
+      if (!cagedAdversary) envFlags.push('-e', `MRC_NOTIFY_PORT=${notifyPort}`)   // #49 (4b): withhold from a caged adversary/member (belt over the firewall block)
     } catch {
       console.log('  ! Notification proxy failed to start')
     }
@@ -956,7 +975,16 @@ if (roomsActive) {
     const sessionId = memberCtx.sessionId
     envFlags.push('-e', `MRC_ROOM_PORT=${daemon.port}`, '-e', `MRC_SESSION_ID=${sessionId}`, '-e', `MRC_REPO_NAME=${basename(repoPath)}`, '-e', `MRC_ROOM_LABEL=${memberCtx.member.first}`)
     envFlags.push(...memberCtx.envFlags)   // MRC_MEMBER_HANDLE, MRC_TEAM, MRC_ROLE, MRC_PERSONA_FILE
-    volumes.push('-v', `${roomsRoot()}:/rooms:ro`)
+    if (cagedAdversary) {
+      // #49 (4b): a caged MEMBER sees ONLY its own room(s), read-only — NEVER the whole roomsRoot() tree (which
+      // would disclose every session's thread.log/consensus.md to an adversary). Its rooms come from authoritative
+      // membership; cagedRoomVolumes `..`-guards each + fails CLOSED on an empty set (no /rooms, never roomsRoot).
+      const h = memberCtx.member.handle.toLowerCase()
+      const ownRoomIds = (memberCtx.norm.rooms || []).filter(r => (r.members || []).some(m => String(m).toLowerCase() === h)).map(r => r.roomId)
+      volumes.push(...cagedRoomVolumes(ownRoomIds, roomsRoot(), existsSync))
+    } else {
+      volumes.push('-v', `${roomsRoot()}:/rooms:ro`)
+    }
     roomInfo = { sessionId, roomName: '', label: `${memberCtx.member.first} (@${memberCtx.member.handle})`, member: true }
   } else {
     // Stable session identity = the Claude conversation UUID, so a resumed conversation keeps its id
@@ -1082,7 +1110,8 @@ if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && 
 const roomLabels = roomInfo
   ? ['--label', 'mrc.room=1', '--label', `mrc.room.session=${roomInfo.sessionId}`,
      ...(memberCtx ? ['--label', `mrc.member=${memberCtx.member.handle}`, '--label', `mrc.team=${memberCtx.member.team}`, '--label', `mrc.project=${memberCtx.org}`] : []),   // #49-SEC: authoritative org (blob/solo), not the member-writable roster's norm.org
-     ...(cagedAdversary ? ['--label', 'mrc.adversary=1', '--label', `mrc.adversary.slot=${adversarySlot}`] : [])]   // the Pierre-slot pool's liveness oracle reads these labels
+     ...(cagedAdversary ? ['--label', 'mrc.adversary=1'] : []),                                  // #49 (4b): IDENTITY label — a caged member is a legit adversary, gets this
+     ...(adversarySlot > 0 ? ['--label', `mrc.adversary.slot=${adversarySlot}`] : [])]           // POOL label ONLY for a real pierre-pool slot — a caged member (adversarySlot=0) is NOT in the pool, so it never stamps a pool label
   : []
 const exitCode = await runContainer({
   repoPath,

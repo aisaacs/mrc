@@ -5,7 +5,7 @@
 // summon by construction). The container-lifetime BEHAVIOR (fails-closed, reap) is Inc 2/3 + a wire rebuild.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { CAGE_PROFILES, resolveCageProfile, assertCageAllowed, applyCage, applyCageDials, sealFreshness, deriveEgressToken, cageReadsRepoEnv, cagedRoomVolumes, resolvedVolIsUserLogin, memberCageLaunchGate } from '../src/teams/cage.js'
+import { CAGE_PROFILES, resolveCageProfile, assertCageAllowed, applyCage, applyCageDials, sealFreshness, deriveEgressToken, cageReadsRepoEnv, cagedRoomVolumes, resolvedVolIsUserLogin, memberCageLaunchGate, cageIsAdversary } from '../src/teams/cage.js'
 import { parseRoster } from '../src/teams/roster.js'
 import { memberRepoEnvKey } from '../src/config.js'
 import { volumeName } from '../src/docker.js'
@@ -197,6 +197,13 @@ test('#49 item5 memberCageLaunchGate: a caged member is REFUSED (fail-closed) un
 // tier ships (classifier:true) — a conscious grant then, not an accident now.
 test('#49 cageReadsRepoEnv(contained) is fail-closed FALSE until the tier ships', () => {
   assert.equal(cageReadsRepoEnv('contained'), false)
+})
+// trap #3: adversaryIdentity must extend to a caged member, or it gets the user's /mrc slice + a false record.
+test('#49 trap3 cageIsAdversary: adversary→true; no-cage/contained/unknown → fail-closed FALSE', () => {
+  assert.equal(cageIsAdversary('adversary'), true, 'the adversary profile confers adversary identity')
+  assert.equal(cageIsAdversary(undefined), false, 'no cage → not an adversary')
+  assert.equal(cageIsAdversary('contained'), false, 'un-mintable tier → fail-closed false (not adversary identity)')
+  assert.equal(cageIsAdversary('bogus'), false, 'unknown → fail-closed false')
 })
 // item #5 TWIN: the worker-exec path is symmetric — a caged worker REFUSES (short-circuits before any docker),
 // so a future worker-compatible cage tier can't ship silently uncaged with ALLOW_WEB=1 on the worker side.

@@ -60,7 +60,14 @@ export function memberWorkspaceVolumes(member, repoPath) {
   // home. Falling back to repoPath keeps a member-less caller (tests) working.
   const root = member.repo || repoPath
   const vols = []
-  if (member.mount === 'rw' && member.territory === '.') {
+  if (member.cage) {
+    // #49 (4b Phase-2): a CAGED member gets a fully READ-ONLY workspace — NO rw .mrc overlay (its transcript lives
+    // in the isolated login vol via container-setup's ADVERSARY branch, keyed on MRC_ADVERSARY) and NO territory.
+    // Both cage tiers declare workspace:'ro', so this is profile-correct today; a future rw-workspace tier would
+    // route through applyCage's workspace dial instead. This is what keeps a caged cross-repo member from writing
+    // ANYTHING into the foreign authorized repo.
+    vols.push('-v', `${canonicalMountSource(root, '.')}:/workspace:ro`)
+  } else if (member.mount === 'rw' && member.territory === '.') {
     vols.push('-v', `${canonicalMountSource(root, '.')}:/workspace`)
   } else {
     vols.push('-v', `${canonicalMountSource(root, '.')}:/workspace:ro`)
