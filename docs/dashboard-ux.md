@@ -3,7 +3,8 @@
 **Status:** Design capture, owner-driven (2026-07-10). No code yet. The containment-sensitive
 surfaces (§10) go past a live Pierre before any implementation. Builds on the solo onramp and
 cross-repo member work already shipped (`docs/dashboard-solo-workflow.md` §4a, Mouth B) and the
-teams substrate (`docs/agent-teams.md`).
+teams substrate (`docs/agent-teams.md`). **Updated 2026-07-10** with the owner's first live
+create→launch **field report (§11)** and the **recurring-characters ("Pierre model") direction (§5.2)**.
 
 This supersedes the repo-coupling framing in `dashboard-solo-workflow.md` §6.5: cross-repo work is
 **same-project**, routed by the engine (one org, multi-repo members), *not* a bridge between two
@@ -76,6 +77,12 @@ The create form's inputs: **project name** (or autoname — Haiku can name it fr
 existing host-side session-naming machinery) · **member(s) + their repo(s)** · **per-member fresh /
 resume-prior** dropdown.
 
+**The repo input is a validated directory chooser, not free text** (field report §11): it **expands
+`~`/`$HOME`**, resolves to a realpath, validates the directory exists, and ideally offers a picker.
+Today's raw free-text field rejects `~/…` with an opaque error — and, worse, is the CSRF `repo=/etc`
+vector §10.1 hardens. A chooser fixes the ergonomics and drops the first-pin severity to
+defense-in-depth in one move.
+
 ## 4. `team.json` is generated, not authored
 
 - **Minted by the create-flow** with the teams/members you chose, **updated** as you add/remove
@@ -118,8 +125,45 @@ The confusing tangle (x-pill vs. Delete vs. "Resume team") collapses to:
 - **Delete project** — the rare "forget this project from Mister Claude." Still **keeps all files on
   disk** (repo, transcripts, roster); it just removes the project from the dashboard. Clearly
   separated from Exit, clearly the heavier action.
+- **Launch must actually launch — in one gesture.** Field report (§11): tapping **🚀 Launch** left the
+  project reading **"⏸ *stopped* — ▶ Resume team"** and the member reading **"@Fabrice isn't launched…
+  (or `mrc team up`)"**; only **Resume team** actually brought it up. That launched-but-stopped →
+  press-Resume two-step is the single most broken-feeling moment in the flow. Launch lands the project
+  **live**, full stop — no second action, no `mrc team up` afterthought.
 - **"Resume team" as a distinct control goes away** — resuming is just **pick-project** from the home
   (§3A).
+
+## 5.2 Recurring characters (the "Pierre model") — stable identities, not random names
+
+Today every launch mints fresh random French names (`names.js`). The owner's field report: the novelty
+is genuinely fun, but it's **too noisy to follow** — you can't build a working relationship with a
+teammate whose name changes every run, and every new name is a new terminal you must re-auth into.
+
+The model to move toward: **a cast of recurring, recognizable characters — the way Pierre is always
+Pierre.** You summon Pierre and you know exactly who you're getting: his role (faultfinding adversary),
+his voice, his behavior. Members should work the same way.
+
+- **Named specialist *and* generalist characters** with a stable identity: name + role/persona + their
+  **own persistent config volume**. You "add Fabrice the architect" (or a generalist) and get the *same*
+  character across projects — same name, same persona, recognizable everywhere (dashboard, `@user`
+  inbox, Telegram thread, transcript).
+- **Persistent per-character volumes ⇒ far fewer re-auths.** Because a character reuses its own config
+  volume, its Claude session is already authenticated — starting a new project with a familiar cast no
+  longer means N fresh terminal logins. This directly attacks the "re-auth into every terminal on every
+  new project" pain the owner called out.
+- **Recognizability > novelty.** Random-name-per-run retires as the *default* (keep it as an optional
+  flavor toggle if wanted, but it is not the model). Stability is what makes a teammate followable.
+- **Pierre is the existing proof of concept** — the caged adversary already IS a stable character with a
+  fixed identity + its own volume. Generalize that pattern into a small reusable cast (architect,
+  engineer, critic, designer, …), each a "Pierre" of its specialty, plus user-authored characters.
+- **The character is stable; its repo/territory is per-project.** A project assigns a character where it
+  works this time; the identity/persona/volume travel with the character across projects.
+
+**Containment note for Pierre (§10):** a per-character config volume **shared across the projects that
+use that character** crosses the one-project=one-org isolation floor for that volume. That trade (auth
+reuse + identity continuity vs. per-project config isolation) is a real containment question — it goes
+to Pierre before it's built, alongside how a character's volume is keyed and what it may/may not carry
+between projects.
 
 ## 6. Telegram — one token, per-project threads
 
@@ -196,6 +240,11 @@ the same session**. So:
 - The **one clean Exit** + relabelled Delete.
 - **One-bot Telegram** (topics or pool) + globally-stable `#N` routing.
 - The **caged-Pierre sidebar action** (the rebuild-gated 4b wiring).
+- **Recurring characters (§5.2)** — a reusable cast with stable identity + persistent per-character
+  volume; retire random-name-per-run as the default.
+- **Create-form declutter (§11)** — collapse to name · members+repos · fresh/resume; remove/hide
+  Save-team.json, Define-rooms, custom-roles, name-style, the territory `x`, and the `mrc team up`
+  footer; make Launch land the project live in one gesture; repo input becomes a validated chooser.
 
 ## 10. Containment surfaces for Pierre (review before code)
 
@@ -211,6 +260,12 @@ the same session**. So:
 3. **One-bot cross-project Telegram routing.** With a single token serving all projects, verify
    per-project isolation still holds — a reply in project A's thread/`#N` can only ever route to a
    member of project A; no cross-project inbox bleed via a forged or mis-stamped `#N`.
+4. **Shared per-character config volumes (§5.2).** A recurring character reusing one config volume
+   across the projects it joins deliberately crosses the per-project config-isolation line for that
+   volume (the point is auth + identity continuity). Verify the blast radius: what a character's volume
+   may carry between projects, that it can't become a cross-project data channel between two otherwise
+   isolated orgs, and how it interacts with the caged-adversary identity rules (a character volume is a
+   USER-RESOURCE, so it must key on identity, per the cage-vs-identity rule).
 
 ### 10.1 The launch security floor (Pierre-hardened, build-first)
 
@@ -285,11 +340,57 @@ distinction leans on an authenticated caller.
 not free text — drops the first-pin severity from primary → defense-in-depth by removing the
 CSRF-sets-`repo=/etc` path at the source. The inert-pin gate holds regardless.
 
-## 11. Open / decide-by-using
+## 11. Field report — the first dashboard create→launch (owner, 2026-07-10)
+
+The owner built and launched a team ("test pros 2") entirely from the dashboard and logged the friction.
+This is the ground truth the redesign has to beat. Each item maps to its fix — an existing section, or a
+**NEW** requirement now folded in.
+
+**The create / teams form ("the whole teams form is weird"):**
+- **Repo path rejected `~`.** Typed `~/Downloads/repos/mrc/`; opaque error (no `~`-expansion). → §3
+  **validated directory chooser** (expand `~`/`$HOME`, resolve, validate, picker). Also drops the
+  §10.1 CSRF `repo=/etc` severity. **NEW req captured.**
+- **Footer "then launch live members: `mrc team up`"** — unclear if it's required after Launch. → §4:
+  `team up` is never manual. **Remove the CLI incantation from the GUI create screen entirely** — it
+  belongs in CLI help, not the form.
+- **"Save team.json" — "don't know why it exists."** → §4: the roster is generated + store-managed; a
+  user should never see a "save the roster file" action. **Remove the button.**
+- **"Define rooms" — unclear.** → rooms are derived from the roster (team room + leads room). **Hide
+  behind advanced; auto-derive by default.**
+- **"Custom roles" — unclear.** → tie to §5.2: pick a character/role from a known cast; "custom role"
+  is an advanced escape hatch, not front-and-center.
+- **"Start from preset" — good idea but very unclear.** → keep presets (the fast path) but make them the
+  **primary** create choice ("start from a template team") with plain-language descriptions of what each
+  spins up — not a bare dropdown.
+- **Name style — "cool but too noisy."** → §5.2: retire random-name-per-run as the default in favor of
+  recurring, recognizable characters.
+- **The territory `x` button — "don't understand it."** → territory (a member's writable sub-tree) is
+  advanced; the unlabeled `x` is inscrutable. **Hide territory behind advanced; default each member to
+  its natural territory; if surfaced, label the control.**
+
+**The "lead" concept:**
+- Good concept, but **should be implicit** — "when you open a single session, that session is the lead."
+  → §1 (solo-is-an-adjective) + §5.2: the first/only member is lead **by default**; "lead" is a derived
+  property, not a manual toggle in the form. Advanced-only if surfaced at all.
+
+**Launch → live (the most broken moment):**
+- Immediately after **🚀 Launch**, the sidebar showed **"⏸ 'test pros 2' is stopped — ▶ Resume team"**
+  and the member showed **"@Fabrice isn't launched. Build + 🚀 Launch the team (or `mrc team up`)."**
+  **Only tapping "Resume team" actually loaded it.** → §5.1 **Launch must actually launch** — one
+  gesture to live, no launched-but-stopped→Resume two-step, no `mrc team up` afterthought.
+
+**What the owner *liked* (keep):**
+- The character/naming *idea* — but as **stable, recurring** identities (§5.2), the Pierre model.
+- **"Pierre is always Pierre."** Summon a known character, know what you'll get. This is the anchor for
+  §5.2 and the whole "recognizable cast" direction.
+
+## 12. Open / decide-by-using
 
 - Which tile timestamp reads best (uptime / created-at / last-message-at).
 - Telegram topics vs. bot-pool — pick after the topics-API verify.
 - Autoname aggressiveness (Haiku-from-work vs. simple default-with-rename).
+- Recurring-character volume keying + what a character may carry between projects (§5.2 / §10 #4).
+- Preset presentation — how prominent, how much each template explains itself (§11).
 
 ---
 
