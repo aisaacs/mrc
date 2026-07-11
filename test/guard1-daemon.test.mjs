@@ -27,9 +27,12 @@ function controlCall(port, frame) {
     c.on('error', reject); setTimeout(() => reject(new Error('control timeout')), 1500)
   })
 }
-async function bootDaemon(base) {
+async function bootDaemon(base, opts = {}) {
   const port = await findFreePort(base); const controlPort = await findFreePort(port + 1)
-  startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9 })   // mints the control-capability secret
+  // Force the Model B mode deterministically (predictModelB is INJECTABLE) so these tests don't depend on the ambient
+  // mister-claude image's capability — a store-capable host (cap≥1) would otherwise flip defineOrg's default mode and
+  // make the legacy-pin assertions pass/fail by environment. Default here = LEGACY (these are the guard-1 PIN tests).
+  startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, modelBPredict: () => false, ...opts })   // mints the control-capability secret
   await sleep(200)
   return { controlPort }
 }
@@ -100,4 +103,21 @@ test('guard-1 poisoned-launchteam: after removeorg clears the pin, a no-secret d
   await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: 'proj', repo, members: [], rooms: [] } })
   assert.equal((await controlCall(controlPort, { action: 'removeorg', org: 'proj' })).ok, false, 'removeorg without the secret is refused')
   assert.equal(pinnedOrgRoot('proj'), repo, 'the pin survives the unauthorized delete attempt')
+})
+
+// Model B (Inc 3, capability-decoupled): force the Model B mode (predictModelB injected true — deterministic, no
+// store-capable image needed) and verify defineOrg RETIRES the write-once pin: no org-root is pinned, because identity
+// is the neutral derived anchor, not a pinned repo. This is the in-sandbox proof of the pin-retirement floor half;
+// the full store-activation (org#handle vols, the /mrc mount) is the owner's Gate-2 hardware test.
+test('Model B (Inc 3): defineOrg under modelB RETIRES the pin — no org-root pinned (identity is the anchor)', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-g1mb-`)
+  const repo = tmpRepo()
+  const { controlPort } = await bootDaemon(19800, { modelBPredict: () => true })
+  const r = await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: 'mb', repo, members: [], rooms: [] } })
+  assert.equal(r.ok, true, 'the define succeeds under Model B')
+  assert.equal(pinnedOrgRoot('mb'), null, 'NO write-once pin lands under Model B — the pin RETIRED (identity is the derived anchor, not a pinned repo)')
+  // Same daemon in LEGACY mode WOULD pin — proving the difference is the mode, not the code being inert.
+  const { controlPort: cp2 } = await bootDaemon(19820, { modelBPredict: () => false })
+  await controlCall(cp2, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: 'lg', repo, members: [], rooms: [] } })
+  assert.equal(pinnedOrgRoot('lg'), repo, 'LEGACY mode still pins the root — the retirement is mode-gated, not a dead branch')
 })

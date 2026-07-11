@@ -369,8 +369,18 @@ export function storeCtx({ solo, memberCtx, cagedAdversary, adversarySlot, repoP
 // store-mode — a false-"capable" is the split-brain; a false-"not-capable" degrades safely (a mount-aware container
 // that sees no /mrc stays legacy, consistent with the host's legacy reads). Same grant-vs-isolate invariant as the
 // slice lattice: lenient toward the safe direction (legacy), strict toward the grant (store-mode).
-export const STORE_CAPABILITY = 1                 // the CURRENT store-layout contract version — what a fresh image is built with; MUST equal container-setup.js's STORE_CAPABILITY (drift-tested)
-const STORE_SUPPORTED = new Set([1])              // the versions THIS host code positively knows how to DRIVE (route + migrate). NOT a `>=` — an image NEWER than the host (a layout the host can't drive) must fall to legacy, not "probably fine".
+export const STORE_CAPABILITY = 2                 // the CURRENT store-layout contract version — what a fresh image is built with; MUST equal container-setup.js's STORE_CAPABILITY (drift-tested). Bumped 1→2 for Model B (identity off the repo): bumping this FORCES a rebuild (container-setup content changes), which is Model B's deliberate activation gate.
+const STORE_SUPPORTED = new Set([1, 2])           // the store-layout versions THIS host code positively knows how to DRIVE (route + migrate). BOTH 1 and 2 are store-mode — so a cap=1 image (a prior #5 rebuild) keeps its store memory working; Model B is a SEPARATE, higher gate (MODELB_SUPPORTED). NOT a `>=` — an image NEWER than the host must fall back, not "probably fine".
+// MODEL B activation (identity off the repo) is a SEPARATE, higher capability than #5's store-mode — so an image
+// that is store-capable but NOT Model-B-capable (cap=1, a prior #5 rebuild) runs #5's store memory WITHOUT Model B,
+// and Model B stays inert until a deliberate rebuild to cap=2. Same deny-unless-proven positive-set discipline as
+// store-mode: an image the host can't drive Model B for (cap=1, or a future cap=3 the host doesn't recognize) is
+// NOT Model B. This is the ONE Model B signal; every Model B gate reads decideModelB, NEVER decideStoreMode.
+const MODELB_SUPPORTED = new Set([2])
+export function decideModelB(imageLabels) {
+  const cap = Number(imageLabels && imageLabels['mrc.store.capability'])
+  return Number.isInteger(cap) && MODELB_SUPPORTED.has(cap)
+}
 
 // Pure: does this image's labels prove a store layout the host can DRIVE? store-mode ONLY if the label parses to an
 // integer that is in the host's SUPPORTED SET. Absent / empty / malformed / older / UNKNOWN-HIGHER → legacy. Using a
@@ -378,8 +388,9 @@ const STORE_SUPPORTED = new Set([1])              // the versions THIS host code
 // a future layout the host doesn't yet drive can never falsely grant store-mode. Deny-first by construction.
 export function decideStoreMode(imageLabels) {
   const cap = Number(imageLabels && imageLabels['mrc.store.capability'])
-  if (Number.isInteger(cap) && STORE_SUPPORTED.has(cap)) return { storeMode: true, cap }
-  return { storeMode: false, cap: Number.isFinite(cap) ? cap : 0 }
+  const modelB = Number.isInteger(cap) && MODELB_SUPPORTED.has(cap)   // Model B is a HIGHER, separate gate — carried alongside so a caller with the store result also has the Model B flag (mrc.js), but Model B gates should prefer decideModelB for clarity
+  if (Number.isInteger(cap) && STORE_SUPPORTED.has(cap)) return { storeMode: true, cap, modelB }
+  return { storeMode: false, cap: Number.isFinite(cap) ? cap : 0, modelB: false }
 }
 
 // Decide store-mode for the EXACT image that will RUN. `imageId` MUST be a resolved image ID, not a tag — a tag can

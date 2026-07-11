@@ -146,7 +146,7 @@ function rngFromString(s) {
 // modelB (Inc 3, Site 2): the Model-B parse — every member MUST carry an explicit, human-authorized repo (the
 // authorized-set is the SOLE gate; no org-root default). Threaded ONLY on the team launch path (materializeRoster,
 // Site 5) and NEVER for solo (soloRoster builds its org directly and never calls parseRoster), so modelB here IS
-// `storeMode && team && !solo` by construction. Absent (default false) → legacy parse, byte-identical.
+// `modelB && team && !solo` by construction (modelB = decideModelB, cap=2). Absent (default false) → legacy parse.
 export function parseRoster(input, { repo, rng, modelB = false } = {}) {
   const data = typeof input === 'string' ? JSON.parse(input) : input
   if (!data || typeof data !== 'object') throw new Error('roster: not an object')
@@ -278,7 +278,7 @@ export function parseRoster(input, { repo, rng, modelB = false } = {}) {
         // memberArgv left the worker blob born without it → an un-org-scoped, cross-org-colliding config vol.
         // Model B: EVERY member is org-scoped (there is no org-root proxy — identity is the neutral anchor), so
         // crossRepo is forced true → the org-scoped LIVE/WORKER paths (mrc.project labels, memberArgv, worker blob)
-        // apply uniformly. (Config-vol keying already flips on storeMode, Inc 2, independent of crossRepo.)
+        // apply uniformly. (Config-vol keying already flips on modelB, Inc 2, independent of crossRepo.)
         crossRepo: modelB || String(memberRepo) !== String(repoPath),
         ...(cage ? { cage } : {}),
         ...(backendNote ? { backendNote } : {}),

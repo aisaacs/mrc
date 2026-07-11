@@ -118,7 +118,7 @@ COPY container/container-setup.js /usr/local/bin/
 # STORE_CAPABILITY (which changes its content → busts this COPY layer → busts this LABEL) can never leave the label
 # claiming a capability the shipped container-setup doesn't implement. The HOST gates store-mode on this label
 # (deny-unless-proven); value MUST equal container-setup.js's STORE_CAPABILITY + src/mrc-store.js's (drift-tested).
-LABEL mrc.store.capability=1
+LABEL mrc.store.capability=2
 # mrc-rename installs WITHOUT the .js so the /rename slash command can invoke it as a clean `mrc-rename`
 # (node shebang, lands on PATH like the xclip shim). The other three KEEP .js — they're referenced by full
 # path in hooks/settings/entrypoint, never typed as a command.

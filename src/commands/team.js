@@ -28,7 +28,7 @@ import { buildPersona } from '../teams/personas.js'
 import { makeHandle } from '../teams/names.js'
 import { PRESETS, listPresets, buildPreset } from '../teams/presets.js'
 import { runWorkerExec, volumeName, imageIdAndLabels } from '../docker.js'
-import { decideStoreMode } from '../mrc-store.js'   // Model B (Inc 2): the same store-capability decision the live path uses → the worker key can't drift
+import { decideModelB } from '../mrc-store.js'   // Model B: the HIGHER capability gate (cap=2), separate from #5's store-mode (cap∈{1,2}) — so Model B stays inert on a cap=1 (#5-only) image until a deliberate rebuild
 import { loadEnv, memberRepoEnvKey } from '../config.js'   // #49 cross-repo (Pierre Q4): member-secret MINT (caged member → no repo .env)
 import { findFreePort } from '../ports.js'
 import { loadLaunches, saveLaunch, setMemberLaunch, removeMemberLaunch, removeLaunch, controlSecret } from '../rooms.js'
@@ -95,16 +95,17 @@ export function memberWorkspaceVolumes(member, repoPath) {
 //     crossRepo=true → org-scoped regardless of the flag.
 // (KNOWN pre-existing edge, deliberately NOT fixed here: two team.jsons in ONE own-repo dir, both crossRepo=false,
 //  same handle → same key. It predates this epic and fixing it would force universal re-login; documented, separate.)
-export function memberConfigVolName(member, repoPath, org, storeMode = false) {
-  // Model B (Inc 2) — storeMode gate (=== #5's mrc.store.capability; the ONE activation signal, threaded from the
-  // authoritative image inspect, never a second read): key UNIFORMLY on `${org}#${handle}`, no repo component.
+export function memberConfigVolName(member, repoPath, org, modelB = false) {
+  // Model B (Inc 2) — modelB gate (decideModelB, cap=2 — the HIGHER Model B capability, NOT #5's store-mode cap∈{1,2},
+  // so this stays legacy on a #5-only image; threaded from the authoritative inspect, never a second read): key
+  // UNIFORMLY on `${org}#${handle}`, no repo component.
   // Identity is the project+member, not the repo, so a member's ~/.claude login persists across repo changes and NO
   // repo is privileged (the own-repo `repoPath#handle` special-case retires here — its role is subsumed by org#handle,
   // just as the own-repo GRANT retires in resolveMemberRepo). Handles are unique within an org → org#handle is
   // injective; the cross-repo `#repo#` disambiguator is redundant once the key never carries a repo.
-  if (storeMode) return volumeName(`${org}#${member.handle}`, 1)
-  // LEGACY (pre-Model-B image — capability absent → storeMode false): byte-identical to today. An un-passed
-  // storeMode defaults false, so any caller not yet threading it stays on the legacy key (inert until the rebuild).
+  if (modelB) return volumeName(`${org}#${member.handle}`, 1)
+  // LEGACY (image not Model-B-capable — cap≠2 → modelB false, incl. a #5-only cap=1 image): byte-identical to today.
+  // An un-passed modelB defaults false, so any caller not yet threading it stays on the legacy key.
   const crossRepo = member.crossRepo != null ? !!member.crossRepo : !!(member.repo && String(member.repo) !== String(repoPath))
   const key = crossRepo ? `${org}#${member.repo || repoPath}#${member.handle}` : `${repoPath}#${member.handle}`
   return volumeName(key, 1)
@@ -185,14 +186,14 @@ export async function execWorker(norm, member, repoPath, prompt) {
   writeFileSync(promptPath, prompt)
   const containerPromptFile = `/workspace/.mrc/teams/${name}`
   const vols = [...memberWorkspaceVolumes(member, root)]
-  // Model B (Inc 2): decide storeMode from the SAME image + the SAME decision function the live path uses
-  // (mister-claude's `mrc.store.capability` label → decideStoreMode), so the worker key and the live key agree by
-  // construction — same image ⇒ same storeMode ⇒ same `${org}#${handle}` (or the same legacy key when the capability
-  // is absent). imageIdAndLabels fails toward legacy ({}), so a docker hiccup degrades to the legacy key, never a
-  // false Model-B key. (A rebuild BETWEEN a live launch and a worker turn could differ → a one-time worker re-login;
+  // Model B (Inc 2): decide modelB from the SAME image + the SAME decision function the live path uses
+  // (mister-claude's `mrc.store.capability` label → decideModelB, cap=2), so the worker key and the live key agree by
+  // construction — same image ⇒ same modelB ⇒ same `${org}#${handle}` (or the same legacy key when cap≠2, incl. a
+  // #5-only cap=1 image). imageIdAndLabels fails toward legacy ({}), so a docker hiccup degrades to the legacy key,
+  // never a false Model-B key. (A rebuild BETWEEN a live launch and a worker turn could differ → a one-time worker re-login;
   // benign + greenfield, and the worker's config vol is its own backend state, not the user's login.)
-  const storeMode = decideStoreMode(imageIdAndLabels().labels).storeMode
-  const volName = memberConfigVolName(member, repoPath, org, storeMode)   // ONE keying helper — no drift vs the live path
+  const modelB = decideModelB(imageIdAndLabels().labels)
+  const volName = memberConfigVolName(member, repoPath, org, modelB)   // ONE keying helper — no drift vs the live path
   vols.push('-v', `${volName}:/home/coder/.claude`, '-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)
   const env = [
     '-e', `MRC_AGENT=${member.backend}`, '-e', `MRC_MEMBER_HANDLE=${member.handle}`,
@@ -551,7 +552,7 @@ export async function assertTtydUnixSocket(ttydPid, ttydSock, { timeoutMs = 3000
 async function launchMembers(norm, repoPath, rosterPath, live) {
   // Site 5 (Model B) — the daemon-predict → OUTER-assert, the assertTtydUnixSocket shape applied to Model-B mode.
   // The daemon threaded its ONE prediction as MRC_MODEL_B_PREDICT; this process reads the AUTHORITATIVE actual from
-  // the exact image it's about to launch (decideStoreMode). Assert they AGREE **before spawning any dtach master** —
+  // the exact image it's about to launch (decideModelB). Assert they AGREE **before spawning any dtach master** —
   // a mismatch (a rebuild landed between the daemon's define/predict and this launch) → THROW at the launch boundary
   // → the daemon's detached child exits non-zero → failLaunch flips launching→failed CLEAN. Critically the throw
   // PRECEDES the dtach spawn, so there is NO orphaned-ALIVE master (a self-killed inner inside a live master whose
@@ -559,7 +560,7 @@ async function launchMembers(norm, repoPath, rosterPath, live) {
   // bare human `mrc team up` carries no predict and is unaffected. The inner mrc.js resolveStoreMode assert is a belt.
   if (process.env.MRC_MODEL_B_PREDICT != null) {
     const predict = process.env.MRC_MODEL_B_PREDICT === '1'
-    const actual = decideStoreMode(imageIdAndLabels().labels).storeMode
+    const actual = decideModelB(imageIdAndLabels().labels)
     if (predict !== actual) throw new Error(`Model B mode mismatch: the daemon predicted ${predict ? 'Model B' : 'legacy'} but this image is ${actual ? 'Model B' : 'legacy'} — refusing the launch LOUD (a rebuild likely landed between define and launch; retry). Never mounting under a mode the daemon didn't expect.`)
   }
   const existing = (loadLaunches()[norm.org] || {}).members || {}

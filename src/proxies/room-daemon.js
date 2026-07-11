@@ -26,7 +26,7 @@ import { resolveTerritoryImage } from '../safe-path.js'   // #56: shared dual-co
 import { leadsRoomId } from '../teams/roster.js'
 import { repoEnvKeyStrict } from '../config.js'
 import { resolveOrgRootForOrg, recordActivatedRoot, isActivatedRoot, clearOrgRoot, clearActivatedRoots, addAuthorizedRepo, orgAnchorDir } from '../teams/repo-auth.js'   // guard-1: write-once org root + pin/activate separation; addAuthorizedRepo = the human-only cross-repo/Model-B authorize (SOLE set writer besides the CLI); orgAnchorDir = Model B's neutral host-only identity anchor
-import { decideStoreMode } from '../mrc-store.js'   // Model B: PREDICT store-mode from the image capability (same signal the inner mrc.js reads authoritatively; fails-toward-legacy without docker)
+import { decideModelB } from '../mrc-store.js'   // Model B: PREDICT the HIGHER Model-B capability (cap=2) from the image label — SEPARATE from #5's store-mode (cap∈{1,2}), so Model B stays inert on a #5-only cap=1 image (same signal the inner mrc.js reads authoritatively; fails-toward-legacy without docker)
 import { imageIdAndLabels } from '../docker.js'
 
 const MRC_JS = fileURLToPath(new URL('../../mrc.js', import.meta.url))
@@ -154,7 +154,7 @@ export function acquireDaemonSingleton(lockPath, { backstopMs = 48 * 3600 * 1000
   return false   // lost the re-acquire race to a live peer → defer
 }
 
-export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort = 0, turnCap = 200, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS, roomTtlMs = 300_000, workerInvoke = defaultWorkerInvoke, workerPollMs = 2_000, tgFetch = globalThis.fetch, tgToken, electSingleton = false }) {
+export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort = 0, turnCap = 200, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS, roomTtlMs = 300_000, workerInvoke = defaultWorkerInvoke, workerPollMs = 2_000, tgFetch = globalThis.fetch, tgToken, electSingleton = false, modelBPredict = () => { try { return decideModelB(imageIdAndLabels().labels) } catch { return false } } }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
   let relayBound = false       // #50/#5: TRUE only from the relay server's 'listening' event — the honest "peers can connect" signal. Surfaced in the status payload (degraded readiness) and gates the idle-reaper (a relay-pending daemon must not self-reap while holding the constant + retrying).
@@ -419,10 +419,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // boot, so a cleared pin can't be re-rooted by a background action reading orgDef.repo). `activate` = a trusted
   // activate gesture (CLI `team up`, the dashboard Launch click) → recordActivatedRoot + run the side effects.
   // Model B PREDICTION (Inc 3): the daemon inspects the mister-claude image capability to PREDICT whether the inner
-  // mrc.js will run Model-B. The inner's resolveStoreMode is AUTHORITATIVE (the exact image it runs); this is a
-  // prediction the OUTER launch asserts against (Site 5). Fresh per-call (never boot-cached → a rebuild is reflected
-  // immediately). Fails toward LEGACY (no docker / inspect error → false), matching #5's deny-unless-proven.
-  const predictModelB = () => { try { return decideStoreMode(imageIdAndLabels().labels).storeMode } catch { return false } }
+  // mrc.js will run Model-B (decideModelB — the HIGHER cap=2 gate, NOT #5's storeMode, so a #5-only cap=1 image
+  // predicts FALSE and Model B stays inert). The inner's resolveStoreMode is AUTHORITATIVE (the exact image it runs);
+  // this is a prediction the OUTER launch asserts against (Site 5). `modelBPredict` is INJECTABLE (startRoomDaemon
+  // option) so tests force the mode deterministically; the PRODUCTION default is the real inspect (fresh per-call →
+  // a rebuild is reflected immediately; fails toward LEGACY on no-docker/inspect-error, deny-unless-proven).
+  const predictModelB = modelBPredict
 
   function defineOrg(def, { trusted = false, activate = false, modelB = predictModelB() } = {}) {
     if (modelB) {
@@ -1317,7 +1319,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             // org whose build silently died). post-capOk handler → pure state-machine honesty, no new surface.
             try { saveLaunchState(norm.org, { at: Date.now(), launching: true, repo: norm.repo }) } catch {}   // provisional STATE in the daemon-owned file (separate from the subprocess's member records) → no cross-process read-modify-write race
             // Site 5: thread the daemon's ONE predict as an env → the OUTER launchMembers asserts
-            // `decideStoreMode(the-image) === MRC_MODEL_B_PREDICT` BEFORE spawning the dtach master (mismatch → throw
+            // `decideModelB(the-image) === MRC_MODEL_B_PREDICT` BEFORE spawning the dtach master (mismatch → throw
             // → this child exits non-zero → failLaunch flips launching→failed CLEAN; the throw precedes the dtach, so
             // no orphaned-ALIVE master — the dtach master's `read` shell would otherwise keep a self-killed inner "up").
             const child = spawn(process.execPath, [MRC_JS, 'team', 'up', norm.repo, '--roster', rosterPath], { detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, MRC_MODEL_B_PREDICT: modelB ? '1' : '0' } })

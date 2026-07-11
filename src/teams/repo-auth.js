@@ -111,7 +111,7 @@ export function removeAuthorizedRepo(org, repoPath) {
 //     loadAuthorizedRepos(org).has(...) or a throw. This is the whole security delta — the pin's re-root protection
 //     and activation's deferral both collapse into this one gate (a repo is mounted/`.env`-read ONLY once a human
 //     CSRF+capOk act put it in the set). modelB is passed ONLY on the team-parse path (never solo: a store-capable
-//     image running solo keeps its own-repo default, so the flag is `storeMode && team && !solo`, set in parseRoster).
+//     image running solo keeps its own-repo default, so the flag is `modelB && team && !solo`, set in parseRoster).
 export function resolveMemberRepo(orgRepo, requested, org, { modelB = false } = {}) {
   if (modelB) {
     // Model B: SOLE-gate. No own-repo-grant, no orgRepo return — request required, realpath, set-check or throw.

@@ -20,7 +20,7 @@ const PROJECT_STORE = join(CLAUDE_DIR, 'projects', '-workspace')
 // gate store-mode on it (deny-unless-proven). MUST equal src/mrc-store.js's STORE_CAPABILITY (drift-tested).
 // Bumping this changes THIS file's content → its COPY layer rebuilds → the label can never be present on an image
 // whose container-setup is stale (the tie that stops the capability label from lying).
-const STORE_CAPABILITY = 1
+const STORE_CAPABILITY = 2   // 1→2 for Model B (identity off the repo): a host-side-only change, but bumping the label REQUIRES a rebuild — that rebuild is Model B's deliberate activation gate (cap=1 image → #5 store only; cap=2 → Model B). container-side store behavior is UNCHANGED (no branch on this value; Model B is host-side).
 const MRC_STORE_MOUNT = '/mrc'   // where the host mounts the leaf slice when store-mode is active (existsSync = the runtime coordination signal)
 
 function readJSON(path) {
