@@ -57,6 +57,11 @@ Goal: create a project and it comes up live, in one gesture, with a form that is
   overwriting `repo/team.json`; the GUI launch persists the roster via the daemon (`defineOrg`→`orgDefs`/
   `saveOrgs`) + the launcher's own `--roster` temp, not the repo root. (Full store lifecycle is Phase 3.)
 
+- **1f. Config-volume name behind a SEAM (Pierre hygiene).** P4 swaps volume keying from per-project
+  (`repoPath#handle`) to per-character. Resolve the config-volume name through the ONE existing helper
+  (`memberConfigVolName`, `team.js:97`) everywhere in the launch path now, so P4 is a resolver swap, not a
+  launch-path rewrite. Cheap now, saves a retrofit.
+
 Files: `src/dashboard.html`, `src/rooms-dashboard.js`, `src/proxies/room-daemon.js`. Host-side;
 `mrc rooms restart` to deploy. **Pierre-gate: light** (1a/1b touch the launch path he signed — send the diff).
 
@@ -66,6 +71,9 @@ Files: `src/dashboard.html`, `src/rooms-dashboard.js`, `src/proxies/room-daemon.
   (aggregate the `@user` inbox) · a timestamp. Doubles as `pick-project`.
 - **One clean Exit (= suspend)** + relabeled **Delete** (keeps files); retire the x-pill / "Resume team" —
   resuming is just picking the project from the home. Warn-if-mid-thought on Exit.
+- **Route new verbs to gated paths (Pierre):** Resume MAPS to the capOk-gated `launchteam`/activate path
+  (it re-activates a pinned org → reads `.env`, spawns), NOT a fresh ungated `/api/resume`; Delete MAPS to
+  the already-gated `removeorg` (clears pin/activation). Don't rebuild either as a new ungated door.
 - **Vocabulary sweep org→project** in user-facing strings (internal field is already `project`).
 
 Files: `src/dashboard.html`, `src/rooms-dashboard.js`. Host-side. **Pierre-gate: a read-path verify (not
@@ -86,6 +94,13 @@ member-influenced field (org name, inbox body) is rendered **escaped** into the 
   re-read of ANY mounted file. Do not record "team.json→store" as the persona-injection close.
 - **Keep the §10.2 split intact:** connect-two-sessions stays session-callable + GUI (parity); the +Add
   **repo-authorization** (mounting a repo for a member) stays **human-only, never session-callable**.
+- **GUI `steer` MUST be capOk-gated (Pierre — the sharp one).** When P3 surfaces room controls
+  (brake/resume/steer/end) to the GUI, `steer` injects the `[Human directive]` trust marker — the ONE
+  marker agents obey — so an ungated GUI steer = cross-uid authoritative-instruction injection into every
+  agent in the room (worse than a re-root: it drives them directly). brake/resume/end are lower-stakes
+  (pause/close, no trust inject) but steer requires the secret. **Banked principle:** every phase that adds
+  a GUI action adds a capability DOOR — re-check the guard-1 rule ("activate/spawn/destructive/trust-inject
+  requires the secret") against each new door, never assume it from the lifecycle pass.
 
 Files: `src/dashboard.html`, `src/rooms-dashboard.js`, `src/commands/team.js`, guard-2 (unbuilt).
 **Pierre-gate: medium** (guard-2 is the real fix here; the human-only repo-auth boundary).
@@ -100,10 +115,14 @@ so a character's Claude auth persists across projects (fewer re-auths), and team
   repo/`.mrc` store (symlinked OUT of `~/.claude/projects/-workspace/` per CLAUDE.md), NOT in the config
   volume — so sharing the config volume by identity does not, on its face, cross project-DATA isolation.
   **The audit proves that premise:** enumerate everything a Claude session writes to `~/.claude` *outside*
-  `projects/-workspace/` (`history*`, `todos`, `settings.json`, plugin/MCP state, caches) and confirm none
-  captures project-A content a character-in-B could read. Cheap: `find ~/.claude -newer <marker>` during a
-  live session, cross-referenced against the symlink. Each leak found = a cross-project data channel to
-  close (route through the symlink or exclude from the shared vol). **If the symlink isn't airtight, P4 in
+  `projects/-workspace/` (`history*`, `todos`, `settings.json`, caches) and confirm none captures project-A
+  content a character-in-B could read. Cheap: `find ~/.claude -newer <marker>` during a live session,
+  cross-referenced against the symlink. Each leak found = a cross-project data channel to close (route
+  through the symlink or exclude from the shared vol). **Name INSTALLED MCP servers / plugins explicitly
+  (Pierre):** a shared per-character volume carrying MCP config means a character that gains an MCP in
+  project A carries it to B — an active code-exec/egress channel, STRONGER than a passive settings file.
+  Probably acceptable (the character's own tooling follows it) but it's the one `~/.claude` resident that's
+  active, not data — call it out and decide deliberately. **If the symlink isn't airtight, P4 in
   its shared-volume form cannot exist — so run this before committing P1–P3 to it.**
 - **Two hard constraints regardless of the audit (Pierre):** (1) **Caged characters are EXCLUDED from the
   shared volume** — a caged adversary keeps its isolated `-pierre-N` slot pool; only UNCAGED recurring

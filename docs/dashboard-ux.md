@@ -5,6 +5,9 @@ surfaces (§10) go past a live Pierre before any implementation. Builds on the s
 cross-repo member work already shipped (`docs/dashboard-solo-workflow.md` §4a, Mouth B) and the
 teams substrate (`docs/agent-teams.md`). **Updated 2026-07-10** with the owner's first live
 create→launch **field report (§11)** and the **recurring-characters ("Pierre model") direction (§5.2)**.
+**Updated 2026-07-11 (§13):** a clickable prototype (`prototype/index.html`) drove the model to lock —
+repo-per-agent, character-vs-role (Alessandro's roles preserved), team/leads-room semantics, no-delete,
+teams-in-simple. §13 + the prototype are the current living reference.
 
 This supersedes the repo-coupling framing in `dashboard-solo-workflow.md` §6.5: cross-repo work is
 **same-project**, routed by the engine (one org, multi-repo members), *not* a bridge between two
@@ -143,10 +146,9 @@ The model to move toward: **a cast of recurring, recognizable characters — the
 Pierre.** You summon Pierre and you know exactly who you're getting: his role (faultfinding adversary),
 his voice, his behavior. Members should work the same way.
 
-- **Named specialist *and* generalist characters** with a stable identity: name + role/persona + their
-  **own persistent config volume**. You "add Fabrice the architect" (or a generalist) and get the *same*
-  character across projects — same name, same persona, recognizable everywhere (dashboard, `@user`
-  inbox, Telegram thread, transcript).
+- **Named characters** with a stable identity: name + role/persona + their **own persistent config
+  volume**. You "add Colette the architect" and get the *same* character across projects — same name,
+  same persona, recognizable everywhere (dashboard, `@user` inbox, Telegram thread, transcript).
 - **Persistent per-character volumes ⇒ far fewer re-auths.** Because a character reuses its own config
   volume, its Claude session is already authenticated — starting a new project with a familiar cast no
   longer means N fresh terminal logins. This directly attacks the "re-auth into every terminal on every
@@ -154,8 +156,11 @@ his voice, his behavior. Members should work the same way.
 - **Recognizability > novelty.** Random-name-per-run retires as the *default* (keep it as an optional
   flavor toggle if wanted, but it is not the model). Stability is what makes a teammate followable.
 - **Pierre is the existing proof of concept** — the caged adversary already IS a stable character with a
-  fixed identity + its own volume. Generalize that pattern into a small reusable cast (architect,
-  engineer, critic, designer, …), each a "Pierre" of its specialty, plus user-authored characters.
+  fixed identity + its own volume. Generalize that pattern to a **curated few** true characters, plus
+  user-authored ones. **Character ≠ role (see §13):** a character is a recurring *identity*; a role is
+  Alessandro's *persona/mandate* (assignable to any Claude). Only a few jobs collapse to a single
+  character — **architect = Colette, critique = Pierre, images = Thierry** — everything else (engineer,
+  tester, …) stays a role you give a plain Claude.
 - **The character is stable; its repo/territory is per-project.** A project assigns a character where it
   works this time; the identity/persona/volume travel with the character across projects.
 
@@ -392,7 +397,62 @@ This is the ground truth the redesign has to beat. Each item maps to its fix —
 - Recurring-character volume keying + what a character may carry between projects (§5.2 / §10 #4).
 - Preset presentation — how prominent, how much each template explains itself (§11).
 
+## 13. Prototype-driven model (locked from the clickable prototype, 2026-07-11)
+
+A clickable, fully-stubbed prototype (**`prototype/index.html`** — open locally, no server) drove several
+model decisions out of the owner's head. These refine the sections above and are the reference the build
+implements against:
+
+- **Repo is per-AGENT, not per-project.** The create flow: each agent picks its own repo (recent-repo
+  quick-picks by folder name, full path shown on select; a system folder chooser; manual), *then* a
+  session in it (the GUI for `mrc pick` — fresh or a prior session). Happy path stays: New → pick a repo →
+  Launch. (Confirms §1's "repo is a member attribute" concretely.)
+- **"Members" → "agents". Default = a plain Claude.** Role is **de-emphasized** — a single session is
+  just "claude"; roles surface only in Advanced and only matter for teams.
+- **Character vs. role — the load-bearing split (preserves Alessandro's `personas.js` whole):**
+  - A **role** is Alessandro's persona: a **mandate** (the collaboration charter) + a **mount** capability
+    (`ro`/`rw`, a real bind boundary) + `leadByDefault` + the shared protocol (directed `@mention`, the
+    leads-room rule, the trust model, human-commits). **Kept exactly.** Assignable to any Claude:
+    engineer, tester, researcher, user-defender.
+  - A **character** is a new layer on top: a recurring *identity* (name + persona + its **own persistent,
+    already-authed config volume**), reusable across projects. A character may carry a default role.
+  - **A few jobs collapse to a single character (hard-stops), by owner decision:** **architect = Colette**,
+    **critique = Pierre**, **images = Thierry (Gemini)**. You don't spin up a generic critic/architect/
+    designer — you summon the character. Everything else stays a role on a Claude. Solene/Margaux (critic/
+    engineer) retire as *named* characters; their roles live on (critique→Pierre; engineer→a Claude+role).
+  - **Making the other characters "proper like Pierre" IS the P4 build** (task #6, §5.2): Pierre already
+    has the full stack (summon flow, prime persona, cage, persistent login-slot volume, durable host
+    record); Colette/Thierry need the same. Gated on the P4 `~/.claude`-leak audit (§10 #4).
+- **Team room + leads room — surfaced only where they earn it (Alessandro's design, unchanged):** a
+  **team room** exists per team with **≥2 members** (intra-team `@mention`); a **leads room** exists per
+  project with **≥2 teams** (each team's lead + `@user` — the *only* cross-team path, lead-to-lead). A
+  solo/1-agent project has **no rooms**. The **`@user` inbox is separate** — your direct line to an agent,
+  not a room. (The phantom 1-member "team room" that confused the owner was a rendering bug, not his
+  design; removed.)
+- **Teams in simple mode.** Default one team / one agent (fast path intact). Each team is **its own card**
+  (Team label + editable name; agents inside); **＋ Add team** below the cards. No delete-team button
+  (an empty extra team offers a small "remove").
+- **Nothing is ever deleted.** The only lifecycle verb is **Close project** (= suspend → Recently used,
+  resumable). Per-agent **Close session** (= Ctrl-C) greys the agent in the list; tapping it **Resumes**.
+  Delete is gone entirely.
+- **Home in three sections** — **Active** (live; New-project tile at the end), **Recently used** (no live
+  terminals, last 14 days), **Archived** (collapsed). Tiles are the project picker; badge reads
+  **"❓ needs human"**.
+- **☰ → daemon Rooms screen** — every open room across all projects + consults, with controls and its
+  **`thread.log` readable outside the project**.
+- **Names are themeable aliases** over the stable identity (the config-volume id is the real identity);
+  the **name theme lives in project settings**, not the add-agent modal. Switch themes or rename freely —
+  the character keeps its volume + login.
+- **Backend/model is per-agent** (Advanced): claude / codex / gemini.
+- **Advanced is a toggle** revealing: the optional **template** (None / web / game / backend — Solo
+  retired), per-agent **territory** (with an explanation: the sub-folder the agent may *write* to), per-
+  agent **backend** and **role**, and a manual **Rooms** card (pair agents into extra rooms; you know a
+  room by its members).
+- **Launch = one gesture, lands live** (the §11 fix, rendered as the `launching → live` progress modal,
+  never a "stopped" flash).
+
 ---
 
 *Design capture, not a commitment. It exists so the build has one spec, the ergonomic bar is stated
-up front, and the containment-sensitive surfaces are named for Pierre before they're written.*
+up front, and the containment-sensitive surfaces are named for Pierre before they're written. §13 and
+`prototype/index.html` are the current living reference.*

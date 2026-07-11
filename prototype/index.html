@@ -1,0 +1,474 @@
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Mister Claude — dashboard prototype</title>
+<style>
+  :root{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --line:#262b36; --inset:#0b0d12; --field:#11141b;
+    --fg:#e6e9ef; --dim:#8b93a3; --faint:#5b6373;
+    --accent:#a78bfa; --accent-soft:#2b2547; --accent-edge:#4a3f78;
+    --online:#5ec878; --starting:#e6a23c; --danger:#f2607a; --worker:#6aa0f5;
+    --needs:#c4a6ff; --needs-bg:#2f2647; --needs-edge:#5a4a7a; --lead:#b39ddb;
+    --danger-bg:#2a1b21; --danger-fg:#f4a6b4; --danger-edge:#5a3540;
+    --shadow:0 12px 40px -12px rgba(0,0,0,.6);
+    --mono:ui-monospace,"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;
+    --ui:system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    --r:12px; --r-sm:8px;
+  }
+  @media (prefers-color-scheme: light){:root{
+    --bg:#f4f3f9; --panel:#ffffff; --panel2:#f4f2fb; --line:#e4e0ef; --inset:#eeecf6; --field:#ffffff;
+    --fg:#1b1922; --dim:#67617a; --faint:#9a94ab; --accent:#6d3bea; --accent-soft:#efe9fe; --accent-edge:#cbb9f7;
+    --online:#2f9e54; --starting:#c07d15; --danger:#d43a5c; --worker:#3d6fd6;
+    --needs:#7a4bde; --needs-bg:#efe7fd; --needs-edge:#c9b6f4; --lead:#7c5cd6;
+    --danger-bg:#fce9ee; --danger-fg:#a51f42; --danger-edge:#f2c6d2; --shadow:0 14px 40px -18px rgba(60,40,110,.35);
+  }}
+  :root[data-theme="dark"]{
+    --bg:#0f1115; --panel:#171a21; --panel2:#1d212b; --line:#262b36; --inset:#0b0d12; --field:#11141b;
+    --fg:#e6e9ef; --dim:#8b93a3; --faint:#5b6373; --accent:#a78bfa; --accent-soft:#2b2547; --accent-edge:#4a3f78;
+    --online:#5ec878; --starting:#e6a23c; --danger:#f2607a; --worker:#6aa0f5;
+    --needs:#c4a6ff; --needs-bg:#2f2647; --needs-edge:#5a4a7a; --lead:#b39ddb;
+    --danger-bg:#2a1b21; --danger-fg:#f4a6b4; --danger-edge:#5a3540; --shadow:0 12px 40px -12px rgba(0,0,0,.6);
+  }
+  :root[data-theme="light"]{
+    --bg:#f4f3f9; --panel:#ffffff; --panel2:#f4f2fb; --line:#e4e0ef; --inset:#eeecf6; --field:#ffffff;
+    --fg:#1b1922; --dim:#67617a; --faint:#9a94ab; --accent:#6d3bea; --accent-soft:#efe9fe; --accent-edge:#cbb9f7;
+    --online:#2f9e54; --starting:#c07d15; --danger:#d43a5c; --worker:#3d6fd6;
+    --needs:#7a4bde; --needs-bg:#efe7fd; --needs-edge:#c9b6f4; --lead:#7c5cd6;
+    --danger-bg:#fce9ee; --danger-fg:#a51f42; --danger-edge:#f2c6d2; --shadow:0 14px 40px -18px rgba(60,40,110,.35);
+  }
+  *{box-sizing:border-box} html,body{margin:0}
+  body{background:var(--bg);color:var(--fg);font-family:var(--ui);font-size:14px;line-height:1.45;-webkit-font-smoothing:antialiased;min-height:100vh}
+  button{font-family:inherit;cursor:pointer;color:var(--fg)}
+  .mono{font-family:var(--mono)} ::selection{background:var(--accent-soft)}
+  *{outline:none !important}   /* prototype: kill every focus ring, incl. any host !important rule */
+  .eyebrow{font-size:11px;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);font-weight:600}
+  .kbd{font-family:var(--mono);font-size:11px;background:var(--panel2);border:1px solid var(--line);border-radius:5px;padding:1px 6px;color:var(--dim)}
+  .hint{font-weight:400;color:var(--dim)}
+
+  .bar{position:sticky;top:0;z-index:30;display:flex;align-items:center;gap:14px;height:54px;padding:0 16px;background:color-mix(in srgb,var(--panel) 88%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--line)}
+  .ham{display:grid;place-items:center;width:34px;height:34px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--dim);font-size:16px}
+  .ham:hover{color:var(--fg);border-color:var(--accent-edge)}
+  .brand{display:flex;align-items:center;gap:9px;cursor:pointer;font-weight:650}.brand svg{width:25px;height:25px;flex:none}.brand .p{color:var(--accent)}
+  .crumbs{display:flex;align-items:center;gap:8px;color:var(--dim);font-size:13px}.crumbs .sep{color:var(--faint)}.crumbs b{color:var(--fg);font-weight:600}.crumbs span[role]{cursor:pointer}
+  .bar .spacer{flex:1}
+  .pill{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);color:var(--dim);background:var(--panel2)}
+  .pill .dot{width:7px;height:7px;border-radius:50%;background:var(--online);box-shadow:0 0 8px var(--online)}
+  .iconbtn{display:inline-grid;place-items:center;width:34px;height:34px;border-radius:9px;border:1px solid var(--line);background:var(--panel2);color:var(--dim);font-size:15px}
+  .iconbtn:hover{color:var(--fg);border-color:var(--accent-edge)}
+
+  .drawer{position:fixed;top:54px;left:0;bottom:0;width:230px;z-index:40;background:var(--panel);border-right:1px solid var(--line);padding:14px 12px;transform:translateX(-100%);transition:transform .2s;display:flex;flex-direction:column;gap:4px}
+  .drawer.open{transform:none}
+  .drawer .di{display:flex;align-items:center;gap:11px;padding:10px 12px;border-radius:var(--r-sm);color:var(--dim);font-size:14px;border:1px solid transparent;background:none;width:100%;text-align:left}
+  .drawer .di:hover{color:var(--fg);background:var(--panel2)}.drawer .di.on{background:var(--accent-soft);color:var(--fg);border-color:var(--accent-edge)}
+  .drawer .di .ct{margin-left:auto;font-size:11px;font-family:var(--mono);color:var(--faint)}
+  .drawer .foot{margin-top:auto;font-size:11px;color:var(--faint);padding:8px 12px;line-height:1.5}
+  .scrim-l{position:fixed;inset:54px 0 0 0;z-index:35;background:rgba(0,0,0,.35)}
+
+  .btn{display:inline-flex;align-items:center;gap:7px;padding:8px 14px;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--panel2);color:var(--fg);font-size:13px;font-weight:550;transition:.14s}
+  .btn:hover{border-color:var(--accent-edge)}
+  .btn.primary{background:var(--accent);border-color:var(--accent);color:#12101c;font-weight:650}.btn.primary:hover{filter:brightness(1.06)}
+  .btn.ghost{background:transparent}.btn.big{padding:12px 22px;font-size:15px;border-radius:10px}.btn.sm{padding:5px 10px;font-size:12px}
+  .btn:disabled{opacity:.45;cursor:not-allowed}
+
+  .switch{display:inline-flex;align-items:center;gap:9px;cursor:pointer;font-size:12.5px;color:var(--dim);user-select:none}
+  .switch .tr{width:38px;height:22px;border-radius:999px;background:var(--panel2);border:1px solid var(--line);position:relative;transition:.15s;flex:none}
+  .switch.on .tr{background:var(--accent);border-color:var(--accent)}
+  .switch .kn{position:absolute;top:2px;left:2px;width:16px;height:16px;border-radius:50%;background:var(--fg);transition:.15s}
+  .switch.on .kn{left:18px;background:#12101c}.switch.on{color:var(--fg)}
+
+  .wrap{max-width:1080px;margin:0 auto;padding:30px 24px 80px}
+  .home-head{display:flex;align-items:flex-end;justify-content:space-between;gap:20px;margin-bottom:8px}
+  .home-head h1{margin:6px 0 2px;font-size:25px;letter-spacing:-.01em}.home-head p{margin:0;color:var(--dim)}
+  .sec{margin-top:26px}.sec .sh{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+  .sec .sh .ct{font-family:var(--mono);font-size:11px;color:var(--faint);background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:1px 8px}
+  .tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px}
+  .tile{position:relative;text-align:left;background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px;min-height:138px;display:flex;flex-direction:column;gap:9px;color:var(--fg);transition:.16s}
+  .tile:hover{border-color:var(--accent-edge);transform:translateY(-2px);box-shadow:var(--shadow)}
+  .tile .toprow{display:flex;align-items:center;justify-content:space-between;gap:8px}
+  .tile h3{margin:0;font-size:16px;font-weight:640;font-family:var(--mono);color:var(--fg)}
+  .tile .meta{color:var(--dim);font-size:12.5px;display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+  .tile .foot{margin-top:auto;display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:12px;color:var(--faint);font-family:var(--mono)}
+  .tile.small{min-height:96px}
+  .avatars{display:flex}.avatars .av{margin-left:-7px;border:2px solid var(--panel)}.avatars .av:first-child{margin-left:0}
+  .state{display:inline-flex;align-items:center;gap:6px;font-size:12px;font-weight:600}.state .d{width:8px;height:8px;border-radius:50%}
+  .state.work .d{background:var(--online);animation:pulse 1.8s infinite}.state.work{color:var(--online)}
+  .state.idle .d{background:var(--faint)}.state.idle{color:var(--dim)}
+  .state.susp .d{background:transparent;border:2px solid var(--faint);width:9px;height:9px}.state.susp{color:var(--faint)}
+  @keyframes pulse{0%{box-shadow:0 0 0 0 color-mix(in srgb,var(--online) 60%,transparent)}70%{box-shadow:0 0 0 7px transparent}100%{box-shadow:0 0 0 0 transparent}}
+  .badge-needs{display:inline-flex;align-items:center;gap:5px;font-size:11px;font-weight:650;color:var(--needs);background:var(--needs-bg);border:1px solid var(--needs-edge);padding:2px 8px;border-radius:999px}
+  .tile.new{border-style:dashed;align-items:center;justify-content:center;color:var(--dim);gap:6px;text-align:center}
+  .tile.new:hover{color:var(--accent);border-color:var(--accent-edge)}.tile.new .plus{font-size:24px;line-height:1}
+  details.arch{margin-top:8px}details.arch summary{cursor:pointer;color:var(--dim);font-size:13px;list-style:none;display:flex;align-items:center;gap:8px;padding:6px 0}
+  details.arch summary::-webkit-details-marker{display:none}details.arch summary .tw{transition:.2s}details.arch[open] summary .tw{transform:rotate(90deg)}
+
+  .av{border-radius:50%;display:grid;place-items:center;font-weight:700;color:#fff;flex:none}
+  .av.sm{width:20px;height:20px;font-size:9px}.av.md{width:28px;height:28px;font-size:11px}.av.lg{width:34px;height:34px;font-size:12px}
+  .star{color:var(--lead)}
+
+  .sheet{max-width:680px;margin:0 auto}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:20px}.card + .card{margin-top:14px}
+  .field{display:flex;flex-direction:column;gap:6px;margin-bottom:15px}.field:last-child{margin-bottom:0}
+  label.lbl{font-size:12.5px;font-weight:600}
+  input.inp,select.inp{width:100%;padding:9px 12px;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--field);color:var(--fg);font-size:13.5px;font-family:var(--mono)}
+  input.inp:focus,select.inp:focus{border-color:var(--accent);outline:none}
+  .teamblk{border:1px solid var(--line);border-radius:var(--r);padding:14px;background:var(--panel2);margin-bottom:12px}
+  .teamhd{display:flex;align-items:center;gap:8px;margin-bottom:11px}
+  .teamhd input{background:var(--field);border:1px solid var(--line);border-radius:6px;color:var(--fg);font-family:var(--mono);font-size:13px;font-weight:600;padding:4px 9px;width:170px}
+  .teamhd input:hover{border-color:var(--accent-edge)}.teamhd input:focus{border-color:var(--accent)}
+  .nmedit{background:var(--field);border:1px solid var(--line);border-radius:6px;color:var(--fg);font-weight:640;font-size:13.5px;padding:3px 9px;max-width:190px;font-family:var(--ui)}
+  .nmedit:hover{border-color:var(--accent-edge)}.nmedit:focus{border-color:var(--accent)}
+  .agent{border:none;border-radius:var(--r-sm);padding:13px;background:var(--panel2);margin-bottom:9px}
+  .agent .ah{display:flex;align-items:center;gap:9px;margin-bottom:9px}
+  .agent .ah .nm{font-weight:640;font-size:13.5px}.agent .ah .hd{font-family:var(--mono);font-size:11px;color:var(--dim)}
+  .agent .ah .sp{margin-left:auto;display:flex;gap:4px}
+  .rowlbl{font-size:11px;color:var(--dim);text-transform:uppercase;letter-spacing:.07em;margin:9px 0 5px;font-weight:600}
+  .repos{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+  .repochip{padding:6px 11px;border-radius:8px;border:1px solid var(--line);background:var(--field);font-size:12px;color:var(--dim);font-family:var(--mono)}
+  .repochip.on{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}.repochip:hover{color:var(--fg)}
+  .fullpath{font-family:var(--mono);font-size:11.5px;color:var(--online);margin-top:6px}
+  .twocol{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+  .explain{font-size:11.5px;color:var(--faint);margin-top:5px;line-height:1.5}
+  .presets{display:flex;gap:8px;flex-wrap:wrap}
+  .chip{padding:7px 13px;border-radius:999px;border:1px solid var(--line);background:var(--panel2);font-size:12.5px;color:var(--dim);font-weight:550}
+  .chip.on{border-color:var(--accent);color:var(--accent);background:var(--accent-soft)}.chip:hover{color:var(--fg)}
+  .rtiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:10px}
+  .rtile{border:1px solid var(--line);border-radius:var(--r);padding:12px;background:var(--panel2);min-height:82px;display:flex;flex-direction:column;gap:7px;text-align:left;color:var(--fg)}
+  .rtile .rm{margin-left:auto}
+  .rtile.add{border-style:dashed;color:var(--accent);align-items:center;justify-content:center;cursor:pointer}
+  .rtile .who{font-size:12px;color:var(--dim);display:flex;gap:4px;flex-wrap:wrap;align-items:center}
+
+  .scrim{position:fixed;inset:0;z-index:60;background:color-mix(in srgb,var(--bg) 78%,transparent);backdrop-filter:blur(4px);display:grid;place-items:center;animation:fade .2s}
+  @keyframes fade{from{opacity:0}to{opacity:1}}
+  .launchbox{width:min(440px,92vw);background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:24px;box-shadow:var(--shadow)}
+  .launchbox h3{margin:0 0 4px;font-size:17px}.launchbox .sub{color:var(--dim);font-size:13px;margin-bottom:18px}
+  .steps{display:flex;flex-direction:column;gap:12px}.step{display:flex;align-items:center;gap:11px;font-size:13.5px;color:var(--faint);transition:.2s}
+  .step .ic{width:22px;height:22px;border-radius:50%;border:2px solid var(--line);display:grid;place-items:center;font-size:12px;flex:none}
+  .step.run{color:var(--fg)}.step.run .ic{border-color:var(--starting);color:var(--starting);animation:spin 1s linear infinite;border-right-color:transparent}
+  .step.done{color:var(--fg)}.step.done .ic{border-color:var(--online);background:var(--online);color:#0b1410}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  .proj{display:grid;grid-template-columns:212px 292px 1fr;height:calc(100vh - 54px)}
+  @media(max-width:900px){.proj{grid-template-columns:60px 210px 1fr}}
+  .rail{border-right:1px solid var(--line);background:var(--panel);padding:12px 10px;display:flex;flex-direction:column;gap:3px;overflow:auto}
+  .rail .grp{margin:13px 6px 5px}.rail .grp:first-child{margin-top:2px}
+  .navitem{display:flex;align-items:center;gap:10px;padding:9px 11px;border-radius:var(--r-sm);color:var(--dim);font-size:13.5px;border:1px solid transparent;width:100%;text-align:left;background:none}
+  .navitem:hover{color:var(--fg);background:var(--panel2)}.navitem.on{background:var(--accent-soft);color:var(--fg);border-color:var(--accent-edge)}
+  .navitem .ic{width:16px;text-align:center;flex:none}.navitem .ct{margin-left:auto;font-size:11px;font-family:var(--mono);color:var(--faint)}
+  .navitem.closed{opacity:.5}.navitem.closed .nm{text-decoration:line-through}
+  .navitem.add{color:var(--accent);border:1px dashed var(--accent-edge);margin-top:5px;font-size:12.5px}
+
+  .list{border-right:1px solid var(--line);background:var(--bg);overflow:auto}
+  .list .lhead{padding:14px 16px 10px;position:sticky;top:0;background:var(--bg);border-bottom:1px solid var(--line)}.list .lhead h4{margin:0;font-size:14px}
+  .mem{display:flex;align-items:center;gap:11px;padding:12px 16px;border-bottom:1px solid var(--line);width:100%;text-align:left;background:none;color:var(--fg);transition:.12s}
+  .mem:hover{background:var(--panel)}.mem.on{background:var(--panel);box-shadow:inset 3px 0 0 var(--accent)}
+  .mem.closed{opacity:.5}.mem.closed .nm{text-decoration:line-through}
+  .mem .who{min-width:0}.mem .nm{font-weight:600;font-size:13.5px;display:flex;align-items:center;gap:6px}
+  .mem .hd{font-family:var(--mono);font-size:11.5px;color:var(--dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .mem .st{margin-left:auto;font-size:11px;font-family:var(--mono);display:flex;align-items:center;gap:5px;color:var(--dim)}
+  .sd{width:7px;height:7px;border-radius:50%;flex:none}.sd.online{background:var(--online);box-shadow:0 0 7px var(--online)}.sd.starting{background:var(--starting);animation:blink 1s infinite}
+  .sd.worker{background:var(--worker)}.sd.off,.sd.closed{background:var(--faint)} @keyframes blink{50%{opacity:.35}}
+  .detail{overflow:auto;display:flex;flex-direction:column;min-width:0}
+  .dhead{display:flex;align-items:center;gap:12px;padding:12px 18px;border-bottom:1px solid var(--line);background:var(--panel)}
+  .dhead .nm{font-weight:640;font-size:15px}.dhead .role{font-size:12px;color:var(--dim);font-family:var(--mono)}.dhead .actions{margin-left:auto;display:flex;gap:8px}
+  .term{flex:1;margin:0;background:var(--inset);color:#cdd3df;font-family:var(--mono);font-size:12.5px;line-height:1.7;padding:16px 18px;overflow:auto;white-space:pre-wrap;border:0}
+  .term .u{color:var(--accent)}.term .g{color:var(--online)}.term .d{color:var(--dim)}.term .a{color:var(--starting)}
+  .cursor{display:inline-block;width:8px;height:15px;background:#cdd3df;vertical-align:-2px;animation:blink 1.1s step-end infinite}
+  .banner{padding:10px 18px;border-bottom:1px solid var(--line);font-size:12.5px;display:flex;align-items:center;gap:10px}.banner.resume{background:var(--panel2)}.banner.info{background:var(--accent-soft);border-color:var(--accent-edge)}
+  .inbox{padding:18px}.qitem{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:15px 16px;margin-bottom:12px}
+  .qitem.q{border-left:3px solid var(--needs)}.qitem.fyi{border-left:3px solid var(--worker)}
+  .qitem .qh{display:flex;align-items:center;gap:8px;margin-bottom:7px;font-size:12px;color:var(--dim)}
+  .qtag{font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;padding:2px 7px;border-radius:5px}
+  .qtag.q{background:var(--needs-bg);color:var(--needs);border:1px solid var(--needs-edge)}.qtag.fyi{background:var(--panel2);color:var(--worker);border:1px solid var(--line)}
+  .refchip{font-family:var(--mono);font-size:11px;color:var(--accent);background:var(--accent-soft);padding:1px 6px;border-radius:5px}
+  .qitem .qb{font-size:13.5px;margin-bottom:12px}.qr{display:flex;gap:8px;align-items:center}.qr input{flex:1;padding:8px 11px;border-radius:var(--r-sm);border:1px solid var(--line);background:var(--field);color:var(--fg);font-size:13px}
+
+  .modal{position:fixed;inset:0;z-index:70;display:grid;place-items:center;background:color-mix(in srgb,var(--bg) 70%,transparent);backdrop-filter:blur(5px);animation:fade .16s;padding:20px}
+  .panel{width:min(760px,96vw);max-height:88vh;overflow:auto;background:var(--panel);border:1px solid var(--line);border-radius:16px;box-shadow:var(--shadow)}
+  .panel .ph{display:flex;align-items:center;gap:12px;padding:17px 20px;border-bottom:1px solid var(--line);position:sticky;top:0;background:var(--panel);z-index:1}
+  .panel .ph h3{margin:0;font-size:16.5px}.panel .ph p{margin:2px 0 0;color:var(--dim);font-size:12.5px}
+  .cast{padding:16px 20px;display:grid;grid-template-columns:1fr 1fr;gap:12px}@media(max-width:620px){.cast{grid-template-columns:1fr}}
+  .cc{display:flex;gap:12px;padding:13px;border:1px solid var(--line);border-radius:var(--r);background:var(--panel2);transition:.14s}.cc:hover{border-color:var(--accent-edge)}.cc.plain{background:var(--accent-soft);border-color:var(--accent-edge)}
+  .cc .body{min-width:0;flex:1}.cc .nm{font-weight:640;font-size:14.5px;display:flex;align-items:center;gap:6px}.cc .role{font-family:var(--mono);font-size:11.5px;color:var(--accent);margin-bottom:5px}
+  .cc .blurb{font-size:12px;color:var(--dim);line-height:1.5;margin-bottom:9px}.cc .cmeta{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-bottom:11px}
+  .tagx{font-size:10.5px;padding:2px 7px;border-radius:5px;border:1px solid var(--line);color:var(--dim);background:var(--bg)}
+  .tagx.ready{color:var(--online);border-color:color-mix(in srgb,var(--online) 40%,var(--line))}.tagx.login{color:var(--starting);border-color:color-mix(in srgb,var(--starting) 40%,var(--line))}
+  .tagx.caged{color:var(--danger-fg);border-color:var(--danger-edge);background:var(--danger-bg)}
+  .cc .add{width:100%;justify-content:center}
+  .cnote{grid-column:1/-1;font-size:12px;color:var(--dim);background:var(--panel2);border:1px solid var(--line);border-radius:var(--r-sm);padding:10px 13px;line-height:1.5}
+  .confirm{width:min(460px,94vw);background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;box-shadow:var(--shadow)}
+  .confirm h3{margin:0 0 8px;font-size:16px}.confirm p{margin:0 0 8px;color:var(--dim);font-size:13.5px}
+  .confirm .warn{background:var(--panel2);border:1px solid var(--line);color:var(--fg);border-radius:var(--r-sm);padding:9px 12px;font-size:12.5px;margin:10px 0}
+  .confirm .row{display:flex;gap:9px;justify-content:flex-end;margin-top:16px}
+  .mchk{display:flex;align-items:center;gap:9px;padding:8px 10px;border:1px solid var(--line);border-radius:var(--r-sm);margin-bottom:6px;cursor:pointer;background:var(--panel2)}.mchk.on{border-color:var(--accent);background:var(--accent-soft)}
+  .toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);z-index:90;background:var(--panel);border:1px solid var(--accent-edge);color:var(--fg);padding:11px 16px;border-radius:10px;font-size:13px;box-shadow:var(--shadow);display:flex;align-items:center;gap:9px;animation:up .25s}
+  @keyframes up{from{transform:translate(-50%,14px);opacity:0}to{transform:translate(-50%,0);opacity:1}}
+  .rooms-wrap{max-width:900px;margin:0 auto;padding:28px 24px 80px}
+  .roomcard{background:var(--panel);border:1px solid var(--line);border-radius:var(--r);padding:16px;margin-bottom:12px}
+  .roomcard .rh{display:flex;align-items:center;gap:10px;margin-bottom:9px}.roomcard .rn{font-weight:640;font-family:var(--mono);font-size:14px}
+  .roomcard .rmeta{color:var(--dim);font-size:12px;margin-left:auto;display:flex;gap:8px;align-items:center}.roomcard .rctrl{display:flex;gap:7px;flex-wrap:wrap}
+  .statechip{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line)}.statechip.running{color:var(--online);border-color:color-mix(in srgb,var(--online) 40%,var(--line))}.statechip.paused{color:var(--starting);border-color:color-mix(in srgb,var(--starting) 40%,var(--line))}
+  @media (prefers-reduced-motion: reduce){*{animation-duration:.01ms!important;transition-duration:.01ms!important}}
+</style>
+
+<div class="bar">
+  <button class="ham" onclick="toggleDrawer()" aria-label="Menu">☰</button>
+  <div class="brand" onclick="go('home')" tabindex="0" role="button">
+    <svg viewBox="0 0 32 32" aria-hidden="true"><ellipse cx="16" cy="24" rx="12.5" ry="2.9" fill="var(--accent)" opacity=".35"/><path d="M10.4 9 Q10.7 6.2 16 6 Q21.3 6.2 21.6 9 L22.1 22 L9.9 22 Z" fill="var(--accent)"/><rect x="8.6" y="21" width="14.8" height="2.5" rx="1.2" fill="var(--accent)"/></svg>
+    <span>Mister <span class="p">Claude</span></span>
+  </div>
+  <div class="crumbs" id="crumbs"></div><div class="spacer"></div>
+  <div class="pill"><span class="dot"></span> daemon up</div>
+  <button class="iconbtn" title="Toggle theme" onclick="toggleTheme()">◑</button>
+</div>
+
+<div id="drawer" class="drawer">
+  <button class="di" onclick="go('home');toggleDrawer()" id="di-home"><span>🗂</span> Projects <span class="ct" id="pcount"></span></button>
+  <button class="di" onclick="go('rooms');toggleDrawer()" id="di-rooms"><span>◎</span> Rooms <span class="ct" id="rcount"></span></button>
+  <div class="foot">Rooms lists every open room on the daemon — read any <span class="kbd">thread.log</span> without opening its project.</div>
+</div>
+
+<div id="view"></div><div id="overlay"></div><div id="toast"></div>
+
+<script>
+const AV={Colette:'#a78bfa',Margaux:'#5ec878',Pierre:'#f2607a',Solene:'#6aa0f5',Thierry:'#e6a23c',Lucien:'#5ec878',Claude:'#a78bfa',You:'#8b93a3',Client:'#6aa0f5',Server:'#5ec878',Worker:'#e6a23c'};
+const initials=n=>n.replace(/^[^-]*-/,'').slice(0,2);
+function avatar(name,size='md'){const base=(name||'').replace(/^Pierre-/,'Pierre').split('-')[0];return `<span class="av ${size}" style="background:${AV[base]||'#8b93a3'}">${initials(name)}</span>`}
+const RECENT_REPOS=[{name:'shop',path:'~/code/shop'},{name:'mrc',path:'~/repos/mrc'},{name:'docs',path:'~/code/docs'},{name:'api-gateway',path:'~/work/api-gateway'}];
+const BACKENDS=['claude','codex','gemini'];
+const ROLES=['plain session','engineer','tester','researcher','user-defender'];   /* architect=Colette, critique=Pierre, images=Thierry are CHARACTERS, not assignable roles */
+const CAST=[
+  {name:'Claude',role:'plain session',handle:'claude',blurb:'The base agent — a plain session. Add as many as you like, name them by use, and (in Advanced) optionally give one a role.',login:'ready',plain:true,generalist:true},
+  {name:'Colette',role:'architect',handle:'colette',blurb:'Your recurring architect — owns the plan, not the code; breaks the goal into steps and hands them to the engineer. Need an architect? Summon Colette.',login:'ready',projects:5,character:true},
+  {name:'Thierry',role:'designer',handle:'thierry',blurb:'Makes image assets (Gemini) on @mention into his territory. Need an image? Summon Thierry.',login:'login',projects:3,worker:true,backend:'gemini',character:true},
+  {name:'Pierre',role:'adversary',handle:'pierre',blurb:'The faultfinding step-brother — caged, read-only, grounded in your repo. Need a critic? Summon Pierre. Always Pierre.',login:'ready',projects:12,caged:true,star:true,attach:true,character:true},
+];
+let DB={projects:[
+  {id:'checkout',name:'checkout-revamp',bucket:'active',state:'work',needs:1,theme:'French',
+    members:[{name:'Colette',role:'architect',handle:'colette/claude',repo:'~/code/shop',team:'team',st:'online',lead:true},{name:'Margaux',role:'engineer',handle:'margaux/claude',repo:'~/code/shop',team:'team',st:'online'},{name:'Pierre-Colette',role:'adversary',handle:'pierre-colette/claude',repo:'~/code/shop',team:'team',st:'online',caged:true}],
+    rooms:[{type:'team',team:'team',members:['Colette','Margaux','Pierre-Colette'],state:'running'}],
+    inbox:[{id:7,type:'q',from:'Colette',body:'Confirm the checkout API shape before Margaux commits — one call or split intent/pay?'},{id:8,type:'fyi',from:'Margaux',body:'Payment retry path landed in cart.js. Reply optional.'}],ts:'working · 2m ago'},
+  {id:'mrc',name:'mrc',bucket:'active',state:'idle',needs:0,theme:'French',members:[{name:'Claude',role:'plain session',handle:'claude',repo:'~/repos/mrc',team:'team',st:'online',lead:true}],rooms:[],inbox:[],ts:'idle · 40m'},
+  {id:'platform',name:'platform',bucket:'active',state:'work',needs:0,theme:'French',members:[{name:'Colette',role:'architect',handle:'colette/claude',repo:'~/code/web',team:'client',st:'online',lead:true},{name:'Margaux',role:'engineer',handle:'margaux/claude',repo:'~/code/web',team:'client',st:'online'},{name:'Lucien',role:'plain session',handle:'lucien/claude',repo:'~/work/api-gateway',team:'server',st:'online',lead:true},{name:'Solene',role:'engineer',handle:'solene/claude',repo:'~/work/api-gateway',team:'server',st:'online'}],rooms:[{type:'team',team:'client',members:['Colette','Margaux'],state:'running'},{type:'team',team:'server',members:['Lucien','Solene'],state:'running'},{type:'leads',members:['Colette','Lucien'],state:'running'}],inbox:[],ts:'working · now'},
+  {id:'docs',name:'docs-site',bucket:'recent',state:'susp',needs:0,theme:'French',members:[{name:'Thierry',role:'designer',handle:'thierry/gemini',repo:'~/code/docs',team:'team',st:'off'}],rooms:[],inbox:[],ts:'used 3 days ago'},
+  {id:'api',name:'api-gateway',bucket:'recent',state:'susp',needs:0,theme:'French',members:[{name:'Colette',role:'architect',handle:'colette/claude',repo:'~/work/api-gateway',team:'team',st:'off',lead:true},{name:'Margaux',role:'engineer',handle:'margaux/claude',repo:'~/work/api-gateway',team:'team',st:'off'}],rooms:[],inbox:[],ts:'used 11 days ago'},
+  {id:'old1',name:'landing-2025',bucket:'archived',state:'susp',needs:0,theme:'French',members:[{name:'Claude',role:'plain session',handle:'claude',repo:'~/code/landing',team:'team',st:'off'}],rooms:[],inbox:[],ts:'Mar 2026'},
+  {id:'old2',name:'invoice-tool',bucket:'archived',state:'susp',needs:0,theme:'French',members:[{name:'Lucien',role:'generalist',handle:'lucien/claude',repo:'~/code/invoice',team:'team',st:'off'}],rooms:[],inbox:[],ts:'Feb 2026'},
+]};
+
+let S={view:'home',proj:null,sel:null,nav:'agents'};
+const $=s=>document.querySelector(s);
+const esc=s=>(s+'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const project=id=>DB.projects.find(p=>p.id===id);
+const liveMembers=p=>p.members.filter(m=>m.st!=='closed'&&m.st!=='off');
+const projTeams=p=>[...new Set(p.members.map(m=>m.team||'team'))];
+const isLead=(p,m)=>m.lead&&p.members.filter(x=>(x.team||'team')===(m.team||'team')).length>1;   /* ★ only matters with a real team */
+const roomNavLabel=r=>r.type==='leads'?'leads room':r.type==='team'?((r.team||'team')+' · team room'):r.members.join(' ⇄ ');
+
+function toggleDrawer(){$('#drawer').classList.toggle('open');const has=$('#drawer').classList.contains('open');let sc=$('#lscrim');if(has&&!sc){sc=document.createElement('div');sc.id='lscrim';sc.className='scrim-l';sc.onclick=toggleDrawer;document.body.appendChild(sc)}else if(sc)sc.remove()}
+function go(v,arg){S.view=v;if(v==='project'){S.proj=arg;S.nav='agents';const p=project(arg);S.sel=(liveMembers(p)[0]||p.members[0])?.handle||null}render();window.scrollTo(0,0)}
+function toast(m){const t=$('#toast');t.innerHTML=`<div class="toast">✓ ${esc(m)}</div>`;setTimeout(()=>t.innerHTML='',2600)}
+function toggleTheme(){const r=document.documentElement;const cur=r.getAttribute('data-theme')||(matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light');r.setAttribute('data-theme',cur==='dark'?'light':'dark')}
+function closeOverlay(){$('#overlay').innerHTML=''}
+function uniq(base,set){if(!set.has(base))return base;let i=2;while(set.has(base+'-'+i))i++;return base+'-'+i}
+
+function render(){crumbs();$('#pcount').textContent=DB.projects.length;$('#rcount').textContent=DB.projects.reduce((n,p)=>n+p.rooms.length,0)+1;
+  $('#di-home').classList.toggle('on',S.view==='home');$('#di-rooms').classList.toggle('on',S.view==='rooms');
+  $('#view').innerHTML=S.view==='home'?homeView():S.view==='create'?createView():S.view==='rooms'?roomsView():projectView()}
+function crumbs(){const c=$('#crumbs');
+  if(S.view==='home'){c.innerHTML='';return}
+  if(S.view==='create'){c.innerHTML=`<span class="sep">/</span> <b>New project</b>`;return}
+  if(S.view==='rooms'){c.innerHTML=`<span class="sep">/</span> <b>Rooms</b> <span style="color:var(--faint)">· daemon</span>`;return}
+  const p=project(S.proj);c.innerHTML=`<span class="sep">/</span> <span role="button" onclick="go('home')">Projects</span> <span class="sep">/</span> <b class="mono">${esc(p.name)}</b>`}
+
+/* HOME */
+function tile(p){const av=p.members.slice(0,3).map(m=>avatar(m.name,'sm')).join('');const stTxt={work:'working',idle:'idle',susp:'suspended'}[p.state];
+  return `<button class="tile ${p.bucket!=='active'?'small':''}" onclick="go('project','${p.id}')"><div class="toprow"><h3>${esc(p.name)}</h3>${p.needs?`<span class="badge-needs">❓ needs human</span>`:''}</div>
+    <div class="meta"><span class="state ${p.state}"><span class="d"></span>${stTxt}</span><span>·</span><span>${p.members.length} agent${p.members.length>1?'s':''}</span></div>
+    <div class="foot"><div class="avatars">${av}</div><span>${esc(p.ts)}</span></div></button>`}
+function homeView(){const active=DB.projects.filter(p=>p.bucket==='active'),recent=DB.projects.filter(p=>p.bucket==='recent'),arch=DB.projects.filter(p=>p.bucket==='archived');
+  return `<div class="wrap"><div class="home-head"><div><div class="eyebrow">Command &amp; control</div><h1>Your projects</h1><p>Live, recent, and archived — open one, or start fresh.</p></div><button class="btn primary big" onclick="go('create')">＋ New project</button></div>
+    <div class="sec"><div class="sh"><span class="eyebrow">Active</span><span class="ct">${active.length} live</span></div><div class="tiles">${active.map(tile).join('')}<button class="tile new small" onclick="go('create')"><span class="plus">＋</span><span>New project</span><span style="font-size:11.5px;color:var(--faint)">light as <span class="kbd">mrc pick</span></span></button></div></div>
+    <div class="sec"><div class="sh"><span class="eyebrow">Recently used</span><span class="ct">no live terminals · last 14 days</span></div><div class="tiles">${recent.map(tile).join('')}</div></div>
+    <details class="arch"><summary><span class="tw">▶</span> <span class="eyebrow">Archived</span> <span class="ct" style="font-family:var(--mono);font-size:11px;color:var(--faint)">${arch.length}</span></summary><div class="tiles" style="margin-top:12px">${arch.map(tile).join('')}</div></details></div>`}
+
+/* ROOMS daemon-wide */
+function roomsView(){const all=[];DB.projects.forEach(p=>p.rooms.forEach(r=>all.push({...r,proj:p.name})));all.push({members:['Client','Server'],state:'running',proj:'cross-project consult'});
+  const cards=all.map(r=>`<div class="roomcard"><div class="rh"><span class="rn">${roomNavLabel(r)}</span><span class="statechip ${r.state}">${r.state}</span><div class="rmeta"><span>${esc(r.proj)}</span><div class="avatars">${r.members.map(m=>avatar(m,'sm')).join('')}</div></div></div>
+    <div class="rctrl"><button class="btn sm ghost" onclick="viewThread('${r.members.join(' ⇄ ')}')">📜 thread.log</button>${r.state==='running'?'<button class="btn sm ghost">⏸ Brake</button>':'<button class="btn sm ghost">▶ Resume</button>'}<button class="btn sm ghost">✎ Steer…</button><button class="btn sm ghost">■ End</button></div></div>`).join('');
+  return `<div class="rooms-wrap"><div class="eyebrow" style="margin-bottom:4px">Daemon</div><h1 style="margin:2px 0 4px;font-size:24px">Rooms</h1><p style="color:var(--dim);margin:0 0 20px">Every open room across all projects and consults — with its controls and full <span class="kbd">thread.log</span>, without opening the project. You know a room by its members.</p>${cards}</div>`}
+function viewThread(name){$('#overlay').innerHTML=`<div class="modal" onclick="if(event.target===this)closeOverlay()"><div class="panel"><div class="ph"><span style="font-size:18px">📜</span><div style="flex:1"><h3>${esc(name)}</h3><p>thread.log · verbatim audit</p></div><button class="iconbtn" onclick="closeOverlay()">✕</button></div><pre class="term" style="max-height:60vh"><span class="a">@Colette</span> <span class="d">→ @Margaux:</span> step 1 ready — acceptance in the ticket.\n<span class="a">@Margaux</span> <span class="d">→ @Colette:</span> done, cart recompute + tests green.\n<span class="a">@Pierre-Colette</span> One idempotency risk on the split API — see my note.\n<span class="a">@Colette</span> <span class="d">→ @user:</span> Confirm the checkout API shape? <span style="color:var(--accent)">[#7]</span>\n<span class="d">— consensus.md updated —</span>\n</pre></div></div>`}
+
+/* CREATE */
+function mkAgent(name,role,lead){return{name,role,handle:name.toLowerCase(),repo:'',repoName:'',session:'fresh',backend:'claude',territory:'',caged:false,lead:!!lead}}
+let B={name:'',advanced:false,template:'none',theme:'French',teams:[{name:'team',agents:[mkAgent('Claude','plain session',true)]}],rooms:[]};
+const allAgents=()=>B.teams.flatMap(t=>t.agents);
+function createView(){
+  const n=allAgents().length;
+  return `<div class="wrap"><div class="sheet">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px"><div class="eyebrow">New project</div>
+      <div class="switch ${B.advanced?'on':''}" onclick="B.advanced=!B.advanced;render()"><span class="tr"><span class="kn"></span></span> Advanced</div></div>
+    <div class="card">
+      <div class="field"><label class="lbl">Project name <span class="hint">— or leave blank to auto-name from the work</span></label><input class="inp" placeholder="checkout-revamp" value="${esc(B.name)}" oninput="B.name=this.value"></div>
+      ${B.advanced?`<div class="field"><label class="lbl">Template <span class="hint">— prefills a team</span></label>
+        <div class="presets">${[['none','None'],['web','Web app'],['game','Game'],['backend','Backend']].map(([k,l])=>`<button class="chip ${B.template===k?'on':''}" onclick="pickPreset('${k}')">${l}</button>`).join('')}</div></div>
+        <div class="field"><label class="lbl">Name theme <span class="hint">— aliases over stable identities; switch anytime</span></label>
+        <select class="inp" onchange="B.theme=this.value">${['French','Spaceballs','Corporate','Far West'].map(t=>`<option ${B.theme===t?'selected':''}>${t}</option>`).join('')}</select></div>`:''}
+    </div>
+
+    <div class="eyebrow" style="margin:16px 4px 8px">Teams &amp; agents</div>
+    <p style="color:var(--dim);font-size:12.5px;margin:0 4px 12px">Each agent picks its own repo, then a session in it. Default is one Claude — pick a repo and Launch. Add a team to run a separate group with its own room.</p>
+    ${B.teams.map((t,ti)=>teamCard(t,ti)).join('')}
+    <button class="btn ghost" onclick="addTeam()" style="margin-top:4px">＋ Add team</button>
+
+    ${B.advanced?`<div class="card"><div class="eyebrow" style="margin-bottom:4px">Rooms</div>
+      <p style="color:var(--dim);font-size:12.5px;margin:0 0 12px">Pair agents into rooms so they can talk. A team already shares a room; add extra pairings here. You know a room by its members.</p>
+      <div class="rtiles">
+        <button class="rtile add" onclick="openRoomBuilder('builder')"><span style="font-size:20px">＋</span><span>Add room</span></button>
+        ${B.rooms.map((r,ri)=>`<div class="rtile"><div style="display:flex"><div class="avatars">${r.members.map(m=>avatar(m,'sm')).join('')}</div><button class="btn ghost sm rm" onclick="B.rooms.splice(${ri},1);render()">✕</button></div><div class="who">${r.members.join(' ⇄ ')}</div></div>`).join('')}
+      </div></div>`:''}
+
+    <div style="display:flex;gap:10px;align-items:center;margin-top:18px">
+      <button class="btn primary big" onclick="launch()" ${n<1?'disabled':''}>🚀 Launch Project</button>
+      <button class="btn ghost" onclick="go('home')">Cancel</button>
+      <span style="margin-left:auto;color:var(--faint);font-size:12px">${n<1?'Add at least one agent.':'One tap — comes up live.'}</span>
+    </div></div></div>`;
+}
+function teamCard(t,ti){
+  return `<div class="card"><div class="teamhd"><span class="eyebrow" style="letter-spacing:.08em">Team</span> <input value="${esc(t.name)}" oninput="B.teams[${ti}].name=this.value" aria-label="team name">${(t.agents.length===0&&B.teams.length>1)?`<button class="btn ghost sm" style="margin-left:auto" onclick="removeTeam(${ti})">remove</button>`:''}</div>
+    ${t.agents.map((a,ai)=>agentCard(t,ti,a,ai)).join('')}
+    ${t.agents.length===0?'<div class="explain" style="margin:2px 0 10px">No agents yet.</div>':''}
+    <button class="btn ghost sm" onclick="openCast('builder',${ti})">＋ Add agent from cast</button></div>`;
+}
+function removeTeam(ti){B.teams.splice(ti,1);render()}
+function agentCard(t,ti,a,ai){
+  const total=allAgents().length;
+  return `<div class="agent"><div class="ah">${avatar(a.name,'md')}<div style="flex:1;min-width:0"><input class="nmedit" value="${esc(a.name)}" onchange="setAgentName(${ti},${ai},this.value)" aria-label="rename agent — click to edit">${a.caged?' <span class="tagx caged" style="padding:0 5px">caged</span>':''}<div class="hd">@${esc(a.handle)}${a.role!=='plain session'?' · '+esc(a.role):''}</div></div>
+    <div class="sp"><button class="btn ghost sm" ${total<2?'disabled title="need at least one agent"':''} onclick="removeAgent(${ti},${ai})">✕</button></div></div>
+    <div class="rowlbl">Repo</div>
+    <div class="repos">${RECENT_REPOS.map(r=>`<button class="repochip ${a.repo===r.path?'on':''}" title="${r.path}" onclick="setRepo(${ti},${ai},'${r.path}','${r.name}')">${r.name}</button>`).join('')}<button class="repochip" style="border-style:dashed" onclick="chooseFolder(${ti},${ai})">📁 Choose…</button></div>
+    ${a.repo?`<div class="fullpath">📁 ${esc(a.repo)}</div>`:''}
+    <div class="rowlbl">Session</div><select class="inp" onchange="B.teams[${ti}].agents[${ai}].session=this.value" ${a.repo?'':'disabled'}><option value="fresh">✦ fresh session</option>${a.repo?`<option value="s1">cart-refactor · 2h ago</option><option value="s2">api-shapes · yesterday</option>`:''}</select>
+    ${B.advanced?`<div class="twocol" style="margin-top:8px"><div><div class="rowlbl" style="margin-top:0">Backend / model</div><select class="inp" onchange="B.teams[${ti}].agents[${ai}].backend=this.value">${BACKENDS.map(b=>`<option ${a.backend===b?'selected':''}>${b}</option>`).join('')}</select></div><div><div class="rowlbl" style="margin-top:0">Role <span class="hint">(optional)</span></div><select class="inp" onchange="setRole(${ti},${ai},this.value)">${[...new Set([(a.role||'plain session'),...ROLES])].map(r=>`<option ${((a.role||'plain session')===r)?'selected':''}>${r}</option>`).join('')}</select></div></div>`:''}
+    ${B.advanced?`<div class="rowlbl">Territory</div><div style="display:flex;gap:6px"><input class="inp" placeholder="whole repo" value="${esc(a.territory)}" oninput="B.teams[${ti}].agents[${ai}].territory=this.value"><button class="btn ghost sm" onclick="chooseTerritory(${ti},${ai})">📁</button></div><div class="explain">Territory = the sub-folder this agent may <b>write</b> to; the rest of the repo is read-only. Default: the whole repo.</div>`:''}
+    ${a.repo?'':'<div class="explain" style="margin-top:6px">Pick a repo to choose a session.</div>'}
+  </div>`;
+}
+function setRepo(ti,ai,path,name){B.teams[ti].agents[ai].repo=path;B.teams[ti].agents[ai].repoName=name;render()}
+function setRole(ti,ai,v){B.teams[ti].agents[ai].role=v;render()}
+function chooseFolder(ti,ai){toast('Opening your system folder chooser…');setTimeout(()=>{B.teams[ti].agents[ai].repo='~/code/new-thing';B.teams[ti].agents[ai].repoName='new-thing';render()},400)}
+function chooseTerritory(ti,ai){toast('Opening folder chooser (under the repo root)…');setTimeout(()=>{B.teams[ti].agents[ai].territory='src/';render()},400)}
+function setAgentName(ti,ai,v){const a=B.teams[ti].agents[ai];v=(v||'').trim();if(!v){render();return}const set=new Set(allAgents().filter(x=>x!==a).map(x=>x.name));a.name=uniq(v,set);a.handle=a.name.toLowerCase();render()}
+function removeAgent(ti,ai){if(allAgents().length<2)return;B.teams[ti].agents.splice(ai,1);if(!B.teams[ti].agents.length&&B.teams.length>1)B.teams.splice(ti,1);render()}
+function addTeam(){B.teams.push({name:'team-'+(B.teams.length+1),agents:[]});render()}
+function pickPreset(k){B.template=k;const T={web:[['Colette','architect'],['Margaux','engineer'],['Thierry','designer']],game:[['Colette','architect'],['Margaux','engineer'],['Solene','critic']],backend:[['Colette','architect'],['Margaux','engineer']]};
+  if(k==='none')B.teams=[{name:'team',agents:[mkAgent('Claude','plain session',true)]}];else B.teams=[{name:'team',agents:T[k].map(([n,r],i)=>mkAgent(n,r,i===0))}];render()}
+
+function launch(){const name=B.name.trim()||'checkout-revamp';const multi=B.teams.filter(t=>t.agents.length).length>1;
+  $('#overlay').innerHTML=`<div class="scrim"><div class="launchbox"><h3>Launching “${esc(name)}”…</h3><div class="sub">One gesture. It'll land live.</div><div class="steps"><div class="step"><span class="ic">1</span> Pinning the project root</div><div class="step"><span class="ic">2</span> Building the image <span style="color:var(--faint)">(first run only)</span></div><div class="step"><span class="ic">3</span> Starting agents</div><div class="step"><span class="ic">4</span> Live</div></div></div></div>`;
+  const steps=[...$('#overlay').querySelectorAll('.step')];let i=0;
+  const run=()=>{steps.forEach((s,k)=>{s.className='step'+(k<i?' done':k===i?' run':'');s.querySelector('.ic').textContent=k<i?'✓':k+1});
+    if(i>=steps.length){const members=[];B.teams.forEach(t=>t.agents.forEach(a=>members.push({name:a.name,role:a.role,handle:a.handle+'/'+a.backend,repo:a.repo||'~/code/app',team:t.name,st:'online',lead:a.lead,caged:a.caged})));
+      const sig=ms=>[...ms].sort().join('|');const rooms=[],seen=new Set();
+      const twa=B.teams.filter(t=>t.agents.length);
+      twa.forEach(t=>{if(t.agents.length>1){const ms=t.agents.map(a=>a.name);rooms.push({type:'team',team:t.name,members:ms,state:'running'});seen.add(sig(ms))}});
+      if(twa.length>1){const leads=twa.map(t=>(t.agents.find(a=>a.lead)||t.agents[0]).name);rooms.push({type:'leads',members:leads,state:'running'})}
+      B.rooms.forEach(r=>{if(!seen.has(sig(r.members))){rooms.push({type:'adhoc',members:r.members,state:'running'});seen.add(sig(r.members))}});
+      const id='new'+Date.now();DB.projects.unshift({id,name,bucket:'active',state:'work',needs:0,theme:B.theme,members,rooms,inbox:[],ts:'just launched'});
+      closeOverlay();B={name:'',advanced:false,template:'none',theme:'French',teams:[{name:'team',agents:[mkAgent('Claude','plain session',true)]}],rooms:[]};go('project',id);toast('Project launched — live');return}
+    i++;setTimeout(run,i===2?1100:700)};run()}
+
+/* PROJECT */
+function projectView(){const p=project(S.proj);const q=p.inbox.filter(x=>x.type==='q').length;const teams=projTeams(p);
+  let agentsNav='';teams.forEach(tn=>{if(teams.length>1)agentsNav+=`<div class="grp"><span class="eyebrow" style="font-size:10px">${esc(tn)}</span></div>`;
+    p.members.filter(m=>(m.team||'team')===tn).forEach(m=>{agentsNav+=`<button class="navitem ${S.nav==='agents'&&S.sel===m.handle?'on':''} ${m.st==='closed'?'closed':''}" onclick="selMember('${m.handle}')"><span class="ic">${dot(m)}</span> <span class="nm">${esc(m.name)}</span> ${isLead(p,m)?'<span class="star">★</span>':''}<span class="ct">${m.st==='closed'?'closed':m.role==='plain session'?'claude':m.role}</span></button>`})});
+  const nav=`<div class="grp"><span class="eyebrow">Inbox</span></div>
+    <button class="navitem ${S.nav==='inbox'?'on':''}" onclick="setNav('inbox')"><span class="ic">✉</span> @you ${q?`<span class="ct badge-needs">❓ ${q}</span>`:'<span class="ct">clear</span>'}</button>
+    <div class="grp"><span class="eyebrow">Agents</span></div>${agentsNav}
+    <button class="navitem add" onclick="openCast('project')"><span class="ic">＋</span> Add agent</button>
+    <div class="grp"><span class="eyebrow">Rooms</span></div>
+    ${p.rooms.length?p.rooms.map((r,ri)=>`<button class="navitem ${S.nav==='room'+ri?'on':''}" onclick="setNav('room${ri}')"><span class="ic">◎</span> <span class="nm" style="font-size:12px">${roomNavLabel(r)}</span></button>`).join(''):'<div style="padding:4px 11px;font-size:12px;color:var(--faint)">No rooms yet</div>'}
+    <button class="navitem add" onclick="openRoomBuilder('project')"><span class="ic">＋</span> Add room</button>`;
+  return `<div class="proj"><div class="rail">${nav}<div style="margin-top:auto;padding:10px 6px 4px;display:flex;flex-direction:column;gap:6px"><button class="btn ghost" style="width:100%;justify-content:center" onclick="openSettings()">⚙ Project settings</button><button class="btn ghost" style="width:100%;justify-content:center" onclick="closeProject()">⤓ Close project</button></div></div>
+    <div class="list"><div class="lhead"><h4>${S.nav==='inbox'?'@you inbox':S.nav.startsWith('room')?'Room':'Agents'} <span style="color:var(--faint);font-weight:400;font-size:12px">· ${p.members.length}</span></h4></div>${p.members.map(m=>memberListRow(p,m)).join('')}</div>
+    <div class="detail">${detailPane(p)}</div></div>`}
+function dot(m){const c={online:'--online',starting:'--starting',worker:'--worker',off:'--faint',closed:'--faint'}[m.st]||'--faint';return `<span class="sd ${m.st}" style="background:var(${c})"></span>`}
+function memberListRow(p,m){const on=S.nav==='agents'&&S.sel===m.handle;const stTxt={online:'ready',starting:'starting',worker:'on-demand',off:'offline',closed:'closed'}[m.st];
+  return `<button class="mem ${on?'on':''} ${m.st==='closed'?'closed':''}" onclick="selMember('${m.handle}')">${avatar(m.name,'lg')}<div class="who"><div class="nm">${esc(m.name)} ${isLead(p,m)?'<span class="star" title="lead">★</span>':''} ${m.caged?'<span class="tagx caged" style="padding:0 5px">caged</span>':''}</div><div class="hd">@${esc(m.handle)} · ${esc(m.repo||'')}</div></div><span class="st"><span class="sd ${m.st}"></span>${stTxt}</span></button>`}
+function setNav(n){S.nav=n;render()}
+function selMember(h){const p=project(S.proj);const m=p.members.find(x=>x.handle===h);S.nav='agents';S.sel=h;if(m&&m.st==='closed'){resumeMember(h);return}render()}
+function detailPane(p){
+  if(S.nav==='inbox')return inboxPane(p);
+  if(S.nav.startsWith('room')){const ri=+S.nav.slice(4);return roomPane(p,p.rooms[ri])}
+  const m=p.members.find(x=>x.handle===S.sel)||p.members[0];
+  if(!m)return `<div style="padding:40px;color:var(--dim)">No agents yet — add one from your cast.</div>`;
+  if(m.st==='closed')return `<div class="dhead"><div style="display:flex;align-items:center;gap:11px">${avatar(m.name,'lg')}<div><div class="nm">${esc(m.name)}</div><div class="role">@${esc(m.handle)} · session closed</div></div></div></div><div class="banner resume">⏸ This agent's session is closed (you Ctrl-C'd it). It's kept — resume to pick up where it left off.</div><div style="padding:22px"><button class="btn primary" onclick="resumeMember('${m.handle}')">▶ Resume session</button></div>`;
+  return `<div class="dhead"><div style="display:flex;align-items:center;gap:11px">${avatar(m.name,'lg')}<div><div class="nm">${esc(m.name)} ${isLead(p,m)?'<span class="star">★</span>':''}</div><div class="role">@${esc(m.handle)} · ${esc(m.repo||'')}</div></div></div><div class="actions"><button class="btn ghost sm">open ↗</button><button class="btn ghost sm" onclick="closeMember('${m.handle}')">⤓ Close session</button></div></div>
+    ${m.st==='starting'?`<div class="banner info">⏳ @${esc(m.name)} is starting — its terminal appears here in a moment.</div>`:''}<pre class="term">${termText(m)}<span class="cursor"></span></pre>`}
+function termText(m){if(m.st==='starting')return `<span class="d">— booting container, first-run login…</span>\n`;
+  if(m.caged)return `<span class="d"># ${esc(m.name)} — caged adversary · read-only · grounded in ${esc(m.repo)}</span>\n<span class="a">⦉Human directive⦊</span> hold — confirm the API shape with @Colette first\n<span class="g">${esc(m.name)}</span> Noted. Splitting intent/pay doubles the idempotency surface.\n       One call with an intent token is safer. Flagging to @Colette.\n`;
+  const L={architect:`<span class="d"># @${esc(m.name)} · architect · owns the plan</span>\n<span class="u">${esc(m.name.toLowerCase())}</span> Broke the revamp into 3 steps. Handing step 1 to @Margaux.\n`,engineer:`<span class="d"># @${esc(m.name)} · engineer</span>\n<span class="u">${esc(m.name.toLowerCase())}</span> Implementing cart recompute…\n<span class="g">✓</span> tests: 14 passing\n`,'plain session':`<span class="d"># ${esc(m.name)} · ${esc(m.repo)}</span>\n<span class="u">${esc(m.name.toLowerCase())}</span> Ready. What are we working on?\n`,critic:`<span class="d"># @${esc(m.name)} · critic</span>\n<span class="u">${esc(m.name.toLowerCase())}</span> One edge case on double-submit.\n`,designer:`<span class="d"># @${esc(m.name)} · designer (on-demand)</span>\n<span class="d">idle — @mention me to generate an asset.</span>\n`};
+  return L[m.role]||`<span class="u">${esc(m.name.toLowerCase())}</span> ready.\n`}
+function roomPane(p,r){return `<div class="dhead"><div style="display:flex;align-items:center;gap:11px"><span style="font-size:18px">◎</span><div><div class="nm">${roomNavLabel(r)}</div><div class="role">${r.members.join(' · ')} · directed @mention · the human steers</div></div></div><div class="actions"><button class="btn ghost sm">⏸ Brake</button><button class="btn ghost sm">✎ Steer…</button></div></div><pre class="term"><span class="a">@${esc(r.members[0]||'a')}</span> <span class="d">→ @${esc(r.members[1]||'b')}:</span> step 1 ready for you.\n<span class="a">@${esc(r.members[1]||'b')}</span> <span class="d">→ @${esc(r.members[0]||'a')}:</span> done, tests green.\n<span class="cursor"></span></pre>`}
+function inboxPane(p){if(!p.inbox.length)return `<div style="padding:48px 24px;color:var(--dim);text-align:center">No messages. Agents ping you here when they need a decision.<br><span style="font-size:12px;color:var(--faint)">The inbox is your direct channel to the agents — separate from rooms.</span></div>`;
+  return `<div class="inbox">${p.inbox.map(x=>`<div class="qitem ${x.type}"><div class="qh"><span class="qtag ${x.type}">${x.type==='q'?'❓ reply to answer':'🔔 reply optional'}</span><span class="refchip">#${x.id}</span><span>from @${esc(x.from)}</span></div><div class="qb">${esc(x.body)}</div><div class="qr"><input placeholder="Reply — routes a [Human reply] back to @${esc(x.from)}"><button class="btn primary" onclick="toast('Reply sent (re #${x.id})')">Reply</button><button class="btn ghost" onclick="toast('Dismissed #${x.id}')">Dismiss</button></div></div>`).join('')}</div>`}
+function closeMember(h){const p=project(S.proj);const m=p.members.find(x=>x.handle===h);if(m)m.st='closed';render();toast('Session closed — resume anytime')}
+function resumeMember(h){const p=project(S.proj);const m=p.members.find(x=>x.handle===h);if(m){m.st='starting';render();setTimeout(()=>{m.st='online';if(S.view==='project')render();toast(m.name+' resumed')},1500)}}
+
+/* project settings (names theme now lives here, not in the cast modal) */
+function openSettings(){const p=project(S.proj);$('#overlay').innerHTML=`<div class="modal" onclick="if(event.target===this)closeOverlay()"><div class="confirm"><h3>⚙ ${esc(p.name)} — settings</h3>
+  <div class="field" style="margin-top:8px"><label class="lbl">Name theme <span class="hint">— aliases over stable identities</span></label><select class="inp" onchange="setTheme('${p.id}',this.value)">${['French','Spaceballs','Corporate','Far West'].map(t=>`<option ${p.theme===t?'selected':''}>${t}</option>`).join('')}</select></div>
+  <p style="font-size:12px">Switching a theme renames the agents; each keeps its identity, config volume, and login.</p>
+  <div class="row"><button class="btn primary" onclick="closeOverlay()">Done</button></div></div></div>`}
+function setTheme(id,t){project(id).theme=t;toast('Name theme → '+t)}
+
+/* CAST (no theme picker here anymore) */
+function openCast(ctx,ti){S._ti=ti;
+  const tteam=ctx==='project'?(projTeams(project(S.proj))[0]||'team'):(B.teams[ti]?.name);   /* dedupe cast per TEAM, not per project */
+  const inTeam=ctx==='project'?new Set(project(S.proj).members.filter(m=>(m.team||'team')===tteam).map(m=>m.name.split('-')[0])):new Set((B.teams[ti]?.agents||[]).map(a=>a.name.split('-')[0]));
+  const cards=CAST.map(c=>{const here=inTeam.has(c.name)&&!c.generalist;const loginTag=c.login==='ready'?`<span class="tagx ready">✓ ready — no login</span>`:`<span class="tagx login">🔑 will ask you to log in</span>`;
+    return `<div class="cc ${c.plain?'plain':''}">${avatar(c.name,'lg')}<div class="body"><div class="nm">${esc(c.name)} ${c.star?'<span class="star">★</span>':''}${c.plain?' <span class="tagx" style="color:var(--accent);border-color:var(--accent-edge)">default</span>':''}</div><div class="role">@${esc(c.handle)} · ${esc(c.role)}</div><div class="blurb">${esc(c.blurb)}</div><div class="cmeta">${loginTag}${c.caged?'<span class="tagx caged">caged · isolated volume</span>':''}${c.worker?'<span class="tagx">on-demand</span>':''}${c.projects?`<span class="tagx">${c.projects} projects</span>`:''}</div><button class="btn ${here?'':'primary'} add" ${here?'disabled':''} onclick="addMember('${c.name}','${ctx}')">${here?'✓ already on the team':c.generalist?'＋ Add a Claude':'＋ Add '+esc(c.name)}</button></div></div>`}).join('');
+  $('#overlay').innerHTML=`<div class="modal" onclick="if(event.target===this)closeOverlay()"><div class="panel"><div class="ph"><div style="font-size:20px">🎭</div><div style="flex:1"><h3>Add an agent</h3><p>Recurring characters — same identity + login every time. Or a plain Claude.</p></div><button class="iconbtn" onclick="closeOverlay()">✕</button></div><div class="cast">${cards}<div class="cnote"><b style="color:var(--fg)">Characters</b> (Pierre, Thierry, Colette) are recurring identities with their own persistent, already-authed volume — the same one every project. <b style="color:var(--fg)">Claude</b> is the base agent: add as many as you like, name by use, give it a role in Advanced. Roles are the collaboration contract; <b style="color:var(--fg)">architect = Colette</b>, <b style="color:var(--fg)">critique = Pierre</b>, <b style="color:var(--fg)">images = Thierry</b>. Names are an alias theme (project settings) over the stable identity.</div></div></div></div>`}
+function addMember(name,ctx){const c=CAST.find(x=>x.name===name);
+  if(c.generalist){nameModal(ctx,(nm)=>doAdd(c,ctx,nm));return}
+  if(c.attach){ // Pierre → namespaced by the agent he attaches to
+    const pool=ctx==='project'?project(S.proj).members:allAgents();const base=(pool.find(m=>m.lead)||pool[0]);const bn=(base?.name||'agent').split('-')[0];doAdd(c,ctx,'Pierre-'+bn);return}
+  doAdd(c,ctx,c.name)}
+function doAdd(c,ctx,nm){
+  if(ctx==='builder'){const a=mkAgent(nm,c.role,false);a.caged=c.caged;a.backend=c.backend||'claude';a.handle=nm.toLowerCase();(B.teams[S._ti]||B.teams[0]).agents.push(a);closeOverlay();render();toast(nm+' added');return}
+  const p=project(S.proj);const m={name:nm,role:c.role,handle:nm.toLowerCase()+'/'+(c.backend||'claude'),repo:p.members[0]?.repo||'~/code/app',team:projTeams(p)[0]||'team',st:'starting',caged:c.caged};p.members.push(m);closeOverlay();S.sel=m.handle;S.nav='agents';render();toast(nm+' joining…');setTimeout(()=>{m.st=c.worker?'worker':'online';if(S.view==='project')render();toast(nm+' is ready')},1900)}
+function nameModal(ctx,cb){
+  const pool=ctx==='project'?project(S.proj).members.map(m=>m.name):allAgents().map(a=>a.name);const set=new Set(pool);
+  const teams=ctx==='project'?projTeams(project(S.proj)):B.teams.map(t=>t.name);const prefix=teams.length>1?(teams[0]+'-'):'';
+  const wk=(()=>{let i=1;while(set.has(prefix+'worker-'+i))i++;return 'worker-'+i})();
+  const picks=['client','server','worker',wk];
+  $('#overlay').innerHTML=`<div class="modal" onclick="if(event.target===this)closeOverlay()"><div class="confirm"><h3>Name this session</h3><p>A name by its use helps you remember what it's for. Must be unique in the project${teams.length>1?`; it'll be namespaced <span class="mono">${esc(teams[0])}-…</span>`:''}.</p>
+    <div class="presets" style="margin:10px 0">${picks.map(p=>`<button class="chip" onclick="pickName('${p}')">${p}</button>`).join('')}</div>
+    <input class="inp" id="nmIn" placeholder="or type a name (client, api, scraper…)" onkeydown="if(event.key==='Enter')confirmName()">
+    <div class="row"><button class="btn ghost" onclick="closeOverlay()">Cancel</button><button class="btn primary" onclick="confirmName()">Add agent</button></div></div></div>`;
+  S._nameCb=cb;S._namePrefix=prefix;S._nameSet=set}
+function pickName(v){$('#nmIn').value=v}
+function confirmName(){const v=($('#nmIn').value||'client').trim()||'client';const full=uniq(S._namePrefix+v,S._nameSet);closeOverlay();S._nameCb(full)}
+
+/* ROOM BUILDER */
+let RB={picked:new Set(),newAgent:null,ctx:'project'};
+function openRoomBuilder(ctx){RB={picked:new Set(),newAgent:null,ctx};renderRoomBuilder()}
+function rbPool(){return RB.ctx==='project'?project(S.proj).members.map(m=>m.name):allAgents().map(a=>a.name)}
+function renderRoomBuilder(){const pool=[...rbPool()];if(RB.newAgent&&!pool.includes(RB.newAgent.name))pool.push(RB.newAgent.name);
+  $('#overlay').innerHTML=`<div class="modal" onclick="if(event.target===this)closeOverlay()"><div class="panel" style="width:min(500px,96vw)"><div class="ph"><span style="font-size:18px">◎</span><div style="flex:1"><h3>New room</h3><p>Pick the agents that share this room.${RB.ctx==='project'?' You can also spin up a NEW agent into it.':''}</p></div><button class="iconbtn" onclick="closeOverlay()">✕</button></div>
+    <div style="padding:16px 20px">${pool.map(n=>`<div class="mchk ${RB.picked.has(n)?'on':''}" onclick="rbToggle('${n}')">${avatar(n,'md')}<span>${esc(n)}</span><span style="margin-left:auto">${RB.picked.has(n)?'✓':''}</span></div>`).join('')}
+    ${RB.ctx==='project'?`<div class="mchk" style="border-style:dashed;color:var(--accent)" onclick="rbNewAgent()">＋ …or spin up a NEW agent into this room (e.g. a server to consult your client)</div>`:''}
+    <div class="row" style="display:flex;gap:9px;justify-content:flex-end;margin-top:14px"><button class="btn ghost" onclick="closeOverlay()">Cancel</button><button class="btn primary" ${RB.picked.size<2?'disabled':''} onclick="rbCreate()">Create room</button></div></div></div></div>`}
+function rbToggle(n){RB.picked.has(n)?RB.picked.delete(n):RB.picked.add(n);renderRoomBuilder()}
+function rbNewAgent(){nameModal('project',(nm)=>{RB.newAgent={name:nm,repo:'~/work/api-gateway'};RB.picked.add(nm);renderRoomBuilder()})}
+function rbCreate(){if(RB.picked.size<2)return;const members=[...RB.picked];
+  if(RB.ctx==='builder'){B.rooms.push({members,state:'running'});closeOverlay();render();toast('Room added');return}
+  const p=project(S.proj);if(RB.newAgent&&!p.members.find(m=>m.name===RB.newAgent.name)){const m={name:RB.newAgent.name,role:'plain session',handle:RB.newAgent.name.toLowerCase()+'/claude',repo:RB.newAgent.repo,team:projTeams(p)[0]||'team',st:'starting'};p.members.push(m);setTimeout(()=>{m.st='online';if(S.view==='project')render()},1700)}
+  p.rooms.push({members,state:'running'});S.nav='room'+(p.rooms.length-1);closeOverlay();render();toast('Room created')}
+
+/* CLOSE project — no delete, ever */
+function closeProject(){const p=project(S.proj);$('#overlay').innerHTML=`<div class="modal" onclick="if(event.target===this)closeOverlay()"><div class="confirm"><h3>Close “${esc(p.name)}”?</h3><p>Stops the agents and closes the window — like Ctrl-C-ing the tabs for a task you've finished. Nothing is deleted; the project, transcripts, and history stay. Reopen anytime to pick up where you left off.</p>${p.state==='work'?`<div class="warn">⚠ @${esc(liveMembers(p)[0]?.name||'an agent')} is mid-thought — an in-flight turn pauses and resumes on reopen.</div>`:''}<div class="row"><button class="btn ghost" onclick="closeOverlay()">Cancel</button><button class="btn primary" onclick="doClose('${p.id}')">⤓ Close project</button></div></div></div>`}
+function doClose(id){const p=project(id);p.state='susp';p.bucket='recent';p.ts='used just now';p.members.forEach(m=>m.st='off');closeOverlay();go('home');toast('Project closed — reopen from Recently used')}
+
+render();
+</script>
+</html>
