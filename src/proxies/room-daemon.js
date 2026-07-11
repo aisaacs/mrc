@@ -435,6 +435,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       // defer. A derived path can't be re-pointed (no pin needed). def.repo is ABSENT; def.anchor carries identity +
       // the launch.log target + the TG token source (read from anchor/.env, NEVER a mounted repo → crack-C closed).
       const anchor = orgAnchorDir(def.org)
+      try { mkdirSync(anchor, { recursive: true }) } catch {}   // ensure the host-only anchor exists before any write to it (writeTeamFile/launch.log canonicalWriteTarget realpaths it → ENOENT otherwise); defineOrg can be called standalone (the wire define), not only after materializeRoster
       def = { ...def, anchor, repo: undefined }
       engine.defineOrg(def)
       for (const r of (def.rooms || [])) ensureRoom(r.roomId, def.org || '', r.team || '')

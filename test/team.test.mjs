@@ -13,8 +13,9 @@ import { readMrcrc, sanitizeRepoConfig } from '../src/config.js'
 import {
   memberSessionId, memberWorkspaceVolumes, memberEnv, personaForMember, writePersonaFile, orgDef, memberLaunch, cleanWorkerOutput,
   rosterFromDef, addMemberToRoster, removeMemberFromRoster, writeTeamFile,
-  memberConfigVolName, memberArgv, memberDockerFilter, reposAction, memberTtydSock, assertTtydUnixSocket,
+  memberConfigVolName, memberArgv, memberDockerFilter, reposAction, memberTtydSock, assertTtydUnixSocket, materializeRoster,
 } from '../src/commands/team.js'
+import { orgAnchorDir } from '../src/teams/repo-auth.js'
 
 test('removeMemberFromRoster drops the member and any team left empty', () => {
   const roster = { org: 'shop', teams: [
@@ -460,4 +461,32 @@ test('#49 reposAction: ls empty → add (realpaths + broad-guards) → ls shows 
     assert.equal(reposAction('rm', org, other).ok, false, 'removing a non-member → ok:false (idempotent, honest)')
     assert.equal(reposAction('bogus', org, other).ok, false, 'unknown subcommand → error')
   } finally { fs.rmSync(root, { recursive: true, force: true }); try { fs.unlinkSync(_authPathForTest(org)) } catch {} }
+})
+
+// Model B (Inc 3) END-TO-END LOGIC de-risk: a full Model B roster (org + two AUTHORIZED differing member repos)
+// through materializeRoster → confirm the anchor identity + per-member repos + org#handle keys all line up, WITHOUT
+// docker. This is the pre-rebuild check that the whole Model B roster→materialize→key chain is coherent — it caught
+// the anchor-dir-ENOENT bug (materializeRoster writes to norm.repo=anchor before defineOrg creates it).
+test('Model B (Inc 3) e2e-logic: materialize a full authorized roster → anchor identity + per-member repos + org#handle keys', () => {
+  const home = fs.mkdtempSync(join(os.tmpdir(), 'mrc-mbE-')); const prevHome = process.env.HOME; process.env.HOME = home
+  const root = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-mbE-repos-')))
+  const repoA = join(root, 'a'); fs.mkdirSync(repoA); const repoB = join(root, 'b'); fs.mkdirSync(repoB)
+  const org = `mbE-${process.pid}`
+  try {
+    addAuthorizedRepo(org, repoA); addAuthorizedRepo(org, repoB)   // the human authorizes both agent repos
+    const roster = { org, teams: [{ name: 'team', members: [
+      { role: 'architect', backend: 'claude', lead: true, repo: repoA },
+      { role: 'engineer', backend: 'claude', repo: repoB } ] }] }
+    const { norm, rosterPath } = materializeRoster(roster, root, true)   // modelB=true
+    // Identity is the neutral ANCHOR (not a repo), and materialize actually WROTE the runtime roster under it.
+    assert.equal(norm.repo, orgAnchorDir(org), 'norm.repo is the neutral anchor (identity off the repo)')
+    assert.ok(rosterPath.startsWith(orgAnchorDir(org)), 'the runtime roster is written UNDER the anchor, not a repo')
+    assert.ok(fs.existsSync(rosterPath), 'materialize created + wrote it (the anchor-dir-ENOENT bug is fixed)')
+    // Each member mounts its OWN authorized repo; every member is org-scoped (crossRepo true).
+    const byRole = Object.fromEntries(norm.members.map((m) => [m.role, m]))
+    assert.equal(byRole.architect.repo, repoA); assert.equal(byRole.engineer.repo, repoB)
+    assert.ok(norm.members.every((m) => m.crossRepo === true), 'every Model B member is org-scoped')
+    // The config-vol key is org#handle (repo-independent), NOT repoPath#handle.
+    for (const m of norm.members) assert.equal(memberConfigVolName(m, norm.repo, org, true), volumeName(`${org}#${m.handle}`, 1))
+  } finally { process.env.HOME = prevHome; fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(home, { recursive: true, force: true }) }
 })

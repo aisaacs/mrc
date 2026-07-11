@@ -834,6 +834,11 @@ export async function launchMember(org, repoPath, rosterPath, member) {
 // members can --roster it, and return { norm, rosterPath }. Used by the daemon's GUI launch.
 export function materializeRoster(rosterInput, repoHint, modelB = false) {
   const norm = parseRoster(rosterInput, { repo: repoHint, modelB })   // Model B: norm.repo becomes the neutral anchor (parseRoster), so the runtime roster + launch.log land there, not in a repo
+  // Model B: norm.repo is the neutral ANCHOR (host-only, mrc-owned) — and materializeRoster runs BEFORE defineOrg,
+  // so nothing has created it yet. canonicalWriteTarget below realpaths the root → ENOENT if it doesn't exist. Create
+  // it here (safe: it's mrc's own hex-keyed dir, never a user repo — legacy norm.repo is a real repo that already
+  // exists, so this is modelB-gated). Without this, EVERY Model B launch throws at the first write. (Caught pre-rebuild.)
+  if (modelB) mkdirSync(norm.repo, { recursive: true })
   // #49 (Pierre — the enumeration's reachable miss): route the runtime-roster write through the canonical
   // guard. Plain writeFileSync FOLLOWS a symlinked `.mrc -> /etc` (and mkdirSync on the existing symlink-dir
   // succeeds silently), and this runs on every `mrc team up` AND the daemon's GUI launch — same `.mrc` symlink
