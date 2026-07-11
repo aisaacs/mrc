@@ -318,7 +318,7 @@ async function handle(req, res) {
     // GUI launch lifecycle: start the live members (each in its own ttyd), stop them, add/remove a
     // member. All proxy to the daemon. (Member terminal switching is client-side now — each member has
     // its own ttyd, so the dashboard just swaps the iframe; the old /api/team-select is gone.)
-    if (req.method === 'POST' && (url.pathname === '/api/team-launch' || url.pathname === '/api/team-stop' || url.pathname === '/api/team-delete' || url.pathname === '/api/team-add-member' || url.pathname === '/api/team-remove-member' || url.pathname === '/api/team-relaunch-member' || url.pathname === '/api/kill-session')) {
+    if (req.method === 'POST' && (url.pathname === '/api/team-launch' || url.pathname === '/api/team-stop' || url.pathname === '/api/team-delete' || url.pathname === '/api/team-add-member' || url.pathname === '/api/team-remove-member' || url.pathname === '/api/team-relaunch-member' || url.pathname === '/api/kill-session' || url.pathname === '/api/authorize-repo')) {
       let body = ''
       req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
       req.on('end', async () => {
@@ -332,6 +332,11 @@ async function handle(req, res) {
         if (url.pathname === '/api/team-launch') return sendJSON(res, 200, await ctrl(cp, 'launchteam', { roster: j.roster, org: j.org, repo: j.repo, secret: sec }))
         if (url.pathname === '/api/team-stop') return sendJSON(res, 200, await ctrl(cp, 'stopteam', { org: j.org, secret: sec }))
         if (url.pathname === '/api/team-delete') return sendJSON(res, 200, await ctrl(cp, 'removeorg', { org: j.org, secret: sec }))   // #13: forget the project (no disk deletion)
+        // Inc 1 (Model B / cross-repo): the human's dashboard pick of a differing agent repo becomes a RECORDED authorization.
+        // CSRF+Origin+Host-gated at the front door (rejectStateChange, above) + carries the capOk secret → the daemon's
+        // authorizerepo records it via addAuthorizedRepo. Additive + un-gated: it's the GUI form of the CLI cross-repo (Mouth B)
+        // authorize, useful today; the launch path only READS the set (resolveMemberRepo) — a session can request, never authorize.
+        if (url.pathname === '/api/authorize-repo') return sendJSON(res, 200, await ctrl(cp, 'authorizerepo', { org: j.org, repo: j.repo, secret: sec }))
         if (url.pathname === '/api/team-add-member') return sendJSON(res, 200, await ctrl(cp, 'addmember', { org: j.org, team: j.team, role: j.role, backend: j.backend, territory: j.territory, secret: sec }))
         if (url.pathname === '/api/team-remove-member') return sendJSON(res, 200, await ctrl(cp, 'removemember', { org: j.org, handle: j.handle, secret: sec }))
         if (url.pathname === '/api/team-relaunch-member') return sendJSON(res, 200, await ctrl(cp, 'relaunchmember', { org: j.org, handle: j.handle, secret: sec }))   // #41: orphan recovery (kill-first → respawn)

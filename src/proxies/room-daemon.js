@@ -25,7 +25,7 @@ import { canonicalWriteTarget } from '../mount-guard.js'   // #49: realpath-cano
 import { resolveTerritoryImage } from '../safe-path.js'   // #56: shared dual-containment (repo + territory) image guard
 import { leadsRoomId } from '../teams/roster.js'
 import { repoEnvKeyStrict } from '../config.js'
-import { resolveOrgRootForOrg, recordActivatedRoot, isActivatedRoot, clearOrgRoot, clearActivatedRoots } from '../teams/repo-auth.js'   // guard-1: write-once org root + pin/activate separation
+import { resolveOrgRootForOrg, recordActivatedRoot, isActivatedRoot, clearOrgRoot, clearActivatedRoots, addAuthorizedRepo } from '../teams/repo-auth.js'   // guard-1: write-once org root + pin/activate separation; addAuthorizedRepo = the human-only cross-repo/Model-B authorize (SOLE set writer besides the CLI)
 
 const MRC_JS = fileURLToPath(new URL('../../mrc.js', import.meta.url))
 
@@ -1294,6 +1294,18 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         // Delete a project (#13): forget it from the live daemon entirely — stop sessions + the TG
         // bridge, then purge ALL per-org state so it stays gone across a restart. Deletes NOTHING on
         // disk (team.json + transcripts/history untouched) — fully re-addable via `mrc team up`. Idempotent.
+        if (f.action === 'authorizerepo' && f.org) {
+          // Model-B / cross-repo (Mouth B) HUMAN authorization: record a repo in the org's authorized-set — the door a
+          // human's dashboard pick (or the CLI) becomes a recorded grant. capOk at the door (Pierre): a session can only
+          // REQUEST a repo (resolveMemberRepo throws until it's here), never AUTHORIZE one — a cross-uid raw frame can't
+          // forge the secret, so it can't seed the set. This action + the CLI are the SOLE writers of the set (invariant
+          // #1: no launch/parse-path writer). addAuthorizedRepo realpaths + broad-guards (refuses `/`/`$HOME`, ENOENT
+          // throws), so the set holds only canonical, vouched paths; the launch path only ever READS it.
+          if (!capOk(f)) { reply({ ok: false, error: 'authorizerepo requires the control-capability secret (it grants a repo as mountable for the org — a human-only act; a session can request a repo but never authorize one)' }); continue }
+          try { const real = addAuthorizedRepo(f.org, String(f.repo || '')); daemonLog(`authorizerepo ${f.org} ${real}`); reply({ ok: true, repo: real }) }
+          catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
+          continue
+        }
         if (f.action === 'removeorg' && f.org) {
           if (!capOk(f)) { reply({ ok: false, error: 'removeorg requires the control-capability secret (destructive: clears the write-once pin)' }); continue }   // guard-1: gate the destructive delete like trusted/activate — a cross-uid frame can't clear a pin to enable a re-root
           const org = f.org

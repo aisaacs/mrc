@@ -5,6 +5,14 @@ for containment/sanity before the gated phases are built. Grounded in a fresh re
 (SPA), `src/rooms-dashboard.js` (HTTP), `src/proxies/room-daemon.js` (control + launch), `src/commands/team.js`
 (launch + config-vol), `src/teams/{names,personas,roster}.js`.
 
+**▶ 2026-07-11 PIVOT — MODEL B (Phase 0 below, co-planned with Pierre).** Building P1's create form surfaced a
+foundation decision the owner made decisively: **project identity must live OFF the repo.** Repos are a
+per-AGENT property (any combination of teams/agents is valid; a repo is not a team trait); a project is a
+collection of agents on a common goal, each on its own repo. Anchoring a project's identity to one agent's
+repo ("Model A") technically works but drags project-level state back into a repo — the exact thing the #5
+store-relocation was getting OUT. So **Phase 0 (the Model B anchor) is now the foundation P1 and P4 sit on**,
+and it folds into #5's rebuild as one refactor. Greenfield / clean-cut — no migration.
+
 ## Context
 
 `docs/dashboard-ux.md` is the agreed design; the owner's first live create→launch (field report §11)
@@ -23,9 +31,74 @@ hits the *same* endpoint, just later. Fix = a provisional launch record written 
 
 ---
 
+## Phase 0 — Model B anchor (the foundation; folds into #5's rebuild)
+
+Goal: a project's identity lives in a neutral, mrc-owned store — tied to NO agent's repo. Every agent repo
+(the lead's included) is a human-authorized, mounted workspace through ONE uniform gate. No privileged repo.
+
+**The crux — `def.repo` is overloaded 5 ways** (`room-daemon.js defineOrg`): (1) the guard-1 pinned identity
+root, (2) the member default mount root, (3) the `.env`-read root (Telegram token + member secrets), (4) the
+launch.log target, (5) the activation record subject. Model B splits this by ROLE (never reinterpret one
+field — that overload is what caused this):
+- **`def.anchor`** (NEW; Model-B identity — derived `hex(project-name)`, mrc-owned, NO pin, immutable *by
+  derivation*): consumers (1) identity, (4) launch.log target, (3-Telegram) TG-token source (moves from
+  `def.repo/.env` → `anchor/.env`, still per-project-isolated by the hex-key — flag for P5).
+- **`member.repo`** (per-agent; ALREADY EXISTS): consumers (2) mount (`team.js:62`), (3-secrets) member `.env`
+  (`memberRepoEnvKey`). Model B makes it always-explicit (no `|| repoPath` fallback to a root that no longer
+  exists) and set-gated.
+- **`def.repo`** = LEGACY ONLY (absent in Model-B).
+
+**Guard-1 RETIRES — both the pin AND activation, subsumed by the authorized-set.** The pin protected "a wire
+frame can't re-point the mount/`.env` root"; activation deferred the root `.env`-read until a human act. In
+Model B, IDENTITY is a derived path (needs no pin — you can't re-point a hash of a validated name) and every
+repo is `.env`-read/mounted ONLY after it's in the authorized-set (a human CSRF+capOk act) — so the set IS the
+re-root protection AND the deferral. Two guard-1 mechanisms → one uniform gate. The floor gets *simpler*, and
+the surface concentrates onto one well-guarded thing: **the authorized-set becomes the SOLE repo gate.**
+
+**Activation gate (stage-inert, #5-style).** Model B rides #5's rails: host-side changes are inert behind the
+image capability signal (the daemon inspects the mister-claude image — `resolveStoreMode` — the ground-truth
+shared signal), byte-identical legacy until the rebuild; container-side (store mount + `.mrc` retarget) is
+#5's container change. Close the daemon/container split-brain window BOTH ways: (a) inspect FRESH per-decision
+(per `defineOrg`/launch, not cached-at-boot, so the daemon reflects the CURRENT image); (b) the daemon PASSES
+its Model-B decision to the container, which ASSERTS it against its own runtime capability → mismatch REFUSES
+the launch loud (guard-4 `assertTtydUnixSocket` shape) — never mount-legacy-while-daemon-thinks-neutral.
+**Seam that keeps legacy byte-identical:** `def.anchor` is OPTIONAL; each consumer branches
+`modelB ? (anchor | member.repo) : def.repo`, and legacy (capability-inactive) falls through to `def.repo` +
+pin + activation, untouched.
+
+**Increments (each stage-inert + independently cold-readable, #5-discipline):**
+- **Inc 1 — `/api/authorize-repo` + daemon `authorizerepo` → `addAuthorizedRepo` (capOk+CSRF at the door). ✅
+  DONE.** Additive, un-gated, safe now — the GUI form of the CLI cross-repo (Mouth B) authorize, useful today;
+  the launch path only READS the set. `resolveMemberRepo` UNCHANGED. Covered by `guard1-daemon.test.mjs`
+  ("Inc 1 authorizerepo: capOk at the door"). Invariant grep clean: `addAuthorizedRepo` callers = only the CLI
+  (`team.js:834`) + the capOk `authorizerepo` action (`room-daemon.js`); `authorizerepo` reachable only via the
+  CSRF `/api/authorize-repo` or the capOk daemon action.
+- **Inc 2 — config-vol keying → uniform `org#handle`** (`memberConfigVolName`, drop the crossRepo branch),
+  gated on Model-B-active. Inert until the capability flips.
+- **Inc 3 — the core:** `def.anchor` split threaded through the 5 consumers under the gate + RETIRE pin AND
+  activation + DELETE the own-repo-grant (`resolveMemberRepo`). Gated. The whole security delta lands here.
+
+**Pierre cold-read contract (Inc 3):** (1) the FULL `resolveMemberRepo` body — every `return` reaches a
+`loadAuthorizedRepos(org).has(...)` set-check or a throw, no residual `== null/''`/early-return/helper/
+caller-pre-resolve bypass (read, not grepped); (2) `def.anchor` threading — each of the 5 consumers reads the
+right field under the gate; (3) the `authorizerepo` handler is capOk+CSRF at its door; (4) pin + activation
+FULLY retired on the Model-B path — no orphaned `isActivatedRoot`/`recordActivatedRoot` consumer. Build-confirm:
+a leftover pre-Model-B real `.mrc` dir in a throwaway repo is clean-removed/ignored (data-loss FINE), never an
+`EEXIST` that fails the re-create launch.
+
+**Deferred (tracked):** solo `.mrc-id` → neutral anchor (agreed faithful end-state, non-urgent; solo stays
+repoId-keyed this pass — two identity models coexist deliberately; track the convergence so it doesn't become
+permanent). #5's memory-migration + the plain-host-terminal guardrail are UNTOUCHED.
+
+Files: `src/proxies/room-daemon.js`, `src/rooms-dashboard.js`, `src/teams/repo-auth.js`, `src/teams/roster.js`,
+`src/commands/team.js` (config-vol key), `src/mrc-store.js` (anchor derivation), `container/container-setup.js`
+(mount/retarget, rebuild-gated). **Pierre-gate: HARD on Inc 3** (the sole-gate refactor); Inc 1/2 light.
+
 ## Phase 1 — Create → launch that just works (biggest win, lowest risk)
 
-Goal: create a project and it comes up live, in one gesture, with a form that isn't scary.
+Goal: create a project and it comes up live, in one gesture, with a form that isn't scary. **Now sits on the
+Phase 0 Model B foundation** — per-agent DIFFERING repos are first-class (each authorized through the set via
+`/api/authorize-repo`), the org anchor is neutral, no repo is privileged.
 
 - **1a. Launch lands live (kills the Resume two-step) — as a self-correcting `launching` state, never
   "running" on faith (Pierre).** A bare "running" written before the detached `mrc team up` confirms its

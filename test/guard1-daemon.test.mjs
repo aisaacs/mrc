@@ -12,7 +12,7 @@ import fs from 'node:fs'
 import { startRoomDaemon as _startRoomDaemon } from '../src/proxies/room-daemon.js'
 import { findFreePort } from '../src/ports.js'
 import { controlSecret } from '../src/rooms.js'
-import { pinnedOrgRoot } from '../src/teams/repo-auth.js'
+import { pinnedOrgRoot, loadAuthorizedRepos } from '../src/teams/repo-auth.js'
 
 const _live = new Set()
 function startRoomDaemon(o) { const d = _startRoomDaemon(o); if (d) _live.add(d); return d }   // teardown discipline (macOS exit-hang)
@@ -49,6 +49,25 @@ test('guard-1 DERIVATION: a defineOrg asserting trusted WITHOUT the secret is do
   const legit = await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: 'acme', repo, members: [], rooms: [] } })
   assert.equal(legit.ok, true, 'the legit caller (with the secret) defines + pins')
   assert.equal(pinnedOrgRoot('acme'), repo, 'the root is pinned write-once')
+})
+
+// Inc 1 (Model B / cross-repo authorize) — the `authorizerepo` action is capOk-gated AT ITS DOOR: a raw frame without
+// the host-only secret cannot seed the org's authorized-set (a session can REQUEST a repo — resolveMemberRepo throws
+// until it's here — but can never AUTHORIZE one). This is the SOLE daemon writer of the set (invariant #1); the launch
+// path only reads it. Broad-guard holds even for the secret-holder (`/` is never a legitimate repo).
+test('Inc 1 authorizerepo: capOk at the door — no-secret REFUSED (set stays empty); with-secret RECORDS the realpath; `/` broad-guarded', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-g1auth-`)
+  const repo = tmpRepo()
+  const { controlPort } = await bootDaemon(19760)
+  const forged = await controlCall(controlPort, { action: 'authorizerepo', org: 'proj', repo })
+  assert.equal(forged.ok, false, 'authorizerepo without the secret is refused (capOk at the door)')
+  assert.equal(loadAuthorizedRepos('proj').size, 0, 'NO set entry lands — an un-authorized frame writes nothing')
+  const ok = await controlCall(controlPort, { action: 'authorizerepo', org: 'proj', repo, secret: controlSecret() })
+  assert.equal(ok.ok, true, 'the legit caller (with the secret) authorizes the repo')
+  assert.ok(loadAuthorizedRepos('proj').has(repo), 'the set now holds the realpath — resolveMemberRepo will pass it')
+  const root = await controlCall(controlPort, { action: 'authorizerepo', org: 'proj', repo: '/', secret: controlSecret() })
+  assert.equal(root.ok, false, 'authorizing `/` is refused by the broad-guard even WITH the secret')
+  assert.equal(loadAuthorizedRepos('proj').size, 1, 'the refused `/` never entered the set')
 })
 
 test('guard-1 orgRoster no-poison (Pierre case 3): a REJECTED untrusted defineOrg does NOT persist its roster', async () => {
