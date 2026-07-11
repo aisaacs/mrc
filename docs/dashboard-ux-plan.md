@@ -74,7 +74,12 @@ pin + activation, untouched.
   (`team.js:834`) + the capOk `authorizerepo` action (`room-daemon.js`); `authorizerepo` reachable only via the
   CSRF `/api/authorize-repo` or the capOk daemon action.
 - **Inc 2 — config-vol keying → uniform `org#handle`** (`memberConfigVolName`, drop the crossRepo branch),
-  gated on Model-B-active. Inert until the capability flips.
+  gated on Model-B-active. ✅ **DONE.** `memberConfigVolName` gains a `storeMode` param (=== #5's
+  `mrc.store.capability`); `storeMode` → `${org}#${handle}` (repo-independent login, no privileged repo),
+  else byte-identical legacy. Both callers thread it: the live path (`mrc.js:619`) passes its already-resolved
+  `store.storeMode` (the authoritative per-container inspect); the worker path (`execWorker`) derives it from
+  the SAME image + `decideStoreMode`, so the two keys can't drift (same image ⇒ same storeMode). Default false
+  → inert until the rebuild flips the capability. Test: `team.test.mjs` "Model B (Inc 2) memberConfigVolName".
 - **Inc 3 — the core:** `def.anchor` split threaded through the 5 consumers under the gate + RETIRE pin AND
   activation + DELETE the own-repo-grant (`resolveMemberRepo`). Gated. The whole security delta lands here.
 

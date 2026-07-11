@@ -348,6 +348,18 @@ test('#49 memberConfigVolName: a cross-repo WORKER (crossRepo:true, repoPath===m
   assert.notEqual(wA, wB, 'two orgs, cross-repo WORKERS, shared repo, colliding handle → DISTINCT config vols (org overrides the fallback)')
   assert.notEqual(wA, volumeName(`${shared}#${handle}`, 1), 'NOT the naive `${repo}#${handle}` the repo-compare fallback would have picked')
 })
+// Model B (Inc 2): under storeMode (=== the mrc.store.capability image signal, threaded from the authoritative inspect)
+// the key is UNIFORMLY `${org}#${handle}` — no repo component. Identity is project+member, not the repo: a member's
+// login persists across repo changes, no repo is privileged, and the legacy own-repo/cross-repo branches both retire
+// into one org-scoped key. Absent storeMode → byte-identical legacy (the increment is inert until the rebuild flips it).
+test('Model B (Inc 2) memberConfigVolName: storeMode → uniform `${org}#${handle}` (repo-independent, no privileged repo); legacy unchanged', () => {
+  const handle = 'ludivine/claude'
+  const mbKey = volumeName('proj#ludivine/claude', 1)
+  assert.equal(memberConfigVolName({ repo: '/home/alice/proj', handle }, '/home/alice/proj', 'proj', true), mbKey, 'own-repo member → org#handle under storeMode (the repoPath#handle special-case retires)')
+  assert.equal(memberConfigVolName({ repo: '/elsewhere', handle, crossRepo: true }, '/home/alice/proj', 'proj', true), mbKey, 'the key is repo-independent — the same member in a different repo keeps its ~/.claude')
+  assert.notEqual(memberConfigVolName({ handle }, '/a', 'orgA', true), memberConfigVolName({ handle }, '/b', 'orgB', true), 'two orgs, same handle → distinct (org is the identity axis)')
+  assert.equal(memberConfigVolName({ repo: '/home/alice/proj', handle }, '/home/alice/proj', 'proj', false), volumeName('/home/alice/proj#ludivine/claude', 1), 'storeMode false → byte-identical legacy own-repo key')
+})
 // And the mint really stamps crossRepo, so the worker blob (a plain spread of the member) inherits it — the fix's
 // root cause. Prove it end-to-end: parse a roster with an authorized cross-repo member → member.crossRepo === true;
 // an own-repo member → false. (This is what makes room-daemon's `{...member}` worker blob org-scoped for free.)

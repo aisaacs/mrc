@@ -613,7 +613,10 @@ if (memberCtx) {
   // #49 multi-repo (Mouth B): org-scoped ONLY when the member lives in a SHARED foreign repo (crossRepo, stamped
   // authoritatively in the --member-def blob) — else `${repoPath}#${handle}`, byte-identical to today (repoPath IS
   // member.repo inside the inner). Shared helper so this can never drift from the worker path's keying.
-  volName = memberConfigVolName(memberCtx.member, repoPath, memberCtx.org)
+  // Model B (Inc 2): the inner mrc.js is the AUTHORITATIVE inspect for the live-member key — `store.storeMode` is
+  // resolved from the exact image this container runs (mrc-store.js resolveStoreMode), so passing it here threads the
+  // ONE decision into the key. storeMode → `${org}#${handle}` (repo-independent login); legacy → today's key.
+  volName = memberConfigVolName(memberCtx.member, repoPath, memberCtx.org, store.storeMode)
 } else if (adversaryVolume) {
   // Dedicated per-repo Pierre config-volume pool (mrc-config-<hash>-pierre-N) via a race-free O_EXCL claim, so
   // a summoned adversary NEVER mounts the user's login/config and its transcript can't be auto-resumed by a

@@ -27,7 +27,8 @@ import { canonicalMountSource, canonicalWriteTarget } from '../mount-guard.js'  
 import { buildPersona } from '../teams/personas.js'
 import { makeHandle } from '../teams/names.js'
 import { PRESETS, listPresets, buildPreset } from '../teams/presets.js'
-import { runWorkerExec, volumeName } from '../docker.js'
+import { runWorkerExec, volumeName, imageIdAndLabels } from '../docker.js'
+import { decideStoreMode } from '../mrc-store.js'   // Model B (Inc 2): the same store-capability decision the live path uses → the worker key can't drift
 import { loadEnv, memberRepoEnvKey } from '../config.js'   // #49 cross-repo (Pierre Q4): member-secret MINT (caged member → no repo .env)
 import { findFreePort } from '../ports.js'
 import { loadLaunches, saveLaunch, setMemberLaunch, removeMemberLaunch, removeLaunch, controlSecret } from '../rooms.js'
@@ -94,7 +95,16 @@ export function memberWorkspaceVolumes(member, repoPath) {
 //     crossRepo=true → org-scoped regardless of the flag.
 // (KNOWN pre-existing edge, deliberately NOT fixed here: two team.jsons in ONE own-repo dir, both crossRepo=false,
 //  same handle → same key. It predates this epic and fixing it would force universal re-login; documented, separate.)
-export function memberConfigVolName(member, repoPath, org) {
+export function memberConfigVolName(member, repoPath, org, storeMode = false) {
+  // Model B (Inc 2) — storeMode gate (=== #5's mrc.store.capability; the ONE activation signal, threaded from the
+  // authoritative image inspect, never a second read): key UNIFORMLY on `${org}#${handle}`, no repo component.
+  // Identity is the project+member, not the repo, so a member's ~/.claude login persists across repo changes and NO
+  // repo is privileged (the own-repo `repoPath#handle` special-case retires here — its role is subsumed by org#handle,
+  // just as the own-repo GRANT retires in resolveMemberRepo). Handles are unique within an org → org#handle is
+  // injective; the cross-repo `#repo#` disambiguator is redundant once the key never carries a repo.
+  if (storeMode) return volumeName(`${org}#${member.handle}`, 1)
+  // LEGACY (pre-Model-B image — capability absent → storeMode false): byte-identical to today. An un-passed
+  // storeMode defaults false, so any caller not yet threading it stays on the legacy key (inert until the rebuild).
   const crossRepo = member.crossRepo != null ? !!member.crossRepo : !!(member.repo && String(member.repo) !== String(repoPath))
   const key = crossRepo ? `${org}#${member.repo || repoPath}#${member.handle}` : `${repoPath}#${member.handle}`
   return volumeName(key, 1)
@@ -175,7 +185,14 @@ export async function execWorker(norm, member, repoPath, prompt) {
   writeFileSync(promptPath, prompt)
   const containerPromptFile = `/workspace/.mrc/teams/${name}`
   const vols = [...memberWorkspaceVolumes(member, root)]
-  const volName = memberConfigVolName(member, repoPath, org)   // ONE keying helper — no drift vs the live path
+  // Model B (Inc 2): decide storeMode from the SAME image + the SAME decision function the live path uses
+  // (mister-claude's `mrc.store.capability` label → decideStoreMode), so the worker key and the live key agree by
+  // construction — same image ⇒ same storeMode ⇒ same `${org}#${handle}` (or the same legacy key when the capability
+  // is absent). imageIdAndLabels fails toward legacy ({}), so a docker hiccup degrades to the legacy key, never a
+  // false Model-B key. (A rebuild BETWEEN a live launch and a worker turn could differ → a one-time worker re-login;
+  // benign + greenfield, and the worker's config vol is its own backend state, not the user's login.)
+  const storeMode = decideStoreMode(imageIdAndLabels().labels).storeMode
+  const volName = memberConfigVolName(member, repoPath, org, storeMode)   // ONE keying helper — no drift vs the live path
   vols.push('-v', `${volName}:/home/coder/.claude`, '-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)
   const env = [
     '-e', `MRC_AGENT=${member.backend}`, '-e', `MRC_MEMBER_HANDLE=${member.handle}`,
