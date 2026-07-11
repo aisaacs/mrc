@@ -1357,7 +1357,8 @@ function bRenderTeams() {
           : `<select onchange="bSet(${ti},${mi},'backend',this.value)">${BACKENDS.map(o=>`<option ${o===m.backend?'selected':''}>${o}</option>`).join('')}</select>`}
         <label class="lead"><input type="checkbox" ${m.lead?'checked':''} onchange="bSet(${ti},${mi},'lead',this.checked)"> lead</label>
         <input value="${esc(m.territory)}" placeholder="territory" oninput="bSet(${ti},${mi},'territory',this.value)">
-        <button class="btn tiny" onclick="bDelMem(${ti},${mi})">✕</button></div></div>`}).join('')}
+        <button class="btn tiny" onclick="bDelMem(${ti},${mi})">✕</button></div>
+      <div class="memrow" style="margin-top:4px"><span class="muted" style="font-size:11px;flex:0 0 auto">📁 repo</span><input style="flex:1" value="${esc(m.repo||'')}" placeholder="this agent's repo (e.g. ~/code/app)" onchange="bSetRepo(${ti},${mi},this.value)"><span id="repomsg-${ti}-${mi}" style="font-size:11px;flex:0 0 auto"></span></div></div>`}).join('')}
     <div style="margin-top:8px"><button class="btn tiny" onclick="bAddMem(${ti})">＋ member</button></div></div>`).join('')
 }
 window.bSet=(ti,mi,k,v)=>{const B=S.builder; if(mi==null)B.teams[ti][k]=v; else if(k==='lead'&&v)B.teams[ti].members.forEach((mm,j)=>mm.lead=(j===mi)); else B.teams[ti].members[mi][k]=v;
@@ -1378,7 +1379,22 @@ window.bSetName=(ti,mi,v)=>{ const m=S.builder.teams[ti].members[mi]; m.name=v; 
   bPreview() }
 window.bRerollName=(ti,mi)=>{ const m=S.builder.teams[ti].members[mi]; const taken=allBuilderNames(); if(m.name)taken.delete(String(m.name).toLowerCase()); m.name=suggestName(S.builder.nameStyle||'french',taken); m._nameAuto=true; bRenderTeams(); bPreview() }
 window.bSetStyle=(v)=>{ S.builder.nameStyle=v; autofillNames(true); bRenderTeams(); bPreview() }   // re-roll AUTO names only; hand-typed stay
-function bRoster(){const B=S.builder;const r={org:B.org||'org',repo:B.repo||undefined,teams:B.teams.map(t=>({name:t.name,territory:t.territory||'.',members:t.members.map(m=>{const o={role:m.role,backend:m.backend};if(m.lead)o.lead=true;if(m.territory)o.territory=m.territory;if(m.name&&String(m.name).trim())o.name=String(m.name).trim();return o})}))};if(B.personas&&Object.keys(B.personas).length)r.personas=B.personas;return r}
+function bRoster(){const B=S.builder;const r={org:B.org||'org',repo:B.repo||undefined,teams:B.teams.map(t=>({name:t.name,territory:t.territory||'.',members:t.members.map(m=>{const o={role:m.role,backend:m.backend};if(m.lead)o.lead=true;if(m.territory)o.territory=m.territory;if(m.name&&String(m.name).trim())o.name=String(m.name).trim();if(m.repo)o.repo=m.repo;return o})}))};if(B.personas&&Object.keys(B.personas).length)r.personas=B.personas;return r}   // P1 (Model B): each member carries its OWN repo (o.repo); under Model B parseRoster requires it + ignores the top-level repo (identity is the neutral anchor). Top-level repo kept for legacy (cap=1) compat.
+// P1 (Model B): each agent picks its OWN repo, and the human's PICK is the authorization — /api/authorize-repo
+// (CSRF + capOk, human-only) lands it in the org's authorized-set BEFORE launch, since the Model B floor THROWS on
+// an un-authorized member.repo (a session can request a repo, never authorize one). Best-effort with inline result;
+// the preview/launch surfaces any refusal. Fires on blur (onchange), not per-keystroke.
+window.bSetRepo = async (ti,mi,v) => {
+  const B=S.builder; const m=B.teams[ti].members[mi]; m.repo = String(v||'').trim() || undefined
+  const msg=$('#repomsg-'+ti+'-'+mi)
+  bPreview()
+  if (!m.repo) { if(msg)msg.innerHTML=''; return }
+  if (!B.org) { if(msg)msg.innerHTML='<span class="bad">name the project first</span>'; return }
+  if(msg)msg.innerHTML='<span class="muted">authorizing…</span>'
+  const r = await api('/api/authorize-repo',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({org:B.org, repo:m.repo})}).catch(()=>({ok:false,error:'network'}))
+  if(msg)msg.innerHTML = r.ok?`<span class="good">✓ authorized</span>`:`<span class="bad">✗ ${esc(r.error||'refused')}</span>`
+  bPreview()
+}
 let bTimer=null
 function bPreview(){clearTimeout(bTimer);bTimer=setTimeout(async()=>{
   const r=await api('/api/team-preview',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})})
