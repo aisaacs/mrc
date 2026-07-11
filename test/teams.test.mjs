@@ -5,6 +5,10 @@ import { pickFirstName, makeHandle, parseMention, extractMentions, stripMentions
 import { buildPersona, roleDef, ROLES } from '../src/teams/personas.js'
 import { parseRoster, validateRoster, editPersona, assertSafeName, assertSafeProjectName, teamRoomId, leadsRoomId } from '../src/teams/roster.js'
 import { classifyTerminal } from '../src/commands/team.js'
+import { addAuthorizedRepo, _authPathForTest } from '../src/teams/repo-auth.js'
+import { mkdtempSync, mkdirSync, realpathSync, rmSync, unlinkSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 // Deterministic RNG for reproducible name draws.
 function seededRng(seed = 1) {
@@ -511,4 +515,30 @@ test('#65 parseRoster: a malicious team.json project / team name is rejected at 
   // a clean readable project + team still parse
   const r = parseRoster({ project: 'My Project', teams: [{ name: 'Équipe A', members: [{ role: 'architect', backend: 'claude', lead: true }] }] })
   assert.equal(r.org, 'My Project')
+})
+
+// Inc 3 Site 2 — the Model B PARSE: every member needs an EXPLICIT, human-authorized repo (the authorized-set is
+// the SOLE gate; no org-root default). modelB is threaded ONLY on the team launch path (materializeRoster, Site 5)
+// and never for solo, so it's `storeMode && team && !solo` by construction. Legacy parse (modelB false) unchanged.
+test('parseRoster Model B (Inc 3 Site 2): explicit authorized member.repo required; no org-root default; legacy unchanged', () => {
+  const rootReal = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-mb-')))
+  const repoA = join(rootReal, 'a'); mkdirSync(repoA)
+  const repoB = join(rootReal, 'b'); mkdirSync(repoB)
+  const org = `mb-${process.pid}-${Math.floor(process.hrtime()[1] % 1e6)}`
+  const mk = (members) => ({ org, teams: [{ name: 't', members }] })
+  try {
+    // No member.repo under Model B → THROW (no org-root default to fall back to).
+    assert.throws(() => parseRoster(mk([{ role: 'engineer', backend: 'claude' }]), { repo: repoA, modelB: true }), /explicit repo is required/)
+    // An UNAUTHORIZED member.repo → THROW (fail-closed — the set is empty).
+    assert.throws(() => parseRoster(mk([{ role: 'engineer', backend: 'claude', repo: repoB }]), { repo: repoA, modelB: true }), /not authorized/)
+    // A human authorizes repoB → parses; the member's repo is canonical repoB; crossRepo forced true (org-scoped).
+    addAuthorizedRepo(org, repoB)
+    const norm = parseRoster(mk([{ role: 'engineer', backend: 'claude', repo: repoB }]), { repo: repoA, modelB: true })
+    assert.equal(norm.members[0].repo, repoB)
+    assert.equal(norm.members[0].crossRepo, true, 'Model B: every member is org-scoped (no org-root proxy)')
+    // LEGACY (modelB false) unchanged: no member.repo → defaults to the org repo (own-repo grant), crossRepo false.
+    const legacy = parseRoster(mk([{ role: 'engineer', backend: 'claude' }]), { repo: repoA })
+    assert.equal(legacy.members[0].repo, repoA)
+    assert.equal(legacy.members[0].crossRepo, false)
+  } finally { rmSync(rootReal, { recursive: true, force: true }); try { unlinkSync(_authPathForTest(org)) } catch {} }
 })

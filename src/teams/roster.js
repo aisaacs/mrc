@@ -143,7 +143,11 @@ function rngFromString(s) {
   return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296 }
 }
 
-export function parseRoster(input, { repo, rng } = {}) {
+// modelB (Inc 3, Site 2): the Model-B parse — every member MUST carry an explicit, human-authorized repo (the
+// authorized-set is the SOLE gate; no org-root default). Threaded ONLY on the team launch path (materializeRoster,
+// Site 5) and NEVER for solo (soloRoster builds its org directly and never calls parseRoster), so modelB here IS
+// `storeMode && team && !solo` by construction. Absent (default false) → legacy parse, byte-identical.
+export function parseRoster(input, { repo, rng, modelB = false } = {}) {
   const data = typeof input === 'string' ? JSON.parse(input) : input
   if (!data || typeof data !== 'object') throw new Error('roster: not an object')
   const repoPath = data.repo || repo || process.cwd()
@@ -236,10 +240,21 @@ export function parseRoster(input, { repo, rng } = {}) {
       // never reach into $HOME on its own — so it goes through resolveMemberRepo, where the broad-guard fires
       // AND it must be human-authorized. $HOME as the ORG repo = allowed (the user's choice); $HOME as a
       // CROSS-REPO member.repo = refused. Routing the default through the broad-guard would break `mrc ~`.
-      let memberRepo = repoPath
-      if (m.repo != null && m.repo !== '' && String(m.repo) !== String(repoPath)) {
-        try { memberRepo = resolveMemberRepo(repoPath, m.repo, org) }
+      let memberRepo
+      if (modelB) {
+        // Model B: NO org-root default. Every member picks its OWN repo, gated by the SOLE-gate resolveMemberRepo
+        // (own-repo grant deleted) — missing repo → throw, unauthorized → throw, authorized → canonical realpath.
+        // There is no `= repoPath` fallback: identity is the neutral anchor (Site 4), not a mounted org repo.
+        try { memberRepo = resolveMemberRepo(repoPath, m.repo, org, { modelB: true }) }
         catch (e) { throw new Error(`member @${handle}: ${e.message || e}`) }
+      } else {
+        // LEGACY (unchanged): default = the team's OWN repo (own-repo grant sidesteps the broad-guard for `mrc ~`);
+        // an EXPLICIT differing member.repo goes through resolveMemberRepo (human-authorized-set or throw).
+        memberRepo = repoPath
+        if (m.repo != null && m.repo !== '' && String(m.repo) !== String(repoPath)) {
+          try { memberRepo = resolveMemberRepo(repoPath, m.repo, org) }
+          catch (e) { throw new Error(`member @${handle}: ${e.message || e}`) }
+        }
       }
       // Resolved persona for this member: label/mandate/leadByDefault from the (custom or built-in)
       // def, with the EFFECTIVE mount + backend-derived tier folded in. buildPersona consumes this.
@@ -254,7 +269,10 @@ export function parseRoster(input, { repo, rng } = {}) {
         // constructors (memberArgv for a live member AND room-daemon's worker blob) and execWorker's config-vol
         // keying — so a cross-repo member is org-scoped on the LIVE and WORKER paths alike. Computing it only in
         // memberArgv left the worker blob born without it → an un-org-scoped, cross-org-colliding config vol.
-        crossRepo: String(memberRepo) !== String(repoPath),
+        // Model B: EVERY member is org-scoped (there is no org-root proxy — identity is the neutral anchor), so
+        // crossRepo is forced true → the org-scoped LIVE/WORKER paths (mrc.project labels, memberArgv, worker blob)
+        // apply uniformly. (Config-vol keying already flips on storeMode, Inc 2, independent of crossRepo.)
+        crossRepo: modelB || String(memberRepo) !== String(repoPath),
         ...(cage ? { cage } : {}),
         ...(backendNote ? { backendNote } : {}),
       }
