@@ -242,3 +242,19 @@ export function clearActivatedRoots(org) {
 
 export const _activatedPathForTest = activatedPath
 export const _authPathForTest = authPath
+
+// MODEL B — the org's NEUTRAL IDENTITY ANCHOR: a host-only, NEVER-MOUNTED directory keyed by the org NAME
+// (hex-injective, same key + same host-only class as org-roots/ and activated-roots/). In Model B this IS the
+// project's identity — tied to NO agent's repo — and it holds identity + the launch.log + the per-project Telegram
+// `.env` (a SECRET). It MUST NOT be a container mount: #5's memory store IS mounted into member containers, so if
+// the anchor were #5's store root, ANY member container could read the project's Telegram token (the def.repo/.env
+// -read crack recreated). So this is a SIBLING to #5's store with the OPPOSITE mount property — anchor UNMOUNTED
+// (secrets safe), store slices mounted (memory). Same hex(org) key for identity consistency, distinct tree.
+// The pin AND activation both retire in Model B (subsumed by the authorized-set), so the anchor needs neither a
+// write-once pin nor an activation gate: it's a DERIVED path (you can't re-point a hash of a validated org name),
+// immutable by derivation. hex-keyed so a lossy slug can't let `acme.prod` collide with `acme_prod`.
+const orgAnchorRoot = () => join(homedir(), '.local', 'share', 'mrc', 'org-anchors')
+export function orgAnchorDir(org) {
+  return join(orgAnchorRoot(), Buffer.from(String(org), 'utf8').toString('hex'))
+}
+export const _orgAnchorRootForTest = orgAnchorRoot

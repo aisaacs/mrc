@@ -25,7 +25,9 @@ import { canonicalWriteTarget } from '../mount-guard.js'   // #49: realpath-cano
 import { resolveTerritoryImage } from '../safe-path.js'   // #56: shared dual-containment (repo + territory) image guard
 import { leadsRoomId } from '../teams/roster.js'
 import { repoEnvKeyStrict } from '../config.js'
-import { resolveOrgRootForOrg, recordActivatedRoot, isActivatedRoot, clearOrgRoot, clearActivatedRoots, addAuthorizedRepo } from '../teams/repo-auth.js'   // guard-1: write-once org root + pin/activate separation; addAuthorizedRepo = the human-only cross-repo/Model-B authorize (SOLE set writer besides the CLI)
+import { resolveOrgRootForOrg, recordActivatedRoot, isActivatedRoot, clearOrgRoot, clearActivatedRoots, addAuthorizedRepo, orgAnchorDir } from '../teams/repo-auth.js'   // guard-1: write-once org root + pin/activate separation; addAuthorizedRepo = the human-only cross-repo/Model-B authorize (SOLE set writer besides the CLI); orgAnchorDir = Model B's neutral host-only identity anchor
+import { decideStoreMode } from '../mrc-store.js'   // Model B: PREDICT store-mode from the image capability (same signal the inner mrc.js reads authoritatively; fails-toward-legacy without docker)
+import { imageIdAndLabels } from '../docker.js'
 
 const MRC_JS = fileURLToPath(new URL('../../mrc.js', import.meta.url))
 
@@ -416,7 +418,32 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // CLI argv the human typed + the dashboard picker-CREATE — never launchteam-of-existing/relaunch/addmember/wire/
   // boot, so a cleared pin can't be re-rooted by a background action reading orgDef.repo). `activate` = a trusted
   // activate gesture (CLI `team up`, the dashboard Launch click) → recordActivatedRoot + run the side effects.
-  function defineOrg(def, { trusted = false, activate = false } = {}) {
+  // Model B PREDICTION (Inc 3): the daemon inspects the mister-claude image capability to PREDICT whether the inner
+  // mrc.js will run Model-B. The inner's resolveStoreMode is AUTHORITATIVE (the exact image it runs); this is a
+  // prediction the OUTER launch asserts against (Site 5). Fresh per-call (never boot-cached → a rebuild is reflected
+  // immediately). Fails toward LEGACY (no docker / inspect error → false), matching #5's deny-unless-proven.
+  const predictModelB = () => { try { return decideStoreMode(imageIdAndLabels().labels).storeMode } catch { return false } }
+
+  function defineOrg(def, { trusted = false, activate = false, modelB = predictModelB() } = {}) {
+    if (modelB) {
+      // MODEL B (Inc 3, Sites 3+4): identity is the NEUTRAL ANCHOR (orgAnchorDir — derived hex(org), host-only,
+      // NEVER mounted). The write-once PIN and the ACTIVATION gate BOTH RETIRE (owner-signed) — subsumed by the
+      // authorized-set: every member repo is set-gated, so an un-authorized mount/`.env`-read is already impossible;
+      // the anchor's own `.env` is the human's host-only per-project config, safe to read without an activation
+      // defer. A derived path can't be re-pointed (no pin needed). def.repo is ABSENT; def.anchor carries identity +
+      // the launch.log target + the TG token source (read from anchor/.env, NEVER a mounted repo → crack-C closed).
+      const anchor = orgAnchorDir(def.org)
+      def = { ...def, anchor, repo: undefined }
+      engine.defineOrg(def)
+      for (const r of (def.rooms || [])) ensureRoom(r.roomId, def.org || '', r.team || '')
+      orgDefs.set(def.org, def); saveOrgs([...orgDefs.values()]); rebuildSessionIndex()
+      // Side effects run UNCONDITIONALLY under Model B (no pin/activation to defer past): the anchor is host-only.
+      try { ensureTgForOrg(def) } catch (e) { daemonLog(`[tg] ensure ${def.org}: ${e?.message || e}`) }
+      if (teamMod) { try { teamMod.writeTeamFile(anchor, teamMod.rosterFromDef(def)) } catch {} }   // team.json in the neutral anchor, not a repo
+      broadcastEvent({ type: 'roster', org: def.org })
+      return (def.rooms || []).map((r) => r.roomId)
+    }
+    // LEGACY (unchanged) — write-once pin + activation gate + def.repo.
     const repo = resolveOrgRootForOrg(def.org, def.repo, { trusted })   // write-once; an untrusted first-pin THROWS before anything persists (the poisoned-define never lands)
     def = { ...def, repo }
     engine.defineOrg(def)
@@ -447,7 +474,10 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // tgToken) — a global token would misattribute one project's bot to every token-less project (#14).
   // `tgToken` is honored ONLY as an explicit per-org test injection (a Map org->token), never a real
   // global source.
-  const tgTokenFor = (def) => repoEnvKeyStrict(def.repo, 'MRC_TELEGRAM_BOT_TOKEN') || (tgToken && typeof tgToken === 'object' ? tgToken[def.org] : '') || ''
+  // Model B: read from the host-only ANCHOR (`anchor/.env`), NEVER a mounted repo — #5's store is mounted into
+  // members, so a repo-sourced token would be readable inside a member container (crack-C). def.anchor is set only
+  // under Model B; legacy defs have no anchor → falls through to def.repo, unchanged.
+  const tgTokenFor = (def) => repoEnvKeyStrict(def.anchor || def.repo, 'MRC_TELEGRAM_BOT_TOKEN') || (tgToken && typeof tgToken === 'object' ? tgToken[def.org] : '') || ''
   function ensureTgForOrg(def) {
     const org = def.org
     const token = tgTokenFor(def)
@@ -475,7 +505,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     if (s.warning) { s.warning = null; persistTg() }   // a previously-clashing token was fixed → clear it
     // prePin chat id is ALSO strict per-repo: a global MRC_TELEGRAM_CHAT_ID would auto-authorize an
     // org (that has its own token but no chat_id) to the WRONG user, bypassing dashboard-confirm (#14).
-    const prePinId = repoEnvKeyStrict(def.repo, 'MRC_TELEGRAM_CHAT_ID')
+    const prePinId = repoEnvKeyStrict(def.anchor || def.repo, 'MRC_TELEGRAM_CHAT_ID')   // Model B: anchor/.env, never a mounted repo
     if (prePinId && !s.pinned) { prePin(s, Number(prePinId)); persistTg() }   // .env zero-window override (own repo only)
     if (!tgBridges.has(org)) {
       const bridge = createTelegramBridge({
@@ -607,7 +637,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     const room = engine.getRoom(leadsRoomId(org))   // the pinned user IS the human → trusted inject
     if (room) engine.doSteer(room, 'all', d.text, { via: 'telegram' })
   }
-  for (const def of orgDefs.values()) { try { if (isActivatedRoot(def.org, def.repo)) ensureTgForOrg(def) } catch {} }   // guard-1: boot restores orgs INERT — a bridge re-binds ONLY for a previously-ACTIVATED root (a grandfathered/poisoned/never-activated root stays dark until a human activates; the .env is not re-read on the way in)
+  // guard-1: boot restores orgs INERT — a LEGACY bridge re-binds ONLY for a previously-ACTIVATED root (a
+  // grandfathered/poisoned/never-activated root stays dark until a human activates; the .env is not re-read on the
+  // way in). Model B has no activation gate (it retired): a Model-B org (def.anchor set) re-binds iff its host-only
+  // anchor/.env carries a token — ensureTgForOrg's own token check gates the actual bridge, and the anchor is never
+  // a mounted/wire-chosen path, so there's no un-authorized-.env-read to defer (the reason activation existed).
+  for (const def of orgDefs.values()) { try { if (def.anchor ? true : isActivatedRoot(def.org, def.repo)) ensureTgForOrg(def) } catch {} }
   // A team member sent a directed message into a room. Route via the engine; ack the true outcome.
   function onSay(fromId, f) {
     const ackId = f.id

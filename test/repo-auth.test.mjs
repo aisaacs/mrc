@@ -2,7 +2,7 @@
 // HOST-ONLY file, so tests use a unique per-run org and clean it up. Real temp repos (realpath resolves them).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveMemberRepo, addAuthorizedRepo, removeAuthorizedRepo, loadAuthorizedRepos, resolveOrgRoot, resolveOrgRootForOrg, pinnedOrgRoot, clearOrgRoot, recordActivatedRoot, isActivatedRoot, clearActivatedRoots, expandHome, _rootPathForTest, _activatedPathForTest, _authPathForTest } from '../src/teams/repo-auth.js'
+import { resolveMemberRepo, addAuthorizedRepo, removeAuthorizedRepo, loadAuthorizedRepos, resolveOrgRoot, resolveOrgRootForOrg, pinnedOrgRoot, clearOrgRoot, recordActivatedRoot, isActivatedRoot, clearActivatedRoots, expandHome, orgAnchorDir, _rootPathForTest, _activatedPathForTest, _authPathForTest, _orgAnchorRootForTest } from '../src/teams/repo-auth.js'
 import { mkdtempSync, mkdirSync, rmSync, realpathSync, symlinkSync, unlinkSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join, sep } from 'node:path'
@@ -297,4 +297,17 @@ test('loadAuthorizedRepos: missing record → empty set (fail-closed); add/remov
     assert.equal(loadAuthorizedRepos(s.org).size, 0)
     assert.equal(removeAuthorizedRepo(s.org, s.other), false)   // idempotent
   } finally { s.cleanup() }
+})
+
+// Model B (Inc 3, Site 4): the org's NEUTRAL IDENTITY ANCHOR — a derived, host-only, hex-keyed path. It is the
+// project's identity in Model B (tied to no repo) and holds the TG `.env` secret, so it MUST be a distinct tree
+// that is never a container mount (crack-C). Derived + hex-injective → immutable-by-derivation (no pin needed).
+test('orgAnchorDir: derived, hex-keyed, host-only, injective; distinct from #5\'s mounted store tree', () => {
+  const a = orgAnchorDir('acme')
+  assert.equal(a, orgAnchorDir('acme'), 'derived + stable — same org → same anchor (immutable by derivation)')
+  assert.notEqual(orgAnchorDir('acme.prod'), orgAnchorDir('acme_prod'), 'hex-injective — a lossy slug would collide these')
+  assert.ok(a.startsWith(_orgAnchorRootForTest()), 'under the dedicated org-anchors/ tree')
+  assert.ok(a.includes('/.local/share/mrc/org-anchors/'), 'host-only mrc state dir, NOT a repo, NOT the store slice tree')
+  assert.match(a.slice(_orgAnchorRootForTest().length + 1), /^[0-9a-f]+$/, 'the key is a hex encoding of the org name')
+  assert.equal(orgAnchorDir('acme'), _orgAnchorRootForTest() + '/' + Buffer.from('acme', 'utf8').toString('hex'))
 })
