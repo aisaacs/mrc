@@ -549,6 +549,19 @@ export async function assertTtydUnixSocket(ttydPid, ttydSock, { timeoutMs = 3000
 // #34: launch each live member as its own persistent dtach session + ttyd viewer. Reuses a member's
 // existing session if its dtach master is still alive (idempotent relaunch). Returns the registry map.
 async function launchMembers(norm, repoPath, rosterPath, live) {
+  // Site 5 (Model B) — the daemon-predict → OUTER-assert, the assertTtydUnixSocket shape applied to Model-B mode.
+  // The daemon threaded its ONE prediction as MRC_MODEL_B_PREDICT; this process reads the AUTHORITATIVE actual from
+  // the exact image it's about to launch (decideStoreMode). Assert they AGREE **before spawning any dtach master** —
+  // a mismatch (a rebuild landed between the daemon's define/predict and this launch) → THROW at the launch boundary
+  // → the daemon's detached child exits non-zero → failLaunch flips launching→failed CLEAN. Critically the throw
+  // PRECEDES the dtach spawn, so there is NO orphaned-ALIVE master (a self-killed inner inside a live master whose
+  // shell `read`s would keep reading as "up" and never self-correct). Only asserts when the daemon set the env — a
+  // bare human `mrc team up` carries no predict and is unaffected. The inner mrc.js resolveStoreMode assert is a belt.
+  if (process.env.MRC_MODEL_B_PREDICT != null) {
+    const predict = process.env.MRC_MODEL_B_PREDICT === '1'
+    const actual = decideStoreMode(imageIdAndLabels().labels).storeMode
+    if (predict !== actual) throw new Error(`Model B mode mismatch: the daemon predicted ${predict ? 'Model B' : 'legacy'} but this image is ${actual ? 'Model B' : 'legacy'} — refusing the launch LOUD (a rebuild likely landed between define and launch; retry). Never mounting under a mode the daemon didn't expect.`)
+  }
   const existing = (loadLaunches()[norm.org] || {}).members || {}
   const members = {}
   let nextPort = Number(process.env.MRC_TTYD_PORT) || 7681
@@ -711,16 +724,25 @@ export function rosterFromDef(def) {
     const mm = { name: m.first, role: m.role, backend: m.backend }
     if (m.lead) mm.lead = true
     if (m.territory && m.territory !== '.') mm.territory = m.territory
+    // Model B: carry the member's explicit authorized repo — a rebuilt roster MUST re-supply it (parseRoster's
+    // modelB branch requires an explicit member.repo; there's no org-root default). Harmless for legacy: an own-repo
+    // member's m.repo === repoPath re-parses to the own-repo grant (byte-identical); a cross-repo member's authorized
+    // repo re-parses through the set (already authorized). So carrying it is safe in BOTH modes.
+    if (m.repo) mm.repo = m.repo
     teams[m.team].members.push(mm)
   }
   const roster = { org: def?.org, repo: def?.repo, teams: Object.values(teams) }
-  // #43: carry the custom `personas` block so a REBUILT roster keeps custom-role charters. The in-memory
-  // def doesn't store personas; team.json on disk is their authoritative home (kept intact by #51). Without
-  // this, every addmember / removemember / launch-reconstruction re-parses a roster with no personas, so a
-  // custom-role member (added live OR relaunched) resolves the generic fallback — no label, no mandate.
+  // #43: carry the custom `personas` block so a REBUILT roster keeps custom-role charters. The in-memory def doesn't
+  // store personas; team.json on disk is their authoritative home. Read it from the SAME place defineOrg WROTE it:
+  // the unmounted ANCHOR under Model B (def.anchor), the repo under legacy (def.repo). Model B security payoff — the
+  // anchor is host-only + never-mounted, so a member container CANNOT tamper the team.json personas are read from →
+  // the persona-injection vector (guard-2 / crack B) is SUBSUMED by the anchor's un-mountedness, the same way the pin
+  // and activation are subsumed by the authorized-set. (Legacy still reads the repo team.json — guard-2 remains its
+  // separately-tracked concern there.)
   try {
-    if (def?.repo) {
-      const tj = JSON.parse(readFileSync(join(def.repo, 'team.json'), 'utf8'))
+    const personaSrc = def?.anchor || def?.repo
+    if (personaSrc) {
+      const tj = JSON.parse(readFileSync(join(personaSrc, 'team.json'), 'utf8'))
       if (tj && tj.personas && typeof tj.personas === 'object' && !Array.isArray(tj.personas) && Object.keys(tj.personas).length) roster.personas = tj.personas
     }
   } catch {}
@@ -809,8 +831,8 @@ export async function launchMember(org, repoPath, rosterPath, member) {
 
 // Parse a roster (object or JSON string), write it to <repo>/.mrc/team.runtime.json so launched
 // members can --roster it, and return { norm, rosterPath }. Used by the daemon's GUI launch.
-export function materializeRoster(rosterInput, repoHint) {
-  const norm = parseRoster(rosterInput, { repo: repoHint })
+export function materializeRoster(rosterInput, repoHint, modelB = false) {
+  const norm = parseRoster(rosterInput, { repo: repoHint, modelB })   // Model B: norm.repo becomes the neutral anchor (parseRoster), so the runtime roster + launch.log land there, not in a repo
   // #49 (Pierre — the enumeration's reachable miss): route the runtime-roster write through the canonical
   // guard. Plain writeFileSync FOLLOWS a symlinked `.mrc -> /etc` (and mkdirSync on the existing symlink-dir
   // succeeds silently), and this runs on every `mrc team up` AND the daemon's GUI launch — same `.mrc` symlink

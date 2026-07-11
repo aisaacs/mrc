@@ -23,7 +23,7 @@ import { roleDef, ROLE_ALIASES } from './personas.js'
 import { isMediaRole, mediaBackendForRole } from './media.js'
 import { assertCageAllowed } from './cage.js'
 import { canonicalMountSource } from '../mount-guard.js'   // #49: realpath-canonical territory validation (legible, symlink-safe)
-import { resolveMemberRepo } from './repo-auth.js'   // #49 Inc 2: gate an explicit member.repo against the org's human-authorized set
+import { resolveMemberRepo, orgAnchorDir } from './repo-auth.js'   // #49 Inc 2: gate an explicit member.repo against the org's human-authorized set; Model B: the neutral team-home anchor
 
 // Backends we can actually launch. claude = live channel member; codex = task-worker agent.
 // gemini/elevenlabs are MEDIA backends, never picked directly — they're DERIVED from a media role.
@@ -150,11 +150,18 @@ function rngFromString(s) {
 export function parseRoster(input, { repo, rng, modelB = false } = {}) {
   const data = typeof input === 'string' ? JSON.parse(input) : input
   if (!data || typeof data !== 'object') throw new Error('roster: not an object')
-  const repoPath = data.repo || repo || process.cwd()
+  const repoHint = data.repo || repo || process.cwd()   // feeds the legacy repoPath AND the org basename fallback
   // #65: validate the EXPLICIT project/org name (the malicious-team.json XSS vector) at this chokepoint;
   // the benign basename fallback (a local dir, not attacker-controlled) is sanitized rather than thrown on.
   const explicitName = data.project || data.org
-  const org = explicitName ? assertSafeProjectName(explicitName, 'project') : (sanitizeProjectName(basename(repoPath)) || 'org')
+  // Model B: identity is the NEUTRAL ANCHOR derived from the project NAME → a name is REQUIRED (the anchor path is
+  // hex(name); there is no org repo to name the project after).
+  if (modelB && !explicitName) throw new Error('Model B: a project name is required — the project identity is a neutral anchor derived from the name (there is no org repo to name it after).')
+  const org = explicitName ? assertSafeProjectName(explicitName, 'project') : (sanitizeProjectName(basename(repoHint)) || 'org')
+  // Model B: repoPath IS the neutral anchor (host-only, NEVER mounted) — the team-home for the launch.log + the
+  // never-firing memberArgv fallback (every member mounts its OWN authorized member.repo, so repoPath is code-mounted
+  // nowhere). Legacy: the org repo (data.repo || repo || cwd), unchanged.
+  const repoPath = modelB ? orgAnchorDir(org) : repoHint
   const teamsIn = Array.isArray(data.teams) ? data.teams : []
   const customPersonas = parsePersonas(data.personas)
   rng = rng || rngFromString(`mrc-team:${org}`)   // stable per-org names by default

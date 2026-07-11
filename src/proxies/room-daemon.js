@@ -536,10 +536,10 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   const SENDPHOTO_MAX = 50 * 1024 * 1024
   async function handleSendPhoto({ org, handle, path: rel, caption }) {
     const def = orgDefs.get(org)
-    if (!def?.repo) return { ok: false, error: 'unknown org' }
+    if (!def) return { ok: false, error: 'unknown org' }
     const m = engine.memberByHandle(handle, org)
     if (!m) return { ok: false, error: `unknown member @${handle}` }
-    const repo = def.repo, territory = m.territory || '.'
+    const repo = m.repo || def.repo, territory = m.territory || '.'   // Model B: the member's OWN authorized repo (def.repo is absent — identity is the anchor)
     const { file, error } = resolveTerritoryImage(repo, territory, rel)    // dual-containment + image-ext (shared primitive)
     if (error) return { ok: false, error }
     let size; try { size = statSync(file).size } catch { return { ok: false, error: 'cannot read file' } }
@@ -1296,8 +1296,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           const roster = f.roster || orgRoster.get(f.org)
           if (!roster) { reply({ ok: false, error: 'no roster for this org — launch from the builder, or run mrc team up' }); continue }
           try {
-            const { norm, rosterPath } = teamMod.materializeRoster(roster, f.repo)
-            defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms }, { trusted: capOk(f), activate: true })   // guard-1: the LAUNCH click first-pins the human's PICKED repo (norm.repo from f.roster/f.repo, NOT orgDef.repo) + activates. trusted derived from capOk (the handler is already capOk-gated, so this is a secret-holder). A no-secret launchteam never reaches here (handler gate).
+            // Site 5: ONE predict for this whole launch flow → threaded to materializeRoster (parse) + defineOrg
+            // (identity) + the spawn env (the outer assert), so identity / config-vol / parse can never two-inspect-
+            // drift within the flow. The inner mrc.js's own resolveStoreMode stays AUTHORITATIVE; this is the daemon's
+            // prediction, which the OUTER launchMembers asserts against before the dtach spawn.
+            const modelB = predictModelB()
+            const { norm, rosterPath } = teamMod.materializeRoster(roster, f.repo, modelB)
+            defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms }, { trusted: capOk(f), activate: true, modelB })   // guard-1 legacy: first-pins the human's PICKED repo + activates. Model B: identity is the neutral anchor (defineOrg ignores repo, uses orgAnchorDir), no pin/activation. trusted derived from capOk (the handler is already capOk-gated).
             orgRoster.set(norm.org, roster)   // guard-1 (Pierre): AFTER defineOrg succeeds — a THROWN define (existing-pin mismatch) must NOT persist its roster into orgRoster, or a rejected op would leave poison a later first-pin fallback (orgRoster.get) could read.
             // #49 (Pierre — the enumeration's daemon-side miss): the GUI-launch log is a repo-relative write,
             // so a symlinked `.mrc` would escape. Canonicalize it (best-effort: a rejected/symlinked .mrc just
@@ -1311,7 +1316,11 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             // on success, OR the child-exit fast-path / a 3-min timeout flips to `failed` (never a phantom-running
             // org whose build silently died). post-capOk handler → pure state-machine honesty, no new surface.
             try { saveLaunchState(norm.org, { at: Date.now(), launching: true, repo: norm.repo }) } catch {}   // provisional STATE in the daemon-owned file (separate from the subprocess's member records) → no cross-process read-modify-write race
-            const child = spawn(process.execPath, [MRC_JS, 'team', 'up', norm.repo, '--roster', rosterPath], { detached: true, stdio: ['ignore', fd, fd] })
+            // Site 5: thread the daemon's ONE predict as an env → the OUTER launchMembers asserts
+            // `decideStoreMode(the-image) === MRC_MODEL_B_PREDICT` BEFORE spawning the dtach master (mismatch → throw
+            // → this child exits non-zero → failLaunch flips launching→failed CLEAN; the throw precedes the dtach, so
+            // no orphaned-ALIVE master — the dtach master's `read` shell would otherwise keep a self-killed inner "up").
+            const child = spawn(process.execPath, [MRC_JS, 'team', 'up', norm.repo, '--roster', rosterPath], { detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, MRC_MODEL_B_PREDICT: modelB ? '1' : '0' } })
             const failLaunch = (why) => { try { if (Object.keys(loadLaunches()[norm.org]?.members || {}).length) return; const st = loadLaunchState()[norm.org]; if (st && st.launching) saveLaunchState(norm.org, { ...st, launching: false, failed: true, error: why }) } catch {} }   // members present (subprocess's file, read-only here) ⇒ not a failure; only the daemon writes launch-state ⇒ a timeout that straddles a slow build can't clobber the member write
             child.on('exit', (code) => { if (code) failLaunch(`the launch process exited with code ${code} before any member came up — see ${logPath || '<repo>/.mrc/launch.log'}`) })   // fast path
             try { setTimeout(() => failLaunch('launch timed out — no member came up within 3 min (see <repo>/.mrc/launch.log)'), 3 * 60_000).unref() } catch {}   // honest backstop: the subprocess can exit 0 yet still bring up nothing
@@ -1365,7 +1374,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           try {
             const m = engine.memberByHandle(f.handle)
             const updated = teamMod.removeMemberFromRoster(teamMod.rosterFromDef(def), f.handle)
-            const { norm } = teamMod.materializeRoster(updated, def.repo)
+            const { norm } = teamMod.materializeRoster(updated, def.repo, predictModelB())   // Model B: parse must agree with defineOrg's mode (same image ⇒ same predict)
             orgRoster.set(norm.org, updated)
             defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })   // prunes the member + syncs team.json
             if (m && m.tier === 'live') teamMod.killMember(f.org, m.handle)   // #34: kill the member's ttyd
@@ -1384,7 +1393,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           const def = orgDefs.get(f.org)
           if (!def) { reply({ ok: false, error: 'unknown org' }); continue }
           try {
-            const { norm, rosterPath } = teamMod.materializeRoster(teamMod.rosterFromDef(def), def.repo)
+            const { norm, rosterPath } = teamMod.materializeRoster(teamMod.rosterFromDef(def), def.repo, predictModelB())   // Model B: rosterFromDef carries member.repo + anchor personas; parse agrees with defineOrg
             const member = norm.members.find((mm) => mm.handle === f.handle)
             if (!member || member.tier !== 'live') { reply({ ok: false, error: 'not a live member' }); continue }
             teamMod.killMember(f.org, f.handle)   // reap master(sock) + container(label) + unlink, synchronously
@@ -1435,7 +1444,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             const prev = new Set(def.members.map((m) => m.handle))
             const team = f.team || def.members[0]?.team
             const updated = teamMod.addMemberToRoster(teamMod.rosterFromDef(def), team, { role: f.role, backend: f.backend, territory: f.territory })
-            const { norm, rosterPath } = teamMod.materializeRoster(updated, def.repo)
+            const { norm, rosterPath } = teamMod.materializeRoster(updated, def.repo, predictModelB())   // Model B: parse agrees with defineOrg's mode
             orgRoster.set(norm.org, updated)
             defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
             const added = norm.members.find((m) => !prev.has(m.handle))

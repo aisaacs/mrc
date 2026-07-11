@@ -12,6 +12,7 @@
 // writable source between check and mount is a dynamic TOCTOU that resolved-p can't close alone — caged
 // members are covered by the egress seal, uncaged cross-repo members need the source out of the racer's reach.)
 import { realpathSync } from 'node:fs'
+import { homedir } from 'node:os'
 import { join, sep } from 'node:path'
 
 // Is `p` the repo root or strictly inside it? `+ sep` closes the /repo vs /repo-evil prefix collision;
@@ -39,6 +40,14 @@ function resolveRepoRoot(repo) {
 // check-reads-link-vs-mount-reads-link race). For a path that EXISTS (a mount source); throws on a missing path.
 export function canonicalMountSource(repo, subpath = '.') {
   const repoReal = resolveRepoRoot(repo)                            // realpath the FEED + refuse a '/'-repo
+  // Model B (Pierre — structural, not trace-completeness): the org-ANCHORS tree holds each project's NEUTRAL
+  // identity anchor — including its Telegram `.env` SECRET and team.json. It is HOST-ONLY and must NEVER be a
+  // container mount source. Refuse ANY mount whose source realpaths inside it, BY CONSTRUCTION, so a future code
+  // path that passes repoPath=anchor (mistaking it for a repo) fails-closed instead of leaking the anchor into a
+  // container — rather than relying on "no current path mounts it". Refuses ONLY org-anchors/, NOT the sibling
+  // store/ tree: #5's memory slices under ~/.local/share/mrc/store ARE legitimately mounted as /mrc.
+  let anchorRoot = null; try { anchorRoot = realpathSync(join(homedir(), '.local', 'share', 'mrc', 'org-anchors')) } catch {}
+  if (anchorRoot && within(anchorRoot, repoReal)) throw new Error(`refusing to mount from the org-anchors tree (${repoReal} is inside ${anchorRoot}) — project anchors hold secrets and are never a container mount source`)
   const target = realpathSync(join(repoReal, String(subpath)))     // NOTE: THROWS ENOENT on a missing source — a conscious, fail-closed behavior change from docker's root-owned auto-create (a member should not mount a territory that isn't in the tree)
   if (!within(repoReal, target)) {
     throw new Error(`mount source "${subpath}" escapes the repo — resolves to ${target}, outside ${repoReal}`)
