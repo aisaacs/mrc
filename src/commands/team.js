@@ -845,7 +845,7 @@ export function materializeRoster(rosterInput, repoHint, modelB = false) {
   // so nothing has created it yet. canonicalWriteTarget below realpaths the root → ENOENT if it doesn't exist. Create
   // it here (safe: it's mrc's own hex-keyed dir, never a user repo — legacy norm.repo is a real repo that already
   // exists, so this is modelB-gated). Without this, EVERY Model B launch throws at the first write. (Caught pre-rebuild.)
-  if (modelB) mkdirSync(norm.repo, { recursive: true })
+  if (modelB) { mkdirSync(norm.repo, { recursive: true }); try { chmodSync(norm.repo, 0o700) } catch {} }   // 0700: the anchor holds the project's TG token .env (a SECRET) — un-mounted keeps it out of containers, 0700 keeps it out of cross-uid HOST processes (same load-bearing dir-perm as guard-4's socket dir). LOAD-BEARING, not deferrable (Pierre).
   // #49 (Pierre — the enumeration's reachable miss): route the runtime-roster write through the canonical
   // guard. Plain writeFileSync FOLLOWS a symlinked `.mrc -> /etc` (and mkdirSync on the existing symlink-dir
   // succeeds silently), and this runs on every `mrc team up` AND the daemon's GUI launch — same `.mrc` symlink

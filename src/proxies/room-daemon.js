@@ -8,7 +8,7 @@
 // before. One daemon serves all sessions, so it outlives any single session.
 import net from 'node:net'
 import { spawn, execFileSync } from 'node:child_process'
-import { openSync, mkdirSync, appendFileSync, readFileSync, writeFileSync, renameSync, statSync, unlinkSync, utimesSync } from 'node:fs'
+import { openSync, mkdirSync, appendFileSync, readFileSync, writeFileSync, renameSync, statSync, unlinkSync, utimesSync, chmodSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -435,7 +435,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       // defer. A derived path can't be re-pointed (no pin needed). def.repo is ABSENT; def.anchor carries identity +
       // the launch.log target + the TG token source (read from anchor/.env, NEVER a mounted repo → crack-C closed).
       const anchor = orgAnchorDir(def.org)
-      try { mkdirSync(anchor, { recursive: true }) } catch {}   // ensure the host-only anchor exists before any write to it (writeTeamFile/launch.log canonicalWriteTarget realpaths it → ENOENT otherwise); defineOrg can be called standalone (the wire define), not only after materializeRoster
+      try { mkdirSync(anchor, { recursive: true }); chmodSync(anchor, 0o700) } catch {}   // ensure the host-only anchor exists before any write to it (canonicalWriteTarget realpaths it → ENOENT otherwise). 0700 (Pierre): the anchor holds the project TG token .env (a SECRET) — un-mounted keeps it out of containers, 0700 keeps it out of cross-uid HOST processes. LOAD-BEARING for this dir (it holds a token, unlike the paths/booleans elsewhere).
       def = { ...def, anchor, repo: undefined }
       engine.defineOrg(def)
       for (const r of (def.rooms || [])) ensureRoom(r.roomId, def.org || '', r.team || '')

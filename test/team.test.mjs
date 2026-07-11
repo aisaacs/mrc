@@ -482,6 +482,7 @@ test('Model B (Inc 3) e2e-logic: materialize a full authorized roster → anchor
     assert.equal(norm.repo, orgAnchorDir(org), 'norm.repo is the neutral anchor (identity off the repo)')
     assert.ok(rosterPath.startsWith(orgAnchorDir(org)), 'the runtime roster is written UNDER the anchor, not a repo')
     assert.ok(fs.existsSync(rosterPath), 'materialize created + wrote it (the anchor-dir-ENOENT bug is fixed)')
+    assert.equal(fs.statSync(orgAnchorDir(org)).mode & 0o777, 0o700, 'the anchor dir is 0700 — a cross-uid HOST process cannot traverse in to read its TG-token .env (Pierre; the anchor is the one host-only dir holding a secret)')
     // Each member mounts its OWN authorized repo; every member is org-scoped (crossRepo true).
     const byRole = Object.fromEntries(norm.members.map((m) => [m.role, m]))
     assert.equal(byRole.architect.repo, repoA); assert.equal(byRole.engineer.repo, repoB)
