@@ -148,6 +148,26 @@ test('roster: live-ness is backend-decided — a claude member is ALWAYS live; c
   assert.equal(tierOf({ org: 'x', teams: [{ name: 't', members: [{ role: 'designer' }] }] }), 'worker')
 })
 
+test('roster: the generalist role (the plain-Claude default) is rw + live + lead, and NOT flagged unknown', () => {
+  const norm = parseRoster({ org: 'x', teams: [{ name: 't', members: [{ role: 'generalist', backend: 'claude', name: 'Claude' }] }] }, { repo: '/tmp/x', rng: seededRng(1) })
+  const m = norm.members[0]
+  assert.equal(m.mount, 'rw')          // a plain agent must be able to WRITE its own repo (same boundary as the old engineer default)
+  assert.equal(m.tier, 'live')          // claude → always live
+  assert.equal(m.roleLabel, 'Claude')   // built-in label, not the generic role-string fallback
+  assert.equal(m.lead, true)            // leadByDefault → the sole/first agent is its own lead
+  assert.ok(!validateRoster(norm).warnings.some((w) => /unknown role/.test(w)))   // it's a known built-in now
+})
+
+test('roster: cwdFallback:false fails a repo-LESS non-Model-B parse closed; default (preview) stays tolerant (Pierre cwd landmine)', () => {
+  const repoLess = { org: 'x', teams: [{ name: 't', members: [{ role: 'generalist', backend: 'claude', name: 'Claude' }] }] }
+  // A LAUNCH parse (cwdFallback:false) with no repo → THROW, never fall back to the daemon's cwd.
+  assert.throws(() => parseRoster(repoLess, { cwdFallback: false }), /a repo is required/)
+  // A structure-only parse (preview/validate — the default) with no repo → tolerated (uses cwd, never mounts).
+  assert.doesNotThrow(() => parseRoster(repoLess, {}))
+  // With a real repo, cwdFallback:false is a no-op — the launch proceeds.
+  assert.doesNotThrow(() => parseRoster({ ...repoLess, repo: '/tmp/x' }, { cwdFallback: false }))
+})
+
 test('roster: buildPersona emits the custom mandate via member.personaDef', () => {
   const json = JSON.stringify({ org: 'shop', personas: { advertiser: { label: 'Ad Strategist', mandate: 'SENTINEL-MANDATE-9f.' } },
     teams: [{ name: 'mkt', members: [{ role: 'advertiser', backend: 'claude' }] }] })

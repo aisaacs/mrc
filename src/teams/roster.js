@@ -147,16 +147,25 @@ function rngFromString(s) {
 // authorized-set is the SOLE gate; no org-root default). Threaded ONLY on the team launch path (materializeRoster,
 // Site 5) and NEVER for solo (soloRoster builds its org directly and never calls parseRoster), so modelB here IS
 // `modelB && team && !solo` by construction (modelB = decideModelB, cap=2). Absent (default false) → legacy parse.
-export function parseRoster(input, { repo, rng, modelB = false } = {}) {
+export function parseRoster(input, { repo, rng, modelB = false, cwdFallback = true } = {}) {
   const data = typeof input === 'string' ? JSON.parse(input) : input
   if (!data || typeof data !== 'object') throw new Error('roster: not an object')
-  const repoHint = data.repo || repo || process.cwd()   // feeds the legacy repoPath AND the org basename fallback
+  // The cwd fallback is only meaningful for a CLI human-argv launch (`mrc <repo>`, where the shell's cwd
+  // IS the human's intended repo) and for structure-only callers (preview/validate) that don't launch. A
+  // WIRE/dashboard LAUNCH (materializeRoster) passes cwdFallback:false: there the daemon's cwd is
+  // meaningless AND dangerous — a repo-less legacy (cap=1) launch would silently root the org at the
+  // daemon's working directory, mount it rw, and read its .env (Pierre, the process.cwd() landmine).
+  const repoHint = data.repo || repo || (cwdFallback ? process.cwd() : '')   // feeds the legacy repoPath AND the org basename fallback
   // #65: validate the EXPLICIT project/org name (the malicious-team.json XSS vector) at this chokepoint;
   // the benign basename fallback (a local dir, not attacker-controlled) is sanitized rather than thrown on.
   const explicitName = data.project || data.org
   // Model B: identity is the NEUTRAL ANCHOR derived from the project NAME → a name is REQUIRED (the anchor path is
   // hex(name); there is no org repo to name the project after).
   if (modelB && !explicitName) throw new Error('Model B: a project name is required — the project identity is a neutral anchor derived from the name (there is no org repo to name it after).')
+  // Legacy (non-Model-B) LAUNCH with no repo → FAIL CLOSED, never fall back to the daemon's cwd. Placed
+  // before the basename(repoHint) org derivation below so an empty repoHint is never stringified. (cap=2
+  // is unaffected: repoPath is the anchor and repoHint feeds nothing.)
+  if (!modelB && !repoHint) throw new Error('a repo is required for this launch — pick a repo. (A dashboard/wire launch never falls back to the daemon\'s working directory.)')
   const org = explicitName ? assertSafeProjectName(explicitName, 'project') : (sanitizeProjectName(basename(repoHint)) || 'org')
   // Model B: repoPath IS the neutral anchor (host-only, NEVER mounted) — the team-home for the launch.log + the
   // never-firing memberArgv fallback (every member mounts its OWN authorized member.repo, so repoPath is code-mounted
@@ -418,7 +427,7 @@ function ROLES_OK(role, customPersonas) {
   // as known too. Unknown roles are allowed (warned + treated generically).
   const r = ROLE_ALIASES[role] || role
   if (customPersonas && Object.prototype.hasOwnProperty.call(customPersonas, r)) return true
-  return ['architect', 'engineer', 'critic', 'adversary', 'ultracritical', 'user-defender', 'researcher', 'tester', 'designer', 'sound-designer', 'composer'].includes(r)
+  return ['generalist', 'architect', 'engineer', 'critic', 'adversary', 'ultracritical', 'user-defender', 'researcher', 'tester', 'designer', 'sound-designer', 'composer'].includes(r)
 }
 
 function territoriesOverlap(a, b) {

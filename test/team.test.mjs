@@ -17,6 +17,14 @@ import {
 } from '../src/commands/team.js'
 import { orgAnchorDir } from '../src/teams/repo-auth.js'
 
+test('materializeRoster (the wire/launch parse) FAILS CLOSED on a repo-less non-Model-B launch — never roots at the daemon cwd (Pierre)', () => {
+  // materializeRoster passes cwdFallback:false; parseRoster runs FIRST (before any disk write), so a
+  // repo-less legacy launch throws here rather than silently rooting the org at the daemon's working dir.
+  const repoLess = { org: 'wire-x', teams: [{ name: 't', members: [{ role: 'generalist', backend: 'claude', name: 'Claude' }] }] }
+  assert.throws(() => materializeRoster(repoLess, '', false), /a repo is required/)
+  assert.throws(() => materializeRoster(repoLess, undefined, false), /a repo is required/)
+})
+
 test('removeMemberFromRoster drops the member and any team left empty', () => {
   const roster = { org: 'shop', teams: [
     { name: 'client', members: [{ name: 'Roland', role: 'architect', backend: 'claude', lead: true }, { name: 'Vespa', role: 'engineer', backend: 'claude' }] },

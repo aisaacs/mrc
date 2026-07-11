@@ -390,7 +390,10 @@ function renderFlash() {
 window.dismissFlash = () => { S.flash=null; renderFlash() }
 const setOrgUrl = (org) => { try { history.replaceState(null, '', '/'+encodeURIComponent(org||'')) } catch {} }   // /anigame
 
-const ROLES = ['architect','engineer','critic','adversary','ultracritical','user-defender','researcher','tester','designer','sound-designer','composer']
+// 'generalist' (a plain Claude) leads the list — it's the de-emphasized DEFAULT (§13: "default = a plain
+// Claude"). architect/critic/adversary stay pickable in Advanced, but the create flow steers to plain
+// agents + (Slice B) a cast of characters rather than role-forward teams.
+const ROLES = ['generalist','engineer','tester','researcher','user-defender','architect','critic','adversary','ultracritical','designer','sound-designer','composer']
 const BACKENDS = ['claude','codex']   // agent backends only — media roles DERIVE their backend (below)
 // #42: the role chooser lists built-in roles PLUS this project's custom personas (so a member can pick
 // @advertiser). Custom keys that shadow a built-in are de-duped (the parser already forbids alias/media
@@ -426,8 +429,11 @@ const S = {
   notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
   teams: { members:[], rooms:[], userInbox:[], orgs:[] }, state: { rooms:[], daemon:{} }, room: null,
   namePools: null,   // #44: {styles, pools} from /api/names, loaded once when the builder opens
-  builder: { org:'shop', repo:'', personas:{}, _pEdit:null, nameStyle:'french', teams:[ { name:'client', territory:'client', members:[
-    {role:'architect',backend:'claude',lead:true,territory:''},{role:'engineer',backend:'claude',lead:false,territory:''},{role:'critic',backend:'claude',lead:false,territory:''} ] } ] },
+  // §13: default = ONE team, ONE plain Claude (role de-emphasized). Named 'Claude' with _nameAuto:false so
+  // autofillNames leaves it alone (no scary auto-French team). Role/backend/territory/name-style live behind
+  // Advanced; specialists come from the cast (Slice B). repo is per-AGENT (the top-level org repo is gone).
+  builder: { org:'', repo:'', advanced:false, personas:{}, _pEdit:null, nameStyle:'french', teams:[ { name:'team', territory:'.', members:[
+    {role:'generalist',backend:'claude',lead:true,territory:'',name:'Claude',_nameAuto:false} ] } ] },
 }
 let paintedKey = null
 let _landed = false   // #61: one-time initial-landing guard (land on the active project's home on first load)
@@ -1266,17 +1272,17 @@ function renderBuilder(d) {
       <button class="btn tiny" aria-label="Cancel — discard unsaved changes and close the builder" onclick="closeBuilder()">✕ Cancel</button></div>
     <div style="display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start">
     <div>
-      <div class="grid2"><div><label>Project</label><input id="bOrg" value="${esc(B.org)}" placeholder="my-project"></div><div><label>Repo path (host)</label><input id="bRepo" value="${esc(B.repo)}" placeholder="/Users/you/code/app"></div></div>
-      <div class="grid2" style="margin-top:8px"><div><label>Start from a preset (optional)</label><select id="bPreset"><option value="">— preset —</option></select></div>
-        <div><label>Name style</label><select id="bNameStyle" onchange="bSetStyle(this.value)">${((S.namePools&&S.namePools.styles)||['french']).map(st=>`<option value="${esc(st)}" ${st===(B.nameStyle||'french')?'selected':''}>${esc(st)}</option>`).join('')}</select>${(B.teams||[]).some(t=>(t.members||[]).some(m=>m._nameAuto===false && m.name))?`<div class="muted" style="font-size:11px;margin-top:3px">existing names are kept on a style change — 🎲 a member to restyle it</div>`:''}</div></div>
-      <h2>Teams</h2><div id="bTeams"></div><button class="btn" onclick="bAddTeam()">＋ Add team</button>
-      <h2 style="margin-top:18px">Custom roles <span class="muted" style="font-size:12px;font-weight:400">— project-specific experts, pickable as @mentions</span></h2><div id="bPersonas"></div>
-      <div class="row" style="margin-top:14px"><button class="btn primary" style="background:#1f3a26;border-color:#2f6b3f;color:#bfe6c8" onclick="bLaunch()">🚀 Launch Project</button><button class="btn" onclick="bDefine()">◎ Define rooms</button><span id="bMsg" class="muted"></span></div>
-      <div class="muted" style="margin-top:8px;font-size:11px">One tap — the project comes up live.</div>
+      <div class="row" style="align-items:flex-end;gap:10px"><div style="flex:1"><label>Project</label><input id="bOrg" value="${esc(B.org)}" placeholder="my-project"></div>
+        <button class="btn tiny" title="Roles, backends, territories, name style, custom roles, and manual rooms" onclick="bToggleAdv()">${B.advanced?'▾ Advanced':'▸ Advanced'}</button></div>
+      ${B.advanced?`<div class="grid2" style="margin-top:8px"><div><label>Start from a preset (optional)</label><select id="bPreset"><option value="">— preset —</option></select></div>
+        <div><label>Name style</label><select id="bNameStyle" onchange="bSetStyle(this.value)">${((S.namePools&&S.namePools.styles)||['french']).map(st=>`<option value="${esc(st)}" ${st===(B.nameStyle||'french')?'selected':''}>${esc(st)}</option>`).join('')}</select>${(B.teams||[]).some(t=>(t.members||[]).some(m=>m._nameAuto===false && m.name))?`<div class="muted" style="font-size:11px;margin-top:3px">existing names are kept on a style change — 🎲 a member to restyle it</div>`:''}</div></div>`:''}
+      <h2>Agents</h2><div id="bTeams"></div><button class="btn" onclick="bAddTeam()">＋ Add team</button>
+      ${B.advanced?`<h2 style="margin-top:18px">Custom roles <span class="muted" style="font-size:12px;font-weight:400">— project-specific experts, pickable as @mentions</span></h2><div id="bPersonas"></div>`:''}
+      <div class="row" style="margin-top:14px"><button class="btn primary" style="background:#1f3a26;border-color:#2f6b3f;color:#bfe6c8" onclick="bLaunch()">🚀 Launch Project</button>${B.advanced?`<button class="btn" onclick="bDefine()">◎ Define rooms</button>`:''}<span id="bMsg" class="muted"></span></div>
+      <div class="muted" style="margin-top:8px;font-size:11px">One tap — the project comes up live. Each agent picks its own repo.</div>
     </div>
     <div><h2>Preview</h2><div id="bPrev" class="muted">…</div></div></div>`
   $('#bOrg').oninput = e=>{B.org=e.target.value;bPreview()}
-  $('#bRepo').oninput = e=>{B.repo=e.target.value;bPreview()}
   fetch('/api/team-presets').then(r=>r.json()).then(d=>{ const sel=$('#bPreset'); if(!sel)return
     sel.innerHTML='<option value="">— preset —</option>'+(d.presets||[]).map(p=>`<option value="${esc(p.name)}">${esc(p.title)}</option>`).join('')
     sel.onchange=()=>{ const p=(d.presets||[]).find(x=>x.name===sel.value); if(!p)return; S.builder.teams=JSON.parse(JSON.stringify(p.roster.teams)); autofillNames(); renderBuilder($('#detail')) } }).catch(()=>{})
@@ -1344,22 +1350,26 @@ window.bRemovePersona=async(k)=>{ const setMsg=(h)=>{ const m=$('#bPMsg'); if(m)
 }
 function bRenderTeams() {
   const B = S.builder
+  const adv = !!B.advanced
+  const totalAgents = B.teams.reduce((n,t)=>n+((t.members||[]).length),0)
+  // Default view = agent NAME + its REPO (the two things every launch needs). role/backend/lead/territory
+  // and the team territory are Advanced-only (§13). delete-agent lives on the name row so it stays reachable
+  // when Advanced is off; it hides for the last remaining agent (an empty launch is refused downstream anyway).
   $('#bTeams').innerHTML = B.teams.map((t,ti)=>`<div class="team">
     <div class="row" style="align-items:flex-end;gap:8px"><div style="flex:2"><label>Team</label><input value="${esc(t.name)}" oninput="bSet(${ti},null,'name',this.value)"></div>
-      <div style="flex:2"><label>Territory</label><input value="${esc(t.territory)}" placeholder="." oninput="bSet(${ti},null,'territory',this.value)"></div>
-      <button class="btn tiny" onclick="bDelTeam(${ti})">✕</button></div>
+      ${adv?`<div style="flex:2"><label>Territory</label><input value="${esc(t.territory)}" placeholder="." oninput="bSet(${ti},null,'territory',this.value)"></div>`:''}
+      ${B.teams.length>1?`<button class="btn tiny" title="remove this team" onclick="bDelTeam(${ti})">✕</button>`:''}</div>
     ${t.members.map((m,mi)=>{ const style=B.nameStyle||'french'; const nmErr=(m.name && !SAFE_NAME_RE.test(m.name))?'<span class="bad" style="font-size:11px">letters, digits, internal hyphens only</span>':''; return `<div class="bmem">
-      <div class="bmemname"><input class="bnm" value="${esc(m.name||'')}" placeholder="${style==='custom'?'name (free-type)':'(auto)'}" aria-label="member name" oninput="bSetName(${ti},${mi},this.value)">${style!=='custom'?`<button class="btn tiny" title="suggest another name" onclick="bRerollName(${ti},${mi})">🎲</button>`:''}<span id="nmerr-${ti}-${mi}">${nmErr}</span></div>
-      <div class="memrow">
+      <div class="bmemname"><input class="bnm" value="${esc(m.name||'')}" placeholder="${style==='custom'?'name (free-type)':'(auto)'}" aria-label="agent name" oninput="bSetName(${ti},${mi},this.value)">${style!=='custom'?`<button class="btn tiny" title="suggest another name" onclick="bRerollName(${ti},${mi})">🎲</button>`:''}<span id="nmerr-${ti}-${mi}">${nmErr}</span>${totalAgents>1?`<button class="btn tiny" title="remove this agent" onclick="bDelMem(${ti},${mi})">✕</button>`:''}</div>
+      <div class="memrow" style="margin-top:4px"><span class="muted" style="font-size:11px;flex:0 0 auto">📁 repo</span><input style="flex:1" value="${esc(m.repo||'')}" placeholder="this agent's repo (e.g. ~/code/app)" onchange="bSetRepo(${ti},${mi},this.value)"><span id="repomsg-${ti}-${mi}" style="font-size:11px;flex:0 0 auto"></span></div>
+      ${adv?`<div class="memrow" style="margin-top:4px">
         <select onchange="bSet(${ti},${mi},'role',this.value)">${roleOptions().map(o=>`<option ${o===m.role?'selected':''}>${o}</option>`).join('')}</select>
         ${mediaBackend(m.role)
           ? `<span class="bklock" aria-label="backend ${esc(mediaBackend(m.role))} — set by the media role, not editable" title="media role — backend is set by the role (not editable)">${esc(mediaBackend(m.role))}</span>`
           : `<select onchange="bSet(${ti},${mi},'backend',this.value)">${BACKENDS.map(o=>`<option ${o===m.backend?'selected':''}>${o}</option>`).join('')}</select>`}
         <label class="lead"><input type="checkbox" ${m.lead?'checked':''} onchange="bSet(${ti},${mi},'lead',this.checked)"> lead</label>
-        <input value="${esc(m.territory)}" placeholder="territory" oninput="bSet(${ti},${mi},'territory',this.value)">
-        <button class="btn tiny" onclick="bDelMem(${ti},${mi})">✕</button></div>
-      <div class="memrow" style="margin-top:4px"><span class="muted" style="font-size:11px;flex:0 0 auto">📁 repo</span><input style="flex:1" value="${esc(m.repo||'')}" placeholder="this agent's repo (e.g. ~/code/app)" onchange="bSetRepo(${ti},${mi},this.value)"><span id="repomsg-${ti}-${mi}" style="font-size:11px;flex:0 0 auto"></span></div></div>`}).join('')}
-    <div style="margin-top:8px"><button class="btn tiny" onclick="bAddMem(${ti})">＋ member</button></div></div>`).join('')
+        <input value="${esc(m.territory)}" placeholder="territory" oninput="bSet(${ti},${mi},'territory',this.value)"></div>`:''}</div>`}).join('')}
+    <div style="margin-top:8px"><button class="btn tiny" onclick="bAddMem(${ti})">＋ agent</button></div></div>`).join('')
 }
 window.bSet=(ti,mi,k,v)=>{const B=S.builder; if(mi==null)B.teams[ti][k]=v; else if(k==='lead'&&v)B.teams[ti].members.forEach((mm,j)=>mm.lead=(j===mi)); else B.teams[ti].members[mi][k]=v;
   // Role drives the backend: a media role pins it (gemini/elevenlabs); switching back to an agent role
@@ -1368,9 +1378,13 @@ window.bSet=(ti,mi,k,v)=>{const B=S.builder; if(mi==null)B.teams[ti][k]=v; else 
   if(k==='lead'||k==='role'){bRenderTeams()} bPreview()}
 // #44: a new member/team gets a suggested free name in the current style (blank for free-type 'custom').
 const bSuggest=()=>{ const style=S.builder.nameStyle||'french'; return style==='custom'?'':suggestName(style,allBuilderNames()) }
-window.bAddTeam=()=>{S.builder.teams.push({name:'team'+(S.builder.teams.length+1),territory:'.',members:[{role:'architect',backend:'claude',lead:true,territory:'',name:bSuggest(),_nameAuto:true}]});bRenderTeams();bPreview()}
+// Advanced is a per-build toggle (§13) — re-render the whole builder so the gated sections appear/vanish.
+window.bToggleAdv=()=>{S.builder.advanced=!S.builder.advanced;renderBuilder($('#detail'))}
+// New teams/agents default to a plain generalist Claude (role de-emphasized). An added AGENT gets an
+// auto-name (names matter for teams, §13); the first/only agent stays 'Claude'.
+window.bAddTeam=()=>{S.builder.teams.push({name:'team'+(S.builder.teams.length+1),territory:'.',members:[{role:'generalist',backend:'claude',lead:true,territory:'',name:bSuggest(),_nameAuto:true}]});bRenderTeams();bPreview()}
 window.bDelTeam=(ti)=>{S.builder.teams.splice(ti,1);bRenderTeams();bPreview()}
-window.bAddMem=(ti)=>{S.builder.teams[ti].members.push({role:'engineer',backend:'claude',lead:false,territory:'',name:bSuggest(),_nameAuto:true});bRenderTeams();bPreview()}
+window.bAddMem=(ti)=>{S.builder.teams[ti].members.push({role:'generalist',backend:'claude',lead:false,territory:'',name:bSuggest(),_nameAuto:true});bRenderTeams();bPreview()}
 window.bDelMem=(ti,mi)=>{S.builder.teams[ti].members.splice(mi,1);bRenderTeams();bPreview()}
 // Hand-typing a name clears _nameAuto so a style change / 🎲 never clobbers it. No re-render (focus) —
 // update the inline #36 error span directly.
@@ -1428,10 +1442,11 @@ const markBuilderClean = ()=>{ if(S.builder) S.builder._sig = builderSig() }
 // S.building=false directly. Every such exit (and a re-entry that would replace the build) routes through
 // this. It's a no-op (returns true) unless you're actually in a dirty builder, so non-builder nav is free.
 function confirmLeaveBuilder(){ return !(S.building && builderDirty()) || confirm('Discard unsaved team changes?') }
-const freshBuilder = () => ({ _fresh:true, org:'', repo:'', personas:{}, _pEdit:null, nameStyle:'french', teams:[{ name:'team', territory:'.', members:[
-  {role:'architect',backend:'claude',lead:true,territory:''},
-  {role:'engineer',backend:'claude',lead:false,territory:''},
-  {role:'critic',backend:'claude',lead:false,territory:''} ] }] })
+// §13: a fresh project = ONE plain Claude (role de-emphasized), named 'Claude' with _nameAuto:false so
+// autofillNames never overwrites it with a French name. Specialists (architect/critique/images) come from
+// the cast (Slice B), not a role-forward default team.
+const freshBuilder = () => ({ _fresh:true, org:'', repo:'', advanced:false, personas:{}, _pEdit:null, nameStyle:'french', teams:[{ name:'team', territory:'.', members:[
+  {role:'generalist',backend:'claude',lead:true,territory:'',name:'Claude',_nameAuto:false} ] }] })
 window.newProject = ()=>openBuilder(true)
 // fresh=true -> a blank new project; otherwise load the CURRENT project's roster so editing EXTENDS it.
 window.openBuilder = async (fresh)=>{
@@ -1449,7 +1464,7 @@ window.openBuilder = async (fresh)=>{
   if (!fresh && S.org && (S.teams.members||[]).some(m=>m.org===S.org)) {
     const r = await api('/api/team-roster?org='+encodeURIComponent(S.org)).catch(()=>null)
     if (r && r.ok && r.roster && (r.roster.teams||[]).length) {
-      S.builder = { _fresh:false, org: r.roster.org||S.org, repo: r.roster.repo||S.builder.repo||'', personas:{}, _pEdit:null, nameStyle:'french', teams: r.roster.teams }   // #62: editing an existing team is NOT a fresh build → no takeover
+      S.builder = { _fresh:false, org: r.roster.org||S.org, repo: r.roster.repo||S.builder.repo||'', advanced:false, personas:{}, _pEdit:null, nameStyle:'french', teams: r.roster.teams }   // #62: editing an existing team is NOT a fresh build → no takeover
       // #44: members loaded with a pinned name are NOT auto — never re-roll a name the roster already has.
       for (const t of (S.builder.teams||[])) for (const m of (t.members||[])) m._nameAuto = !m.name
       // getroster drops personas (orgDefs/rosterFromDef don't carry them) — load them from team.json (#42).

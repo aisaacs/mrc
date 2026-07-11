@@ -840,7 +840,7 @@ export async function launchMember(org, repoPath, rosterPath, member) {
 // Parse a roster (object or JSON string), write it to <repo>/.mrc/team.runtime.json so launched
 // members can --roster it, and return { norm, rosterPath }. Used by the daemon's GUI launch.
 export function materializeRoster(rosterInput, repoHint, modelB = false) {
-  const norm = parseRoster(rosterInput, { repo: repoHint, modelB })   // Model B: norm.repo becomes the neutral anchor (parseRoster), so the runtime roster + launch.log land there, not in a repo
+  const norm = parseRoster(rosterInput, { repo: repoHint, modelB, cwdFallback: false })   // Model B: norm.repo becomes the neutral anchor (parseRoster), so the runtime roster + launch.log land there, not in a repo. cwdFallback:false — a LAUNCH never roots at the daemon's cwd; a repo-less legacy launch fails closed (Pierre landmine).
   // Model B: norm.repo is the neutral ANCHOR (host-only, mrc-owned) — and materializeRoster runs BEFORE defineOrg,
   // so nothing has created it yet. canonicalWriteTarget below realpaths the root → ENOENT if it doesn't exist. Create
   // it here (safe: it's mrc's own hex-keyed dir, never a user repo — legacy norm.repo is a real repo that already
