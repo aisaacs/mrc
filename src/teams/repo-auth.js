@@ -101,16 +101,30 @@ export function removeAuthorizedRepo(org, repoPath) {
   return true
 }
 
-// THE MINT GATE (Inc 2 calls this from parseRoster): resolve a member's requested repo to an authorized,
-// realpath-canonical path, or THROW. Accept iff the resolved request === the resolved ORG repo (the tautological
-// own-repo grant) OR it's in the org's human-authorized set. Returns the canonical repo to store in the norm,
-// so every downstream consumer (mount, worker mount, worker-log, asset write, .env secret read) inherits an
-// already-authorized value. `requested` null/empty/=== the org repo → the own-repo grant (the common case).
-export function resolveMemberRepo(orgRepo, requested, org) {
-  // Broad-guard the IMPLICIT own-repo grant ONLY (Pierre #3): the own-repo grant is the sole AUTO-authorization
-  // (accepts realpath(orgRepo) with no human confirm), so a repo symlinked to `/` or `$HOME` must not
-  // auto-authorize the world. The explicit set needs no broad-guard — a human vouched for those, and
-  // addAuthorizedRepo already refuses `/`/`$HOME` at the add, so the set can never contain them.
+// THE MINT GATE (parseRoster calls this): resolve a member's requested repo to an authorized, realpath-canonical
+// path, or THROW. Returns the canonical repo to store in the norm, so every downstream consumer (mount, worker
+// mount, worker-log, asset write, .env secret read) inherits an already-authorized value.
+//   • LEGACY: accept iff the resolved request === the resolved ORG repo (the own-repo grant) OR it's in the set.
+//   • MODEL B (Inc 3): the authorized-set is the SOLE gate. NO own-repo-grant — there is no org repo in Model B
+//     (identity is the neutral anchor, not a mounted repo), so every member repo must be EXPLICIT and in the org's
+//     human-authorized set, or THROW. There is no `return orgReal` path: every return reaches
+//     loadAuthorizedRepos(org).has(...) or a throw. This is the whole security delta — the pin's re-root protection
+//     and activation's deferral both collapse into this one gate (a repo is mounted/`.env`-read ONLY once a human
+//     CSRF+capOk act put it in the set). modelB is passed ONLY on the team-parse path (never solo: a store-capable
+//     image running solo keeps its own-repo default, so the flag is `storeMode && team && !solo`, set in parseRoster).
+export function resolveMemberRepo(orgRepo, requested, org, { modelB = false } = {}) {
+  if (modelB) {
+    // Model B: SOLE-gate. No own-repo-grant, no orgRepo return — request required, realpath, set-check or throw.
+    if (requested == null || requested === '') throw new Error(`Model B: an explicit repo is required for a member of org "${org}" — every agent picks its own authorized repo (there is no org-root default to fall back to).`)
+    let reqReal
+    try { reqReal = realpathSync(expandHome(requested)) } catch { throw new Error(`member repo "${requested}" not found on disk`) }
+    if (loadAuthorizedRepos(org).has(reqReal)) return reqReal
+    throw new Error(`member repo "${requested}" (resolves to ${reqReal}) is not authorized for org "${org}" — a human must add it (dashboard Authorize / \`mrc team … repos add\`); a session can request a repo, never authorize one.`)
+  }
+  // LEGACY (unchanged) — own-repo grant OR set. Broad-guard the IMPLICIT own-repo grant ONLY (Pierre #3): the
+  // own-repo grant is the sole AUTO-authorization (accepts realpath(orgRepo) with no human confirm), so a repo
+  // symlinked to `/` or `$HOME` must not auto-authorize the world. The explicit set needs no broad-guard — a human
+  // vouched for those, and addAuthorizedRepo already refuses `/`/`$HOME` at the add, so the set can't contain them.
   const orgReal = resolveRepoOrThrow(orgRepo, 'org repo')
   if (requested == null || requested === '' || requested === orgRepo || requested === orgReal) return orgReal
   // Realpath the FEED (canonical compare) but do NOT broad-guard the request — the set-check is its gate. A

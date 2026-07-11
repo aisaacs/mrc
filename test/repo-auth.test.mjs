@@ -61,6 +61,29 @@ test('resolveMemberRepo: after a HUMAN addAuthorizedRepo, the cross-repo resolve
   } finally { s.cleanup() }
 })
 
+// Model B (Inc 3): the authorized-set is the SOLE gate — the own-repo grant is DELETED. Every mountable member repo
+// must be EXPLICIT and in the human-authorized set, or THROW. There is no `return orgReal` path: proves the cross-site
+// floor claim's Site-1 half — every return reaches loadAuthorizedRepos(org).has(...) or a throw. (modelB is passed only
+// on the team-parse path; solo never sets it, so a store-capable image's solo launch keeps its own-repo default.)
+test('resolveMemberRepo Model B (Inc 3): SOLE-gate — own-repo grant deleted; every repo must be in the set (or throw)', () => {
+  const s = scratch()
+  try {
+    // The org repo itself is NOT auto-granted under Model B — no special-casing; unauthorized → throw.
+    assert.throws(() => resolveMemberRepo(s.orgRepo, s.orgRepo, s.org, { modelB: true }), /not authorized/, 'own-repo grant is GONE — the org repo is just another repo')
+    // A missing member.repo is an ERROR (no org-root default to fall back to under Model B).
+    assert.throws(() => resolveMemberRepo(s.orgRepo, undefined, s.org, { modelB: true }), /explicit repo is required/)
+    assert.throws(() => resolveMemberRepo(s.orgRepo, '', s.org, { modelB: true }), /explicit repo is required/)
+    // An unauthorized cross-repo → refused (fail-closed).
+    assert.throws(() => resolveMemberRepo(s.orgRepo, s.other, s.org, { modelB: true }), /not authorized/)
+    // After a HUMAN addAuthorizedRepo, it resolves — the set is the ONLY way in.
+    addAuthorizedRepo(s.org, s.other)
+    assert.equal(resolveMemberRepo(s.orgRepo, s.other, s.org, { modelB: true }), s.other)
+    // Even the org repo, once authorized, resolves — proving it's not special, just another set entry.
+    addAuthorizedRepo(s.org, s.orgRepo)
+    assert.equal(resolveMemberRepo(s.orgRepo, s.orgRepo, s.org, { modelB: true }), s.orgRepo)
+  } finally { s.cleanup() }
+})
+
 test('broad-guard is on the IMPLICIT own-repo grant only (Pierre #3): a "/"/$HOME ORG repo is refused', () => {
   const s = scratch()
   try {
