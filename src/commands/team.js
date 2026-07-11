@@ -937,7 +937,7 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
       // guard-4: terminals are served ONLY same-origin behind the dashboard proxy now (ttyd listens on a unix
       // socket, no TCP port) — a stray page can no longer reach them directly. Open them via the dashboard.
       console.log('\n  Open them:  mrc dashboard   (each terminal is embedded there — no direct URL by design).')
-      console.log('  Each member accepts the one-time Channels prompt on first launch.')
+      console.log('  A member logs in on its first launch in a fresh config.')
       return
     }
 

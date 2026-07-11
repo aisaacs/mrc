@@ -30,12 +30,24 @@ const authDir = () => join(homedir(), '.local', 'share', 'mrc', 'authorized-repo
 // NEVER for a security-record key.
 const authPath = (org) => join(authDir(), `${Buffer.from(String(org), 'utf8').toString('hex')}.json`)
 
+// Expand a LEADING `~`/`~/` or `$HOME` to the home dir BEFORE realpath — a human types `~/code/app` (in the CLI or
+// the create form) but realpathSync treats `~` as a literal char → ENOENT → a confusing "not found". Only a leading
+// `~`/`~/`/`$HOME` is expanded (never `~user`), so it's a SPELLING normalization on the feed, not a new authorization
+// path: the realpath + broad-guards downstream are unchanged — a bare `~`/`$HOME` still resolves to the home dir and
+// is refused by resolveRepoOrThrow (or allowed only as the trusted `mrc ~` root), exactly as before.
+export function expandHome(p) {
+  const s = String(p)
+  if (s === '~' || s.startsWith('~/')) return join(homedir(), s.slice(1))
+  if (s === '$HOME' || s.startsWith('$HOME/')) return join(homedir(), s.slice(5))
+  return s
+}
+
 // Realpath a repo path (the FEED — never trust the caller's spelling) and BROAD-GUARD it: a repo that resolves
 // to the filesystem root or the home dir is never a legitimate team repo (far too broad a mount + secret
 // surface). Fuzzier roots (a project-root's parent) stay policy for the human's add decision; these two
 // unambiguous ones are refused in the primitive so a forgotten upstream check can't authorize `/` or `~`.
 function resolveRepoOrThrow(repoPath, label = 'repo') {
-  const real = realpathSync(String(repoPath))
+  const real = realpathSync(expandHome(repoPath))
   if (real === sep) throw new Error(`${label} resolves to the filesystem root ("/") — never a legitimate team repo`)
   if (real === realpathSync(homedir())) throw new Error(`${label} resolves to the home directory — too broad to authorize; point at a specific project`)
   return real
@@ -47,7 +59,7 @@ function resolveRepoOrThrow(repoPath, label = 'repo') {
 // resolveOrgRoot's trusted first-pin AND recordActivatedRoot so pin and activate can NEVER disagree about a value
 // (the $HOME pin-but-can't-activate contradiction Pierre found): both accept exactly the same trusted roots.
 function canonicalTrustedRoot(repoPath, label = 'root') {
-  const real = realpathSync(String(repoPath))   // throws ENOENT on a non-existent path → throw-closed
+  const real = realpathSync(expandHome(repoPath))   // ~ / $HOME expanded first; throws ENOENT on a non-existent path → throw-closed
   if (real === sep) throw new Error(`refusing to pin the filesystem root ("/") as a project ${label} — never a legitimate project`)
   return real
 }
@@ -78,7 +90,7 @@ export function addAuthorizedRepo(org, repoPath) {
 
 // Remove a repo from an org's set (human control-plane; e.g. the dashboard "remove repo"). Idempotent.
 export function removeAuthorizedRepo(org, repoPath) {
-  let real; try { real = realpathSync(String(repoPath)) } catch { real = String(repoPath) }
+  let real; try { real = realpathSync(expandHome(repoPath)) } catch { real = String(repoPath) }
   const set = loadAuthorizedRepos(org)
   if (!set.delete(real) && !set.delete(String(repoPath))) return false
   const p = authPath(org)
@@ -104,7 +116,7 @@ export function resolveMemberRepo(orgRepo, requested, org) {
   // Realpath the FEED (canonical compare) but do NOT broad-guard the request — the set-check is its gate. A
   // request that resolves to `/`/`$HOME` simply isn't in the set → refused there, no separate denylist to drift.
   let reqReal
-  try { reqReal = realpathSync(String(requested)) } catch { throw new Error(`member repo "${requested}" not found on disk`) }
+  try { reqReal = realpathSync(expandHome(requested)) } catch { throw new Error(`member repo "${requested}" not found on disk`) }
   if (reqReal === orgReal) return orgReal   // a different spelling of the org repo → still the own-repo grant
   if (loadAuthorizedRepos(org).has(reqReal)) return reqReal
   throw new Error(`member repo "${requested}" (resolves to ${reqReal}) is not authorized for org "${org}" — a human must add it to the team's repos first; a session can never authorize a repo, only request one.`)

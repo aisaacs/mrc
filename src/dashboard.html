@@ -434,6 +434,7 @@ let _landed = false   // #61: one-time initial-landing guard (land on the active
 
 // ---- data ----
 let _prefsLoaded = false
+let _reconcileT = null   // P1: bounded self-poll while a launch is coming up (SSE deltas don't carry starting→serve)
 async function tick() {
   if (!_prefsLoaded) { _prefsLoaded = true; api('/api/settings').then(r=>{ if (r && r.ok && r.notify && r.notify.value) S.notifyPrefs = r.notify.value }).catch(()=>{}) }   // #42c: load notify prefs once for the OS-notify gate
   const [t, st] = await Promise.all([ api('/api/teams').catch(()=>S.teams), api('/api/state').catch(()=>S.state) ])
@@ -461,6 +462,14 @@ async function tick() {
     }
   }
   notifyNewInbox(S.teams.userInbox || [])   // fire OS notifications for @you items that arrived since the last tick
+  // P1 launch-reconcile: the SSE delta stream (#69-B) does NOT carry per-member terminal-state transitions
+  // (starting/building → serve), so a freshly launched member's terminal would read "isn't launched" until a full
+  // re-sync — which only fires on boot / SSE reconnect / a 'roster' delta, i.e. a daemon restart. That's the
+  // "never comes up clean without a restart" bug. While ANY org is still coming up, self-schedule a bounded full
+  // re-fetch so `serve` lands on its own; it self-terminates once every member is settled (serve/dead/orphaned),
+  // and /api/teams is ETag/304-cheap while it runs.
+  const _inFlight = (S.teams.launch || []).some(l => l.launching || Object.values(l.members || {}).some(m => m && (m.state === 'starting' || m.state === 'building')))
+  clearTimeout(_reconcileT); if (_inFlight) _reconcileT = setTimeout(tick, 2500)
   paint()
 }
 const needRoomFetch = () => !S.building
@@ -566,7 +575,7 @@ window.closeTab = async (org) => {
 // Resume = relaunch the saved roster (deterministic members rebind, each --continues its own convo).
 window.resumeTeam = async (org) => { const r=await actJSON('/api/team-launch', { org: org||S.org }); if(!r.ok)return flashFail(r); S.flash=null; tick() }
 // Readiness: workers are on-demand; a live member is 'ready' once its channel registers, 'starting'
-// while its terminal is up but not connected yet (loading / awaiting login + the Channels prompt).
+// while its terminal is up but not connected yet (loading / awaiting login).
 function memberState(m) {
   if (m.tier==='worker') return { cls:'worker', label:'on-demand' }
   if (m.online) return { cls:'ready', label:'ready' }
@@ -672,7 +681,7 @@ function renderMain() {
     const live = orgMembers().filter(m=>m.tier==='live')
     html += `<div class="resume"><h3>⏸ "${esc(S.org)}" is stopped</h3>`
       + `<div class="step">Resume relaunches the saved team — each live member <b>--continues its own conversation</b> from where it left off.</div>`
-      + `<div class="step">First run rebuilds the image (~minutes). Each live member must re-accept its one-time <b>Channels prompt in its Console</b> before it's active${live.length?`: ${live.map(m=>'@'+esc(m.first)).join(', ')}`:''}. Workers are on-demand (no accept).</div>`
+      + `<div class="step">First run rebuilds the image (~minutes); each live member comes up in its Console${live.length?`: ${live.map(m=>'@'+esc(m.first)).join(', ')}`:''}. Workers are on-demand.</div>`
       + `<div style="margin-top:10px"><button class="btn launch" data-org="${esc(S.org)}" onclick="resumeTeam(this.dataset.org)">▶ Resume team</button></div></div>`
   }
 
@@ -840,12 +849,12 @@ function syncTermHost() {
     const showPh = !_termPlaceholderShown.has(target.key)
     const phCopy = online
       ? `<div class="tp-main">Connecting to @${f}'s terminal…</div><div class="tp-sub muted">You're attached to the live session — @${f}'s <b>live screen from here</b>; earlier output isn't replayed.</div>`
-      : `<div class="tp-main">First launch — activate @${f}</div><div class="tp-sub muted">Log in and accept the <b>Channels</b> prompt in this terminal to put @${f} to work.</div>`
+      : `<div class="tp-main">First launch — activate @${f}</div><div class="tp-sub muted">Log in here to put @${f} to work.</div>`
     block.innerHTML = `<div class="termhdr"></div>`
       + `<div class="termbanner">↑ You're seeing @${f}'s <b>live screen from here</b> — earlier output before you opened this isn't replayed.<span class="bx" role="button" tabindex="0" title="dismiss" data-key="${esc(target.key)}" onclick="dismissTermBanner(this.dataset.key)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();dismissTermBanner(this.dataset.key)}">✕</span></div>`
       + `<div class="termwrap"><iframe class="termframe" title="@${f} terminal" src="${esc(target.url)}"></iframe>`
       + (showPh ? `<div class="termplaceholder">${phCopy}</div>` : '')
-      + `</div><div class="termfoot muted">First launch: log in + accept the Channels prompt in this terminal.</div>`
+      + `</div><div class="termfoot muted">First launch: log in here.</div>`
     host.appendChild(block)   // lazily created once; src is never changed after this
     if (showPh) { _termPlaceholderShown.add(target.key); const ph=block.querySelector('.termplaceholder'); if(ph) setTimeout(()=>{ if(document.contains(ph)) ph.classList.add('hide') }, 1700) }   // time-reveal; guard a torn-down block
   }
@@ -1262,12 +1271,12 @@ function renderBuilder(d) {
         <div><label>Name style</label><select id="bNameStyle" onchange="bSetStyle(this.value)">${((S.namePools&&S.namePools.styles)||['french']).map(st=>`<option value="${esc(st)}" ${st===(B.nameStyle||'french')?'selected':''}>${esc(st)}</option>`).join('')}</select>${(B.teams||[]).some(t=>(t.members||[]).some(m=>m._nameAuto===false && m.name))?`<div class="muted" style="font-size:11px;margin-top:3px">existing names are kept on a style change — 🎲 a member to restyle it</div>`:''}</div></div>
       <h2>Teams</h2><div id="bTeams"></div><button class="btn" onclick="bAddTeam()">＋ Add team</button>
       <h2 style="margin-top:18px">Custom roles <span class="muted" style="font-size:12px;font-weight:400">— project-specific experts, pickable as @mentions</span></h2><div id="bPersonas"></div>
-      <div class="row" style="margin-top:14px"><button class="btn primary" onclick="bSave()">💾 Save team.json</button><button class="btn" onclick="bDefine()">◎ Define rooms</button><button class="btn" style="background:#1f3a26;border-color:#2f6b3f;color:#bfe6c8" onclick="bLaunch()">🚀 Launch</button><span id="bMsg" class="muted"></span></div>
-      <div class="muted" style="margin-top:8px">Then launch live members: <code id="bCmd">mrc team up</code></div>
+      <div class="row" style="margin-top:14px"><button class="btn primary" style="background:#1f3a26;border-color:#2f6b3f;color:#bfe6c8" onclick="bLaunch()">🚀 Launch Project</button><button class="btn" onclick="bDefine()">◎ Define rooms</button><span id="bMsg" class="muted"></span></div>
+      <div class="muted" style="margin-top:8px;font-size:11px">One tap — the project comes up live.</div>
     </div>
     <div><h2>Preview</h2><div id="bPrev" class="muted">…</div></div></div>`
   $('#bOrg').oninput = e=>{B.org=e.target.value;bPreview()}
-  $('#bRepo').oninput = e=>{B.repo=e.target.value;$('#bCmd').textContent='cd '+(B.repo||'<repo>')+' && mrc team up';bPreview()}
+  $('#bRepo').oninput = e=>{B.repo=e.target.value;bPreview()}
   fetch('/api/team-presets').then(r=>r.json()).then(d=>{ const sel=$('#bPreset'); if(!sel)return
     sel.innerHTML='<option value="">— preset —</option>'+(d.presets||[]).map(p=>`<option value="${esc(p.name)}">${esc(p.title)}</option>`).join('')
     sel.onchange=()=>{ const p=(d.presets||[]).find(x=>x.name===sel.value); if(!p)return; S.builder.teams=JSON.parse(JSON.stringify(p.roster.teams)); autofillNames(); renderBuilder($('#detail')) } }).catch(()=>{})

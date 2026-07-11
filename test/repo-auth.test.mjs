@@ -2,10 +2,24 @@
 // HOST-ONLY file, so tests use a unique per-run org and clean it up. Real temp repos (realpath resolves them).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveMemberRepo, addAuthorizedRepo, removeAuthorizedRepo, loadAuthorizedRepos, resolveOrgRoot, resolveOrgRootForOrg, pinnedOrgRoot, clearOrgRoot, recordActivatedRoot, isActivatedRoot, clearActivatedRoots, _rootPathForTest, _activatedPathForTest, _authPathForTest } from '../src/teams/repo-auth.js'
+import { resolveMemberRepo, addAuthorizedRepo, removeAuthorizedRepo, loadAuthorizedRepos, resolveOrgRoot, resolveOrgRootForOrg, pinnedOrgRoot, clearOrgRoot, recordActivatedRoot, isActivatedRoot, clearActivatedRoots, expandHome, _rootPathForTest, _activatedPathForTest, _authPathForTest } from '../src/teams/repo-auth.js'
 import { mkdtempSync, mkdirSync, rmSync, realpathSync, symlinkSync, unlinkSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join, sep } from 'node:path'
+
+// P1 (create→launch): a human types `~/code/app` in the CLI or the create form; expandHome resolves the leading
+// `~`/`~/`/`$HOME` BEFORE realpath (which treats `~` as a literal → ENOENT). It's a spelling fix on the feed only —
+// never `~user`, never an absolute/relative path — so the trusted realpath + broad-guards downstream are unchanged.
+test('expandHome expands a LEADING ~ / ~/ / $HOME to the home dir, and ONLY that', () => {
+  const H = homedir()
+  assert.equal(expandHome('~'), H)
+  assert.equal(expandHome('~/code/app'), join(H, 'code/app'))
+  assert.equal(expandHome('$HOME'), H)
+  assert.equal(expandHome('$HOME/x'), join(H, 'x'))
+  assert.equal(expandHome('/abs/path'), '/abs/path')   // absolute untouched
+  assert.equal(expandHome('~user/x'), '~user/x')       // NOT `~/` → never guess another user's home
+  assert.equal(expandHome('rel/path'), 'rel/path')     // relative untouched
+})
 
 let orgN = 0
 function scratch() {
