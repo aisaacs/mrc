@@ -241,7 +241,14 @@ export async function pushOrg(norm) {
 function loadRoster(repoPath, rosterPath) {
   const path = rosterPath || findRoster(repoPath)
   if (!path) throw new Error(`no roster found. Create team.json in ${repoPath} (or pass --roster <file>).`)
-  const norm = parseRoster(readFileSync(path, 'utf8'), { repo: repoPath })
+  // Model B: parse in the SAME mode the launch runs in. A daemon-spawned `mrc team up` inherits the daemon's ONE
+  // decision via MRC_MODEL_B_PREDICT; a human CLI `mrc team up` (no daemon env) self-inspects the exact image
+  // (decideModelB). So a legacy-shaped team.json (no per-member repos) on a cap=2 image FAILS CLOSED (parseRoster
+  // modelB requires explicit authorized member repos) rather than a mixed legacy/Model-B launch. Inert at cap≠2.
+  const modelB = process.env.MRC_MODEL_B_PREDICT != null
+    ? process.env.MRC_MODEL_B_PREDICT === '1'
+    : decideModelB(imageIdAndLabels().labels)
+  const norm = parseRoster(readFileSync(path, 'utf8'), { repo: repoPath, modelB })
   return { norm, path }
 }
 
