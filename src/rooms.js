@@ -288,6 +288,21 @@ export function removeLaunch(org) {
   const all = loadLaunches(); delete all[org]
   try { atomicWriteFileSync(launchesFile(), JSON.stringify(all, null, 2)) } catch {}
 }
+// P1a (Pierre Q5): the LAUNCH STATE (launching/failed/error) is DAEMON-owned and lives in its OWN file, split from
+// the subprocess-owned member records in team-launches.json. The daemon's failLaunch timer and the detached
+// `mrc team up`'s member write then never read-modify-write the SAME file → no cross-process lost update, so a
+// launch that straddles the 3-min timeout can't have its member record clobbered into an orphaned live container.
+const launchStateFile = () => join(daemonDir(), 'launch-state.json')
+export function loadLaunchState() { return loadJsonFile(launchStateFile(), {}) || {} }
+export function saveLaunchState(org, info) {
+  const all = loadLaunchState(); all[org] = { ...info }
+  try { atomicWriteFileSync(launchStateFile(), JSON.stringify(all, null, 2)) } catch {}
+}
+export function removeLaunchState(org) {
+  const all = loadLaunchState(); if (!(org in all)) return
+  delete all[org]
+  try { atomicWriteFileSync(launchStateFile(), JSON.stringify(all, null, 2)) } catch {}
+}
 // #34: per-member ttyd registry. A launch record is now
 //   { repo, members: { <handle>: { sock, dtachPid, ttydSock, ttydPid, containerId } }, at }
 // (guard-4: `ttydSock` is the ttyd UNIX-socket path — the dashboard proxies /ttyd/<org>/<handle> to it same-origin;

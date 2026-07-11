@@ -13,7 +13,7 @@ import { homedir } from 'node:os'
 import { join, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { ensureRoom, appendThread, appendTranscript, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadLaunches, removeLaunch, loadTgStates, saveTgStates, loadInbox, saveInbox, loadUserPrefs, saveUserPrefs, roomsRoot, removeRoomDir, controlSecret } from '../rooms.js'
+import { ensureRoom, appendThread, appendTranscript, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadLaunches, removeLaunch, loadLaunchState, saveLaunchState, removeLaunchState, loadTgStates, saveTgStates, loadInbox, saveInbox, loadUserPrefs, saveUserPrefs, roomsRoot, removeRoomDir, controlSecret } from '../rooms.js'
 import { createRoomEngine } from '../teams/room-engine.js'
 import { createWorkerRunner, workerLogPath, parseWorkerLog } from '../teams/worker-runner.js'
 import { memberSessionId } from '../teams/session-id.js'
@@ -1220,11 +1220,21 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           // so an all-orphaned team STILL shows (its terminals can be Relaunched) instead of vanishing as
           // not-running. (Legacy/crashed teams: no live container → not-running → ▶ Resume shows.)
           const BUILD_GRACE_MS = 5 * 60_000
-          reply({ ok: true, ...st, telegram, launch: Object.entries(launches).map(([org, v]) => {
-            const fresh = Date.now() - (v.at || 0) < BUILD_GRACE_MS
-            const members = teamMod ? teamMod.memberTtyds(org, { repo: v.repo, onlineHandles: onlineByOrg[org], withinGrace: fresh }) : {}
-            const running = fresh || Object.values(members).some((m) => m.state && m.state !== 'dead')
-            return { org, repo: v.repo || null, members, running }
+          const lstate = loadLaunchState()
+          const launchOrgs = new Set([...Object.keys(launches), ...Object.keys(lstate)])
+          reply({ ok: true, ...st, telegram, launch: [...launchOrgs].map((org) => {
+            const v = launches[org] || {}; const ls = lstate[org] || {}
+            const fresh = (Date.now() - (v.at || 0) < BUILD_GRACE_MS) || (Date.now() - (ls.at || 0) < BUILD_GRACE_MS)
+            const members = teamMod ? teamMod.memberTtyds(org, { repo: v.repo || ls.repo, onlineHandles: onlineByOrg[org], withinGrace: fresh }) : {}
+            const hasMembers = Object.keys(members).length > 0
+            if (hasMembers && (org in lstate)) { try { removeLaunchState(org) } catch {} }   // P1a: launch reconciled to real members → drop the transient daemon state (honest by construction, not by a reader-gate)
+            // P1a (Pierre Q5): STATE lives in the daemon-owned launch-state file, MEMBER records in the subprocess-owned
+            // team-launches.json — different files, so the failLaunch timer and the `mrc team up` member write never
+            // clobber each other. members present ⇒ a real launch, NEVER "failed" even if the timer flipped it.
+            const failed = !!ls.failed && !hasMembers
+            const launching = !!ls.launching && !hasMembers && !failed && fresh
+            const running = !failed && (fresh || Object.values(members).some((m) => m.state && m.state !== 'dead'))
+            return { org, repo: v.repo || ls.repo || null, members, running, launching, failed, error: ls.error || null }
           }) })
           continue
         }
@@ -1259,7 +1269,17 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             // skips the log — the spawned `mrc team up` hits the same guards and fails closed).
             let fd = 'ignore'; let logPath = null
             try { logPath = canonicalWriteTarget(norm.repo, join('.mrc', 'launch.log')); mkdirSync(dirname(logPath), { recursive: true }); fd = openSync(logPath, 'a') } catch {}
+            // P1a launch-lands-live (Pierre): write a PROVISIONAL launch record NOW so the org reads `running`
+            // immediately — the detached `mrc team up` only writes the real member records AFTER the slow image
+            // build, and without this the dashboard flashes "⏸ stopped" in that gap. It's a self-correcting THIRD
+            // state: `launching:true` (no false claim about members) that the subprocess upgrades to real members
+            // on success, OR the child-exit fast-path / a 3-min timeout flips to `failed` (never a phantom-running
+            // org whose build silently died). post-capOk handler → pure state-machine honesty, no new surface.
+            try { saveLaunchState(norm.org, { at: Date.now(), launching: true, repo: norm.repo }) } catch {}   // provisional STATE in the daemon-owned file (separate from the subprocess's member records) → no cross-process read-modify-write race
             const child = spawn(process.execPath, [MRC_JS, 'team', 'up', norm.repo, '--roster', rosterPath], { detached: true, stdio: ['ignore', fd, fd] })
+            const failLaunch = (why) => { try { if (Object.keys(loadLaunches()[norm.org]?.members || {}).length) return; const st = loadLaunchState()[norm.org]; if (st && st.launching) saveLaunchState(norm.org, { ...st, launching: false, failed: true, error: why }) } catch {} }   // members present (subprocess's file, read-only here) ⇒ not a failure; only the daemon writes launch-state ⇒ a timeout that straddles a slow build can't clobber the member write
+            child.on('exit', (code) => { if (code) failLaunch(`the launch process exited with code ${code} before any member came up — see ${logPath || '<repo>/.mrc/launch.log'}`) })   // fast path
+            try { setTimeout(() => failLaunch('launch timed out — no member came up within 3 min (see <repo>/.mrc/launch.log)'), 3 * 60_000).unref() } catch {}   // honest backstop: the subprocess can exit 0 yet still bring up nothing
             child.unref()
             daemonLog(`launch ${norm.org}: spawned mrc team up (pid ${child.pid}); log ${logPath || '(skipped — non-canonical .mrc)'}`)
             reply({ ok: true, launching: true })
@@ -1269,7 +1289,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         if (f.action === 'stopteam' && f.org) {
           if (!capOk(f)) { reply({ ok: false, error: 'stopteam requires the control-capability secret' }); continue }   // guard-1: activate/spawn/state-change capability
           if (teamMod) teamMod.killTeamSession(f.org)   // #34: kills every member's ttyd (→ container stops)
-          removeLaunch(f.org); reply({ ok: true }); continue
+          removeLaunch(f.org); try { removeLaunchState(f.org) } catch {}; reply({ ok: true }); continue   // P1a: drop the transient launch state too
         }
         // Delete a project (#13): forget it from the live daemon entirely — stop sessions + the TG
         // bridge, then purge ALL per-org state so it stays gone across a restart. Deletes NOTHING on
@@ -1278,7 +1298,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           if (!capOk(f)) { reply({ ok: false, error: 'removeorg requires the control-capability secret (destructive: clears the write-once pin)' }); continue }   // guard-1: gate the destructive delete like trusted/activate — a cross-uid frame can't clear a pin to enable a re-root
           const org = f.org
           if (teamMod) { try { teamMod.killTeamSession(org) } catch {} }   // #34: kills every member's ttyd
-          removeLaunch(org)
+          removeLaunch(org); try { removeLaunchState(org) } catch {}   // P1a: purge the transient launch state on delete too
           stopTgForOrg(org)                                   // stop the poller BEFORE dropping its state (Roland's ordering)
           tgStates.delete(org)
           for (const k of [...tgPushed.keys()]) if (k.startsWith(org + '\x00')) tgPushed.delete(k)

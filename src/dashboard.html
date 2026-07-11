@@ -502,6 +502,11 @@ function orgNeed(org) {
 // A launch record only counts as "running" if the daemon reconciled it as live (≥1 member session up,
 // or still building) — a stale record from a crash reports running:false, so ▶ Resume/🚀 Launch comes back.
 const orgRunning = (org) => (S.teams.launch||[]).some(l=>l.org===org && l.running) || (S.teams.members||[]).some(m=>m.org===org && m.tier==='live' && (m.online||m.launched))
+// P1a: the daemon reports a provisional `launching` record (org comes up live in one gesture — no "stopped" flash)
+// and flips it to `failed` on a build error / 3-min timeout instead of a phantom-running org.
+const orgLaunchRec = (org) => (S.teams.launch||[]).find(l=>l.org===org)
+const orgLaunching = (org) => !!(orgLaunchRec(org)||{}).launching
+const orgFailed = (org) => !!(orgLaunchRec(org)||{}).failed
 function switchOrg(org) { if (org===S.org) return; if (!confirmLeaveBuilder()) return; leaveUnread(); S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; S.selHome=true; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }); setOrgUrl(org); paint() }   // #55-1: guard a dirty build; #61: entering a project lands on its home
 window.switchOrg = switchOrg
 
@@ -655,7 +660,15 @@ function renderMain() {
 
   // Reopen panel (T7): the active project is defined but not running → explicit ▶ Resume, with the
   // honest cold-image + per-live-member Channels-accept expectation (no surprise multi-minute spin-up).
-  if (S.org && teams.length && !orgRunning(S.org)) {
+  if (S.org && orgLaunching(S.org)) {
+    // P1a: the launch landed — show it coming up (never the "stopped" panel) while the image builds + members register.
+    html += `<div class="resume"><h3>🚀 launching "${esc(S.org)}"…</h3>`
+      + `<div class="step">Pinning the project, building the image (first run ~minutes), and starting the members. This panel updates itself the moment they come up — nothing to do.</div></div>`
+  } else if (S.org && orgFailed(S.org)) {
+    html += `<div class="resume"><h3>⚠ "${esc(S.org)}" didn't launch</h3>`
+      + `<div class="step">${esc((orgLaunchRec(S.org)||{}).error || 'the launch failed — check the console for details')}</div>`
+      + `<div style="margin-top:10px"><button class="btn launch" data-org="${esc(S.org)}" onclick="resumeTeam(this.dataset.org)">↻ Retry launch</button></div></div>`
+  } else if (S.org && teams.length && !orgRunning(S.org)) {
     const live = orgMembers().filter(m=>m.tier==='live')
     html += `<div class="resume"><h3>⏸ "${esc(S.org)}" is stopped</h3>`
       + `<div class="step">Resume relaunches the saved team — each live member <b>--continues its own conversation</b> from where it left off.</div>`
