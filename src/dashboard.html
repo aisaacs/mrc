@@ -1367,11 +1367,13 @@ function bRenderTeams() {
         ${mediaBackend(m.role)
           ? `<span class="bklock" aria-label="backend ${esc(mediaBackend(m.role))} — set by the media role, not editable" title="media role — backend is set by the role (not editable)">${esc(mediaBackend(m.role))}</span>`
           : `<select onchange="bSet(${ti},${mi},'backend',this.value)">${BACKENDS.map(o=>`<option ${o===m.backend?'selected':''}>${o}</option>`).join('')}</select>`}
-        <label class="lead"><input type="checkbox" ${m.lead?'checked':''} onchange="bSet(${ti},${mi},'lead',this.checked)"> lead</label>
+        <label class="lead" title="★ — this agent can reach you directly (it joins the escalation room with @user). Non-★ agents escalate up to a ★ instead. Several ★ per team are fine; a team with none gets one automatically."><input type="checkbox" ${m.lead?'checked':''} onchange="bSet(${ti},${mi},'lead',this.checked)"> ★ reaches you</label>
         <input value="${esc(m.territory)}" placeholder="territory" oninput="bSet(${ti},${mi},'territory',this.value)"></div>`:''}</div>`}).join('')}
     <div style="margin-top:8px"><button class="btn tiny" onclick="bAddMem(${ti})">＋ agent</button></div></div>`).join('')
 }
-window.bSet=(ti,mi,k,v)=>{const B=S.builder; if(mi==null)B.teams[ti][k]=v; else if(k==='lead'&&v)B.teams[ti].members.forEach((mm,j)=>mm.lead=(j===mi)); else B.teams[ti].members[mi][k]=v;
+// §14: ★ ("reaches you") is a per-agent toggle and MULTIPLE are allowed per team (was: a radio that forced
+// exactly one lead). Zero is fine in the form — parseRoster defaults one per team (the ≥1-★ floor).
+window.bSet=(ti,mi,k,v)=>{const B=S.builder; if(mi==null)B.teams[ti][k]=v; else B.teams[ti].members[mi][k]=v;
   // Role drives the backend: a media role pins it (gemini/elevenlabs); switching back to an agent role
   // restores a valid agent backend (claude/codex) if it was a media one. Re-render so the control swaps.
   if(mi!=null && k==='role'){const m=B.teams[ti].members[mi]; const mb=mediaBackend(v); m.backend = mb || (BACKENDS.includes(m.backend)?m.backend:'claude')}
