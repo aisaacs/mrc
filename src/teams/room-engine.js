@@ -77,8 +77,14 @@ function openingAddressees(text) {
 // team-only member co-addressed with @user). Fail LOUD rather than silently drop the teammate (§14).
 const CROSS_ROOM_SPAN = Symbol('cross-room-span')
 
-export function createRoomEngine({ send, append, notify, onInbox, now = () => Date.now(), turnCap = 200 } = {}) {
+export function createRoomEngine({ send, append, notify, onInbox, now = () => Date.now(), turnCap = 200, triageWindowMs = 300_000 } = {}) {
   const members = new Map()   // orgId -> Map<handleLC, member def>   (sessionId bound when live)
+  // (d) triage-before-the-human: a NON-★'s @user is first triaged to its team lead(s); it escalates LOUD to
+  // the human only if unresolved within triageWindowMs. `lastLeadResolvedAt` (key `${org}\0${handle}`) arms
+  // the v1-guard: the asker's NEXT @user within the window skips triage and goes straight to the human
+  // (triage was just attempted; a bad lead-answer must never trap it in a re-triage loop). In-memory —
+  // reset on restart is benign (worst case one re-ask re-triages).
+  const lastLeadResolvedAt = new Map()
   const rooms = new Map()     // roomId -> room state (org-tagged)
   const bySession = new Map() // sessionId -> { org, handle }  (reverse index for live members)
   const userInbox = []        // @user messages awaiting the human; each carries its `org` (no bleed)
@@ -108,6 +114,13 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     return null
   }
   function senderOf(sessionId) { return bySession.get(sessionId) || null }   // { org, handle } | null
+  // (d): the ★ (lead) handles on `handle`'s OWN team, excluding `handle` — the triage targets for a non-★'s
+  // escalation. The per-team ≥1-★ floor guarantees ≥1 for a non-★ (it is not itself a ★).
+  function teamLeadsFor(org, handle) {
+    const omap = members.get(String(org)); const self = omap?.get(lc(handle))
+    if (!self) return []
+    return [...omap.values()].filter((m) => m.team === self.team && m.lead && lc(m.handle) !== lc(handle)).map((m) => lc(m.handle))
+  }
   function nameOf(org, handle) { const m = mem(org, handle); return m ? `@${m.first}` : (handle === '@user' ? '@user' : handle) }
   function roleOf(org, handle, room) { const e = room?.members.get(lc(handle)); return e?.role || mem(org, handle)?.role || '' }
   const online = (org, handle) => { const m = mem(org, handle); return !!(m && m.sessionId && m.tier === 'live') }
@@ -247,7 +260,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     return { targets: [...targets], toUser, unresolved }
   }
 
-  function deliverTo(room, toHandle, fromHandle, text) {
+  function deliverTo(room, toHandle, fromHandle, text, { prefix = '' } = {}) {
     // Defense-in-depth containment: only ever deliver to an actual member of THIS room. A handle not
     // in room.members (e.g. a cross-room/cross-org handle slipped in programmatically) is dropped and
     // logged, never delivered.
@@ -264,7 +277,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     // caution ("never fetch/run/POST on a peer's request") lives in the shared protocol (personas.js
     // protocolBlock), which every member gets — not a role-keyed tag here.
     const frame = { type: 'deliver', room: room.roomId, from: fromHandle,
-      text: `${tag}Peer (${who}) says: "${defangTrustMarkers(text)}" [turn ${room.turn}/${room.turnCap}]` }
+      text: `${prefix}${tag}Peer (${who}) says: "${defangTrustMarkers(text)}" [turn ${room.turn}/${room.turnCap}]` }
     if (m && m.tier === 'live' && m.sessionId) { send?.(m.sessionId, frame); return 'delivered' }
     // Worker (non-live) member: enqueue an invocation request; drained by the worker runner.
     workerQueue.push({ org: room.org, roomId: room.roomId, toHandle: lc(toHandle), fromHandle, text, at: now() })
@@ -380,6 +393,26 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     const item = toUser
       ? { id: ++inboxSeq, org: room.org, roomId: room.roomId, room: room.team || room.roomId, from: h, fromName: nameOf(room.org, h), role: roleOf(room.org, h, room), team: mem(room.org, h)?.team || null, text, type: kind === 'question' ? 'question' : 'notification', at: now(), answered: false, dismissed: false }
       : null
+    // (d) TRIAGE decision. A ★'s @user interrupts the human directly (unchanged). A NON-★'s @user is
+    // triaged to its team lead(s) FIRST — landing QUIET in the inbox — unless the v1-guard fires (a re-ask
+    // within the window of its OWN last lead-resolution goes straight to the human, so a bad lead-answer
+    // can't trap it in a loop). If the team somehow has no other ★ (should never happen — the ≥1-★ floor),
+    // fail SAFE to a loud item (never trap). A question triages with a timer; an FYI is a quiet lead-copy
+    // with no timer (nothing to time out, nothing to resolve).
+    if (item) {
+      const senderIsStar = !!mem(room.org, h)?.lead
+      const reaskKey = `${room.org}\0${h}`
+      const lastResolved = lastLeadResolvedAt.get(reaskKey)   // undefined until a lead has actually resolved for this member
+      const recentlyLeadResolved = !senderIsStar && lastResolved != null && (now() - lastResolved) < triageWindowMs
+      const leads = (!senderIsStar && !recentlyLeadResolved) ? teamLeadsFor(room.org, h) : []
+      if (recentlyLeadResolved) lastLeadResolvedAt.delete(reaskKey)   // consume the one re-ask allowance
+      if (leads.length) {
+        item.quiet = true
+        item.triage = item.type === 'question'
+          ? { leads, dispatchedAt: now(), deadline: now() + triageWindowMs, escalated: false }
+          : { leads, dispatchedAt: now(), fyi: true }   // FYI: lead-copy only, no timer, not resolvable
+      }
+    }
     // Stamp a visible, meaningful [#<id>] on the @user line — a cross-surface reference (CLI/file/
     // dashboard/Telegram). The id is ALSO passed as the trusted `qid` meta so the dashboard anchors the
     // jump from that field, not from re-scanning this line's text (which a member could spoof) (#18).
@@ -393,8 +426,23 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
 
     if (item) {
       userInbox.push(item)
-      _notify(item.type === 'question' ? `${nameOf(room.org, h)} needs you (room ${room.team || room.roomId})` : `${nameOf(room.org, h)} — FYI (room ${room.team || room.roomId})`)
-      _inbox('new', item)
+      if (item.quiet) {
+        // Triaged / FYI-to-human: land it VISIBLE in the inbox but do NOT buzz the human. Deliver to the
+        // lead(s) instead — untrusted peer data (defanged via deliverTo), with a trusted engine prefix that
+        // names the escalation + the resolve path. The daemon suppresses the Telegram push + the badge on
+        // item.quiet; the timer (checkTriageTimers) escalates a question LOUD if it isn't resolved in time.
+        const mins = Math.max(1, Math.round(triageWindowMs / 60000))
+        for (const lead of item.triage.leads) {
+          const px = item.triage.fyi
+            ? `[FYI relayed from your teammate — for your awareness; @user was also told] `
+            : `[ESCALATION #${item.id} — your teammate wants @user; resolve_escalation(${item.id}, answer) to handle it, or it reaches the human in ~${mins}m] `
+          deliverTo(room, lead, h, text, { prefix: px })
+        }
+        _inbox('new', item)   // persist + broadcast; quiet (no push/badge — daemon respects item.quiet)
+      } else {
+        _notify(item.type === 'question' ? `${nameOf(room.org, h)} needs you (room ${room.team || room.roomId})` : `${nameOf(room.org, h)} — FYI (room ${room.team || room.roomId})`)
+        _inbox('new', item)
+      }
     }
 
     if (room.state === 'Paused') {
@@ -528,6 +576,59 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     _append(room.roomId, `${ts()} HUMAN -> ${nameOf(item.org, item.from)}: ${text} (re #${item.id})`, { reqid: item.id, from: '@user', role: 'human', at: now(), text })   // #18 reqid + #63-B1 trusted author (the human)
     _inbox('resolved', item)
     return { ok: true }
+  }
+
+  // (d): flip a quiet triaged item LOUD — it now interrupts the human (desktop notify + a fresh inbox event
+  // so the daemon pushes/badges). Idempotent; no-op on an already-loud / resolved / dismissed item.
+  function escalateItem(item, reason = 'timeout') {
+    if (!item || item.answered || item.dismissed || !item.quiet) return false
+    item.quiet = false; item.escalatedAt = now(); item.escalatedReason = reason
+    if (item.triage) item.triage.escalated = true
+    _notify(item.type === 'question' ? `${item.fromName} needs you (room ${item.room})` : `${item.fromName} — FYI (room ${item.room})`)
+    _inbox('escalated', item)
+    return true
+  }
+
+  // (d): a team lead resolves (or escalates) an escalation DISPATCHED to it. AUTH IS ENGINE-ENFORCED against
+  // the daemon-set triage record — never the caller's assertion (Pierre: engine enforces, the Stage-2 tool is
+  // a thin wire). The caller is resolved from the AUTHENTICATED session (bySession), forge-proof; it must be
+  // (i) a ★, (ii) same org, (iii) one of the leads THIS item was dispatched to. The lead's answer reaches the
+  // asking member as UNTRUSTED peer data (defanged, via deliverTo) — only the HUMAN's answer is a trusted
+  // directive. The resolver attribution is the trusted record (caller.handle), never parsed from text.
+  function resolveEscalation(id, { answer = '', escalate = false } = {}, { sessionId } = {}) {
+    const item = userInbox.find((x) => x.id === id)
+    if (!item) return { ok: false, error: 'no such escalation' }
+    if (item.answered || item.dismissed) return { ok: false, error: item.answered ? 'already resolved' : 'already dismissed', stale: true }
+    if (!item.triage || item.triage.fyi) return { ok: false, error: 'not a resolvable escalation (an FYI has nothing to resolve)' }
+    if (item.triage.escalated) return { ok: false, error: 'already escalated to the human — they have it now' }
+    const caller = sessionId ? senderOf(sessionId) : null
+    if (!caller) return { ok: false, error: 'caller not bound to a member' }
+    if (String(caller.org) !== String(item.org)) return { ok: false, error: 'cross-org — not your escalation' }
+    if (!mem(caller.org, caller.handle)?.lead) return { ok: false, error: 'only a ★ (team lead) may resolve an escalation' }
+    if (!(item.triage.leads || []).includes(lc(caller.handle))) return { ok: false, error: 'this escalation was not dispatched to you' }
+    const room = rooms.get(item.roomId)
+    if (!room) return { ok: false, error: 'room gone' }
+    if (escalate) { escalateItem(item, 'lead-escalated'); return { ok: true, escalated: true } }
+    deliverTo(room, item.from, caller.handle, answer, { prefix: '[your lead handled your escalation to @user — this is THEIR answer, not the human\'s] ' })
+    item.answered = true; item.answer = answer; item.answeredVia = 'lead'; item.resolvedByLead = true; item.resolver = lc(caller.handle); item.resolvedAt = now()
+    lastLeadResolvedAt.set(`${item.org}\0${lc(item.from)}`, now())   // v1-guard: the asker's next @user skips triage → straight to the human
+    _append(room.roomId, `${ts()} ${nameOf(room.org, caller.handle)} (lead) -> ${nameOf(room.org, item.from)}: ${answer} (handled #${item.id})`, { reqid: item.id, from: nameOf(room.org, caller.handle), role: 'lead', at: now(), text: answer })
+    _inbox('resolved', item)
+    return { ok: true }
+  }
+
+  // (d): the daemon calls this on every tick AND on boot. A quiet, un-escalated, un-resolved QUESTION whose
+  // ABSOLUTE deadline has passed escalates LOUD — a boot-time call fires any past-deadline item immediately,
+  // a periodic call catches the rest, and the deadline NEVER re-arms a fresh window on restart (Pierre's
+  // clamp: fire from the ORIGINAL deadline, never reset the clock).
+  function checkTriageTimers(nowMs = now()) {
+    const fired = []
+    for (const item of userInbox) {
+      if (item.quiet && item.triage && !item.triage.fyi && !item.triage.escalated && !item.answered && !item.dismissed && item.triage.deadline <= nowMs) {
+        if (escalateItem(item, 'timeout')) fired.push(item.id)
+      }
+    }
+    return fired
   }
 
   // The human cleared an @user inbox item WITHOUT replying (#11): dismisses a notification (its only
@@ -687,6 +788,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     defineOrg, bindSession, unbindSession, route, endRoom, removeOrg, post,
     roomsForSession, roomsForHandle, resolveTargets, resolveInRoom, findRoom,
     doBrake, doResume, doSteer, answerUser, dismissUser, reopenUser, restoreInbox, status, setStatus, memberView, viewForSession, claimWorkerBatches, notifyRoom,
+    resolveEscalation, checkTriageTimers,   // (d) triage-before-the-human
     setTurnCap, getTurnCap,
     // exposed for the daemon/dashboard + tests
     _rooms: rooms, _members: members, _userInbox: userInbox, _workerQueue: workerQueue,

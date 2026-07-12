@@ -90,18 +90,21 @@ test('engine: 2-member consult back-compat — no mention delivers to the other;
   assert.doesNotMatch(toBob[0].frame.text, /\[room /, 'consult kind omits the room tag')
 })
 
-test('engine: @user routes to the inbox + notify; answerUser sends [Human reply] back', () => {
+test('engine: a ★\'s @user routes LOUD to the inbox + notify; answerUser sends [Human reply] back', () => {
+  // A ★ (architect) interrupts the human directly. (A non-★'s @user is triaged quiet under (d) — covered by
+  // the §(d) tests below; the loud inbox + notify + answerUser round-trip is exercised here via the ★.)
   const h = harness(TEAM)
-  const engineer = h.handle('engineer')
-  h.engine.route({ fromHandle: engineer, roomId: teamRoomId('shop', 'client'), text: '@user should errors be toasts or inline?', kind: 'question' })
+  const arch = h.handle('architect')
+  h.engine.route({ fromHandle: arch, roomId: teamRoomId('shop', 'client'), text: '@user should errors be toasts or inline?', kind: 'question' })
   const inbox = h.engine.status().userInbox
   assert.equal(inbox.length, 1)
-  assert.equal(inbox[0].from, engineer)
+  assert.equal(inbox[0].from, arch)
   assert.equal(inbox[0].type, 'question')
+  assert.ok(!inbox[0].quiet, 'a ★ is loud, not triaged')
   assert.ok(h.notes.some((n) => /needs you/.test(n)))   // a question nags ("needs you"); a notification would be "FYI"
   const res = h.engine.answerUser(inbox[0].id, 'inline')
   assert.equal(res.ok, true)
-  assert.match(h.directivesTo(engineer)[0], /\[Human reply to "[^"]*"\]: inline/)
+  assert.match(h.directivesTo(arch)[0], /\[Human reply to "[^"]*"\]: inline/)
 })
 
 test('engine: multi-room — a lead is in team room + leads room; routing is isolated per room', () => {
@@ -706,4 +709,99 @@ test('§14: un-addressed in a 3-MEMBER team room reaches NO ONE — a distinguis
   // @name, or call list_team)" (mrc-channel-server.js:302). The actor IS told; this engine result (delivered:[]
   // + !toUser) is the distinguishable signal that surfacing rests on — asserting it here documents the contract
   // rather than freezing an ok:true-delivered-nothing masquerade.
+})
+
+// ---- (d) triage-before-the-human: a non-★'s @user is triaged to its lead first, escalates to the human only if unresolved ----
+test('§(d): a non-★ @user QUESTION is triaged QUIET to its lead — no human buzz; the lead gets an ESCALATION', () => {
+  const h = harness(TEAM)   // architect★ + engineer + critic, one team
+  const arch = h.handle('architect'), eng = h.handle('engineer')
+  const r = h.engine.route({ fromHandle: eng, roomId: teamRoomId('shop', 'client'), text: '@user one call or split?', kind: 'question' })
+  assert.equal(r.ok, true)
+  const it = h.engine._userInbox.at(-1)
+  assert.equal(it.quiet, true, 'quiet — the human is not buzzed')
+  assert.deepEqual(it.triage.leads, [arch], 'dispatched to the team lead (★)')
+  assert.ok(it.triage.deadline > h.clock(), 'a timer is armed')
+  assert.equal(h.notes.length, 0, 'no desktop notify while quiet')
+  assert.ok(h.deliveriesTo(arch).some((t) => /ESCALATION #/.test(t)), 'the lead received the escalation')
+})
+
+test('§(d): the lead resolves → the asker gets the answer as UNTRUSTED peer data; resolved-by-lead, stays quiet', () => {
+  const h = harness(TEAM)
+  const arch = h.handle('architect'), eng = h.handle('engineer')
+  h.engine.route({ fromHandle: eng, roomId: teamRoomId('shop', 'client'), text: '@user ship?', kind: 'question' })
+  const it = h.engine._userInbox.at(-1)
+  const r = h.engine.resolveEscalation(it.id, { answer: 'yes, ship it' }, { sessionId: h.sid(arch) })
+  assert.equal(r.ok, true)
+  assert.ok(h.deliveriesTo(eng).some((t) => /ship it/.test(t) && /Peer \(/.test(t)), 'the answer reached the asker as PEER data (never a [Human reply])')
+  assert.equal(it.resolvedByLead, true); assert.equal(it.resolver, arch); assert.equal(it.answered, true)
+  assert.equal(it.quiet, true, 'stays quiet — the human sees it in the audit surface, never buzzed')
+})
+
+test('§(d): resolve AUTH is engine-enforced — non-★ refused, unbound refused, cross-team-not-dispatched refused, dispatched ★ resolves', () => {
+  const h = harness(TEAM)
+  const arch = h.handle('architect'), eng = h.handle('engineer'), crit = h.handle('critic')
+  h.engine.route({ fromHandle: eng, roomId: teamRoomId('shop', 'client'), text: '@user ship?', kind: 'question' })
+  const it = h.engine._userInbox.at(-1)
+  assert.match(h.engine.resolveEscalation(it.id, { answer: 'x' }, { sessionId: h.sid(crit) }).error, /only a ★/, 'a non-★ teammate (critic) cannot resolve')
+  assert.equal(h.engine.resolveEscalation(it.id, { answer: 'x' }, { sessionId: 'sess:ghost' }).ok, false, 'an unbound caller is refused')
+  assert.equal(h.engine.resolveEscalation(it.id, { answer: 'ok' }, { sessionId: h.sid(arch) }).ok, true, 'the dispatched ★ resolves')
+})
+
+test('§(d): a ★ NOT dispatched this escalation (another team\'s lead) is refused', () => {
+  const TWO = { org: 'p', repo: '/tmp/repo', teams: [
+    { name: 'client', members: [{ role: 'architect', name: 'Ac', backend: 'claude', lead: true }, { role: 'engineer', name: 'Ec', backend: 'claude' }] },
+    { name: 'server', members: [{ role: 'architect', name: 'As', backend: 'claude', lead: true }, { role: 'engineer', name: 'Es', backend: 'claude' }] },
+  ] }
+  const h = harness(TWO)
+  h.engine.route({ fromHandle: 'ec/claude', roomId: teamRoomId('p', 'client'), text: '@user decide?', kind: 'question' })
+  const it = h.engine._userInbox.at(-1)
+  assert.deepEqual(it.triage.leads, ['ac/claude'], 'dispatched only to the CLIENT lead')
+  const r = h.engine.resolveEscalation(it.id, { answer: 'no' }, { sessionId: h.sid('as/claude') })
+  assert.equal(r.ok, false); assert.match(r.error, /not dispatched to you/, 'the SERVER lead — a ★, but not dispatched this one — is refused')
+})
+
+test('§(d): v1-guard — a re-ask within the window of the asker\'s last lead-resolution goes LOUD (no bad-lead loop)', () => {
+  const h = harness(TEAM)
+  const arch = h.handle('architect'), eng = h.handle('engineer')
+  h.engine.route({ fromHandle: eng, roomId: teamRoomId('shop', 'client'), text: '@user ship?', kind: 'question' })
+  const it1 = h.engine._userInbox.at(-1)
+  h.engine.resolveEscalation(it1.id, { answer: 'nah' }, { sessionId: h.sid(arch) })   // lead resolves (arms the guard)
+  h.engine.route({ fromHandle: eng, roomId: teamRoomId('shop', 'client'), text: '@user still stuck, help', kind: 'question' })
+  const it2 = h.engine._userInbox.at(-1)
+  assert.equal(it2.quiet, undefined, 're-ask is NOT triaged — it goes straight to the human')
+  assert.ok(!it2.triage, 'no triage on the re-ask')
+  assert.ok(h.notes.length > 0, 'the human is buzzed (loud)')
+})
+
+test('§(d): a ★\'s own @user is LOUD immediately (the escalation contact interrupts, never triaged)', () => {
+  const h = harness(TEAM)
+  const arch = h.handle('architect')
+  h.engine.route({ fromHandle: arch, roomId: leadsRoomId('shop'), text: '@user architect decision', kind: 'question' })
+  const it = h.engine._userInbox.at(-1)
+  assert.equal(it.quiet, undefined); assert.ok(!it.triage, 'a ★ is never triaged')
+})
+
+test('§(d): the timer escalates an unresolved triage LOUD past its deadline (from the ORIGINAL deadline)', () => {
+  const h = harness(TEAM)
+  const eng = h.handle('engineer')
+  h.engine.route({ fromHandle: eng, roomId: teamRoomId('shop', 'client'), text: '@user blocking', kind: 'question' })
+  const it = h.engine._userInbox.at(-1)
+  assert.equal(h.engine.checkTriageTimers().length, 0, 'not yet past the deadline → no escalation')
+  h.tick(400_000)   // past the default 300s window
+  const fired = h.engine.checkTriageTimers()
+  assert.ok(fired.includes(it.id), 'the timer fired')
+  assert.equal(it.quiet, false, 'now LOUD'); assert.equal(it.triage.escalated, true)
+  assert.ok(h.notes.length > 0, 'the human is buzzed on escalation')
+  assert.match(h.engine.resolveEscalation(it.id, { answer: 'x' }, { sessionId: h.sid(h.handle('architect')) }).error, /already escalated/, 'a lead can no longer bury it once the human has it')
+})
+
+test('§(d): a non-★ FYI (plain @user) is a QUIET lead-copy — no timer, not resolvable', () => {
+  const h = harness(TEAM)
+  const eng = h.handle('engineer')
+  h.engine.route({ fromHandle: eng, roomId: teamRoomId('shop', 'client'), text: '@user build is green', kind: 'notification' })
+  const it = h.engine._userInbox.at(-1)
+  assert.equal(it.quiet, true); assert.equal(it.triage.fyi, true)
+  assert.equal(it.triage.deadline, undefined, 'no timer on an FYI')
+  assert.equal(h.engine.checkTriageTimers().length, 0, 'FYIs never time out')
+  assert.match(h.engine.resolveEscalation(it.id, { answer: 'x' }, { sessionId: h.sid(h.handle('architect')) }).error, /nothing to resolve/, 'an FYI has nothing to resolve')
 })

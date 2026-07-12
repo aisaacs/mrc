@@ -115,6 +115,24 @@ test('daemon team rooms: define org, directed delivery, @user round-trip, brake/
   const directive = await engineer.waitFor((f) => f.type === 'directive')
   assert.match(directive.text, /\[Human reply to "[^"]*"\]: inline/)
 
+  // 4b) (d) triage over the WIRE: a non-★ (ludivine) @user QUESTION is triaged to its lead (roland) — the
+  // lead gets an ESCALATION, resolves it via a `resolve` frame, and the answer reaches ludivine as PEER data.
+  // The engine enforces auth against the AUTHENTICATED sessionId (proves the daemon passes the real caller):
+  // the critic (a non-★) is refused; only the dispatched ★ resolves.
+  engineer.send({ type: 'say', id: 20, text: '@user one call, or split intent/pay?', kind: 'question' })
+  const esc = await arch.waitFor((f) => f.type === 'deliver' && /ESCALATION #/.test(f.text))
+  const escId = Number(esc.text.match(/ESCALATION #(\d+)/)[1])
+  critic.send({ type: 'resolve', id: 21, escId, answer: 'hijack' })
+  const refusal = await critic.waitFor((f) => f.type === 'notice' && /not resolved/.test(f.text))
+  assert.match(refusal.text, /only a ★|not dispatched/, 'a non-★ cannot resolve — the engine auth sees the real caller')
+  arch.send({ type: 'resolve', id: 22, escId, answer: 'one call' })
+  const leadAns = await engineer.waitFor((f) => f.type === 'deliver' && /one call/.test(f.text))
+  assert.match(leadAns.text, /Peer \(/, "the lead's answer arrives as PEER data, never a [Human reply]")
+  const st = await controlCall(controlPort, { action: 'team' })
+  const resolved = st.userInbox.find((x) => x.id === escId)
+  assert.equal(resolved.resolvedByLead, true, 'item marked resolved-by-lead')
+  assert.equal(resolved.resolver, 'roland/claude', 'resolver from the trusted record')
+
   // 5) Brake holds; resume delivers in order.
   const roomId = teamRoomId('shop', 'client')
   await controlCall(controlPort, { action: 'brake', roomId })

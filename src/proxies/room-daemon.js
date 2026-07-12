@@ -154,7 +154,7 @@ export function acquireDaemonSingleton(lockPath, { backstopMs = 48 * 3600 * 1000
   return false   // lost the re-acquire race to a live peer → defer
 }
 
-export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort = 0, turnCap = 200, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS, roomTtlMs = 300_000, workerInvoke = defaultWorkerInvoke, workerPollMs = 2_000, tgFetch = globalThis.fetch, tgToken, electSingleton = false, modelBPredict = () => { try { return decideModelB(imageIdAndLabels().labels) } catch { return false } } }) {
+export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort = 0, turnCap = 200, triageWindowMs = Number(process.env.MRC_TRIAGE_WINDOW) || 300_000, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS, roomTtlMs = 300_000, workerInvoke = defaultWorkerInvoke, workerPollMs = 2_000, tgFetch = globalThis.fetch, tgToken, electSingleton = false, modelBPredict = () => { try { return decideModelB(imageIdAndLabels().labels) } catch { return false } } }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
   let relayBound = false       // #50/#5: TRUE only from the relay server's 'listening' event — the honest "peers can connect" signal. Surfaced in the status payload (degraded readiness) and gates the idle-reaper (a relay-pending daemon must not self-reap while holding the constant + retrying).
@@ -371,7 +371,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     try { appendTranscript(roomId, record) } catch {}
     broadcastEvent({ type: 'msg', roomId, record })   // #69-B: push the one new line (the open room appends it; no room re-fetch)
   }
-  const engine = createRoomEngine({ send, append: appendBoth, notify, onInbox: (ev) => { try { handleInboxEvent(ev) } catch (e) { daemonLog(`[tg] inbox event: ${e?.message || e}`) } persistInbox(); broadcastEvent({ type: 'inbox', op: ev.kind, item: ev.item }) }, now: () => Date.now(), turnCap })   // #69-B: push the one inbox delta (upsert-by-id), never the whole 277 KB inbox
+  const engine = createRoomEngine({ send, append: appendBoth, notify, onInbox: (ev) => { try { handleInboxEvent(ev) } catch (e) { daemonLog(`[tg] inbox event: ${e?.message || e}`) } persistInbox(); broadcastEvent({ type: 'inbox', op: ev.kind, item: ev.item }) }, now: () => Date.now(), turnCap, triageWindowMs })   // #69-B: push the one inbox delta (upsert-by-id), never the whole 277 KB inbox
   // Drives non-Claude (task-worker) members: a queued mention invokes the worker's CLI and posts the
   // reply back. The invoker is injectable so tests don't spawn real processes.
   const worker = createWorkerRunner({ engine, invoke: workerInvoke, intervalMs: workerPollMs, log: (m) => daemonLog(`worker: ${m}`) })
@@ -412,6 +412,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   }
   rebuildSessionIndex()
   try { engine.restoreInbox(loadInbox()) } catch {}   // #16: restore the @user inbox AFTER orgs/rooms exist (sets inboxSeq past max id → no collision)
+  // (d) boot triage-timer fire is DEFERRED to just after the Telegram bridges are set up (below) — else a
+  // restart-gap escalation would reach the dashboard + desktop but MISS the phone (tgStates still empty here).
   // guard-1: the org root is pinned WRITE-ONCE (the chokepoint loads the pin internally — no caller can pass a
   // null pin and re-root), and the define-time SIDE EFFECTS (the `.env` read + Telegram bridge in ensureTgForOrg,
   // the writeTeamFile) fire ONLY when the root is ACTIVATED. `trusted` = may first-pin (gesture-scoped: ONLY the
@@ -603,9 +605,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     const s = tgStates.get(item.org)
     // Diagnostic (#12/#25 outbound): for ANY new @user item on a TG-configured org, log whether it
     // pushes and, if not, exactly why — so "outbound silent" is never a mystery (covers not-linked too).
-    if (kind === 'new' && s) daemonLog(`[tg ${item.org}] ${item.type || 'message'} #${item.id}: ${s.pinned ? `pushing → chat ${s.pinned.chatId}` : 'NOT pushed — bot not linked (Confirm the pairing in the dashboard)'}`)
+    // (d) triage: a QUIET triaged item never pushes to Telegram (it went to its lead, not the human's phone);
+    // it pushes only if/when it ESCALATES (timer/lead-escalate → kind 'escalated', item now loud).
+    const pushable = (kind === 'new' && !item.quiet) || kind === 'escalated'
+    if (kind === 'new' && item.quiet && s) daemonLog(`[tg ${item.org}] ${item.type || 'message'} #${item.id}: NOT pushed — triaged quiet to its lead (escalates if unresolved)`)
+    if (pushable && s) daemonLog(`[tg ${item.org}] ${item.type || 'message'} #${item.id}${kind === 'escalated' ? ' (escalated)' : ''}: ${s.pinned ? `pushing → chat ${s.pinned.chatId}` : 'NOT pushed — bot not linked (Confirm the pairing in the dashboard)'}`)
     if (!s || !s.pinned) return
-    if (kind === 'new') {
+    if (pushable) {
       const md = tgNewText(item)
       // #58: send as Telegram HTML (parse_mode) so markdown renders; on a FORMATTING 400 fall back to PLAIN
       // (chunked, nothing lost). The fallback only fires on `formatting` — an auth/rate-limit/transient surfaces.
@@ -646,6 +652,11 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // anchor/.env carries a token — ensureTgForOrg's own token check gates the actual bridge, and the anchor is never
   // a mounted/wire-chosen path, so there's no un-authorized-.env-read to defer (the reason activation existed).
   for (const def of orgDefs.values()) { try { if (def.anchor ? true : isActivatedRoot(def.org, def.repo)) ensureTgForOrg(def) } catch {} }
+  // (d): NOW fire any triage whose deadline passed while the daemon was down — from the ORIGINAL deadline,
+  // never a fresh window (the restart guarantee). Placed AFTER ensureTgForOrg so tgStates is populated and a
+  // boot escalation pushes to Telegram too (Pierre) — the surface a walked-away human is watching. Fires each
+  // past-deadline item exactly once (escalateItem no-ops on an already-loud item), so restarts don't storm.
+  try { const f = engine.checkTriageTimers(); if (f.length) daemonLog(`(d) boot: escalated ${f.length} past-deadline triage(s)`) } catch {}
   // A team member sent a directed message into a room. Route via the engine; ack the true outcome.
   function onSay(fromId, f) {
     const ackId = f.id
@@ -657,6 +668,18 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     const queued = (r.delivered || []).filter((d) => d.status === 'queued').length
     if (queued) worker.kick()   // a worker was addressed — invoke it now (don't wait for the poll)
     ack(r.state === 'Paused' ? 'held' : 'delivered', { delivered, queued, toUser: !!r.toUser })
+  }
+
+  // (d): a team LEAD resolves (or escalates) an escalation dispatched to it — the thin wire for the Stage-2
+  // resolve_escalation tool. The ENGINE enforces the auth (caller is a ★ + this #N was dispatched to it),
+  // resolved from the AUTHENTICATED sessionId (fromId), never a wire-asserted identity. No trusted field
+  // comes off the frame except the structured escId + the (untrusted, defanged-on-delivery) answer body.
+  function onResolveEscalation(fromId, f) {
+    const ackId = f.id
+    const ack = (status, extra = {}) => { if (ackId != null) send(fromId, { type: 'ack', id: ackId, status, ...extra }) }
+    const r = engine.resolveEscalation(Number(f.escId), { answer: String(f.answer ?? ''), escalate: !!f.escalate }, { sessionId: fromId })
+    if (!r.ok) { send(fromId, { type: 'notice', text: `[Escalation not resolved: ${r.error}]` }); return ack('error', { error: r.error }) }
+    ack('resolved-escalation', { escalated: !!r.escalated })
   }
 
   function peerList(exceptId) {
@@ -1129,6 +1152,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         else if (f.type === 'resume' && sessionId) onAgentResume(sessionId)
         else if (f.type === 'summon' && sessionId) { bumpActivity(sessionId); onSummon(sessionId, String(f.brief ?? ''), f.id) }   // #S4: reflex-summon a red-team adversary (Pierre)
         else if (f.type === 'say' && sessionId) { bumpActivity(sessionId); onSay(sessionId, f) }        // team room directed message
+        else if (f.type === 'resolve' && sessionId) { bumpActivity(sessionId); onResolveEscalation(sessionId, f) }   // (d) a lead resolves an escalation dispatched to it
         else if (f.type === 'sendphoto' && sessionId) { bumpActivity(sessionId); onSendPhoto(sessionId, f) }   // #56: member → its human's Telegram
         else if (f.type === 'status' && sessionId) { noteActivity(sessionId, f.tokens); adoptDisplayName(sessionId, f.name); const r = engine.setStatus(sessionId, f); if (r) broadcastEvent({ type: 'status', org: r.org, handle: r.handle, status: r.status, rateLimit: r.rateLimit }) }   // #64 statusline ints + #caffeine OFF-CHANNEL token supplement (a solo grind emits no room frames) + #58 PUSH-on-change display name
         else if (f.type === 'whoami' && sessionId) send(sessionId, { type: 'teaminfo', view: engine.viewForSession(sessionId) })
@@ -1600,6 +1624,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       const ago = newest ? Math.round((Date.now() - newest) / 1000) : -1
       daemonLog(`caffeine: holding · ${lastActivityAt.size} tracked · last bump ${who ? who.slice(0, 8) : '—'} ${ago}s ago`)
     }
+    try { engine.checkTriageTimers() } catch {}   // (d): escalate any triage past its deadline (tickMs granularity; the boot call covers restart gaps)
     reapFailedSummonDirs(Date.now())   // #30: reap an orphaned summon dir that never connected (no pairing/socket ever formed, so the other reapers never see it)
     pruneDeadRooms(Date.now())   // #35: reap dead pairings (both sides gone, or a spent adversary room) so they don't linger in `mrc rooms status`/the dashboard
     for (const p of pairings.values()) {
