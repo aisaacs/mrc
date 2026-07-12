@@ -1389,6 +1389,18 @@ function shortRepo(p) { const s=String(p||'').replace(/\/+$/,''); const parts=s.
 // 📁 Choose… → the in-app folder browser; on pick, reuse bPickRepo (fills the field + the EXISTING cap-gated
 // authorize). The browse endpoint is a pure read; the grant stays /api/authorize-repo. Two gates, never conflated.
 window.fcOpen = (ti,mi) => openFolderChooser((path) => bPickRepo(Number(ti), Number(mi), path))
+// §3/§13 Session picker — after a repo is picked, "the GUI for mrc pick": fresh, or a prior session in that repo
+// (the owner's own sessions only — the endpoint reads the getId(repoPath) slice, disjoint from any member slice).
+window.bSetSession = (ti,mi,v) => { const m=S.builder.teams[ti]?.members[mi]; if(m){ m.session=v } bPreview() }
+function sessLabel(s) { const nm = s.name || s.preview || String(s.id||'').slice(0,8); return nm + (s.ts ? ' · ' + relTime(s.ts) : '') }
+async function bLoadSessions(ti,mi) {
+  const m = S.builder.teams[ti]?.members[mi]; if(!m || !m.repo) return
+  const repo = m.repo; m._sessLoading = true
+  const r = await api('/api/repo-sessions?repo='+encodeURIComponent(repo)).catch(()=>({ok:false}))
+  const cur = S.builder.teams[ti]?.members[mi]; if(!cur || cur.repo!==repo) return   // repo changed mid-flight → stale, drop
+  cur._sessLoading = false; cur._sessions = (r&&r.ok&&Array.isArray(r.sessions)) ? r.sessions : []
+  if (S.building) bRenderTeams()
+}
 // ---- custom personas (#42) ----
 // The editor edits S.builder.personas (the working copy that the role-chooser + bRoster read). A save
 // also persists the single persona to the project's team.json via POST /api/personas — server-validated
@@ -1463,6 +1475,7 @@ function bRenderTeams() {
       <div class="bmemname"><input class="bnm" value="${esc(m.name||'')}" placeholder="${style==='custom'?'name (free-type)':'(auto)'}" aria-label="agent name" oninput="bSetName(${ti},${mi},this.value)">${style!=='custom'?`<button class="btn tiny" title="suggest another name" onclick="bRerollName(${ti},${mi})">🎲</button>`:''}<span id="nmerr-${ti}-${mi}">${nmErr}</span>${totalAgents>1?`<button class="btn tiny" title="remove this agent" onclick="bDelMem(${ti},${mi})">✕</button>`:''}</div>
       <div class="memrow" style="margin-top:4px"><span class="muted" style="font-size:11px;flex:0 0 auto">📁 repo</span><input style="flex:1" list="bRepoPicks" value="${esc(m.repo||'')}" placeholder="this agent's repo — type ~/code/app or pick a recent one" oninput="bRepoInput(${ti},${mi},this.value)" onchange="bSetRepo(${ti},${mi},this.value)"><button class="btn tiny" style="flex:0 0 auto" data-ti="${ti}" data-mi="${mi}" onclick="fcOpen(this.dataset.ti,this.dataset.mi)" title="Browse folders">📁 Choose…</button><span id="repomsg-${ti}-${mi}" style="font-size:11px;flex:0 0 auto">${m._repoMsg||''}</span></div>
       ${(!m.repo) ? repoPickRow('This project', (picks.authorized||[]), ti, mi) + repoPickRow('Recent · other projects', (picks.recent||[]), ti, mi) : ''}
+      ${m.repo ? `<div class="memrow" style="margin-top:4px"><span class="muted" style="font-size:11px;flex:0 0 auto">session</span><select style="flex:1" onchange="bSetSession(${ti},${mi},this.value)" aria-label="session to resume"><option value="fresh"${(m.session||'fresh')==='fresh'?' selected':''}>✦ fresh session</option>${(m._sessions||[]).map(s=>`<option value="${esc(s.id)}"${m.session===s.id?' selected':''}>${esc(sessLabel(s))}</option>`).join('')}</select>${(m._sessLoading?'<span class="muted" style="font-size:11px;flex:0 0 auto">…</span>':'')}</div>` : ''}
       ${adv?`<div class="memrow" style="margin-top:4px">
         <select onchange="bSet(${ti},${mi},'role',this.value)">${roleOptions().map(o=>`<option ${o===m.role?'selected':''}>${o}</option>`).join('')}</select>
         ${mediaBackend(m.role)
@@ -1497,7 +1510,7 @@ window.bSetName=(ti,mi,v)=>{ const m=S.builder.teams[ti].members[mi]; m.name=v; 
   bPreview() }
 window.bRerollName=(ti,mi)=>{ const m=S.builder.teams[ti].members[mi]; const taken=allBuilderNames(); if(m.name)taken.delete(String(m.name).toLowerCase()); m.name=suggestName(S.builder.nameStyle||'french',taken); m._nameAuto=true; bRenderTeams(); bPreview() }
 window.bSetStyle=(v)=>{ S.builder.nameStyle=v; autofillNames(true); bRenderTeams(); bPreview() }   // re-roll AUTO names only; hand-typed stay
-function bRoster(){const B=S.builder;const r={org:B.org||'org',repo:B.repo||undefined,teams:B.teams.map(t=>({name:t.name,territory:t.territory||'.',members:t.members.map(m=>{const o={role:m.role,backend:m.backend};if(m.lead)o.lead=true;if(m.territory)o.territory=m.territory;if(m.name&&String(m.name).trim())o.name=String(m.name).trim();if(m.repo)o.repo=m.repo;return o})}))};if(B.personas&&Object.keys(B.personas).length)r.personas=B.personas;return r}   // P1 (Model B): each member carries its OWN repo (o.repo); under Model B parseRoster requires it + ignores the top-level repo (identity is the neutral anchor). Top-level repo kept for legacy (cap=1) compat.
+function bRoster(){const B=S.builder;const r={org:B.org||'org',repo:B.repo||undefined,teams:B.teams.map(t=>({name:t.name,territory:t.territory||'.',members:t.members.map(m=>{const o={role:m.role,backend:m.backend};if(m.lead)o.lead=true;if(m.territory)o.territory=m.territory;if(m.name&&String(m.name).trim())o.name=String(m.name).trim();if(m.repo)o.repo=m.repo;if(m.session&&m.session!=='fresh')o.session=m.session;return o})}))};if(B.personas&&Object.keys(B.personas).length)r.personas=B.personas;return r}   // P1 (Model B): each member carries its OWN repo (o.repo); under Model B parseRoster requires it + ignores the top-level repo (identity is the neutral anchor). Top-level repo kept for legacy (cap=1) compat.
 // P1 (Model B): each agent picks its OWN repo, and the human's PICK is the authorization — /api/authorize-repo
 // (CSRF + capOk, human-only) lands it in the org's authorized-set BEFORE launch, since the Model B floor THROWS on
 // an un-authorized member.repo (a session can request a repo, never authorize one). Best-effort with inline result;
@@ -1528,7 +1541,8 @@ window.bSetRepo = async (ti,mi,v) => {
   const B=S.builder; const m=B.teams[ti].members[mi]; m.repo = String(v||'').trim() || undefined
   const key=ti+'-'+mi; clearTimeout(bRepoTimers[key])   // cancel any pending validate so it can't overwrite the authorize result
   bPreview()
-  if (!m.repo) { setRepoMsg(ti,mi,''); return }
+  if (!m.repo) { setRepoMsg(ti,mi,''); m._sessions=null; return }
+  bLoadSessions(ti,mi)   // §3 Session picker: load the repo's prior sessions (re-renders when they arrive → the dropdown appears)
   if (!B.org) { setRepoMsg(ti,mi,'<span class="bad">name the project first</span>'); return }
   setRepoMsg(ti,mi,'<span class="muted">authorizing…</span>')
   const r = await api('/api/authorize-repo',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({org:B.org, repo:m.repo})}).catch(()=>({ok:false,error:'network'}))

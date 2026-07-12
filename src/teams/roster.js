@@ -402,7 +402,7 @@ export function validateRoster(norm) {
   //     escalates to the human. The cast modal can't produce a ★-Pierre, but a text-edited team.json could — so
   //     the wall is at PARSE (completing the caged-member triple-gate: modal-disabled + cage.js fail-closed + this).
   for (const m of norm.members) {
-    if ((m.role === 'adversary' || m.role === 'ultracritical' || m.cage) && m.lead) errors.push(`member @${m.handle}: an adversary/ultracritical/caged member can never be ★ (lead) — a critique/adversary reports UP the chain to a ★ lead, it never escalates to the human directly (§14). Drop its lead.`)
+    if ((m.role === 'adversary' || m.role === 'ultracritical' || m.cage) && m.lead) errors.push(`member @${m.handle}: an adversary/ultracritical/caged member can never be ★ (lead) — a critique/adversary reports UP the chain to a ★ lead, it never escalates to the human directly (§14). Add a NON-critique member to lead this team, or change this member's role — a team of only critique/adversary roles has no valid escalation point. (Just dropping its lead won't help: the per-team default would re-assign ★ to a member here.)`)
   }
   return { errors, warnings, ok: errors.length === 0 }
 }
