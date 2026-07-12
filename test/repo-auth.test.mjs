@@ -2,8 +2,8 @@
 // HOST-ONLY file, so tests use a unique per-run org and clean it up. Real temp repos (realpath resolves them).
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { resolveMemberRepo, addAuthorizedRepo, removeAuthorizedRepo, loadAuthorizedRepos, resolveOrgRoot, resolveOrgRootForOrg, pinnedOrgRoot, clearOrgRoot, recordActivatedRoot, isActivatedRoot, clearActivatedRoots, expandHome, orgAnchorDir, _rootPathForTest, _activatedPathForTest, _authPathForTest, _orgAnchorRootForTest } from '../src/teams/repo-auth.js'
-import { mkdtempSync, mkdirSync, rmSync, realpathSync, symlinkSync, unlinkSync } from 'node:fs'
+import { resolveMemberRepo, addAuthorizedRepo, removeAuthorizedRepo, loadAuthorizedRepos, listAllAuthorizedRepos, resolveOrgRoot, resolveOrgRootForOrg, pinnedOrgRoot, clearOrgRoot, recordActivatedRoot, isActivatedRoot, clearActivatedRoots, expandHome, orgAnchorDir, _rootPathForTest, _activatedPathForTest, _authPathForTest, _orgAnchorRootForTest } from '../src/teams/repo-auth.js'
+import { mkdtempSync, mkdirSync, rmSync, realpathSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir, homedir } from 'node:os'
 import { join, sep } from 'node:path'
 
@@ -49,6 +49,23 @@ test('resolveMemberRepo: own-repo grant — requesting the org repo (any spellin
 test('resolveMemberRepo: an UNAUTHORIZED cross-repo is REFUSED (fail-closed — empty set by default)', () => {
   const s = scratch()
   try { assert.throws(() => resolveMemberRepo(s.orgRepo, s.other, s.org), /not authorized/) } finally { s.cleanup() }
+})
+
+// P1 repo-picker: the dashboard "recent (other projects)" source — the union of EVERY org's vouched repos, and it
+// must survive a malformed record (per-file fault tolerance, Pierre gate) so one bad file doesn't kill the picker.
+test('listAllAuthorizedRepos: unions across orgs and skips a malformed record (fault-tolerant)', () => {
+  const a = scratch(), b = scratch()
+  try {
+    const ra = addAuthorizedRepo(a.org, a.orgRepo)
+    const rb = addAuthorizedRepo(b.org, b.other)
+    const all = listAllAuthorizedRepos()
+    assert.ok(all.includes(ra) && all.includes(rb), 'union carries both orgs\' authorized repos')
+    // corrupt org b's record → the enumeration must skip it, still returning org a's repo (degrade, not crash)
+    writeFileSync(_authPathForTest(b.org), '{ this is not json')
+    const after = listAllAuthorizedRepos()
+    assert.ok(after.includes(ra), 'a good record still surfaces past a malformed sibling')
+    assert.ok(!after.includes(rb), 'the malformed record is skipped, not fatal')
+  } finally { a.cleanup(); b.cleanup() }
 })
 
 test('resolveMemberRepo: after a HUMAN addAuthorizedRepo, the cross-repo resolves (realpath-canonical match)', () => {

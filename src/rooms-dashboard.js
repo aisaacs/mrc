@@ -16,6 +16,8 @@ import { roomsRoot, roomDir, listRooms, readCatchups, updateCatchup, readTranscr
 import { resolveTtydRequest, ttydSecurityHeaders } from './ttyd-proxy.js'   // guard-4: ttyd unix-socket + same-origin proxy
 import { findFreePort } from './ports.js'
 import { parseRoster, validateRoster, editPersona } from './teams/roster.js'
+import { realpath as realpathP, stat as statP } from 'node:fs/promises'   // P1 repo-picker: async, bounded I/O for the validate oracle (never block the daemon event loop)
+import { expandHome, loadAuthorizedRepos, listAllAuthorizedRepos } from './teams/repo-auth.js'   // P1 repo-picker: validate + this-org's authorized set + the union for "recent (other projects)"
 import { ROLES } from './teams/personas.js'
 import { NAME_STYLES, NAME_STYLE_NAMES } from './teams/names.js'
 import { isMediaRole } from './teams/media.js'
@@ -365,6 +367,50 @@ async function handle(req, res) {
       const meta = daemonMeta()
       const r = meta?.controlPort ? await ctrl(meta.controlPort, 'getroster', { org: url.searchParams.get('org') }) : { ok: false }
       return sendJSON(res, 200, r)
+    }
+    // P1 repo-picker (create-form): validate a human-typed repo path BEFORE the authorize call, so the "📁 repo"
+    // field gives live feedback instead of an opaque failure at launch (the owner's #1 create-form pain). Read-only
+    // and side-effect-free — it NEVER authorizes (that stays the human's PICK via the cap-gated /api/authorize-repo).
+    // SECURITY (Pierre): this is an ARBITRARY-PATH filesystem oracle, so it's the sharp edge, not hygiene —
+    //   (1) origin-gated with the SAME shared rejectRead as /api/state (a malicious browser page / DNS-rebind must
+    //       not turn it into a "does ~/.ssh/id_rsa exist?" probe). The `{ok}` boolean IS STILL a filesystem
+    //       existence probe on caller input — it's safe ONLY because rejectRead keeps it owner-origin-only, NOT
+    //       because "a bool is harmless". Do not relax the gate thinking it just returns true/false.
+    //   (2) MINIMAL RETURN — it computes the realpath only internally (to stat + set-compare) and returns just a
+    //       yes/no + the already-authorized bit; it NEVER echoes the realpath of arbitrary input, so even a gate
+    //       bypass can't use it as a symlink-target oracle;
+    //   (3) NON-BLOCKING + BOUNDED — the Promise.race bounds the RESPONSE (a dead network mount / deep symlink
+    //       chain / /proc path returns 'timed out' in ~2s); it does NOT cancel the underlying realpath, which
+    //       keeps running off the event loop and resolves into the void — harmless precisely because it's async
+    //       (the loop never blocks, which is the whole goal). Owner-only origin ⇒ no pending-op-accumulation DoS.
+    if (req.method === 'GET' && url.pathname === '/api/validate-repo') {
+      const bad = rejectRead(req); if (bad) return sendJSON(res, bad.code, { error: bad.error })
+      const raw = String(url.searchParams.get('path') || '').trim()
+      if (!raw) return sendJSON(res, 200, { ok: false, error: 'empty' })
+      const org = url.searchParams.get('org') || ''
+      const deadline = new Promise((_, rej) => setTimeout(() => rej(new Error('timed out')), 2000))
+      try {
+        const real = await Promise.race([realpathP(expandHome(raw)), deadline])
+        const st = await Promise.race([statP(real), deadline])
+        if (!st.isDirectory()) return sendJSON(res, 200, { ok: false, error: 'not a directory' })
+        const authorized = org ? loadAuthorizedRepos(org).has(real) : false   // real used ONLY for the set-compare, never returned
+        return sendJSON(res, 200, { ok: true, authorized })
+      } catch (e) { return sendJSON(res, 200, { ok: false, error: /timed out/.test(String(e?.message)) ? 'timed out' : 'not found on disk' }) }
+    }
+    // P1 repo-picker: quick-pick source for the "📁 repo" field. Two LABELED groups (Pierre): `authorized` = this
+    // org's already-authorized set (canonical realpaths), `recent` = the union of every OTHER org's vouched repos
+    // (so a FRESH org with an empty own-set still gets bootstrap quick-picks instead of typing blind). Cross-org
+    // visibility is NOT a leak — the dashboard is single-principal (one owner's orgs) — and every path is already
+    // human-vouched; the union's only real risk is picking the WRONG org's repo, which the UI closes with the
+    // "other projects" label, not by omission. Picking still routes through cap-gated authorize (visibility ≠ grant).
+    // Origin-gated (same rejectRead). Only reads small local JSON (no arbitrary-input realpath) → sync is fine here.
+    if (req.method === 'GET' && url.pathname === '/api/repos') {
+      const bad = rejectRead(req); if (bad) return sendJSON(res, bad.code, { error: bad.error })
+      const org = String(url.searchParams.get('org') || '').trim()
+      const mine = org ? loadAuthorizedRepos(org) : new Set()
+      const authorized = [...mine].sort()
+      const recent = listAllAuthorizedRepos().filter((p) => !mine.has(p)).sort()   // union minus this org's own set
+      return sendJSON(res, 200, { ok: true, authorized, recent })
     }
     // #48b: serve a worker-generated IMAGE asset (call-history preview), guarded HARD against path-traversal
     // / symlink-escape. GET (no CSRF — a read, consistent with the other GETs); the path-guard + raster-only

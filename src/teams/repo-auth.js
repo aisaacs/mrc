@@ -16,7 +16,7 @@
 // container) and is mutated ONLY by addAuthorizedRepo — the human control-plane path (dashboard CSRF / CLI),
 // NEVER a session-callable channel verb. A container can't read it (unmounted) and can't grow it (no verb). A
 // session may REQUEST a repo (an @user inbox item); the AUTHORIZATION is a human act. Escalate-by-asking only.
-import { realpathSync, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync } from 'node:fs'
+import { realpathSync, readFileSync, writeFileSync, mkdirSync, renameSync, unlinkSync, readdirSync } from 'node:fs'
 import { join, sep } from 'node:path'
 import { homedir } from 'node:os'
 
@@ -71,6 +71,23 @@ export function loadAuthorizedRepos(org) {
     const arr = JSON.parse(readFileSync(authPath(org), 'utf8'))
     return new Set(Array.isArray(arr) ? arr.map(String) : [])
   } catch { return new Set() }
+}
+
+// The union of EVERY org's authorized repos (canonical realpaths), across the whole store. Used ONLY by the
+// dashboard repo-picker to offer "recent (other projects)" quick-picks so a FRESH org (empty own set) isn't
+// typed-blind. This is NOT a security relaxation: every path returned already passed an authorize gate to be in
+// some org's set (all vouched), and picking one still routes through the per-org, cap-gated addAuthorizedRepo —
+// visibility ≠ grant. Single-principal dashboard (one owner's orgs), so surfacing the owner's own paths to the
+// owner is zero marginal disclosure; the caller LABELS them "other projects" to close the wrong-org foot-gun.
+export function listAllAuthorizedRepos() {
+  const out = new Set()
+  let names
+  try { names = readdirSync(authDir()) } catch { return [] }   // no store yet → empty
+  for (const f of names) {
+    if (!f.endsWith('.json')) continue
+    try { const arr = JSON.parse(readFileSync(join(authDir(), f), 'utf8')); if (Array.isArray(arr)) for (const r of arr) out.add(String(r)) } catch {}
+  }
+  return [...out]
 }
 
 // Add a repo to an org's authorized set — the HUMAN control-plane mutation ONLY. Realpaths + broad-guards

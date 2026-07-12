@@ -1309,15 +1309,34 @@ function renderBuilder(d) {
       <div class="muted" style="margin-top:8px;font-size:11px">One tap — the project comes up live. Each agent picks its own repo.</div>
     </div>
     <div><h2>Preview</h2><div id="bPrev" class="muted">…</div></div></div>`
-  $('#bOrg').oninput = e=>{B.org=e.target.value;bPreview()}
+  $('#bOrg').oninput = e=>{B.org=e.target.value;bPreview(); clearTimeout(bOrgPicksT); bOrgPicksT=setTimeout(()=>{ if(S.building && (S.builder._repoPicksOrg||'')!==(S.builder.org||'')) bLoadRepoPicks() },500)}
   fetch('/api/team-presets').then(r=>r.json()).then(d=>{ const sel=$('#bPreset'); if(!sel)return
     sel.innerHTML='<option value="">— preset —</option>'+(d.presets||[]).map(p=>`<option value="${esc(p.name)}">${esc(p.title)}</option>`).join('')
     sel.onchange=()=>{ const p=(d.presets||[]).find(x=>x.name===sel.value); if(!p)return; S.builder.teams=JSON.parse(JSON.stringify(p.roster.teams)); autofillNames(); renderBuilder($('#detail')) } }).catch(()=>{})
   // #44: load the name-style pools once, then auto-name members (idempotent — keeps any already-set names).
   if(!S.namePools){ fetch('/api/names').then(r=>r.json()).then(d=>{ if(d&&d.ok){ S.namePools={styles:d.styles,pools:d.pools}; autofillNames(); if(S.building)renderBuilder($('#detail')) } }).catch(()=>{}) }
   else autofillNames()
+  bLoadRepoPicks()   // P1 repo-picker: fetch this org's authorized set + recent (other projects) for the 📁 quick-picks
   bRenderTeams(); bRenderPersonas(); bPreview()
 }
+// P1 repo-picker: refresh the quick-pick source for the current builder org. Re-fetched on org change (the
+// this-project set is org-scoped) — best-effort, empty on failure. Re-renders teams so the chips/datalist appear.
+function bLoadRepoPicks() {
+  const org = (S.builder && S.builder.org) || ''
+  fetch('/api/repos?org=' + encodeURIComponent(org)).then(r=>r.json()).then(d=>{
+    if (!d || !d.ok || !S.building) return
+    S.builder._repoPicks = { authorized: d.authorized || [], recent: d.recent || [] }
+    S.builder._repoPicksOrg = org
+    bRenderTeams()
+  }).catch(()=>{})
+}
+// A labeled row of repo quick-pick chips (empty → nothing). shortRepo trims to the last two path segments so the
+// chip is scannable; the full path is the title + what gets picked.
+function repoPickRow(label, list, ti, mi) {
+  if (!list || !list.length) return ''
+  return `<div class="memrow reporecents" style="margin-top:3px;gap:5px;flex-wrap:wrap;align-items:center"><span class="muted" style="font-size:10.5px;flex:0 0 auto;text-transform:uppercase;letter-spacing:.04em">${esc(label)}</span>${list.slice(0,8).map(p=>`<button class="btn tiny" title="${esc(p)}" data-p="${esc(p)}" onclick="bPickRepo(${ti},${mi},this.dataset.p)">${esc(shortRepo(p))}</button>`).join('')}</div>`
+}
+function shortRepo(p) { const s=String(p||'').replace(/\/+$/,''); const parts=s.split('/').filter(Boolean); return parts.length<=2 ? s : '…/'+parts.slice(-2).join('/') }
 // ---- custom personas (#42) ----
 // The editor edits S.builder.personas (the working copy that the role-chooser + bRoster read). A save
 // also persists the single persona to the project's team.json via POST /api/personas — server-validated
@@ -1382,13 +1401,16 @@ function bRenderTeams() {
   // Default view = agent NAME + its REPO (the two things every launch needs). role/backend/lead/territory
   // and the team territory are Advanced-only (§13). delete-agent lives on the name row so it stays reachable
   // when Advanced is off; it hides for the last remaining agent (an empty launch is refused downstream anyway).
-  $('#bTeams').innerHTML = B.teams.map((t,ti)=>`<div class="team">
+  const picks = B._repoPicks || { authorized: [], recent: [] }
+  const dlOpts = [...(picks.authorized||[]).map(p=>({p,lbl:'this project'})), ...(picks.recent||[]).map(p=>({p,lbl:'other project'}))]
+  $('#bTeams').innerHTML = `<datalist id="bRepoPicks">${dlOpts.map(o=>`<option value="${esc(o.p)}" label="${esc(o.lbl)}"></option>`).join('')}</datalist>` + B.teams.map((t,ti)=>`<div class="team">
     <div class="row" style="align-items:flex-end;gap:8px"><div style="flex:2"><label>Team</label><input value="${esc(t.name)}" oninput="bSet(${ti},null,'name',this.value)"></div>
       ${adv?`<div style="flex:2"><label>Territory</label><input value="${esc(t.territory)}" placeholder="." oninput="bSet(${ti},null,'territory',this.value)"></div>`:''}
       ${B.teams.length>1?`<button class="btn tiny" title="remove this team" onclick="bDelTeam(${ti})">✕</button>`:''}</div>
     ${t.members.map((m,mi)=>{ const style=B.nameStyle||'french'; const nmErr=(m.name && !SAFE_NAME_RE.test(m.name))?'<span class="bad" style="font-size:11px">letters, digits, internal hyphens only</span>':''; return `<div class="bmem">
       <div class="bmemname"><input class="bnm" value="${esc(m.name||'')}" placeholder="${style==='custom'?'name (free-type)':'(auto)'}" aria-label="agent name" oninput="bSetName(${ti},${mi},this.value)">${style!=='custom'?`<button class="btn tiny" title="suggest another name" onclick="bRerollName(${ti},${mi})">🎲</button>`:''}<span id="nmerr-${ti}-${mi}">${nmErr}</span>${totalAgents>1?`<button class="btn tiny" title="remove this agent" onclick="bDelMem(${ti},${mi})">✕</button>`:''}</div>
-      <div class="memrow" style="margin-top:4px"><span class="muted" style="font-size:11px;flex:0 0 auto">📁 repo</span><input style="flex:1" value="${esc(m.repo||'')}" placeholder="this agent's repo (e.g. ~/code/app)" onchange="bSetRepo(${ti},${mi},this.value)"><span id="repomsg-${ti}-${mi}" style="font-size:11px;flex:0 0 auto"></span></div>
+      <div class="memrow" style="margin-top:4px"><span class="muted" style="font-size:11px;flex:0 0 auto">📁 repo</span><input style="flex:1" list="bRepoPicks" value="${esc(m.repo||'')}" placeholder="this agent's repo — type ~/code/app or pick a recent one" oninput="bRepoInput(${ti},${mi},this.value)" onchange="bSetRepo(${ti},${mi},this.value)"><span id="repomsg-${ti}-${mi}" style="font-size:11px;flex:0 0 auto">${m._repoMsg||''}</span></div>
+      ${(!m.repo) ? repoPickRow('This project', (picks.authorized||[]), ti, mi) + repoPickRow('Recent · other projects', (picks.recent||[]), ti, mi) : ''}
       ${adv?`<div class="memrow" style="margin-top:4px">
         <select onchange="bSet(${ti},${mi},'role',this.value)">${roleOptions().map(o=>`<option ${o===m.role?'selected':''}>${o}</option>`).join('')}</select>
         ${mediaBackend(m.role)
@@ -1427,18 +1449,47 @@ function bRoster(){const B=S.builder;const r={org:B.org||'org',repo:B.repo||unde
 // (CSRF + capOk, human-only) lands it in the org's authorized-set BEFORE launch, since the Model B floor THROWS on
 // an un-authorized member.repo (a session can request a repo, never authorize one). Best-effort with inline result;
 // the preview/launch surfaces any refusal. Fires on blur (onchange), not per-keystroke.
+// The repo state (validating / ✓ found / ✓ authorized / ✗ …) is stashed on the member as `_repoMsg` so a
+// bRenderTeams re-render preserves it (the span reads it back); handlers update both the live DOM span and _repoMsg.
+function setRepoMsg(ti,mi,html){ const m=S.builder.teams[ti].members[mi]; if(m)m._repoMsg=html; const el=$('#repomsg-'+ti+'-'+mi); if(el)el.innerHTML=html }
+const bRepoTimers = {}
+// oninput (per-keystroke, debounced): VALIDATE ONLY — never authorize (that's the human's commit, onchange/pick).
+// Reads /api/validate-repo (a yes/no existence check, origin-gated) so a typo surfaces before launch, not at it.
+window.bRepoInput = (ti,mi,v) => {
+  const B=S.builder; const m=B.teams[ti].members[mi]; m.repo = String(v||'').trim() || undefined
+  const key=ti+'-'+mi; clearTimeout(bRepoTimers[key]); bPreview()
+  if (!m.repo) { setRepoMsg(ti,mi,''); return }
+  setRepoMsg(ti,mi,'<span class="muted">…</span>')
+  bRepoTimers[key] = setTimeout(async () => {
+    const path=m.repo; if(!path) return
+    const r = await api('/api/validate-repo?path='+encodeURIComponent(path)+'&org='+encodeURIComponent(B.org||''),{method:'GET'}).catch(()=>({ok:false,error:'network'}))
+    if (m.repo!==path) return   // field moved on — stale result, drop
+    setRepoMsg(ti,mi, r.ok ? (r.authorized?'<span class="good">✓ authorized</span>':'<span class="good">✓ found</span>') : `<span class="bad">✗ ${esc(r.error||'invalid')}</span>`)
+  }, 400)
+}
+// P1 (Model B): each agent picks its OWN repo, and the human's PICK is the authorization — /api/authorize-repo
+// (CSRF + capOk, human-only) lands it in the org's authorized-set BEFORE launch, since the Model B floor THROWS on
+// an un-authorized member.repo (a session can request a repo, never authorize one). Best-effort with inline result;
+// the preview/launch surfaces any refusal. Fires on blur (onchange), not per-keystroke.
 window.bSetRepo = async (ti,mi,v) => {
   const B=S.builder; const m=B.teams[ti].members[mi]; m.repo = String(v||'').trim() || undefined
-  const msg=$('#repomsg-'+ti+'-'+mi)
+  const key=ti+'-'+mi; clearTimeout(bRepoTimers[key])   // cancel any pending validate so it can't overwrite the authorize result
   bPreview()
-  if (!m.repo) { if(msg)msg.innerHTML=''; return }
-  if (!B.org) { if(msg)msg.innerHTML='<span class="bad">name the project first</span>'; return }
-  if(msg)msg.innerHTML='<span class="muted">authorizing…</span>'
+  if (!m.repo) { setRepoMsg(ti,mi,''); return }
+  if (!B.org) { setRepoMsg(ti,mi,'<span class="bad">name the project first</span>'); return }
+  setRepoMsg(ti,mi,'<span class="muted">authorizing…</span>')
   const r = await api('/api/authorize-repo',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({org:B.org, repo:m.repo})}).catch(()=>({ok:false,error:'network'}))
-  if(msg)msg.innerHTML = r.ok?`<span class="good">✓ authorized</span>`:`<span class="bad">✗ ${esc(r.error||'refused')}</span>`
-  bPreview()
+  setRepoMsg(ti,mi, r.ok?'<span class="good">✓ authorized</span>':`<span class="bad">✗ ${esc(r.error||'refused')}</span>`)
+  bPreview(); if(r.ok) bLoadRepoPicks()   // newly-authorized repo moves recent→this-project for the other members' chips
 }
-let bTimer=null
+// A quick-pick chip: fill the field with a vouched path + authorize it for THIS org (picking a "recent · other
+// project" chip is a deliberate cross-repo grant — human act, cap-gated). Re-renders so the chips collapse and the
+// filled value shows; _repoMsg persistence keeps the authorize result visible across that re-render.
+window.bPickRepo = (ti,mi,p) => {
+  const m=S.builder.teams[ti].members[mi]; m.repo=String(p||'').trim()||undefined; setRepoMsg(ti,mi,'<span class="muted">authorizing…</span>')
+  bRenderTeams(); bSetRepo(ti,mi,m.repo)
+}
+let bTimer=null, bOrgPicksT=null
 function bPreview(){clearTimeout(bTimer);bTimer=setTimeout(async()=>{
   const r=await api('/api/team-preview',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})})
   const el=$('#bPrev'); if(!el)return
