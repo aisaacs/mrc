@@ -88,7 +88,28 @@
      else the hidden list's column 1 leaves an empty gutter beside the builder. */
   .app.build-takeover #detail { grid-column:1 / -1 }
   .app.build-takeover .tabwrap { visibility:hidden }
+  /* P2 command-center: the Projects landing is a full-width takeover (same mechanism as the builder) — a
+     glanceable grid of every project that doubles as the pick/resume picker. */
+  .app.projects-takeover .main { grid-template-columns:1fr }
+  .app.projects-takeover .list { display:none }
+  .app.projects-takeover #detail { grid-column:1 / -1 }
+  .app.projects-takeover .tabwrap { visibility:hidden }
   #detail { grid-column:2; grid-row:1 }
+  h1.home-link { cursor:pointer } h1.home-link:hover { opacity:.82 } h1.home-link:focus-visible { outline:2px solid var(--accent); outline-offset:3px; border-radius:4px }
+  .projwrap { padding:20px 22px; max-width:920px }
+  .projgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:14px; margin-top:14px }
+  .projtile { border:1px solid var(--line); border-radius:12px; padding:14px 15px; background:var(--panel); display:flex; flex-direction:column; gap:9px; text-align:left; cursor:pointer; transition:border-color .12s, transform .06s }
+  .projtile:hover { border-color:var(--accent) } .projtile:active { transform:translateY(1px) }
+  .projtile:focus-visible { outline:2px solid var(--accent); outline-offset:2px }
+  .projtile .pt-top { display:flex; align-items:center; gap:8px }
+  .projtile .pt-name { font-weight:700; font-size:15px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .projtile .pt-need { font-size:11px; font-weight:700; color:#fff; background:var(--danger,#c0392b); border-radius:10px; padding:1px 7px; flex:0 0 auto }
+  .projtile .pt-state { font-size:11.5px; font-weight:700; padding:1px 8px; border-radius:11px; border:1px solid var(--line); flex:0 0 auto }
+  .projtile .pt-state.on { color:var(--online); border-color:#2f6b3f } .projtile .pt-state.off { color:var(--dim) } .projtile .pt-state.go { color:var(--accent); border-color:var(--accent) }
+  .projtile .pt-meta { font-size:12px; color:var(--dim); display:flex; flex-wrap:wrap; gap:4px 10px }
+  .projtile .pt-acts { display:flex; gap:6px; margin-top:2px }
+  .projtile.add { align-items:center; justify-content:center; color:var(--dim); border-style:dashed; min-height:96px; font-weight:600 }
+  .projtile.add:hover { color:var(--accent) }
   .termblock { display:none; flex-direction:column; flex:1 1 0; min-height:0 }
   .termhdr { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px }
   .termframe { width:100%; flex:1 1 0; min-height:0; border:1px solid var(--line); border-radius:8px; background:#000 }
@@ -326,7 +347,7 @@
 <div id="flash"></div>
 <div class="app">
   <header>
-    <h1><svg class="hatmark" viewBox="0 0 32 32" width="20" height="20" aria-hidden="true"><ellipse cx="16" cy="23.4" rx="12.8" ry="3.05"/><path d="M10.5 9 Q10.75 6.3 16 6.1 Q21.25 6.3 21.5 9 L22 22.6 L10 22.6 Z"/></svg>Mister Claude</h1>
+    <h1 class="home-link" role="button" tabindex="0" title="All projects — pick or resume" aria-label="All projects — pick or resume" onclick="openProjects()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openProjects()}"><svg class="hatmark" viewBox="0 0 32 32" width="20" height="20" aria-hidden="true"><ellipse cx="16" cy="23.4" rx="12.8" ry="3.05"/><path d="M10.5 9 Q10.75 6.3 16 6.1 Q21.25 6.3 21.5 9 L22 22.6 L10 22.6 Z"/></svg>Mister Claude</h1>
     <div class="tabwrap">
       <button class="tabhint l" id="tabHintL" onclick="scrollTabs(-1)" title="needs-you on a tab scrolled off the left — click to reveal" hidden></button>
       <div class="tabstrip" id="tabs"></div>
@@ -423,7 +444,7 @@ const MEDIA_ROLE_BACKEND = { designer:'gemini', 'sound-designer':'elevenlabs', c
 const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
 
 const S = {
-  building: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, showHandled: false, replyTo: null, jumpTarget: null, flash: null, roomDrafts: {},
+  building: false, projects: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, showHandled: false, replyTo: null, jumpTarget: null, flash: null, roomDrafts: {},
   _wmCur: null, _wmLatest: 0, _openWm: {},   // #63-F unread watermark: the room/channel currently open + its latest position + the per-key captured-at-open boundary
   notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
   notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
@@ -533,7 +554,7 @@ const orgRunning = (org) => (S.teams.launch||[]).some(l=>l.org===org && l.runnin
 const orgLaunchRec = (org) => (S.teams.launch||[]).find(l=>l.org===org)
 const orgLaunching = (org) => !!(orgLaunchRec(org)||{}).launching
 const orgFailed = (org) => !!(orgLaunchRec(org)||{}).failed
-function switchOrg(org) { if (org===S.org) return; if (!confirmLeaveBuilder()) return; leaveUnread(); S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; S.selHome=true; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }); setOrgUrl(org); paint() }   // #55-1: guard a dirty build; #61: entering a project lands on its home
+function switchOrg(org) { if (org===S.org) return; if (!confirmLeaveBuilder()) return; leaveUnread(); S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; S.projects=false; S.selHome=true; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }); setOrgUrl(org); paint() }   // #55-1: guard a dirty build; #61: entering a project lands on its home
 window.switchOrg = switchOrg
 
 // Browser-style project tabs: one per defined org. Chrome-stable — tabs keep a FIXED position
@@ -607,6 +628,7 @@ const launchFor = () => (S.teams.launch||[]).find(x=>x.org===S.org && x.running)
 // #47: the @you channel's detailKey uses channelSig() (folds every item's RESOLUTION into the key, so a
 // REMOTE resolve — e.g. answered via Telegram — re-renders the channel) and FREEZES while composing.
 const detailKey = () => S.building ? 'build'
+  : S.projects ? 'projects:'+projectsSig()   // P2: re-render the landing when any project's state/needs-you changes
   : S.selHome ? 'home:'+(S.org||'')+':'+(S.settings?'s':'-')   // #61: rebuild once settings load (for the --web note)
   : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+S.selMember+':'+(launchFor()?.members?.[S.selMember]?.state||'none'))
   : S.selInbox!=null ? 'channel:'+(S.org||'')+':'+channelSig()
@@ -624,6 +646,7 @@ function paint() {
   // fills width); editing an existing team stays the in-place subpanel. Re-evaluated every paint; ✕ Cancel
   // (S.building=false) drops the class and restores the layout.
   $('.app').classList.toggle('build-takeover', S.building && builderIsFresh())
+  $('.app').classList.toggle('projects-takeover', S.projects && !S.building)   // P2: the command-center Projects landing
   if (!S.addingTo) renderMain()   // freeze the list while the add-member form is open (don't clobber inputs)
   const key = detailKey()
   if (key!==paintedKey) { renderDetail(); paintedKey=key } else patchDetail()
@@ -744,6 +767,7 @@ function amForm(t) {
 function renderDetail() {
   const d = $('#detail')
   if (S.building) return renderBuilder(d)
+  if (S.projects) return renderProjects(d)
   if (S.selHome) return renderProjectHome(d)
   if (S.selMember) return renderMember(d)
   if (S.selInbox!=null) return renderInboxChannel(d)
@@ -1538,7 +1562,7 @@ window.openBuilder = async (fresh)=>{
   // modal which just avoided nulling).
   if (!S.building) S._builderReturn = { selRoom:S.selRoom, selMember:S.selMember, selInbox:S.selInbox, selHome:S.selHome, tab:S.tab }
   leaveUnread()   // #63-F: opening the builder leaves any open room — flush its watermark
-  S.building=true; S.selMember=null; S.selRoom=null; S.selInbox=null; S.selHome=false
+  S.building=true; S.projects=false; S.selMember=null; S.selRoom=null; S.selInbox=null; S.selHome=false
   if (fresh) { S.builder = freshBuilder(); markBuilderClean() }   // #55: baseline the empty build
   paint()
   if (!fresh && S.org && (S.teams.members||[]).some(m=>m.org===S.org)) {
@@ -1579,7 +1603,66 @@ window.closeSettings = ()=>{ S.settingsOpen=false; renderModal() }
 // #61: the project HOME — entering a project lands here (overview + the per-project settings moved out of
 // the gear). Clears the other selections; lazy-loads settings for the --web note (detailKey's settings flag
 // rebuilds the pane once it arrives). Guarded by confirmLeaveBuilder so it can't silently discard a build.
-window.openProjectHome = ()=>{ if (!confirmLeaveBuilder()) return; leaveUnread(); S.selHome=true; S.selRoom=S.selInbox=S.selMember=null; S.building=false; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }); paint() }
+window.openProjectHome = ()=>{ if (!confirmLeaveBuilder()) return; leaveUnread(); S.selHome=true; S.projects=false; S.selRoom=S.selInbox=S.selMember=null; S.building=false; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }); paint() }
+
+// ---- P2: command-center Projects landing (pick / resume) ----
+// A glanceable, full-width grid of EVERY project (running + suspended), doubling as the pick-project picker —
+// the "as light as `mrc pick`" bar. Opened from the header logo (or when no project is entered). Trust-split
+// (Pierre): "pick" is a pure CLIENT switch over origin-gated reads; every state-CHANGING tile action reuses an
+// EXISTING actJSON (CSRF-token) → cap-gated daemon endpoint — resume→/api/team-launch, suspend→/api/team-stop,
+// delete→/api/team-delete. No tile affordance is a new or unguarded write; no "▶" is a GET.
+function projectsSig() {
+  return (S.teams.orgs||[]).map(o=>{ const g=o.org; return g+':'+(orgRunning(g)?'r':orgLaunching(g)?'l':orgFailed(g)?'f':'s')+':'+orgNeed(g) }).join('|')
+}
+window.openProjects = ()=>{ if (!confirmLeaveBuilder()) return; leaveUnread(); S.projects=true; S.building=false; S.selHome=S.selRoom=S.selInbox=S.selMember=null; paint() }
+// pick = client switch (read); for the currently-active org, "open" lands on its home.
+window.openProject = (org)=>{ S.projects=false; if (org===S.org) openProjectHome(); else switchOrg(org) }
+// resume = the EXISTING cap-gated launchteam write (resumeTeam → actJSON /api/team-launch); enter first so the
+// launching panel gives immediate feedback, then fire the guarded relaunch.
+window.resumeAndOpen = (org)=>{ if (org===S.org) { S.projects=false; S.selHome=true; S.building=false; paint() } else openProject(org); resumeTeam(org) }
+// delete = the EXISTING cap-gated removeorg write (forget the org; nothing on disk deleted), param'd for a tile
+// that may target a non-active org. Confirms first (destructive), clears active-selection if it was the target.
+window.projDelete = async (org)=>{ if(!org||!confirm(`Delete "${org}" from Mister Claude? Its sessions stop and the tab is removed. Nothing on disk is deleted — transcripts and team.json stay, so you can re-add it any time with \`mrc team up\`.`))return
+  const r=await actJSON('/api/team-delete',{org}); if(!r.ok)return flashFail(r); S.flash=null
+  if(org===S.org){ S.org=null; S.selRoom=S.selInbox=S.selMember=null; S.selHome=false }
+  if(S.building && S.builder?.org===org) S.building=false; tick() }
+function renderProjects(d) {
+  const orgs = (S.teams.orgs||[]).map(o=>o.org)
+  const tile = (org) => {
+    const running=orgRunning(org), launching=orgLaunching(org), failed=orgFailed(org)
+    const mem = (S.teams.members||[]).filter(m=>m.org===org)
+    const teams = new Set(mem.map(m=>m.team).filter(Boolean)).size
+    const live = mem.filter(m=>m.tier==='live'); const ready = live.filter(m=>m.online).length
+    const workers = mem.filter(m=>m.tier==='worker').length
+    const need = orgNeed(org)
+    const stateCls = running?'on':launching?'go':'off'
+    const stateLbl = launching?'🚀 launching':running?'● running':failed?'⚠ failed':'○ suspended'
+    const metaBits = [ teams?`${teams} team${teams>1?'s':''}`:'', `${mem.length} member${mem.length===1?'':'s'}`, running&&live.length?`${ready}/${live.length} ready`:'', workers?`${workers} worker${workers>1?'s':''}`:'' ].filter(Boolean)
+    // action row — primary (open/resume/retry) + secondary (suspend/open-peek/delete). Every WRITE = an
+    // existing actJSON (CSRF → cap-gated); Open/peek are client switches. data-org keeps the org out of the
+    // interpolated JS string (#65 — the fixed onclick reads this.dataset.org).
+    let acts = ''
+    if (running || launching) {
+      acts = `<button class="btn primary tiny" data-org="${esc(org)}" onclick="openProject(this.dataset.org)">Open</button>`
+        + `<button class="btn tiny" data-org="${esc(org)}" title="Suspend — stop members, keep the team, transcripts &amp; history" onclick="closeTab(this.dataset.org)">⏸ Suspend</button>`
+    } else if (failed) {
+      acts = `<button class="btn primary tiny" data-org="${esc(org)}" onclick="resumeAndOpen(this.dataset.org)">↻ Retry</button>`
+        + `<button class="btn tiny" data-org="${esc(org)}" onclick="openProject(this.dataset.org)">Open</button>`
+    } else {
+      acts = `<button class="btn primary tiny" data-org="${esc(org)}" onclick="resumeAndOpen(this.dataset.org)">▶ Resume</button>`
+        + `<button class="btn tiny" data-org="${esc(org)}" title="Open without resuming — read transcripts &amp; history" onclick="openProject(this.dataset.org)">Open</button>`
+    }
+    acts += `<button class="btn tiny" data-org="${esc(org)}" title="Delete — forget this project (files kept)" onclick="projDelete(this.dataset.org)" style="margin-left:auto">🗑</button>`
+    return `<div class="projtile">
+      <div class="pt-top"><span class="pt-name" title="${esc(org)}">${esc(org)}</span>${need?`<span class="pt-need" title="${need} need you">❓${need}</span>`:''}<span class="pt-state ${stateCls}">${stateLbl}</span></div>
+      <div class="pt-meta">${metaBits.map(b=>`<span>${esc(b)}</span>`).join('')}</div>
+      <div class="pt-acts">${acts}</div></div>`
+  }
+  d.innerHTML = `<div class="projwrap"><div class="modalhead" style="margin-bottom:2px"><h2 style="margin:0;font-size:17px">Projects</h2></div>
+    <div class="muted" style="font-size:12px">Pick a project to open, or ▶ resume a suspended one — each live member --continues its own conversation.</div>
+    <div class="projgrid">${orgs.map(tile).join('')}<div class="projtile add" role="button" tabindex="0" title="New project" onclick="newProject()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();newProject()}">＋ New project</div></div>
+    ${orgs.length?'':`<div class="muted" style="margin-top:16px">No projects yet — ＋ New project to build one.</div>`}</div>`
+}
 const sBadge = (scope,mut)=>`<span class="stag ${scope==='global'?'g':'p'}">${scope==='global'?'GLOBAL':'PER-PROJECT'}</span><span class="stag ${mut==='runtime'?'r':'l'}">${mut==='runtime'?'RUNTIME':'LAUNCH-TIME'}</span>`
 
 // Render the Settings modal — centered card + scrim over the whole app. EVENT-DRIVEN (openSettings /
