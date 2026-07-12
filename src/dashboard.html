@@ -1413,7 +1413,9 @@ function repoPickRow(label, list, ti, mi) {
   if (!list || !list.length) return ''
   return `<div class="memrow reporecents" style="margin-top:3px;gap:5px;flex-wrap:wrap;align-items:center"><span class="muted" style="font-size:10.5px;flex:0 0 auto;text-transform:uppercase;letter-spacing:.04em">${esc(label)}</span>${list.slice(0,8).map(p=>`<button class="btn tiny" title="${esc(p)}" data-p="${esc(p)}" onclick="bPickRepo(${ti},${mi},this.dataset.p)">${esc(shortRepo(p))}</button>`).join('')}</div>`
 }
-function shortRepo(p) { const s=String(p||'').replace(/\/+$/,''); const parts=s.split('/').filter(Boolean); return parts.length<=2 ? s : '…/'+parts.slice(-2).join('/') }
+// §13 "recent-repo quick-picks by folder name" — the chip shows the folder NAME (basename); the full path is the
+// title (hover) and lands in the field on select (bPickRepo sets m.repo = the full path).
+function shortRepo(p) { const parts=String(p||'').replace(/\/+$/,'').split('/').filter(Boolean); return parts[parts.length-1] || String(p||'') }
 // 📁 Choose… → the in-app folder browser; on pick, reuse bPickRepo (fills the field + the EXISTING cap-gated
 // authorize). The browse endpoint is a pure read; the grant stays /api/authorize-repo. Two gates, never conflated.
 window.fcOpen = (ti,mi) => openFolderChooser((path) => bPickRepo(Number(ti), Number(mi), path))
