@@ -416,6 +416,21 @@ const setOrgUrl = (org) => { try { history.replaceState(null, '', '/'+encodeURIC
 // agents + (Slice B) a cast of characters rather than role-forward teams.
 const ROLES = ['generalist','engineer','tester','researcher','user-defender','architect','critic','adversary','ultracritical','designer','sound-designer','composer']
 const BACKENDS = ['claude','codex']   // agent backends only — media roles DERIVE their backend (below)
+// §5.2 cast (Slice B), UI-ADD-ONLY: a curated set of recognizable named characters, each mapped to its
+// signature ROLE, so adding a specialist is one recognizable click instead of a random French name — the first
+// increment of the recurring-characters direction (persistent per-character volumes stay P4/Pierre-gated). A
+// cast pick is roster-populate-only: it pushes the SAME member shape a hand-add does, so it's launch-identical
+// (parseRoster/materializeRoster re-validate it). Deliberately NO adversary/ultracritical here — a team adversary
+// is a FULL-EGRESS member (opposite of the caged one you /summon); those stay the Advanced role dropdown. And the
+// critic is HERVÉ, not Pierre: "Pierre" is reserved for the caged summoned adversary (the canonical, hard-coded,
+// containment-loaded identity), so the cast never collides with it (Pierre's call — a rename beats disambiguating copy).
+const CAST = [
+  { key:'colette', name:'Colette', role:'architect', label:'Architect', title:'Colette — the architect: plans structure, interfaces, and the shape of the work' },
+  { key:'camille', name:'Camille', role:'engineer',  label:'Engineer',  title:'Camille — an engineer: implements features in its territory' },
+  { key:'herve',   name:'Hervé',   role:'critic',    label:'Critic',    title:'Hervé — an in-team critic: pushes back on the plan (a full team member — not the sandboxed red-teamer you /summon)' },
+  { key:'margot',  name:'Margot',  role:'tester',    label:'Tester',    title:'Margot — a tester: verifies output with the in-container headless browser' },
+  { key:'thierry', name:'Thierry', role:'designer',  label:'Designer',  title:'Thierry — the designer: generates image assets (needs a Gemini key in the repo .env)' },
+]
 // #42: the role chooser lists built-in roles PLUS this project's custom personas (so a member can pick
 // @advertiser). Custom keys that shadow a built-in are de-duped (the parser already forbids alias/media
 // shadows, so the only real overlap is an agent-role override, which we show once).
@@ -1442,7 +1457,7 @@ function bRenderTeams() {
           : `<select onchange="bSet(${ti},${mi},'backend',this.value)">${BACKENDS.map(o=>`<option ${o===m.backend?'selected':''}>${o}</option>`).join('')}</select>`}
         <label class="lead" title="★ — this agent can reach you directly (it joins the escalation room with @user). Non-★ agents escalate up to a ★ instead. Several ★ per team are fine; a team with none gets one automatically."><input type="checkbox" ${m.lead?'checked':''} onchange="bSet(${ti},${mi},'lead',this.checked)"> ★ reaches you</label>
         <input value="${esc(m.territory)}" placeholder="territory" oninput="bSet(${ti},${mi},'territory',this.value)"></div>`:''}</div>`}).join('')}
-    <div style="margin-top:8px"><button class="btn tiny" onclick="bAddMem(${ti})">＋ agent</button></div></div>`).join('')
+    <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><button class="btn tiny" onclick="bAddMem(${ti})">＋ agent</button><span class="muted" style="font-size:11px">or from cast:</span>${CAST.map(c=>`<button class="btn tiny castchip" title="${esc(c.title)}" data-ti="${ti}" data-key="${esc(c.key)}" onclick="bAddCast(this.dataset.ti,this.dataset.key)">${esc(c.name)} · ${esc(c.label)}</button>`).join('')}</div></div>`).join('')
 }
 // §14: ★ ("reaches you") is a per-agent toggle and MULTIPLE are allowed per team (was: a radio that forced
 // exactly one lead). Zero is fine in the form — parseRoster defaults one per team (the ≥1-★ floor).
@@ -1460,6 +1475,16 @@ window.bToggleAdv=()=>{S.builder.advanced=!S.builder.advanced;renderBuilder($('#
 window.bAddTeam=()=>{S.builder.teams.push({name:'team'+(S.builder.teams.length+1),territory:'.',members:[{role:'generalist',backend:'claude',lead:true,territory:'',name:bSuggest(),_nameAuto:true}]});bRenderTeams();bPreview()}
 window.bDelTeam=(ti)=>{S.builder.teams.splice(ti,1);bRenderTeams();bPreview()}
 window.bAddMem=(ti)=>{S.builder.teams[ti].members.push({role:'generalist',backend:'claude',lead:false,territory:'',name:bSuggest(),_nameAuto:true});bRenderTeams();bPreview()}
+// §5.2 cast add: append a named character to team ti. The member object is the SAME shape bAddMem pushes —
+// {role,backend,lead,territory,name} — so at launch it's byte-indistinguishable from a hand-added member (no
+// cast-specific launch path; bRoster→parseRoster re-validates it). The name is PINNED (_nameAuto:false) so a
+// style change / autofill never re-rolls it. Media roles (designer) derive their backend via mediaBackend. If
+// the cast name is already taken in this build, suffix a digit so the handle stays unique + recognizable.
+window.bAddCast=(ti,key)=>{ const c=CAST.find(x=>x.key===key); if(!c)return
+  const backend = mediaBackend(c.role) || 'claude'
+  let name=c.name; const taken=allBuilderNames(); if(taken.has(name.toLowerCase())){ let n=2; while(taken.has((c.name+n).toLowerCase()))n++; name=c.name+n }
+  S.builder.teams[ti].members.push({role:c.role,backend,lead:false,territory:'',name,_nameAuto:false})
+  bRenderTeams();bPreview() }
 window.bDelMem=(ti,mi)=>{S.builder.teams[ti].members.splice(mi,1);bRenderTeams();bPreview()}
 // Hand-typing a name clears _nameAuto so a style change / 🎲 never clobbers it. No re-render (focus) —
 // update the inline #36 error span directly.

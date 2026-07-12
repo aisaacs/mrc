@@ -17,8 +17,13 @@ export const SPACEBALLS_EGGS = {
 }
 
 // Plain French first names, no agenda. Mixed with the eggs above into one draw pool.
+// NOTE: "Pierre" is deliberately NOT here — it's RESERVED product-wide for the caged summoned adversary (whose
+// name is HARDCODED at `--new 'Pierre'` + "You are PIERRE" in ADVERSARY_PROMPT, never drawn from this pool). If
+// a random member could be auto-named Pierre, it would sit next to a summoned adversary Pierre with OPPOSITE
+// containment — the two-Pierres confusion, arrived at by dice. Reserving the name at the source (not just the
+// §5.2 cast) makes "Pierre" mean exactly one thing everywhere. (Pierre's call, this-session.)
 const PLAIN = [
-  'Thierry', 'Guy', 'Pierre', 'Camille', 'Hervé', 'Margot', 'Gaston', 'Colette', 'Rémy',
+  'Thierry', 'Guy', 'Camille', 'Hervé', 'Margot', 'Gaston', 'Colette', 'Rémy',
   'Yannick', 'Brigitte', 'Maurice', 'Sylvie', 'Étienne', 'Hélène', 'Bernard', 'Josette',
   'Lucien', 'Odette', 'Fabrice', 'Ghislaine', 'Bruno', 'Nadine', 'Pascal', 'Renée', 'Didier',
   'Mireille', 'Gérard', 'Solange', 'Florent', 'Apolline', 'Côme', 'Margaux', 'Anouk',
