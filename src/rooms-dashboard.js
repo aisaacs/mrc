@@ -17,7 +17,10 @@ import { resolveTtydRequest, ttydSecurityHeaders } from './ttyd-proxy.js'   // g
 import { findFreePort } from './ports.js'
 import { parseRoster, validateRoster, editPersona } from './teams/roster.js'
 import { realpath as realpathP, stat as statP, readdir as readdirP } from 'node:fs/promises'   // P1 repo-picker: async, bounded I/O for the validate oracle + the folder-chooser dir-enumeration (never block the daemon event loop)
+import { readdirSync } from 'node:fs'
 import { expandHome, loadAuthorizedRepos, listAllAuthorizedRepos } from './teams/repo-auth.js'   // P1 repo-picker: validate + this-org's authorized set + the union for "recent (other projects)"
+import { storeCtx, mrcStoreDir } from './mrc-store.js'   // REBUILD session-picker: resolve the getId(repoPath) read root — the EXACT slice `mrc <repo>` opens (repoSliceDir lattice), disjoint from member/adv slices
+import { loadNames, getSummaryPreview } from './sessions/manager.js'   // session-picker: STORED metadata only (names file + summary file) — NEVER a transcript-body read
 import { ROLES } from './teams/personas.js'
 import { NAME_STYLES, NAME_STYLE_NAMES } from './teams/names.js'
 import { isMediaRole } from './teams/media.js'
@@ -411,6 +414,38 @@ async function handle(req, res) {
       const authorized = [...mine].sort()
       const recent = listAllAuthorizedRepos().filter((p) => !mine.has(p)).sort()   // union minus this org's own set
       return sendJSON(res, 200, { ok: true, authorized, recent })
+    }
+    // REBUILD (create-form §3/§13 Session picker): the prior sessions to resume for a repo — "the GUI for
+    // `mrc pick`". SECURITY (Pierre surface-4 invariant):
+    //   - READ ROOT = getId(repoPath) — the user's OWN repo memory slice (the EXACT slice `mrc <repo>` opens), via
+    //     the same storeCtx→mrcStoreDir lattice as repoSliceDir. This is DISJOINT from any member `m-` slice or
+    //     adversary `adv-` slice (different keyspaces) → the picker can NEVER surface another agent's session
+    //     (the context-graft is unreachable by construction, not by a filter). Falls back to the legacy in-repo
+    //     store; both are single-principal (the owner's own repo memory).
+    //   - NON-MINTING: reads `.mrc-id` read-only (a READ endpoint must not create a store id) — missing/invalid id
+    //     → no store slice → legacy fallback. repoPath is realpath'd + the slice key is a validated UUID
+    //     (REPO_ID_RE) → traversal-safe, same injective-key property as authPath.
+    //   - ZERO TRANSCRIPT READS: the list is built from `.jsonl` FILENAMES (uuids) + file mtime + the STORED
+    //     names file + the STORED summary file — it never opens a conversation body. origin-gated (rejectRead).
+    if (req.method === 'GET' && url.pathname === '/api/repo-sessions') {
+      const bad = rejectRead(req); if (bad) return sendJSON(res, bad.code, { error: bad.error })
+      const raw = String(url.searchParams.get('repo') || '').trim()
+      if (!raw) return sendJSON(res, 200, { ok: true, sessions: [] })
+      let real; try { real = realpathSync(expandHome(raw)) } catch { return sendJSON(res, 200, { ok: true, sessions: [] }) }
+      const nonMintingRepoId = (repoPath) => {   // read `.mrc-id` WITHOUT minting (repoStoreId would create one); throw → no store slice → legacy
+        const id = readFileSync(join(repoPath, '.mrc', '.mrc-id'), 'utf8').trim()
+        if (/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(id)) return id
+        throw new Error('no valid repo store id')
+      }
+      let dir = null
+      try { const d = mrcStoreDir(storeCtx({ solo: false, memberCtx: null, cagedAdversary: false, repoPath: real }), { repoStoreId: nonMintingRepoId }); if (existsSync(d)) dir = d } catch {}
+      if (!dir) { const legacy = join(real, '.mrc', 'projects', '-workspace'); if (existsSync(legacy)) dir = legacy }
+      if (!dir) return sendJSON(res, 200, { ok: true, sessions: [] })
+      let files = []; try { files = readdirSync(dir).filter((f) => f.endsWith('.jsonl')) } catch {}
+      const names = loadNames(dir)
+      const sessions = files.map((f) => { const id = f.slice(0, -6); let ts = 0; try { ts = statSync(join(dir, f)).mtimeMs } catch {} ; return { id, name: names[id] || null, ts, preview: getSummaryPreview(dir, id) || null } })
+        .sort((a, b) => b.ts - a.ts).slice(0, 50)
+      return sendJSON(res, 200, { ok: true, sessions })
     }
     // REBUILD (create-form §13 "📁 Choose…"): the in-app folder chooser's data. A browser file input can't return a
     // host FOLDER path and a native OS dialog from a headless daemon is fragile, so the chooser is an in-app directory
