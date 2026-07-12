@@ -293,25 +293,38 @@ export function parseRoster(input, { repo, rng, modelB = false, cwdFallback = tr
         ...(backendNote ? { backendNote } : {}),
       }
     })
-    // Exactly one lead per team: honor an explicit lead, else the first architect, else a custom persona
-    // that opts in via leadByDefault (e.g. a "project-manager" role), else the first member. The
-    // leadByDefault clause sits AFTER the architect check so existing teams are unchanged — architect
-    // wins ties; it only claims the lead a team without an architect would otherwise hand to member[0].
-    const explicit = normMembers.find((m) => m.lead)
-    const lead = explicit || normMembers.find((m) => m.role === 'architect') || normMembers.find((m) => m.personaDef?.leadByDefault) || normMembers[0]
-    for (const m of normMembers) m.lead = m === lead
-    leadHandle = lead ? lead.handle : null
+    // ★ ("can reach the human") is a PER-MEMBER flag and MULTIPLE are allowed per team (§14). Honor EVERY
+    // explicitly-declared lead. If a team declares NONE, default exactly one — the first architect, else a
+    // custom persona that opts in via leadByDefault, else the first member (architect wins the tie so
+    // existing single-lead teams are unchanged; the leadByDefault clause only claims the lead a team without
+    // an architect would otherwise hand to member[0]). This per-team default-one-if-none IS the per-team
+    // ≥1-★ floor: it guarantees every team has an escalation point AND that no member is left roomless (a
+    // lone non-★ member gets a team room at ≥2 members OR is itself defaulted to ★ → the escalation room).
+    if (!normMembers.some((m) => m.lead)) {
+      const dflt = normMembers.find((m) => m.role === 'architect') || normMembers.find((m) => m.personaDef?.leadByDefault) || normMembers[0]
+      if (dflt) dflt.lead = true
+    }
+    const teamLeadHandles = normMembers.filter((m) => m.lead).map((m) => m.handle)
+    leadHandle = teamLeadHandles[0] || null   // primary ★ (back-compat single field)
     for (const m of normMembers) { members.push(m); memberIds.push(m.handle) }
-    teams.push({ name: teamName, territory: teamTerritory, leadHandle, members: memberIds })
+    teams.push({ name: teamName, territory: teamTerritory, leadHandle, leadHandles: teamLeadHandles, members: memberIds })
   }
 
-  // Derived rooms: one team room per team, plus one leads room with every team lead + @user.
-  const rooms = teams.map((t) => ({
-    roomId: teamRoomId(org, t.name), kind: 'team', team: t.name, members: [...t.members],
-  }))
-  const leadHandles = teams.map((t) => t.leadHandle).filter(Boolean)
-  if (leadHandles.length) {
-    rooms.push({ roomId: leadsRoomId(org), kind: 'leads', team: null, members: [...leadHandles, '@user'] })
+  // Derived rooms (§14 — the escalation model):
+  //   • a TEAM room per team with ≥2 members — peer coordination, NO @user. That @user-absence IS the wall
+  //     that forces a non-★ to escalate UP to a ★ (never bicking the human directly). A team of ONE has no
+  //     teammate to coordinate with, so no team room (its lone member is ★ by the per-team default → the
+  //     escalation room). ONE uniform rule (≥2 members), no ★-composition special-case.
+  //   • ONE ESCALATION room = EVERY ★ across all teams + @user, ALWAYS present (id/kind kept as the "leads"
+  //     room — same room, generalized). It is the human's only push surface AND the cross-team lead-to-lead
+  //     bridge. Containment invariant (Pierre): @user ∈ a room ⟺ every non-@user member is ★ — so @user
+  //     lives here and NOWHERE else, and this room's members are EXACTLY the ★s (members.filter, never "all").
+  const rooms = teams
+    .filter((t) => t.members.length >= 2)
+    .map((t) => ({ roomId: teamRoomId(org, t.name), kind: 'team', team: t.name, members: [...t.members] }))
+  const starHandles = members.filter((m) => m.lead).map((m) => m.handle)
+  if (starHandles.length) {
+    rooms.push({ roomId: leadsRoomId(org), kind: 'leads', team: null, members: [...starHandles, '@user'] })
   }
 
   return { org, repo: repoPath, members, teams, rooms, customPersonas }

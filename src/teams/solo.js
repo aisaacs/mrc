@@ -101,6 +101,6 @@ export function soloRoster(repoPath) {
   const org = soloOrgId(repo)
   const member = soloMember(org)
   const rooms = [{ roomId: soloRoomId(org), kind: 'solo', team: SOLO_TEAM, members: [SOLO_HANDLE, '@user'] }]
-  const teams = [{ name: SOLO_TEAM, territory: '.', leadHandle: SOLO_HANDLE, members: [SOLO_HANDLE] }]
+  const teams = [{ name: SOLO_TEAM, territory: '.', leadHandle: SOLO_HANDLE, leadHandles: [SOLO_HANDLE], members: [SOLO_HANDLE] }]
   return { org, repo, members: [member], teams, rooms, customPersonas: {} }
 }

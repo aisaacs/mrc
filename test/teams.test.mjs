@@ -168,6 +168,82 @@ test('roster: cwdFallback:false fails a repo-LESS non-Model-B parse closed; defa
   assert.doesNotThrow(() => parseRoster({ ...repoLess, repo: '/tmp/x' }, { cwdFallback: false }))
 })
 
+test('deriveRooms §14 (Option 2): escalation room = all ★ + @user; team room per team ≥2 members; a/b/c invariants across topologies', () => {
+  const parse = (teams) => parseRoster({ org: 'o', teams }, { repo: '/tmp/o', rng: seededRng(1) })
+  const esc = (norm) => norm.rooms.find((r) => r.kind === 'leads')          // the escalation room (id/kind kept as "leads")
+  const teamRooms = (norm) => norm.rooms.filter((r) => r.kind === 'team')
+  const stars = (norm) => norm.members.filter((m) => m.lead).map((m) => m.handle)
+  const M = (name, role, lead) => ({ name, role, backend: 'claude', ...(lead != null ? { lead } : {}) })
+
+  // The three invariants Pierre checks on the diff, applied to EVERY topology below.
+  const invariants = (norm, label) => {
+    const e = esc(norm); assert.ok(e, `${label}: an escalation room exists`)
+    const escMembers = e.members.filter((h) => h !== '@user')
+    const starSet = new Set(stars(norm))
+    // (a) escalation room members are EXACTLY the ★s — no non-★ leaks the human, none missing
+    assert.deepEqual([...escMembers].sort(), [...starSet].sort(), `${label}: escalation members == ★s (a)`)
+    assert.ok(e.members.includes('@user'), `${label}: @user seated in the escalation room`)
+    // (b) NO @user in any team (coordination) room — the wall
+    for (const tr of teamRooms(norm)) assert.ok(!tr.members.includes('@user'), `${label}: team room "${tr.team}" has no @user (b)`)
+    // (c) ≥1 ★ — nobody is roomless / unable to reach the human
+    assert.ok(starSet.size >= 1, `${label}: ≥1 ★ (c)`)
+  }
+
+  // 1. SOLO — 1 member, no explicit lead → defaulted ★; NO team room; escalation = [member, @user]
+  const solo = parse([{ name: 't', members: [M('Claude', 'generalist')] }])
+  assert.equal(teamRooms(solo).length, 0, 'solo: no team room (a team of one has no teammate)')
+  assert.equal(stars(solo).length, 1, 'solo: the lone member is defaulted ★')
+  invariants(solo, 'solo')
+
+  // 2. HIERARCHICAL 1 team — architect★ + engineer + critic; team room of 3, escalation = [architect, @user]
+  const hier = parse([{ name: 't', members: [M('Aa', 'architect'), M('Ee', 'engineer'), M('Cc', 'critic')] }])
+  assert.equal(teamRooms(hier).length, 1, 'hier: one team room')
+  assert.equal(teamRooms(hier)[0].members.length, 3, 'hier: team room holds all 3 (coordination)')
+  assert.equal(stars(hier).length, 1, 'hier: exactly 1 ★ (architect default) — eng/crit escalate UP to it')
+  invariants(hier, 'hier-1team')
+
+  // 3. HIERARCHICAL 2 teams — the escalation room bridges both leads (lead-to-lead cross-team + @user)
+  const two = parse([
+    { name: 'client', members: [M('Ac', 'architect'), M('Ec', 'engineer')] },
+    { name: 'server', members: [M('As', 'architect'), M('Es', 'engineer')] },
+  ])
+  assert.equal(teamRooms(two).length, 2, '2-team: two team rooms')
+  assert.equal(stars(two).length, 2, '2-team: 2 ★ (one architect per team)')
+  assert.equal(esc(two).members.filter((h) => h !== '@user').length, 2, '2-team: escalation room bridges both leads')
+  invariants(two, 'hier-2team')
+
+  // 4. FLAT 2-★ (Option 2, uniform) — both leads → a size-2 team room (they can just talk) + escalation [both, @user]
+  const flat = parse([{ name: 't', members: [M('Client', 'generalist', true), M('Server', 'generalist', true)] }])
+  assert.equal(stars(flat).length, 2, 'flat: both declared leads kept as ★')
+  assert.equal(teamRooms(flat).length, 1, 'flat: a size-2 team room exists — SAME shape as any ≥2 team (no special-case)')
+  assert.equal(teamRooms(flat)[0].members.length, 2, 'flat: team room = [client, server]')
+  assert.equal(esc(flat).members.length, 3, 'flat: escalation room = [client, server, @user]')
+  invariants(flat, 'flat-2star')
+
+  // 5. 1-member NON-★ team — the roomless edge: the per-team default MUST make it ★ (not stranded)
+  const lonely = parse([{ name: 't', members: [M('Solo', 'engineer', false)] }])
+  assert.equal(stars(lonely).length, 1, 'lonely: per-team default fired → the lone non-★ member became ★')
+  assert.ok(esc(lonely).members.includes(stars(lonely)[0]), 'lonely: it is in the escalation room, NOT roomless')
+  assert.equal(teamRooms(lonely).length, 0, 'lonely: no team room (1 member)')
+  invariants(lonely, 'lonely-was-nonstar')
+
+  // 6. MULTIPLE explicit leads in one team are HONORED (not collapsed to one — the old one-lead forcing is gone)
+  const multi = parse([{ name: 't', members: [M('Xx', 'engineer', true), M('Yy', 'engineer', true), M('Zz', 'engineer')] }])
+  assert.equal(stars(multi).length, 2, 'multi: both declared leads kept (not forced to one)')
+  assert.ok(!stars(multi).includes('zz/claude'), 'multi: the non-declared member stays non-★')
+  invariants(multi, 'multi-lead')
+
+  // 7. MULTIPLE ★ WITHIN ONE team [a★, b★, c, d] — the several-★-per-team primitive. Team room holds all 4
+  //    (c/d can escalate to EITHER a or b, both share their team room); escalation room = [a, b, @user] only.
+  const within = parse([{ name: 't', members: [M('Aa', 'engineer', true), M('Bb', 'engineer', true), M('Cc', 'engineer'), M('Dd', 'engineer')] }])
+  assert.equal(stars(within).length, 2, 'within: 2 ★ (a, b)')
+  assert.equal(teamRooms(within).length, 1, 'within: one team room')
+  assert.equal(teamRooms(within)[0].members.length, 4, 'within: team room holds all 4 — c/d reach either ★ here')
+  const wEsc = esc(within).members.filter((h) => h !== '@user')
+  assert.deepEqual(wEsc.sort(), ['aa/claude', 'bb/claude'].sort(), 'within: escalation room = exactly the 2 ★s (c/d walled out)')
+  invariants(within, 'multi-star-within-team')
+})
+
 test('roster: buildPersona emits the custom mandate via member.personaDef', () => {
   const json = JSON.stringify({ org: 'shop', personas: { advertiser: { label: 'Ad Strategist', mandate: 'SENTINEL-MANDATE-9f.' } },
     teams: [{ name: 'mkt', members: [{ role: 'advertiser', backend: 'claude' }] }] })

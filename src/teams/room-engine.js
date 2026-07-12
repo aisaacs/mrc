@@ -73,6 +73,10 @@ function openingAddressees(text) {
   return out
 }
 
+// findRoom sentinel: the message addresses @user AND a teammate that resolve in DIFFERENT rooms (a
+// team-only member co-addressed with @user). Fail LOUD rather than silently drop the teammate (§14).
+const CROSS_ROOM_SPAN = Symbol('cross-room-span')
+
 export function createRoomEngine({ send, append, notify, onInbox, now = () => Date.now(), turnCap = 200 } = {}) {
   const members = new Map()   // orgId -> Map<handleLC, member def>   (sessionId bound when live)
   const rooms = new Map()     // roomId -> room state (org-tagged)
@@ -310,16 +314,32 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     // Infer the room from the OPENING addressees (consistent with resolveTargets — buried refs don't
     // steer routing). Peer addressees pick the one room where they all resolve.
     const opening = openingAddressees(text)
+    const hasUser = opening.has('user') || opening.has('user/human')
     const toks = [...opening].filter((t) => t !== 'user' && t !== 'user/human')
-    // An @user-only message (no peer addressee, no hint) from a lead belongs in the room where @user
-    // actually lives — the leads room — not an "ambiguous room" error.
-    if (!toks.length && (opening.has('user') || opening.has('user/human'))) {
-      const withUser = mine.filter((r) => r.members.has('@user'))
-      if (withUser.length === 1) return withUser[0]
+    // §14 disambiguation. The escalation room (kind:'leads') is where a member talks to the HUMAN; peer
+    // coordination belongs in the team room. The multiple-★ primitive puts two same-team ★s in BOTH rooms,
+    // so a bare "@coB" resolves in both → without this it's "ambiguous". Resolve it by NARROWING: drop the
+    // escalation room from the candidate set for peer/un-addressed routing UNLESS @user is addressed OR the
+    // escalation room is the SOLE room a peer addressee resolves in (a cross-team lead reachable nowhere
+    // else). `candidates ⊆ mine` — this can only REMOVE a room, never add one the sender isn't in; deliverTo
+    // (:250) still gates membership on whatever is picked, so containment never rests on this selection.
+    const escRoom = mine.find((r) => r.kind === 'leads')
+    const escResolvesToks = !!escRoom && toks.length > 0 && toks.every((t) => resolveInRoom(escRoom, t))
+    const otherResolvesToks = toks.length > 0 && mine.some((r) => r !== escRoom && toks.every((t) => resolveInRoom(r, t)))
+    const keepEsc = hasUser || (escResolvesToks && !otherResolvesToks)   // @user-directed, or the sole resolver
+    const candidates = (escRoom && !keepEsc) ? mine.filter((r) => r !== escRoom) : mine
+    if (hasUser && escRoom) {
+      // Reaching the human → the escalation room. A peer addressee that does NOT also live there is a
+      // cross-room span (@<team-only member> + @user): fail LOUD rather than silently drop the teammate.
+      if (!toks.length) return escRoom
+      if (toks.every((t) => resolveInRoom(escRoom, t))) return escRoom
+      return CROSS_ROOM_SPAN
     }
     if (toks.length) {
-      const fit = mine.filter((r) => toks.every((t) => resolveInRoom(r, t)))
+      const fit = candidates.filter((r) => toks.every((t) => resolveInRoom(r, t)))
       if (fit.length === 1) return fit[0]
+    } else if (candidates.length === 1) {
+      return candidates[0]   // un-addressed → the single coordination (non-escalation) room
     }
     return undefined   // ambiguous
   }
@@ -347,6 +367,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     } else {
       room = findRoom(s, hint, text)
       if (room === null) return { ok: false, error: 'not in any room' }
+      if (room === CROSS_ROOM_SPAN) return { ok: false, error: '@user and a teammate resolve in different rooms — send separately: coordinate with your team in the team room, reach the human with @user (they live in the escalation room, your teammate does not)' }
       if (room === undefined) return { ok: false, error: 'ambiguous room — name the team or room (e.g. room:"leads")' }
       if (room.org !== s.org || !room.members.has(h)) return { ok: false, error: 'not a member of that room' }
     }

@@ -494,28 +494,37 @@ is needed:
   **+** escalation room `[architect ★, @user]`. Split — because the non-`★` engineer/critic must be walled
   from the human. The engineer stuck ⇒ `@architect`; the architect stuck ⇒ `@user`; the answer flows back
   down to the engineer. This is the "give it a task and it runs, escalating only when genuinely stuck" flow.
-- **Flat peers (ad-hoc):** one room `[client ★, server ★, @user]` serves as both their coordination room
-  and their escalation room — no redundant room, because there is no non-`★` to wall off. Both reach the
-  human directly; a Pierre lives in separate `[client, pierre]` / `[server, pierre]` consult rooms and
-  reaches neither the human nor the other peer. **Caveat (Pierre, the `size===2` gate):** in a room with
-  **3+ members**, an un-addressed message routes to **no one** (the sole-other fallback is gated on
-  `room.members.size === 2`, `room-engine.js:238`). So in a multi-`★` room the peers must **`@mention`**
-  each other to coordinate and **`@user`** explicitly to escalate — "just talking" drops. Only a **size-2**
-  `[★, @user]` room auto-escalates un-addressed (the solo case: the lone `★` just talks → reaches the
-  human). This is a genuine asymmetry the persona must convey: **single-`★` escalation is implicit,
-  multi-`★` escalation is explicit** (a multi-`★` agent must address `@user`, not merely talk).
+- **Flat peers (ad-hoc), "Option 2" — the owner's choice:** two co-equal `★`s in one team get a **team room**
+  `[client, server]` for coordination **+** the escalation room `[client, server, @user]` — the **same shape**
+  every ≥2-member team gets. One uniform rule, no special-case for flat teams (Option 1 would have skipped the
+  team room for all-`★` teams — a `★`'s room membership would then depend on its teammates' `★`-status; and it
+  would have put their coordination *in* the escalation room, the exact clutter the owner rejected). Both peers
+  reach the human directly (`@user` → escalation room) and coordinate in their team room (`@server` /
+  un-addressed → team room); a Pierre lives in separate `[client, pierre]` / `[server, pierre]` consult rooms and
+  reaches neither the human nor the other peer. Because the two `★`s are in BOTH rooms, a bare `@server` resolves
+  in each — the **`findRoom` disambiguation** (below) routes it to the team room, keeping the escalation room
+  `@user`-only **by construction**. (Note the `size===2` gate still applies *within* a room: un-addressed reaches
+  the peer in a **2-member** team room, but drops in any **3+**-member room — so in a 3+ team, members must
+  `@mention` to be heard. That's a size property, not a flat-vs-hierarchical one; the persona conveys "in a room
+  of 3+, un-addressed drops — `@mention`.")
 - **Solo (+ optional Pierre):** `[member ★, @user]`, plus a `[member, pierre]` consult if summoned. Not a
   special case — just "the only escalation path is the human," the general rule with one `★`.
 
-**No engine-routing change.** `@user` still lives in a room as a member; escalations still land in the
-inbox (the machinery already validated). What changes: **(1)** `deriveRooms` — which rooms get an `@user`
-seat (team rooms gated to ≥2 members for coordination; the escalation room = all `★` + `@user`, always;
-never seat `@user` in a room that holds a non-`★`); **(2)** the **multiple-`★`** primitive (decouple
-"reaches the human" from one-lead-per-team); **(3)** the create-form to express `★` and ad-hoc rooms. A
-non-`★` still cannot reach `@user` (no `@user` in any of its rooms); reaching the *human* is never
-agent-to-agent tangle, so this stays inside the containment mechanism, not a replacement. **Pierre-gated:
-the multiple-`★` + `deriveRooms` wall invariant goes past a live Pierre before it's built** (correctness /
-containment-critical — the human-reachability path).
+**The engine change is bounded to routing SELECTION, not enforcement.** (An earlier draft claimed "no engine
+change" — that was wrong for Option 2 and corrected here; the owner re-consented on the true premise.) `@user`
+still lives in a room as a member and escalations still land in the inbox (that machinery is untouched). What
+changes: **(1)** `deriveRooms` — team rooms gated to ≥2 members; the escalation room = all `★` + `@user`,
+always; never seat `@user` in a room holding a non-`★`. **(2)** the **multiple-`★`** primitive (decouple
+"reaches the human" from one-lead-per-team). **(3)** a bounded **`findRoom` disambiguation** — Option 2 puts
+two same-team `★`s in BOTH their team room and the escalation room, so a bare `@peer` was ambiguous; `findRoom`
+now drops the escalation room from the candidate set for peer/un-addressed routing **unless** `@user` is
+addressed **or** the escalation room is the sole room a peer resolves in (a cross-team lead). This keeps the
+escalation room `@user`-only by construction. It is **narrow-only** — `candidates ⊆ mine`, so it can only
+*remove* a room, never add one the sender isn't in — and `deliverTo`'s membership gate still enforces
+containment on whatever room is picked, so routing SELECTION never weakens the wall. A `@<team-only member> +
+@user` cross-room span fails **loud** (never silently drops the teammate). **(4)** the create-form to express
+`★` and ad-hoc rooms. **Pierre-gated: the multiple-`★` + `deriveRooms` invariant AND the `findRoom`
+narrow-not-widen both go past a live Pierre** (correctness / containment-critical — the human-reachability path).
 
 **The `deriveRooms` containment invariant (Pierre-verified — the three checks the diff must pass):**
 
@@ -534,9 +543,12 @@ story (a/b leak the human to a non-`★`; c strands the human unreachable):
   refused or default one member to `★` (solo already does this — the lone member IS `★`). This is exactly
   the invariant a naive multiple-lead primitive breaks by permitting zero.
 
-Why it holds with **no engine change**: a non-`★` lives in coordination rooms only (no `@user`, by **b**), so
-its `@user` token resolves to no room-member and is **blocked at delivery** (`deliverTo`, `room-engine.js`) —
-it cannot address the human. A `★` is in the escalation room (has `@user`) → reaches the human. The wall *is*
+Why the wall holds (routing SELECTION aside — enforcement is unchanged): a non-`★` lives in coordination rooms
+only (no `@user`, by **b**), so its `@user` token resolves to no room-member and is **blocked at delivery**
+(`deliverTo`, `room-engine.js`) — it cannot address the human. A `★` is in the escalation room (has `@user`) →
+reaches the human. The `findRoom` disambiguation only chooses *which* room a message routes to; it never adds a
+room, and `deliverTo` re-checks membership on the pick — so the wall rests on the membership gate, not on the
+selection. The wall *is*
 the autonomy chain: a non-`★` `@mention`s a `★` in its coordination room → the `★` `@user`s in the escalation
 room. **Pierre checks exactly (a)/(b)/(c) on the `deriveRooms` diff before it ships.**
 

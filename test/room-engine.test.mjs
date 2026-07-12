@@ -124,10 +124,14 @@ test('engine: multi-room — a lead is in team room + leads room; routing is iso
   assert.equal(h.deliveriesTo(ludivine).length, 0, 'leads-room traffic stays out of the client team room')
   assert.match(h.deliveriesTo(gaston)[0], /\[room shop--leads\]|\[room .*leads\]/)
 
-  // Ambiguous room (roland is in 2) without a roomId must be rejected.
-  const amb = h.engine.route({ fromHandle: roland, text: 'no room specified' })
-  assert.equal(amb.ok, false)
-  assert.match(amb.error, /ambiguous room/)
+  // §14: an un-addressed message from a lead (in a team room + the escalation room) now defaults to the
+  // TEAM room (coordination) rather than an "ambiguous" error — the escalation room is entered only by
+  // naming @user, so a no-@user line is coordination and belongs with the team. (A lead in TWO team rooms
+  // is still genuinely ambiguous — two coordination rooms — and errors; here roland has exactly one.)
+  const uncoord = h.engine.route({ fromHandle: roland, text: 'no room specified' })
+  assert.equal(uncoord.ok, true, 'un-addressed → the coordination room, not an ambiguous error')
+  assert.equal(h.appended.at(-1).roomId, teamRoomId('shop', 'client'), 'defaulted to roland\'s team room, not the escalation room')
+  assert.ok(h.deliveriesTo(ludivine).some((t) => /no room specified/.test(t)), 'reached his teammate (size-2 team room sole-other)')
 })
 
 test('engine: a engineer cannot reach another team (not a member of that room)', () => {
@@ -622,4 +626,84 @@ test('#49 defineOrg preserves crossRepo on the member projection (so the worker 
     assert.equal(away.crossRepo, true, 'cross-repo worker member keeps crossRepo=true through the engine projection')
     assert.equal(own.crossRepo, false, 'own-repo member keeps crossRepo=false')
   } finally { fs.rmSync(root, { recursive: true, force: true }); try { fs.unlinkSync(_authPathForTest(org)) } catch {} }
+})
+
+// ---- §14 escalation model: the findRoom disambiguation (coupled to the multiple-★ deriveRooms) ----
+const FLAT2 = {
+  org: 'flat', repo: '/tmp/repo',
+  teams: [{ name: 'team', territory: '.', members: [
+    { role: 'generalist', name: 'Client', backend: 'claude', lead: true },
+    { role: 'generalist', name: 'Server', backend: 'claude', lead: true },
+  ] }],
+}
+
+test('§14 COUPLING GUARD: flat 2-★ co-★ coordination routes to the TEAM room, NOT ambiguous (RED without findRoom)', () => {
+  // This is the test that CANNOT pass before the findRoom disambiguation exists — it enforces that the
+  // multiple-★ deriveRooms (which arms the overlapping rooms) never ships without the routing that defuses
+  // them. Before the fix, "@server" resolved in BOTH the team room and the escalation room → hard "ambiguous".
+  const h = harness(FLAT2)
+  const client = 'client/claude', server = 'server/claude'
+  const r = h.engine.route({ fromHandle: client, text: '@server let us split intent/pay' })
+  assert.equal(r.ok, true, 'co-★ @peer is NOT ambiguous (findRoom prefers the team room)')
+  assert.equal(r.toUser, false, 'co-★ @peer does not reach the human')
+  assert.ok(h.deliveriesTo(server).some((t) => /split intent/.test(t)), 'the peer received the coordination')
+  assert.equal(h.appended.at(-1).roomId, teamRoomId('flat', 'team'), 'it landed in the TEAM room — the escalation room stays clean by construction')
+})
+
+test('§14: flat 2-★ — @user reaches the human via the escalation room; @peer+@user pulls the peer into it', () => {
+  const h = harness(FLAT2)
+  const client = 'client/claude'
+  const r1 = h.engine.route({ fromHandle: client, text: '@user one call or split?' })
+  assert.equal(r1.ok, true); assert.equal(r1.toUser, true, '@user → the human')
+  assert.equal(h.appended.at(-1).roomId, leadsRoomId('flat'), 'via the escalation room')
+  const r2 = h.engine.route({ fromHandle: client, text: '@server @user we cannot agree — you decide?' })
+  assert.equal(r2.ok, true); assert.equal(r2.toUser, true, '@peer+@user is not a span (the co-★ is IN the escalation room) → pulls in cleanly')
+  assert.equal(h.appended.at(-1).roomId, leadsRoomId('flat'))
+})
+
+test('§14: flat 2-★ un-addressed coordination → the team room (size-2 → the peer), never the escalation room', () => {
+  const h = harness(FLAT2)
+  const client = 'client/claude', server = 'server/claude'
+  const r = h.engine.route({ fromHandle: client, text: 'done with the API shape' })
+  assert.equal(r.ok, true)
+  assert.equal(h.appended.at(-1).roomId, teamRoomId('flat', 'team'), 'un-addressed → team room, not the escalation room')
+  assert.ok(h.deliveriesTo(server).some((t) => /done with the API/.test(t)), 'the peer got it (size-2 sole-other)')
+})
+
+test('§14: @teamOnlyMember + @user is a cross-room SPAN → fail LOUD (never silently drop the teammate)', () => {
+  const h = harness(TEAM)   // architect★ + engineer + critic; @user lives only in the escalation room, eng only in the team room
+  const arch = h.handle('architect')
+  const r = h.engine.route({ fromHandle: arch, text: '@engineer @user should we ship?' })
+  assert.equal(r.ok, false, 'the span is refused, not silently half-delivered')
+  assert.match(r.error, /different rooms/, 'loud, topology-teaching error')
+})
+
+test('§14: a lead reaching the OTHER team\'s lead routes through the escalation room (cross-team bridge); own-team peer stays in the team room', () => {
+  const TWO = { org: 'p', repo: '/tmp/repo', teams: [
+    { name: 'client', members: [{ role: 'architect', name: 'Ac', backend: 'claude', lead: true }, { role: 'engineer', name: 'Ec', backend: 'claude' }] },
+    { name: 'server', members: [{ role: 'architect', name: 'As', backend: 'claude', lead: true }, { role: 'engineer', name: 'Es', backend: 'claude' }] },
+  ] }
+  const h = harness(TWO)
+  const ac = 'ac/claude'
+  const r1 = h.engine.route({ fromHandle: ac, text: '@as sync on the API contract' })
+  assert.equal(r1.ok, true, 'the other team\'s lead is reachable (escalation room is the SOLE resolver)')
+  assert.equal(h.appended.at(-1).roomId, leadsRoomId('p'), 'cross-team lead-to-lead → the escalation room bridge')
+  const r2 = h.engine.route({ fromHandle: ac, text: '@ec implement it' })
+  assert.equal(r2.ok, true)
+  assert.equal(h.appended.at(-1).roomId, teamRoomId('p', 'client'), 'own-team peer → the team room (not the bridge)')
+})
+
+test('§14: un-addressed in a 3-MEMBER team room reaches NO ONE — a distinguishable signal, not a silent success (size===2 gate is about SIZE, not ★-ness)', () => {
+  const h = harness(TEAM)   // 3 members, one team room of size 3
+  const eng = h.handle('engineer'), arch = h.handle('architect')
+  const r = h.engine.route({ fromHandle: eng, roomId: teamRoomId('shop', 'client'), text: 'I am done with the form' })
+  assert.equal(r.ok, true, 'the message was accepted (it is in the thread log) — not a syntax error')
+  assert.equal(r.toUser, false, 'un-addressed is not an escalation')
+  assert.equal((r.delivered || []).length, 0, 'reached no one — in a 3+ room you must @mention to be heard')
+  assert.equal(h.deliveriesTo(arch).length, 0, 'the architect did not receive it')
+  // This is NOT a silent drop to the SENDER (Pierre's flag). The daemon acks delivered:0 (room-daemon.js:656-659)
+  // and the channel server turns that into the agent-facing "Reached no one — no addressee matched (check the
+  // @name, or call list_team)" (mrc-channel-server.js:302). The actor IS told; this engine result (delivered:[]
+  // + !toUser) is the distinguishable signal that surfacing rests on — asserting it here documents the contract
+  // rather than freezing an ok:true-delivered-nothing masquerade.
 })
