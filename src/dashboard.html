@@ -119,6 +119,18 @@
   .pavs { display:flex } .pav { width:22px; height:22px; border-radius:50%; margin-left:-6px; border:2px solid var(--panel); display:grid; place-items:center; font-size:9px; font-weight:700; color:#fff } .pav:first-child { margin-left:0 }
   .ptile.new { border-style:dashed; align-items:center; justify-content:center; color:var(--dim); gap:5px; text-align:center; font-weight:600 } .ptile.new:hover { color:var(--accent) }
   details.parch { margin-top:18px } details.parch summary { cursor:pointer; list-style:none; display:flex; align-items:center; gap:8px; padding:6px 0; color:var(--dim) } details.parch summary::-webkit-details-marker { display:none }
+  /* ☰ drawer + daemon-wide Rooms screen (§13) */
+  .ham { display:grid; place-items:center; width:32px; height:32px; border-radius:8px; border:1px solid var(--line); background:var(--panel2); color:var(--dim); font-size:15px; flex:0 0 auto } .ham:hover { color:var(--fg); border-color:var(--accent) }
+  .dwrap { position:fixed; inset:0; z-index:60; display:flex } .dscrim { position:absolute; inset:0; background:rgba(0,0,0,.4) }
+  .dpanel { position:relative; width:250px; background:var(--panel); border-right:1px solid var(--line); padding:14px 12px; display:flex; flex-direction:column; gap:4px; box-shadow:0 0 40px rgba(0,0,0,.5) }
+  .ditem { display:flex; align-items:center; gap:11px; padding:10px 12px; border-radius:8px; color:var(--dim); font-size:14px; border:1px solid transparent; background:none; width:100%; text-align:left } .ditem:hover { color:var(--fg); background:var(--panel2) } .ditem.on { background:var(--accent-soft,#2b2547); color:var(--fg); border-color:var(--accent) }
+  .ditem .dct { margin-left:auto; font-family:ui-monospace,monospace; font-size:11px; color:var(--dim) }
+  .app.rooms-takeover .main { grid-template-columns:1fr } .app.rooms-takeover .list { display:none } .app.rooms-takeover #detail { grid-column:1 / -1 } .app.rooms-takeover .tabwrap { visibility:hidden }
+  .rmwrap { padding:24px; max-width:900px; width:100%; margin:0 auto }
+  .rmcard { background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:15px; margin-bottom:12px }
+  .rmcard .rmh { display:flex; align-items:center; gap:10px; margin-bottom:9px; flex-wrap:wrap } .rmcard .rmn { font-weight:640; font-family:ui-monospace,monospace; font-size:14px }
+  .rmcard .rmproj { color:var(--dim); font-size:12px; margin-left:auto } .rmcard .rmctrl { display:flex; gap:7px; flex-wrap:wrap }
+  .statechip { font-size:11px; padding:2px 8px; border-radius:999px; border:1px solid var(--line); color:var(--dim) } .statechip.Running,.statechip.running { color:var(--online); border-color:var(--online) } .statechip.Paused { color:var(--warning,#e6a23c); border-color:var(--warning,#e6a23c) }
   .termblock { display:none; flex-direction:column; flex:1 1 0; min-height:0 }
   .termhdr { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px }
   .termframe { width:100%; flex:1 1 0; min-height:0; border:1px solid var(--line); border-radius:8px; background:#000 }
@@ -364,6 +376,7 @@
 <div id="flash"></div>
 <div class="app">
   <header>
+    <button class="ham" onclick="toggleDrawer()" aria-label="Menu" title="Menu">☰</button>
     <h1 class="home-link" role="button" tabindex="0" title="All projects — pick or resume" aria-label="All projects — pick or resume" onclick="openProjects()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();openProjects()}"><svg class="hatmark" viewBox="0 0 32 32" width="20" height="20" aria-hidden="true"><ellipse cx="16" cy="23.4" rx="12.8" ry="3.05"/><path d="M10.5 9 Q10.75 6.3 16 6.1 Q21.25 6.3 21.5 9 L22 22.6 L10 22.6 Z"/></svg>Mister Claude</h1>
     <div class="tabwrap">
       <button class="tabhint l" id="tabHintL" onclick="scrollTabs(-1)" title="needs-you on a tab scrolled off the left — click to reveal" hidden></button>
@@ -382,6 +395,7 @@
   <div id="modal"></div>
   <div id="fcModal"></div>
   <div id="castModal"></div>
+  <div id="drawer"></div>
 </div>
 <script>
 const $ = (s, r=document) => r.querySelector(s)
@@ -477,7 +491,7 @@ const MEDIA_ROLE_BACKEND = { designer:'gemini', 'sound-designer':'elevenlabs', c
 const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
 
 const S = {
-  building: false, projects: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, showHandled: false, replyTo: null, jumpTarget: null, flash: null, roomDrafts: {},
+  building: false, projects: false, roomsHome: false, drawerOpen: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, showHandled: false, replyTo: null, jumpTarget: null, flash: null, roomDrafts: {},
   _wmCur: null, _wmLatest: 0, _openWm: {},   // #63-F unread watermark: the room/channel currently open + its latest position + the per-key captured-at-open boundary
   notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
   notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
@@ -587,7 +601,7 @@ const orgRunning = (org) => (S.teams.launch||[]).some(l=>l.org===org && l.runnin
 const orgLaunchRec = (org) => (S.teams.launch||[]).find(l=>l.org===org)
 const orgLaunching = (org) => !!(orgLaunchRec(org)||{}).launching
 const orgFailed = (org) => !!(orgLaunchRec(org)||{}).failed
-function switchOrg(org) { if (org===S.org) return; if (!confirmLeaveBuilder()) return; leaveUnread(); S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; S.projects=false; S.selHome=true; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }); setOrgUrl(org); paint() }   // #55-1: guard a dirty build; #61: entering a project lands on its home
+function switchOrg(org) { if (org===S.org) return; if (!confirmLeaveBuilder()) return; leaveUnread(); S.org=org; S.selRoom=S.selInbox=S.selMember=null; S.building=false; S.projects=false; S.roomsHome=false; S.selHome=true; if (!S.settings) loadSettings().then(()=>{ if (S.selHome) tick() }); setOrgUrl(org); paint() }   // #55-1: guard a dirty build; #61: entering a project lands on its home
 window.switchOrg = switchOrg
 
 // Browser-style project tabs: one per defined org. Chrome-stable — tabs keep a FIXED position
@@ -661,6 +675,7 @@ const launchFor = () => (S.teams.launch||[]).find(x=>x.org===S.org && x.running)
 // #47: the @you channel's detailKey uses channelSig() (folds every item's RESOLUTION into the key, so a
 // REMOTE resolve — e.g. answered via Telegram — re-renders the channel) and FREEZES while composing.
 const detailKey = () => S.building ? 'build'
+  : S.roomsHome ? 'roomshome:'+mergedRooms().map(r=>r.roomId+':'+r.state).join(',')   // §13 daemon Rooms screen
   : S.projects ? 'projects:'+projectsSig()   // P2: re-render the landing when any project's state/needs-you changes
   : S.selHome ? 'home:'+(S.org||'')+':'+(S.settings?'s':'-')   // #61: rebuild once settings load (for the --web note)
   : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+S.selMember+':'+(launchFor()?.members?.[S.selMember]?.state||'none'))
@@ -680,6 +695,8 @@ function paint() {
   // (S.building=false) drops the class and restores the layout.
   $('.app').classList.toggle('build-takeover', S.building && builderIsFresh())
   $('.app').classList.toggle('projects-takeover', S.projects && !S.building)   // P2: the command-center Projects landing
+  $('.app').classList.toggle('rooms-takeover', S.roomsHome && !S.building)   // §13: the daemon-wide Rooms screen
+  drawerRender()
   if (!S.addingTo) renderMain()   // freeze the list while the add-member form is open (don't clobber inputs)
   const key = detailKey()
   if (key!==paintedKey) { renderDetail(); paintedKey=key } else patchDetail()
@@ -801,6 +818,7 @@ function amForm(t) {
 function renderDetail() {
   const d = $('#detail')
   if (S.building) return renderBuilder(d)
+  if (S.roomsHome) return renderRoomsHome(d)
   if (S.projects) return renderProjects(d)
   if (S.selHome) return renderProjectHome(d)
   if (S.selMember) return renderMember(d)
@@ -1679,7 +1697,39 @@ function projectsSig() {
 }
 const orgOnline = (org)=>(S.teams.members||[]).some(m=>m.org===org && m.tier==='live' && m.online)
 const avColor = (n)=>{ let h=0; const s=String(n||''); for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0; return `hsl(${h%360} 42% 52%)` }
-window.openProjects = ()=>{ if (!confirmLeaveBuilder()) return; leaveUnread(); S.projects=true; S.building=false; S.selHome=S.selRoom=S.selInbox=S.selMember=null; paint() }
+window.openProjects = ()=>{ if (!confirmLeaveBuilder()) return; leaveUnread(); S.projects=true; S.roomsHome=false; S.building=false; S.selHome=S.selRoom=S.selInbox=S.selMember=null; paint() }
+// ---- ☰ drawer + daemon-wide Rooms screen (§13) ----
+window.toggleDrawer = ()=>{ S.drawerOpen=!S.drawerOpen; drawerRender() }
+window.drawerGo = (v)=>{ S.drawerOpen=false; drawerRender(); if(v==='projects') openProjects(); else openRoomsHome() }
+window.openRoomsHome = ()=>{ if(!confirmLeaveBuilder())return; leaveUnread(); S.roomsHome=true; S.projects=false; S.building=false; S.selHome=S.selRoom=S.selInbox=S.selMember=null; paint() }
+function drawerRender() {
+  const h=$('#drawer'); if(!h)return
+  if(!S.drawerOpen){ h.innerHTML=''; return }
+  const nRooms=mergedRooms().length, nProj=(S.teams.orgs||[]).length
+  h.innerHTML=`<div class="dwrap"><div class="dscrim" onclick="toggleDrawer()"></div>
+    <div class="dpanel" role="dialog" aria-label="Menu">
+      <button class="ditem ${S.projects?'on':''}" onclick="drawerGo('projects')"><span>🗂</span> Projects <span class="dct">${nProj}</span></button>
+      <button class="ditem ${S.roomsHome?'on':''}" onclick="drawerGo('rooms')"><span>◎</span> Rooms <span class="dct">${nRooms}</span></button>
+      <div style="margin-top:auto;font-size:11px;color:var(--dim);padding:8px 12px;line-height:1.5">Rooms lists every open room on the daemon — read any <code>thread.log</code> without opening its project.</div>
+    </div></div>`
+}
+// brake/resume via the EXISTING cap+CSRF-gated act()→/api/action door. STEER is NOT a button here (Pierre): it
+// injects a trusted [Human directive] — the one authoritative message class — so it stays behind the room's own
+// gated composer. "Steer…" here just OPENS the room, where doSteer→act('steer') is the same gated path; no new door.
+window.rmCtrl = async (id, action)=>{ const r=await act(action,{roomId:id}); if(!r||!r.ok)return flashFail(r||{error:'failed'}); S.flash=null; tick() }
+window.rmOpen = (id, org)=>{ S.roomsHome=false; S.drawerOpen=false; if(org && org!==S.org){ S.org=org; try{setOrgUrl(org)}catch{} } selRoom(id) }
+function renderRoomsHome(d) {
+  const rooms = mergedRooms()
+  const card = (r)=>{ const nm=r.team||label2(r)||r.roomId; const running=/running/i.test(r.state||'')
+    return `<div class="rmcard"><div class="rmh"><span class="rmn">${esc(nm)}</span><span class="statechip ${esc(r.state||'')}">${esc(r.state||'')}</span><span class="rmproj">${esc(r.org||'consult')}${r.turn?` · ${r.turn} msgs`:''}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>
+      <div class="rmctrl"><button class="btn tiny" data-id="${esc(r.roomId)}" data-org="${esc(r.org||'')}" onclick="rmOpen(this.dataset.id,this.dataset.org)">📜 Open · thread.log</button>
+        ${running?`<button class="btn tiny" data-id="${esc(r.roomId)}" onclick="rmCtrl(this.dataset.id,'brake')">⏸ Brake</button>`:`<button class="btn tiny" data-id="${esc(r.roomId)}" onclick="rmCtrl(this.dataset.id,'resume')">▶ Resume</button>`}
+        <button class="btn tiny" data-id="${esc(r.roomId)}" data-org="${esc(r.org||'')}" onclick="rmOpen(this.dataset.id,this.dataset.org)" title="Steer sends a trusted [Human directive] — opens the room's gated composer">✎ Steer…</button></div></div>`
+  }
+  d.innerHTML=`<div class="rmwrap"><div class="eyebrow">Daemon</div><h1 style="margin:2px 0 4px;font-size:22px">Rooms</h1>
+    <div class="muted" style="font-size:12.5px;margin-bottom:16px">Every open room across all projects and consults — with its controls and full <code>thread.log</code>, without opening the project. You know a room by its members.</div>
+    ${rooms.length?rooms.map(card).join(''):'<div class="muted">No open rooms.</div>'}</div>`
+}
 // pick = a client switch (read); a suspended project opens to its view where ▶ Resume lives (§13: resume is not
 // a home-tile control — the tile just opens). For the currently-active org, "open" lands on its home.
 window.openProject = (org)=>{ S.projects=false; if (org===S.org) openProjectHome(); else switchOrg(org) }
