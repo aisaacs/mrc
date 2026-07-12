@@ -16,7 +16,7 @@ import { roomsRoot, roomDir, listRooms, readCatchups, updateCatchup, readTranscr
 import { resolveTtydRequest, ttydSecurityHeaders } from './ttyd-proxy.js'   // guard-4: ttyd unix-socket + same-origin proxy
 import { findFreePort } from './ports.js'
 import { parseRoster, validateRoster, editPersona } from './teams/roster.js'
-import { realpath as realpathP, stat as statP } from 'node:fs/promises'   // P1 repo-picker: async, bounded I/O for the validate oracle (never block the daemon event loop)
+import { realpath as realpathP, stat as statP, readdir as readdirP } from 'node:fs/promises'   // P1 repo-picker: async, bounded I/O for the validate oracle + the folder-chooser dir-enumeration (never block the daemon event loop)
 import { expandHome, loadAuthorizedRepos, listAllAuthorizedRepos } from './teams/repo-auth.js'   // P1 repo-picker: validate + this-org's authorized set + the union for "recent (other projects)"
 import { ROLES } from './teams/personas.js'
 import { NAME_STYLES, NAME_STYLE_NAMES } from './teams/names.js'
@@ -411,6 +411,34 @@ async function handle(req, res) {
       const authorized = [...mine].sort()
       const recent = listAllAuthorizedRepos().filter((p) => !mine.has(p)).sort()   // union minus this org's own set
       return sendJSON(res, 200, { ok: true, authorized, recent })
+    }
+    // REBUILD (create-form §13 "📁 Choose…"): the in-app folder chooser's data. A browser file input can't return a
+    // host FOLDER path and a native OS dialog from a headless daemon is fragile, so the chooser is an in-app directory
+    // browser backed by this endpoint. SECURITY (Pierre): this is a directory-ENUMERATION oracle — strictly worse than
+    // validate-repo's existence check — so it's the sharp edge and gets the same three hardenings + the two-gate rule:
+    //   (1) origin-gated with the SAME shared rejectRead as /api/state (owner-origin-only; a malicious page / rebind
+    //       must not enumerate the host filesystem). It reveals the OWNER's own dir tree to the OWNER — zero marginal
+    //       disclosure — but ONLY because rejectRead pins it there; do NOT relax the gate thinking "it's just names".
+    //   (2) MINIMAL return — child directory NAMES only (real subdirs; no files, no contents, no sizes/mtimes, no
+    //       symlink targets), plus the canonical realpath of the browsed dir (inherent to a chooser — the user is
+    //       navigating it) so the client can build the full path + breadcrumb. Entry count capped.
+    //   (3) NON-BLOCKING + BOUNDED — async fs raced against a deadline, so a dead mount / huge dir can't stall the
+    //       daemon event loop. BROWSE IS READ-ONLY: it NEVER authorizes — selecting a folder only fills the field;
+    //       the mount grant stays the separate cap-gated /api/authorize-repo (the two gates are never conflated).
+    if (req.method === 'GET' && url.pathname === '/api/browse-dirs') {
+      const bad = rejectRead(req); if (bad) return sendJSON(res, bad.code, { error: bad.error })
+      const raw = String(url.searchParams.get('path') || '').trim() || homedir()
+      const deadline = new Promise((_, rej) => setTimeout(() => rej(new Error('timed out')), 2000))
+      try {
+        const real = await Promise.race([realpathP(expandHome(raw)), deadline])
+        const st = await Promise.race([statP(real), deadline])
+        if (!st.isDirectory()) throw new Error('enotdir')   // collapse not-a-dir INTO the generic error (Pierre): a file → same "cannot open" as nonexistent/EACCES, so a bypass can't tell file-vs-nonexistent-vs-noperm apart (no existence/permission/type oracle). Only timeout (a perf signal, not existence) stays distinct.
+        const ents = await Promise.race([readdirP(real, { withFileTypes: true }), deadline])
+        const dirs = []
+        for (const e of ents) { if (e.isDirectory()) { dirs.push(e.name); if (dirs.length >= 2000) break } }   // real subdirs only — no files, no symlink-following; a dir of only FILES (~/.ssh, a secrets dir) lists EMPTY (never enumerates filenames)
+        dirs.sort((a, b) => a.localeCompare(b))
+        return sendJSON(res, 200, { ok: true, path: real, parent: real === '/' ? null : dirname(real), dirs, truncated: dirs.length >= 2000 })
+      } catch (e) { return sendJSON(res, 200, { ok: false, error: /timed out/.test(String(e?.message)) ? 'timed out' : 'cannot open this folder' }) }
     }
     // #48b: serve a worker-generated IMAGE asset (call-history preview), guarded HARD against path-traversal
     // / symlink-escape. GET (no CSRF — a read, consistent with the other GETs); the path-guard + raster-only

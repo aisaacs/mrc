@@ -363,6 +363,7 @@
     <div id="termhost"></div>
   </div>
   <div id="modal"></div>
+  <div id="fcModal"></div>
 </div>
 <script>
 const $ = (s, r=document) => r.querySelector(s)
@@ -1377,6 +1378,9 @@ function repoPickRow(label, list, ti, mi) {
   return `<div class="memrow reporecents" style="margin-top:3px;gap:5px;flex-wrap:wrap;align-items:center"><span class="muted" style="font-size:10.5px;flex:0 0 auto;text-transform:uppercase;letter-spacing:.04em">${esc(label)}</span>${list.slice(0,8).map(p=>`<button class="btn tiny" title="${esc(p)}" data-p="${esc(p)}" onclick="bPickRepo(${ti},${mi},this.dataset.p)">${esc(shortRepo(p))}</button>`).join('')}</div>`
 }
 function shortRepo(p) { const s=String(p||'').replace(/\/+$/,''); const parts=s.split('/').filter(Boolean); return parts.length<=2 ? s : '…/'+parts.slice(-2).join('/') }
+// 📁 Choose… → the in-app folder browser; on pick, reuse bPickRepo (fills the field + the EXISTING cap-gated
+// authorize). The browse endpoint is a pure read; the grant stays /api/authorize-repo. Two gates, never conflated.
+window.fcOpen = (ti,mi) => openFolderChooser((path) => bPickRepo(Number(ti), Number(mi), path))
 // ---- custom personas (#42) ----
 // The editor edits S.builder.personas (the working copy that the role-chooser + bRoster read). A save
 // also persists the single persona to the project's team.json via POST /api/personas — server-validated
@@ -1449,7 +1453,7 @@ function bRenderTeams() {
       ${B.teams.length>1?`<button class="btn tiny" title="remove this team" onclick="bDelTeam(${ti})">✕</button>`:''}</div>
     ${t.members.map((m,mi)=>{ const style=B.nameStyle||'french'; const nmErr=(m.name && !SAFE_NAME_RE.test(m.name))?'<span class="bad" style="font-size:11px">letters, digits, internal hyphens only</span>':''; return `<div class="bmem">
       <div class="bmemname"><input class="bnm" value="${esc(m.name||'')}" placeholder="${style==='custom'?'name (free-type)':'(auto)'}" aria-label="agent name" oninput="bSetName(${ti},${mi},this.value)">${style!=='custom'?`<button class="btn tiny" title="suggest another name" onclick="bRerollName(${ti},${mi})">🎲</button>`:''}<span id="nmerr-${ti}-${mi}">${nmErr}</span>${totalAgents>1?`<button class="btn tiny" title="remove this agent" onclick="bDelMem(${ti},${mi})">✕</button>`:''}</div>
-      <div class="memrow" style="margin-top:4px"><span class="muted" style="font-size:11px;flex:0 0 auto">📁 repo</span><input style="flex:1" list="bRepoPicks" value="${esc(m.repo||'')}" placeholder="this agent's repo — type ~/code/app or pick a recent one" oninput="bRepoInput(${ti},${mi},this.value)" onchange="bSetRepo(${ti},${mi},this.value)"><span id="repomsg-${ti}-${mi}" style="font-size:11px;flex:0 0 auto">${m._repoMsg||''}</span></div>
+      <div class="memrow" style="margin-top:4px"><span class="muted" style="font-size:11px;flex:0 0 auto">📁 repo</span><input style="flex:1" list="bRepoPicks" value="${esc(m.repo||'')}" placeholder="this agent's repo — type ~/code/app or pick a recent one" oninput="bRepoInput(${ti},${mi},this.value)" onchange="bSetRepo(${ti},${mi},this.value)"><button class="btn tiny" style="flex:0 0 auto" data-ti="${ti}" data-mi="${mi}" onclick="fcOpen(this.dataset.ti,this.dataset.mi)" title="Browse folders">📁 Choose…</button><span id="repomsg-${ti}-${mi}" style="font-size:11px;flex:0 0 auto">${m._repoMsg||''}</span></div>
       ${(!m.repo) ? repoPickRow('This project', (picks.authorized||[]), ti, mi) + repoPickRow('Recent · other projects', (picks.recent||[]), ti, mi) : ''}
       ${adv?`<div class="memrow" style="margin-top:4px">
         <select onchange="bSet(${ti},${mi},'role',this.value)">${roleOptions().map(o=>`<option ${o===m.role?'selected':''}>${o}</option>`).join('')}</select>
@@ -1690,6 +1694,47 @@ function renderProjects(d) {
     ${orgs.length?'':`<div class="muted" style="margin-top:16px">No projects yet — ＋ New project to build one.</div>`}</div>`
 }
 const sBadge = (scope,mut)=>`<span class="stag ${scope==='global'?'g':'p'}">${scope==='global'?'GLOBAL':'PER-PROJECT'}</span><span class="stag ${mut==='runtime'?'r':'l'}">${mut==='runtime'?'RUNTIME':'LAUNCH-TIME'}</span>`
+
+// ---- folder chooser (create-form §13 "📁 Choose…") ----
+// An in-app directory browser (a browser file input can't return a host folder path). It is the SEAM the whole
+// rebuild rides on: it wires through the EXISTING api() (so the CSRF-stamp/rejectRead ride along — no raw fetch)
+// and esc()s every filesystem name (untrusted). BROWSE IS READ-ONLY: onPick only FILLS the field; authorization
+// stays the separate cap-gated step (bSetRepo → /api/authorize-repo). Two gates, never conflated.
+let _fc = null
+window.openFolderChooser = (onPick) => { _fc = { onPick, path: '', dirs: [], loading: true, error: '' }; fcRender(); fcLoad('') }
+function fcClose() { _fc = null; const h = $('#fcModal'); if (h) h.innerHTML='' }
+async function fcLoad(path) {
+  if (!_fc) return
+  _fc.loading = true; _fc.error=''; fcRender()
+  const r = await api('/api/browse-dirs?path=' + encodeURIComponent(path)).catch(() => ({ ok:false, error:'network' }))
+  if (!_fc) return
+  _fc.loading = false
+  if (r && r.ok) { _fc.path = r.path; _fc.parent = r.parent; _fc.dirs = r.dirs || []; _fc.truncated = !!r.truncated }
+  else { _fc.error = (r && r.error) || 'cannot open this folder' }
+  fcRender()
+}
+function fcRender() {
+  const h = $('#fcModal'); if (!h) return
+  if (!_fc) { h.innerHTML=''; return }
+  const dirRows = _fc.loading ? `<div class="muted" style="padding:16px">…</div>`
+    : _fc.error ? `<div class="bad" style="padding:16px">${esc(_fc.error)}</div>`
+    : (_fc.dirs.length ? _fc.dirs.map(d => `<button class="btn" style="width:100%;justify-content:flex-start;border:0;border-bottom:1px solid var(--line);border-radius:0" data-p="${esc((_fc.path==='/'?'':_fc.path)+'/'+d)}" onclick="fcLoad(this.dataset.p)">📁 ${esc(d)}</button>`).join('')
+        : `<div class="muted" style="padding:16px">No sub-folders here.</div>`)
+  h.innerHTML = `<div class="scrim" onclick="if(event.target===this)fcClose()">
+    <div class="modalcard" role="dialog" aria-modal="true" aria-label="Choose a folder" tabindex="-1" style="max-width:560px">
+      <div class="modalhead"><h2 style="margin:0;font-size:14px">📁 Choose a folder</h2><button class="btn tiny" aria-label="Cancel" onclick="fcClose()">✕</button></div>
+      <div style="padding:10px 16px;border-bottom:1px solid var(--line);display:flex;gap:8px;align-items:center">
+        <button class="btn tiny" ${_fc.parent?'':'disabled'} data-p="${esc(_fc.parent||'')}" onclick="fcLoad(this.dataset.p)" title="Up one level">↑ Up</button>
+        <code style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px">${esc(_fc.path||'~')}</code></div>
+      <div class="modalbody" style="max-height:44vh;padding:0">${dirRows}${_fc.truncated?`<div class="muted" style="padding:8px 16px;font-size:11px">…(list truncated)</div>`:''}</div>
+      <div class="modalhead" style="border-top:1px solid var(--line);border-bottom:0;justify-content:flex-end;gap:8px">
+        <button class="btn tiny" onclick="fcClose()">Cancel</button>
+        <button class="btn tiny primary" ${(_fc.path&&!_fc.loading&&!_fc.error)?'':'disabled'} onclick="fcPick()">Select this folder</button></div>
+    </div></div>`
+  const card = h.querySelector('.modalcard'); if (card) { try { card.focus() } catch {}
+    card.addEventListener('keydown', (e)=>{ if(e.key==='Escape'){ e.preventDefault(); fcClose() } }) }
+}
+function fcPick() { if (!_fc || !_fc.path) return; const cb = _fc.onPick, p = _fc.path; fcClose(); if (cb) cb(p) }
 
 // Render the Settings modal — centered card + scrim over the whole app. EVENT-DRIVEN (openSettings /
 // closeSettings / the tg handlers / enableNotifyPerm) — deliberately NOT called from paint()/tick(), so
