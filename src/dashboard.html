@@ -610,7 +610,7 @@ function renderTabs() {
       + `<span class="pdot"></span><span class="pname">${esc(o)}</span>`
       + (link?`<span class="plink" title="Telegram link awaiting your confirmation${link>1?` (${link})`:''}">🔗${link>1?link:''}</span>`:'')
       + (need?`<span class="pbadge" title="${need} need you">${need}</span>`:'')
-      + `<span class="pclose" title="Close (stop members, keep the team)" onclick="event.stopPropagation();closeTab(this.closest('.ptab').dataset.org)">✕</span></div>`
+      + `<span class="pclose" title="Close (stop agents, keep the team)" onclick="event.stopPropagation();closeTab(this.closest('.ptab').dataset.org)">✕</span></div>`
   }
   el.innerHTML = orgs.map(tab).join('') + `<div class="ptab add" title="New project (Build)" onclick="newProject()">＋</div>`
   const act = el.querySelector('.ptab.active')
@@ -730,7 +730,7 @@ function renderMain() {
     return `<div class="mem ${m.lead?'lead':''} ${m.handle===S.selMember?'sel':''}" data-h="${esc(m.handle)}" role="button" tabindex="0" aria-label="Open ${esc(m.first)}, ${esc(m.role)}${m.lead?', lead':''}${ctxNote}" onclick="selMember(this.dataset.h)" onkeydown="kbd(event,this)" title="${m.tier==='worker'?'on-demand — click for activity':'click for terminal'}"><span class="dot ${s.cls}"></span><div class="who"><div class="nm">${esc(m.first)}${m.lead?' <span class="leadstar" title="lead">★</span>':''}</div><div class="role">${esc(m.role)} <span class="bk">· ${esc(m.backend)}</span></div></div><span class="mstate ${s.cls}">${esc(s.label)}</span>${ctxBar(m)}</div>` }
   const teamCard = (t) => { const ms=byTeam[t]; const running=teamRunning(ms)
     return `<div class="team"><div class="tn">${esc(t)}${running?'':' <span class="state Paused" style="font-size:10px;padding:1px 6px">not running</span>'}</div>${ms.map(memberRow).join('')}
-      ${S.addingTo===t ? amForm(t) : `<div class="row" style="margin-top:8px;gap:6px"><button class="btn tiny" data-team="${esc(t)}" onclick="startAddMember(this.dataset.team)">＋ add member</button></div>`}</div>` }
+      ${S.addingTo===t ? amForm(t) : `<div class="row" style="margin-top:8px;gap:6px"><button class="btn tiny" data-team="${esc(t)}" onclick="startAddMember(this.dataset.team)">＋ add agent</button></div>`}</div>` }
 
   // @you: open QUESTIONS (actionable, badged) first, then notifications (FYI, muted, dismiss-only),
   // then catch-ups. The header badge counts questions only — notifications never inflate it (#11).
@@ -745,7 +745,7 @@ function renderMain() {
   if (S.org && orgLaunching(S.org)) {
     // P1a: the launch landed — show it coming up (never the "stopped" panel) while the image builds + members register.
     html += `<div class="resume"><h3>🚀 launching "${esc(S.org)}"…</h3>`
-      + `<div class="step">Pinning the project, building the image (first run ~minutes), and starting the members. This panel updates itself the moment they come up — nothing to do.</div></div>`
+      + `<div class="step">Pinning the project, building the image (first run ~minutes), and starting the agents. This panel updates itself the moment they come up — nothing to do.</div></div>`
   } else if (S.org && orgFailed(S.org)) {
     html += `<div class="resume"><h3>⚠ "${esc(S.org)}" didn't launch</h3>`
       + `<div class="step">${esc((orgLaunchRec(S.org)||{}).error || 'the launch failed — check the console for details')}</div>`
@@ -753,8 +753,8 @@ function renderMain() {
   } else if (S.org && teams.length && !orgRunning(S.org)) {
     const live = orgMembers().filter(m=>m.tier==='live')
     html += `<div class="resume"><h3>⏸ "${esc(S.org)}" is stopped</h3>`
-      + `<div class="step">Resume relaunches the saved team — each live member <b>--continues its own conversation</b> from where it left off.</div>`
-      + `<div class="step">First run rebuilds the image (~minutes); each live member comes up in its Console${live.length?`: ${live.map(m=>'@'+esc(m.first)).join(', ')}`:''}. Workers are on-demand.</div>`
+      + `<div class="step">Resume relaunches the saved team — each live agent <b>--continues its own conversation</b> from where it left off.</div>`
+      + `<div class="step">First run rebuilds the image (~minutes); each live agent comes up in its Console${live.length?`: ${live.map(m=>'@'+esc(m.first)).join(', ')}`:''}. Workers are on-demand.</div>`
       + `<div style="margin-top:10px"><button class="btn launch" data-org="${esc(S.org)}" onclick="resumeTeam(this.dataset.org)">▶ Resume team</button></div></div>`
   }
 
@@ -788,7 +788,7 @@ function amBackendControl(role) {
 window.amSyncBackend = ()=>{ const w=$('#amBackendWrap'); if(w) w.innerHTML = amBackendControl($('#amRole').value) }
 function amForm(t) {
   return `<div class="amf">
-    <div class="muted" style="margin-bottom:5px">Add a member to <b>${esc(t)}</b>:</div>
+    <div class="muted" style="margin-bottom:5px">Add an agent to <b>${esc(t)}</b>:</div>
     <div class="row"><select id="amRole" style="flex:1.2" onchange="amSyncBackend()">${ROLES.concat((S.addCustomRoles||[]).filter(k=>!ROLES.includes(k))).map(r=>`<option ${r==='engineer'?'selected':''}>${esc(r)}</option>`).join('')}</select>
       <span id="amBackendWrap" style="flex:1;display:flex">${amBackendControl('engineer')}</span></div>
     <div class="row" style="margin-top:6px"><input id="amName" placeholder="name — optional (e.g. Colette)" style="flex:1"><input id="amTerr" placeholder="territory — optional" style="flex:1"></div>
@@ -806,7 +806,7 @@ function renderDetail() {
   if (S.selMember) return renderMember(d)
   if (S.selInbox!=null) return renderInboxChannel(d)
   if (S.selRoom) return renderRoom(d)
-  d.innerHTML = `<div class="empty"><svg class="hatwm" viewBox="0 0 32 32" width="60" height="60" aria-hidden="true"><ellipse cx="16" cy="23.4" rx="12.8" ry="3.05"/><path d="M10.5 9 Q10.75 6.3 16 6.1 Q21.25 6.3 21.5 9 L22 22.6 L10 22.6 Z"/></svg><div>Pick a member (terminal / log), a room (transcript &amp; steer), or an @you message — or ＋ New project.</div><div class="flavor">May the Schwartz be with you.</div></div>`
+  d.innerHTML = `<div class="empty"><svg class="hatwm" viewBox="0 0 32 32" width="60" height="60" aria-hidden="true"><ellipse cx="16" cy="23.4" rx="12.8" ry="3.05"/><path d="M10.5 9 Q10.75 6.3 16 6.1 Q21.25 6.3 21.5 9 L22 22.6 L10 22.6 Z"/></svg><div>Pick an agent (terminal / log), a room (transcript &amp; steer), or an @you message — or ＋ New project.</div><div class="flavor">May the Schwartz be with you.</div></div>`
 }
 // #61: the at-a-glance counts — kept LIGHT (members ready/total, on-demand workers, rooms) so home reads as
 // "home," not a settings dump. Split out so patchDetail can refresh it on a poll without rebuilding the pane.
@@ -817,7 +817,7 @@ function homeOverviewHTML() {
   // #64: lead-only rate-limit gauges (5h/7d) ride the same overview rail. v is a daemon-clamped number or null.
   const rl = orgRateLimit()
   const rlChip = (label, v) => `<span class="ovchip rl ${v==null?'':v>=90?'r':v>=70?'y':''}"${v!=null?` role="meter" aria-valuenow="${v}" aria-valuemin="0" aria-valuemax="100" aria-label="${label} rate-limit ${v}% used"`:''} title="team ${label} rate-limit — ${v==null?'no report from the lead yet':v+'% used'}"><b>${label}</b> ${v==null?'—':v+'%'}</span>`   /* #31: role=meter parity with the context gauge */
-  return `<span class="ovchip"><b>${ready}/${live.length}</b> member${live.length===1?'':'s'} ready</span>`
+  return `<span class="ovchip"><b>${ready}/${live.length}</b> agent${live.length===1?'':'s'} ready</span>`
     + (workers?`<span class="ovchip"><b>${workers}</b> on-demand</span>`:'')
     + `<span class="ovchip"><b>${rooms}</b> room${rooms===1?'':'s'}</span>`
     + (rl ? rlChip('5h', rl.fiveHour) + rlChip('7d', rl.sevenDay) : '')
@@ -1421,7 +1421,7 @@ function bRenderPersonas() {
   const cps = S.builder.personas || {}; const keys = Object.keys(cps); const f = S.builder._pEdit
   const list = keys.length ? keys.map(k=>{ const p=cps[k]||{}; const used=membersUsingPersona(k)
     return `<div style="display:flex;align-items:center;gap:8px;padding:6px 0;border-top:1px solid var(--line)"><code style="flex:0 0 auto">@${esc(k)}</code>
-      <span class="muted" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.label||k)} · ${p.mount==='rw'?'rw':'ro'}${p.leadByDefault?' · lead':''}${used.length?' · '+used.length+' member'+(used.length>1?'s':''):''}</span>
+      <span class="muted" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(p.label||k)} · ${p.mount==='rw'?'rw':'ro'}${p.leadByDefault?' · lead':''}${used.length?' · '+used.length+' agent'+(used.length>1?'s':''):''}</span>
       <button class="btn tiny" style="flex:0 0 auto" data-k="${esc(k)}" onclick="bEditPersona(this.dataset.k)">edit</button>
       <button class="btn tiny" style="flex:0 0 auto" ${used.length?`title="in use by ${esc(used.join(', '))}"`:''} data-k="${esc(k)}" onclick="bRemovePersona(this.dataset.k)">✕</button></div>` }).join('')
     : `<div class="muted" style="font-size:12px">No custom roles yet — add one to define a project-specific expert (e.g. <code>@advertiser</code>).</div>`
@@ -2074,7 +2074,7 @@ window.toggleNotify = async ()=>{
   S.notifyEnabled=true; try{ localStorage.setItem('mrc-notify','1') }catch{}
   updateNotifyBtn(); playChime()   // audible confirmation + satisfies the autoplay-needs-gesture rule
 }
-window.stopTeam = async ()=>{ if(!confirm('Stop the team? This closes all member terminals.'))return; const r=await actJSON('/api/team-stop',{org:S.org}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
+window.stopTeam = async ()=>{ if(!confirm('Stop the team? This closes all agent terminals.'))return; const r=await actJSON('/api/team-stop',{org:S.org}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
 window.removeMember = async (h, first)=>{ if(!confirm('Dismiss @'+first+' — remove this agent from the team entirely? (updates team.json; its session stops and it leaves the roster)'))return; const r=await actJSON('/api/team-remove-member',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; S.selMember=null; tick() }
 // §13 Close session (Ctrl-C an agent): stop its live session but KEEP it in the team (≠ dismiss). Resumable via
 // relaunchMember (the existing kill-first→respawn, which the agent --continues). Routes through the cap-gated
