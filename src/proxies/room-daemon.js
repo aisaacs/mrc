@@ -154,7 +154,7 @@ export function acquireDaemonSingleton(lockPath, { backstopMs = 48 * 3600 * 1000
   return false   // lost the re-acquire race to a live peer → defer
 }
 
-export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort = 0, turnCap = 200, triageWindowMs = Number(process.env.MRC_TRIAGE_WINDOW) || 300_000, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS, roomTtlMs = 300_000, workerInvoke = defaultWorkerInvoke, workerPollMs = 2_000, tgFetch = globalThis.fetch, tgToken, electSingleton = false, modelBPredict = () => { try { return decideModelB(imageIdAndLabels().labels) } catch { return false } } }) {
+export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort = 0, turnCap = 200, triageWindowMs = (Number(process.env.MRC_TRIAGE_WINDOW) || 300) * 1000, stallMs = 600_000, version = '', idleMs = 600_000, tickMs = 15_000, dashboardKeepaliveMs = 30_000, catchupTimeoutMs = CATCHUP_TIMEOUT_MS, roomTtlMs = 300_000, workerInvoke = defaultWorkerInvoke, workerPollMs = 2_000, tgFetch = globalThis.fetch, tgToken, electSingleton = false, modelBPredict = () => { try { return decideModelB(imageIdAndLabels().labels) } catch { return false } } }) {
   const sessions = new Map()   // sessionId -> { sock, repo, label, room }
   const pairings = new Map()   // roomId    -> pairing state
   let relayBound = false       // #50/#5: TRUE only from the relay server's 'listening' event — the honest "peers can connect" signal. Surfaced in the status payload (degraded readiness) and gates the idle-reaper (a relay-pending daemon must not self-reap while holding the constant + retrying).

@@ -182,6 +182,9 @@ Environment:
   OPENAI_API_KEY       OpenAI key (required for --agent codex)
   MRC_PORT_BASE        Starting port for proxy allocation (default: 7722)
   MRC_ROOM_TURN_CAP    Room turn-cap window before a check-in pause (default: 200; 0 disables)
+  MRC_TRIAGE_WINDOW    (d) triage window in SECONDS — a non-★'s @user question is triaged to its
+                       team lead first and escalates LOUD to the human only if unresolved within this
+                       window (default: 300 = 5 min). Set short (e.g. 60) to feel the timer live.
   MRC_DASHBOARD_PORT   Room dashboard port (default: 8787; 0 disables the daemon-hosted dashboard)
   MRC_TELEGRAM_BOT_TOKEN  Per-PROJECT Telegram bot token, read STRICTLY from the repo's own .env
                        (.env / .mrc/.env; no process.env or global fallback). Enables the Telegram
