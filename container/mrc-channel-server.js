@@ -163,8 +163,29 @@ const teamTools = [
   },
   {
     name: 'ask_user',
-    description: 'Ask your human a question (routes to their inbox + a notification). Shorthand for send_message to @user.',
+    description: 'Ask your human a question (routes to their inbox). If you are NOT a team lead, your question ' +
+      'is TRIAGED to your lead first — they can answer it for you, and it reaches the human directly only if ' +
+      'the lead does not resolve it in time. So keep working while you wait; do not hard-block. (A lead\'s ' +
+      'ask_user reaches the human immediately.) Shorthand for send_message to @user.',
     inputSchema: { type: 'object', properties: { text: { type: 'string' } }, required: ['text'] },
+  },
+  {
+    name: 'resolve_escalation',
+    description: 'ONLY a team LEAD uses this. When a teammate escalates a question to @user, you receive it as ' +
+      '"[ESCALATION #N …]". Handle it FOR the human: call resolve_escalation with that #N and your answer, and ' +
+      'your teammate gets your answer instead of the human being interrupted — resolve what you can so the human ' +
+      'is bothered only when the team genuinely cannot. If it truly needs the human, pass escalate:true to send ' +
+      'it to them now (it also reaches them automatically if you do not resolve it in time). You can only ' +
+      'resolve an escalation that was dispatched to YOU.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'number', description: 'the #N from the "[ESCALATION #N …]" message' },
+        answer: { type: 'string', description: 'your answer for the teammate — your resolution of their question' },
+        escalate: { type: 'boolean', description: 'set true to send it to the human NOW instead of answering it yourself' },
+      },
+      required: ['id'],
+    },
   },
   {
     name: 'send_photo',
@@ -231,6 +252,10 @@ mcp.setRequestHandler(CallToolRequestSchema, async (req) => {
       // The member chose ask_user → it's a QUESTION (wants a reply). A plain send_message to @user is
       // an FYI/notification. The `kind` rides the frame so the inbox can tell them apart (#11).
       return await sendAwaitAck({ type: 'say', text: `@user ${String(a.text ?? '')}`, kind: 'question' })
+    case 'resolve_escalation':
+      // (d): a lead resolves an escalation dispatched to it. Thin wire — the daemon/engine enforce the auth
+      // (caller must be the dispatched ★) against the authenticated session; the id is a STRUCTURED arg.
+      return await sendAwaitAck({ type: 'resolve', escId: Number(a.id), answer: String(a.answer ?? ''), escalate: !!a.escalate })
     case 'send_photo':
       // #56: the frame carries ONLY {path, caption} — the daemon resolves WHICH member (org/handle) from the
       // bound session and the destination from the org's CONFIRMED chat, so the member controls neither.
@@ -290,6 +315,13 @@ const pendingAcks = new Map()
 function ackText(status, frame = {}) {
   switch (status) {
     case 'delivered':
+      // (d): a non-lead's @user was TRIAGED to its lead — tell the truth (it did NOT ping the human).
+      if (frame.triaged) {
+        const leads = (frame.triaged.leads || []).join(', ') || 'your lead'
+        return frame.triaged.fyi
+          ? `Noted for your human (quietly) and shared with ${leads}.`
+          : `Triaged to ${leads} — they can answer it for you, and it reaches your human directly in ~${Math.max(1, Math.round((frame.triaged.escalatesInMs || 0) / 60000))}m if unresolved. Keep working; don't hard-block on it.`
+      }
       // Team `say` acks carry per-target counts; a plain consult reply does not.
       if (frame.delivered != null || frame.queued) {
         const parts = []
@@ -302,6 +334,9 @@ function ackText(status, frame = {}) {
         return parts.length ? `Delivered — ${parts.join(', ')}.` : 'Reached no one — no addressee matched (check the @name, or call list_team).'
       }
       return 'Delivered to the peer.'
+    case 'resolved-escalation': return frame.escalated
+      ? 'Escalated to your human — they will take it now.'
+      : 'Resolved — your teammate got your answer; your human was not interrupted.'
     case 'held': return 'Room is paused — your message is queued and will be delivered when it resumes.'
     case 'error': return `NOT delivered: ${frame.error || 'unknown error'}.`
     case 'queued': return 'Queued for a worker teammate; they will pick it up on their next turn.'

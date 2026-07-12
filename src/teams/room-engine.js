@@ -467,7 +467,12 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
         _inbox('new', pi)
       }
     }
-    return { ok: true, delivered: results, toUser, unresolved, state: room.state }
+    // (d): when this @user was TRIAGED (a non-★'s question/FYI → its lead), surface it so the ask-ack tells
+    // the member the truth — "triaged to @lead; reaches the human in ~T if unresolved" — not "human pinged".
+    const triaged = (item && item.quiet && item.triage)
+      ? { leads: item.triage.leads.map((lh) => nameOf(room.org, lh)), fyi: !!item.triage.fyi, escalatesInMs: item.triage.fyi ? null : triageWindowMs }
+      : null
+    return { ok: true, delivered: results, toUser, unresolved, state: room.state, triaged }
   }
 
   // --- controls (per room) -------------------------------------------------

@@ -667,7 +667,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     const delivered = (r.delivered || []).filter((d) => d.status === 'delivered').length
     const queued = (r.delivered || []).filter((d) => d.status === 'queued').length
     if (queued) worker.kick()   // a worker was addressed — invoke it now (don't wait for the poll)
-    ack(r.state === 'Paused' ? 'held' : 'delivered', { delivered, queued, toUser: !!r.toUser })
+    ack(r.state === 'Paused' ? 'held' : 'delivered', { delivered, queued, toUser: !!r.toUser, triaged: r.triaged || undefined })   // (d): triaged → the ack tells the member it went to its lead, not the human
   }
 
   // (d): a team LEAD resolves (or escalates) an escalation dispatched to it — the thin wire for the Stage-2

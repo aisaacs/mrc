@@ -805,3 +805,17 @@ test('§(d): a non-★ FYI (plain @user) is a QUIET lead-copy — no timer, not 
   assert.equal(h.engine.checkTriageTimers().length, 0, 'FYIs never time out')
   assert.match(h.engine.resolveEscalation(it.id, { answer: 'x' }, { sessionId: h.sid(h.handle('architect')) }).error, /nothing to resolve/, 'an FYI has nothing to resolve')
 })
+
+test('§(d): route() returns `triaged` info for a non-★ ask (feeds the ask-ack) — null for a ★', () => {
+  const h = harness(TEAM)
+  const eng = h.handle('engineer'), arch = h.handle('architect')
+  const rq = h.engine.route({ fromHandle: eng, roomId: teamRoomId('shop', 'client'), text: '@user ship?', kind: 'question' })
+  assert.ok(rq.triaged, 'a triaged question surfaces the descriptor for the ask-ack')
+  assert.ok(rq.triaged.leads.length >= 1, 'names the lead(s) it went to')
+  assert.equal(rq.triaged.fyi, false)
+  assert.ok(rq.triaged.escalatesInMs > 0, 'carries the escalation window for the "reaches you in ~T" message')
+  const rf = h.engine.route({ fromHandle: eng, roomId: teamRoomId('shop', 'client'), text: '@user fyi green', kind: 'notification' })
+  assert.equal(rf.triaged.fyi, true); assert.equal(rf.triaged.escalatesInMs, null, 'an FYI has no timer')
+  const rs = h.engine.route({ fromHandle: arch, roomId: teamRoomId('shop', 'client'), text: '@user loud?', kind: 'question' })
+  assert.equal(rs.triaged, null, 'a ★ is not triaged → no descriptor (the ack says the human was pinged)')
+})

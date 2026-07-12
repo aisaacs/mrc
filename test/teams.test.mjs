@@ -370,13 +370,14 @@ test('personas: buildPersona injects identity, addressing, trust, territory, com
   assert.match(p, /you may EDIT/)                // rw mount
 })
 
-test('personas: lead gets the leads-room instruction; non-lead does not', () => {
+test('personas (d): a lead gets the LEADS-room + triage (resolve_escalation) instruction; a non-lead is told its @user is triaged to a lead', () => {
   const self = { first: 'Roland', handle: 'roland/claude', roleLabel: 'Architect' }
   const lead = buildPersona({ self, team: 'api', roster: [self], isLead: true, territory: '.', mount: 'ro', role: 'architect' })
   const member = buildPersona({ self, team: 'api', roster: [self], isLead: false, territory: '.', mount: 'ro', role: 'architect' })
   assert.match(lead, /LEADS room/)
+  assert.match(lead, /resolve_escalation/, 'a lead is told it triages teammates\' escalations')
   assert.doesNotMatch(member, /LEADS room/)
-  assert.match(member, /ask your architect/)
+  assert.match(member, /triaged to your team lead/i, 'a non-lead is told its @user is triaged to its lead first')
 })
 
 test('roster: parses a two-team org and assigns unique handles', () => {
