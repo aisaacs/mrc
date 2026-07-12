@@ -110,10 +110,21 @@ test('daemon team rooms: define org, directed delivery, @user round-trip, brake/
   const teamState = await controlCall(controlPort, { action: 'team' })
   assert.equal(teamState.userInbox.length, 1)
   assert.equal(teamState.userInbox[0].from, 'ludivine/claude')
-  const answered = await controlCall(controlPort, { action: 'answer', i: teamState.userInbox[0].id, text: 'inline' })
+  const answered = await controlCall(controlPort, { action: 'answer', i: teamState.userInbox[0].id, text: 'inline', secret: controlSecret() })
   assert.equal(answered.ok, true)
   const directive = await engineer.waitFor((f) => f.type === 'directive')
   assert.match(directive.text, /\[Human reply to "[^"]*"\]: inline/)
+
+  // SECURITY — the steer-gate + its twin (Pierre): `answer` (a trusted [Human reply]) and `steer` (a trusted
+  // [Human directive]) inject the ONLY authoritative message classes over the any-uid TCP control port, so a raw
+  // frame WITHOUT the 0600 control-secret must be REFUSED (capOk) — a cross-uid host process can't speak as the human.
+  const forgedAnswer = await controlCall(controlPort, { action: 'answer', i: teamState.userInbox[0].id, text: 'forged reply' })   // NO secret
+  assert.equal(forgedAnswer.ok, false, 'a no-secret answer is refused (capOk)')
+  assert.match(forgedAnswer.error || '', /control-capability secret/)
+  const aRoom = teamState.rooms.find((r) => r.roomId)?.roomId
+  const forgedSteer = await controlCall(controlPort, { action: 'steer', roomId: aRoom, target: 'all', text: 'forged directive' })   // NO secret
+  assert.equal(forgedSteer.ok, false, 'a no-secret steer is refused (capOk)')
+  assert.match(forgedSteer.error || '', /control-capability secret/)
 
   // 4b) (d) triage over the WIRE: a non-★ (ludivine) @user QUESTION is triaged to its lead (roland) — the
   // lead gets an ESCALATION, resolves it via a `resolve` frame, and the answer reaches ludivine as PEER data.
@@ -135,12 +146,12 @@ test('daemon team rooms: define org, directed delivery, @user round-trip, brake/
 
   // 5) Brake holds; resume delivers in order.
   const roomId = teamRoomId('shop', 'client')
-  await controlCall(controlPort, { action: 'brake', roomId })
+  await controlCall(controlPort, { action: 'brake', roomId, secret: controlSecret() })
   arch.send({ type: 'say', id: 3, text: '@ludivine step A' })
   arch.send({ type: 'say', id: 4, text: '@ludivine step B' })
   await sleep(80)
   const before = engineer.frames.filter((f) => f.type === 'deliver').length
-  await controlCall(controlPort, { action: 'resume', roomId })
+  await controlCall(controlPort, { action: 'resume', roomId, secret: controlSecret() })
   await engineer.waitFor((f) => f.type === 'deliver' && /step B/.test(f.text))
   const stepFrames = engineer.frames.filter((f) => f.type === 'deliver' && /step [AB]/.test(f.text)).map((f) => f.text)
   assert.equal(stepFrames.length, 2)
@@ -250,8 +261,8 @@ test('daemon #11: the ask_user `kind` survives say→route→inbox so questions 
 
   // dismiss the notification → cleared, no reply routed; answer the question → [Human reply] delivered.
   // Address items by their STABLE id (not array index) — the wire `i` carries the id now.
-  await controlCall(controlPort, { action: 'dismiss', i: inbox.find((x) => /deploy/.test(x.text)).id })
-  await controlCall(controlPort, { action: 'answer', i: inbox.find((x) => /toasts/.test(x.text)).id, text: 'inline' })
+  await controlCall(controlPort, { action: 'dismiss', i: inbox.find((x) => /deploy/.test(x.text)).id, secret: controlSecret() })
+  await controlCall(controlPort, { action: 'answer', i: inbox.find((x) => /toasts/.test(x.text)).id, text: 'inline', secret: controlSecret() })
   const reply = await eng.waitFor((f) => f.type === 'directive' && /Human reply/.test(f.text))
   assert.match(reply.text, /inline/)
   const st2 = await controlCall(controlPort, { action: 'team' })
@@ -285,8 +296,8 @@ test('daemon #16: the @user inbox survives a daemon restart (no loss, no resurre
   let inbox = (await controlCall(controlPort, { action: 'team' })).userInbox
   assert.equal(inbox.length, 3)
   const byText = (s) => inbox.find((x) => x.text.includes(s))
-  await controlCall(controlPort, { action: 'answer', i: byText('q1').id, text: 'inline' })   // resolve one
-  await controlCall(controlPort, { action: 'dismiss', i: byText('fyi').id })                  // dismiss one
+  await controlCall(controlPort, { action: 'answer', i: byText('q1').id, text: 'inline', secret: controlSecret() })   // resolve one
+  await controlCall(controlPort, { action: 'dismiss', i: byText('fyi').id, secret: controlSecret() })                  // dismiss one
   await sleep(120)
   const before = (await controlCall(controlPort, { action: 'team' })).userInbox
   const maxId = Math.max(...before.map((x) => x.id))

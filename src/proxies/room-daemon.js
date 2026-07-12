@@ -1300,9 +1300,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           }) })
           continue
         }
-        if (f.action === 'answer') { reply(engine.answerUser(Number(f.i), String(f.text || ''))); continue }
-        if (f.action === 'dismiss') { reply(engine.dismissUser(Number(f.i))); continue }   // clear an inbox item without replying (#11)
-        if (f.action === 'reopen') { reply(engine.reopenUser(Number(f.i))); continue }     // undo a dismiss (#11)
+        // `answer` is steer's TWIN (Pierre): answerUser routes a TRUSTED [Human reply] to the member — exactly as
+        // authoritative as steer's [Human directive]. Both are trusted-INJECTION over the any-uid TCP control port,
+        // so both MUST be capOk-gated (a cross-uid host process must not speak as the human). dismiss/reopen are
+        // NOT injections (they clear/restore an inbox item) — gated too for consistency (cheap, correct).
+        if (f.action === 'answer') { if (!capOk(f)) { reply({ ok: false, error: 'answer requires the control-capability secret (it routes a trusted [Human reply] — human-only)' }); continue } reply(engine.answerUser(Number(f.i), String(f.text || ''))); continue }
+        if (f.action === 'dismiss') { if (!capOk(f)) { reply({ ok: false, error: 'dismiss requires the control-capability secret' }); continue } reply(engine.dismissUser(Number(f.i))); continue }   // clear an inbox item without replying (#11)
+        if (f.action === 'reopen') { if (!capOk(f)) { reply({ ok: false, error: 'reopen requires the control-capability secret' }); continue } reply(engine.reopenUser(Number(f.i))); continue }     // undo a dismiss (#11)
         // --- Telegram pairing controls (#12): all on the trusted localhost surface ---
         if (f.action === 'tgconfirm' && f.org) {   // human confirmed a pending chat → pin it + greet
           const s = tgStates.get(f.org)
@@ -1506,6 +1510,14 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           continue
         }
         if (['brake', 'resume', 'steer', 'end'].includes(f.action) && f.roomId && engine.getRoom(f.roomId)) {
+          // STEER injects a TRUSTED [Human directive] — the single authoritative message class — so it MUST be
+          // human-only: capOk (the host-only 0600 control-secret), same as removeorg/launchteam/closemember. The
+          // control socket is 127.0.0.1 TCP (any-uid reachable, NOT uid-restricted), so without this a cross-uid
+          // host process could POST {action:'steer'} with no secret and speak AS the human to every agent. The
+          // browser path is already blocked by rejectStateChange; this closes the cross-uid host gap. brake/resume/
+          // end gated too — consistency is cheap, and there's no reason to leave a cross-uid pause/end open. The
+          // dashboard threads the secret from /api/action (it runs in the daemon uid → reads the 0600 file).
+          if (!capOk(f)) { reply({ ok: false, error: `${f.action} requires the control-capability secret (steer injects a trusted [Human directive] — human-only; a cross-uid frame can't forge it)` }); continue }
           const room = engine.getRoom(f.roomId)
           if (f.action === 'brake') { const held = engine.doBrake(room, 'brake'); notify(`Room ${room.team || room.roomId}: paused (human)`); reply({ ok: true, held }) }
           else if (f.action === 'resume') { engine.doResume(room); reply({ ok: true }) }

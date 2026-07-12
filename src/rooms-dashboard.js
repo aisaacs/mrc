@@ -572,15 +572,21 @@ async function handle(req, res) {
           const e = updateCatchup(j.roomId, Number(j.seq), { reviewedAt: new Date().toISOString() })
           return sendJSON(res, 200, e ? { ok: true } : { ok: false, error: 'unknown catch-up' })
         }
-        // 'answer' replies to an @user inbox item; no roomId (the daemon knows the item's room).
-        if (j.action === 'answer') return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, 'answer', { i: Number(j.i), text: String(j.text || '').slice(0, 8000) }))
-        // 'dismiss' clears an @user inbox item without replying (#11); 'reopen' undoes a dismiss.
-        if (j.action === 'dismiss') return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, 'dismiss', { i: Number(j.i) }))
-        if (j.action === 'reopen') return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, 'reopen', { i: Number(j.i) }))
+        // 'answer' replies to an @user inbox item; no roomId (the daemon knows the item's room). It routes a
+        // TRUSTED [Human reply] → capOk-gated on the daemon (steer's twin, Pierre), so thread the 0600 secret.
+        if (j.action === 'answer') return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, 'answer', { i: Number(j.i), text: String(j.text || '').slice(0, 8000), secret: controlSecret() }))
+        // 'dismiss' clears an @user inbox item without replying (#11); 'reopen' undoes a dismiss. (capOk-gated for consistency.)
+        if (j.action === 'dismiss') return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, 'dismiss', { i: Number(j.i), secret: controlSecret() }))
+        if (j.action === 'reopen') return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, 'reopen', { i: Number(j.i), secret: controlSecret() }))
         const extra = { roomId: j.roomId }
         // Team rooms steer by member handle / role / 'all'; legacy pairings use a|b|both (non-a/b => both).
         if (j.action === 'steer') { extra.target = String(j.target || 'both').slice(0, 80); extra.text = String(j.text || '').slice(0, 8000) }
         if (j.action === 'autocatchup') extra.on = !!j.on
+        // brake/resume/steer/end are now capOk-gated on the daemon (steer injects a trusted [Human directive] — a
+        // cross-uid host process on the TCP control port must NOT forge it). This layer runs in the daemon's uid,
+        // so it reads the host-only 0600 control-secret and forwards it — same as the team-* doors (:337+). Without
+        // this the daemon would 403 the legitimate dashboard steer.
+        if (['brake', 'resume', 'steer', 'end'].includes(j.action)) extra.secret = controlSecret()
         return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, j.action, extra))
       })
       return
