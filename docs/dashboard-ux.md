@@ -453,6 +453,101 @@ implements against:
 
 ---
 
+## 14. The escalation model — rooms, `★` leads, and the notify boundary (locked 2026-07-11)
+
+Worked out with the owner from concrete traces (a checkout feature spanning a client + a server). It
+resolves how `@user` fits the room topology, preserving **Alessandro's autonomous hierarchical team** and
+the owner's **ad-hoc / flat / simple** workflow in **one uniform rule**. This is the foundation the
+`deriveRooms` change and the create-form sit on.
+
+**The invariant (the whole thing in one line):**
+
+> **The human is notified ONLY on escalation decisions. Coordination is observe-and-steer on demand —
+> pull, never push.** Your limited context stays spent on "what does the project need from me to unblock
+> it," and nothing else. Want the backstory for a decision? You read that room's `thread.log` on demand —
+> the context is there when you *want* it, not shoved at you constantly. You can always look at or steer
+> any coordination room yourself; you just don't get *notifications* from it.
+
+**The structure that falls out of the invariant:**
+
+- **The escalation room = every `★` + `@user`, and it ALWAYS exists.** This is the "situation room" — the
+  *only* surface that pushes to the human. It is the leads room, generalized (the owner's first instinct —
+  "the leads room might need to always be there" — was right; it's how agents reach the human).
+- **`★` ("can reach the human") is a per-AGENT capability, and there can be SEVERAL.** This is the
+  primitive missing today (`deriveRooms` does one-lead-per-team). Solo = the one member is `★`. Hierarchical
+  team = the lead is `★`. Ad-hoc peers (a client + a server) = **both** `★`. A Pierre/adversary is **never**
+  `★` (it relays to the session it's consulting, never escalates to the human).
+- **Coordination rooms carry NO `@user`. That absence IS the wall.** It's what forces a non-`★` (engineer,
+  critic, Pierre) to escalate UP to a `★` rather than bicking the human directly — which is exactly
+  Alessandro's autonomy chain (fan out → check each other → escalate up → the human only when the chain is
+  exhausted → the answer filters back down to the origin agent). The wall is a structural property, not a
+  persona instruction.
+- **Only an explicit `@user`-directed message notifies.** The engine already does this — `ask_user` →
+  question (badges/pushes), a plain `@user` → FYI (no badge), peer-directed → no inbox item at all. So peer
+  chatter never pushes to the human regardless of which room it happens in.
+
+**Split-vs-merged dissolves — it's just "is there a non-`★` to wall off?"** The *rule* is uniform ("`@user`
+sits with the `★`s; coordination rooms wall off everyone else"); the room *count* varies by whether a wall
+is needed:
+
+- **Hierarchical team (autonomous):** team room `[architect ★, engineer, critic]` (coordination, no `@user`)
+  **+** escalation room `[architect ★, @user]`. Split — because the non-`★` engineer/critic must be walled
+  from the human. The engineer stuck ⇒ `@architect`; the architect stuck ⇒ `@user`; the answer flows back
+  down to the engineer. This is the "give it a task and it runs, escalating only when genuinely stuck" flow.
+- **Flat peers (ad-hoc):** one room `[client ★, server ★, @user]` serves as both their coordination room
+  and their escalation room — no redundant room, because there is no non-`★` to wall off. Both reach the
+  human directly; a Pierre lives in separate `[client, pierre]` / `[server, pierre]` consult rooms and
+  reaches neither the human nor the other peer. **Caveat (Pierre, the `size===2` gate):** in a room with
+  **3+ members**, an un-addressed message routes to **no one** (the sole-other fallback is gated on
+  `room.members.size === 2`, `room-engine.js:238`). So in a multi-`★` room the peers must **`@mention`**
+  each other to coordinate and **`@user`** explicitly to escalate — "just talking" drops. Only a **size-2**
+  `[★, @user]` room auto-escalates un-addressed (the solo case: the lone `★` just talks → reaches the
+  human). This is a genuine asymmetry the persona must convey: **single-`★` escalation is implicit,
+  multi-`★` escalation is explicit** (a multi-`★` agent must address `@user`, not merely talk).
+- **Solo (+ optional Pierre):** `[member ★, @user]`, plus a `[member, pierre]` consult if summoned. Not a
+  special case — just "the only escalation path is the human," the general rule with one `★`.
+
+**No engine-routing change.** `@user` still lives in a room as a member; escalations still land in the
+inbox (the machinery already validated). What changes: **(1)** `deriveRooms` — which rooms get an `@user`
+seat (team rooms gated to ≥2 members for coordination; the escalation room = all `★` + `@user`, always;
+never seat `@user` in a room that holds a non-`★`); **(2)** the **multiple-`★`** primitive (decouple
+"reaches the human" from one-lead-per-team); **(3)** the create-form to express `★` and ad-hoc rooms. A
+non-`★` still cannot reach `@user` (no `@user` in any of its rooms); reaching the *human* is never
+agent-to-agent tangle, so this stays inside the containment mechanism, not a replacement. **Pierre-gated:
+the multiple-`★` + `deriveRooms` wall invariant goes past a live Pierre before it's built** (correctness /
+containment-critical — the human-reachability path).
+
+**The `deriveRooms` containment invariant (Pierre-verified — the three checks the diff must pass):**
+
+> **`@user` ∈ room.members  ⟺  every non-`@user` member of that room is a `★`.** Equivalently: there is
+> **exactly one** `@user`-carrying room — the escalation room — and its members are **exactly** the
+> `★`-flagged agents `+ @user`.
+
+Three failure modes `deriveRooms` must structurally prevent — get any wrong and it's the whole autonomy
+story (a/b leak the human to a non-`★`; c strands the human unreachable):
+- **(a) No non-`★` in the escalation room.** Build its members as `members.filter(★) + @user`, never "all
+  members" — a single stray non-`★` in it reaches the human directly and the wall is gone.
+- **(b) No `@user` in any coordination room.** The phantom-leads-room bug generalized. Assert: for every
+  room that is not the escalation room, `!room.members.has('@user')`.
+- **(c) At least one `★`.** Zero `★` is a dead-end — the human is unreachable (no `@user` path) *and* can't
+  reach any agent. Floor: `1 ≤ ★-count ≤ member-count`; a create-form declaring an all-non-`★` team must be
+  refused or default one member to `★` (solo already does this — the lone member IS `★`). This is exactly
+  the invariant a naive multiple-lead primitive breaks by permitting zero.
+
+Why it holds with **no engine change**: a non-`★` lives in coordination rooms only (no `@user`, by **b**), so
+its `@user` token resolves to no room-member and is **blocked at delivery** (`deliverTo`, `room-engine.js`) —
+it cannot address the human. A `★` is in the escalation room (has `@user`) → reaches the human. The wall *is*
+the autonomy chain: a non-`★` `@mention`s a `★` in its coordination room → the `★` `@user`s in the escalation
+room. **Pierre checks exactly (a)/(b)/(c) on the `deriveRooms` diff before it ships.**
+
+**Why this is the right landing:** it preserves Alessandro's work/intention/autonomy (the wall + the
+escalation chain are intact and structural) AND the owner's need for flexibility, simplicity, and
+efficiency (a plain session or "just a client, a server, and a Pierre" is first-class; the human is bugged
+only for real decisions and can go as hands-on or hands-off as they want, on demand). One rule spans "full
+autonomous team" down to "a session and a Pierre."
+
+---
+
 *Design capture, not a commitment. It exists so the build has one spec, the ergonomic bar is stated
-up front, and the containment-sensitive surfaces are named for Pierre before they're written. §13 and
+up front, and the containment-sensitive surfaces are named for Pierre before they're written. §13, §14, and
 `prototype/index.html` are the current living reference.*
