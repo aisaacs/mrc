@@ -838,11 +838,12 @@ function renderProjectHome(d) {
     <div class="sblk"><div class="srow"><b>Telegram</b> ${sBadge('project','runtime')}</div><span id="tgSection">${tgSectionHtml()}</span></div>
     <div class="sblk"><div class="srow"><b>Outbound egress (--web)</b> ${sBadge('project','launch')}</div>
       <div class="shelp">${S.settings ? esc(web.note||'Not enabled — this project reaches only the sanctioned proxy + whitelisted domains.') : '<span class="muted">loading…</span>'}</div></div>
-    <div class="sblk danger"><div class="srow"><b>Danger zone</b></div>
-      <div class="shelp">Forget this project from Mister Claude — stops its sessions and removes the tab. <b>Nothing on disk is deleted</b> (team.json + transcripts stay; re-add with <code>mrc team up</code>).</div>
-      <div class="row" style="margin-top:6px"><button class="btn danger tiny" onclick="deleteProject()">🗑 Delete project</button></div></div>
   </div>`
 }
+// §13 "nothing is ever deleted": the dashboard Delete-project UI is RETIRED — the only lifecycle verb is Close
+// project (= suspend → Recently used → Archived by age). The removeorg endpoint STAYS (capOk-gated) for the CLI
+// (`mrc team down`) — an orphaned-but-gated endpoint is still walled; it's just no longer surfaced in the UI.
+// (window.deleteProject is left defined-but-unreferenced so the CLI/endpoint path is intact.)
 function renderMember(d) {
   const m = memberByHandle(S.selMember)
   if (!m) { d.innerHTML = `<div class="empty">Member gone.</div>`; return }
@@ -885,7 +886,7 @@ function renderTerminal(d, m) {
 function termHeaderHTML(m, url) {
   const live = orgMembers().filter(x=>x.tier==='live'); const ready=live.filter(x=>x.online).length; const starting=live.filter(x=>!x.online && x.launched).length
   return `<b>@${esc(m.first)} <span class="muted">· terminal</span></b>
-    <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(url)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny" style="margin-left:8px" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="removeMember(this.dataset.h,this.dataset.f)">✕ remove</button> <button class="btn tiny danger" onclick="stopTeam()">■ Stop team</button>`
+    <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(url)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny" style="margin-left:8px" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="closeMemberSession(this.dataset.h,this.dataset.f)" title="Ctrl-C this agent — stop its session, keep it in the team (resume anytime)">⤓ Close session</button> <button class="btn tiny" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="removeMember(this.dataset.h,this.dataset.f)" title="Dismiss — remove this agent from the team entirely">✕ dismiss</button> <button class="btn tiny danger" onclick="stopTeam()">■ Stop team</button>`
 }
 function syncTermHost() {
   const host = $('#termhost'), detail = $('#detail')
@@ -2074,7 +2075,12 @@ window.toggleNotify = async ()=>{
   updateNotifyBtn(); playChime()   // audible confirmation + satisfies the autoplay-needs-gesture rule
 }
 window.stopTeam = async ()=>{ if(!confirm('Stop the team? This closes all member terminals.'))return; const r=await actJSON('/api/team-stop',{org:S.org}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
-window.removeMember = async (h, first)=>{ if(!confirm('Remove @'+first+' from the team? (updates team.json)'))return; const r=await actJSON('/api/team-remove-member',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; S.selMember=null; tick() }
+window.removeMember = async (h, first)=>{ if(!confirm('Dismiss @'+first+' — remove this agent from the team entirely? (updates team.json; its session stops and it leaves the roster)'))return; const r=await actJSON('/api/team-remove-member',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; S.selMember=null; tick() }
+// §13 Close session (Ctrl-C an agent): stop its live session but KEEP it in the team (≠ dismiss). Resumable via
+// relaunchMember (the existing kill-first→respawn, which the agent --continues). Routes through the cap-gated
+// /api/team-close-session (closemember → killMember; the roster/orgDef is untouched — the ≠-remove distinction
+// is enforced at the endpoint, not just the label).
+window.closeMemberSession = async (h, first)=>{ if(!confirm(`Close @${first}'s session? Like Ctrl-C — its terminal stops but it STAYS in the team; resume anytime to pick up where it left off. Nothing is removed.`))return; const r=await actJSON('/api/team-close-session',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
 // #41: recover an orphaned terminal — stops the lost session (master+container) FIRST, then a fresh spawn.
 // The agent's conversation resumes (--continue). Goes through actJSON → CSRF-guarded + confirms a 2xx
 // before clearing (no optimistic success; a 403/error surfaces via flashFail).

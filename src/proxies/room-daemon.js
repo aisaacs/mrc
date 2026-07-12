@@ -1410,6 +1410,18 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
           continue
         }
+        if (f.action === 'closemember' && f.org && f.handle) {
+          // §13 "Close session" (Ctrl-C an agent): STOP its live session but LEAVE it in the roster — the ≠-remove
+          // distinction is REAL here, at the endpoint (Pierre): killMember reaps the dtach master + ttyd + container
+          // + the LAUNCH record, but NEVER touches orgDefs (the member stays defined → resumable via relaunchmember).
+          // A state-change → capOk-gated like every spawn/kill door. (removemember stays a SEPARATE roster mutation.)
+          if (!capOk(f)) { reply({ ok: false, error: 'closemember requires the control-capability secret' }); continue }
+          if (!teamMod) { reply({ ok: false, error: 'launch helpers still loading — retry' }); continue }
+          if (!orgDefs.get(f.org)) { reply({ ok: false, error: 'unknown org' }); continue }
+          try { teamMod.killMember(f.org, f.handle); daemonLog(`closemember ${f.org}: @${f.handle} (session stopped, roster kept)`); reply({ ok: true }) }
+          catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
+          continue
+        }
         if (f.action === 'relaunchmember' && f.org && f.handle) {
           if (!capOk(f)) { reply({ ok: false, error: 'relaunchmember requires the control-capability secret' }); continue }   // guard-1: activate/spawn/state-change capability
           // #41 orphan recovery: kill-FIRST (reap the orphaned master + container by sock/label — Gate-2,
