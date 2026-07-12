@@ -137,6 +137,14 @@
   .modalcard:focus { outline:none }
   .modalhead { display:flex; align-items:center; justify-content:space-between; padding:12px 16px; border-bottom:1px solid var(--line) }
   .modalbody { padding:14px 16px; overflow:auto }
+  /* 🎭 cast modal (§13 prototype openCast) */
+  .castgrid { display:grid; grid-template-columns:1fr 1fr; gap:12px } @media (max-width:620px){ .castgrid{ grid-template-columns:1fr } }
+  .cc { display:flex; gap:11px; padding:12px; border:1px solid var(--line); border-radius:10px; background:var(--panel2) } .cc:hover{ border-color:var(--accent) } .cc.plain{ background:var(--accent-soft,#2b2547); border-color:var(--accent) }
+  .cav { width:34px; height:34px; border-radius:50%; flex:0 0 auto; display:grid; place-items:center; font-weight:700; font-size:12px; color:#fff; background:var(--accent) }
+  .cbody { min-width:0; flex:1 } .cnm { font-weight:650; font-size:14px; display:flex; align-items:center; gap:6px } .crole { font-family:ui-monospace,monospace; font-size:11px; color:var(--accent); margin-bottom:5px }
+  .cblurb { font-size:12px; color:var(--dim); line-height:1.5; margin-bottom:8px } .cmeta { display:flex; flex-wrap:wrap; gap:5px; margin-bottom:9px }
+  .ctag { font-size:10px; padding:1px 6px; border-radius:5px; border:1px solid var(--line); color:var(--dim); background:var(--bg) } .ctag.accent{ color:var(--accent); border-color:var(--accent) } .ctag.caged{ color:var(--danger); border-color:var(--danger) }
+  .castnote { margin-top:12px; font-size:12px; color:var(--dim); background:var(--panel2); border:1px solid var(--line); border-radius:8px; padding:10px 13px; line-height:1.55 }
   .sgrouph { font-size:11px; font-weight:700; letter-spacing:.06em; text-transform:uppercase; color:var(--dim); margin:0 0 8px }
   .sblk.danger { border-color:var(--danger) }
   .badge { font-size:10px; background:var(--needs-bg); color:var(--needs-fg); border-radius:var(--radius-pill); padding:0 6px; margin-left:auto }
@@ -364,6 +372,7 @@
   </div>
   <div id="modal"></div>
   <div id="fcModal"></div>
+  <div id="castModal"></div>
 </div>
 <script>
 const $ = (s, r=document) => r.querySelector(s)
@@ -417,20 +426,19 @@ const setOrgUrl = (org) => { try { history.replaceState(null, '', '/'+encodeURIC
 // agents + (Slice B) a cast of characters rather than role-forward teams.
 const ROLES = ['generalist','engineer','tester','researcher','user-defender','architect','critic','adversary','ultracritical','designer','sound-designer','composer']
 const BACKENDS = ['claude','codex']   // agent backends only — media roles DERIVE their backend (below)
-// §5.2 cast (Slice B), UI-ADD-ONLY: a curated set of recognizable named characters, each mapped to its
-// signature ROLE, so adding a specialist is one recognizable click instead of a random French name — the first
-// increment of the recurring-characters direction (persistent per-character volumes stay P4/Pierre-gated). A
-// cast pick is roster-populate-only: it pushes the SAME member shape a hand-add does, so it's launch-identical
-// (parseRoster/materializeRoster re-validate it). Deliberately NO adversary/ultracritical here — a team adversary
-// is a FULL-EGRESS member (opposite of the caged one you /summon); those stay the Advanced role dropdown. And the
-// critic is HERVÉ, not Pierre: "Pierre" is reserved for the caged summoned adversary (the canonical, hard-coded,
-// containment-loaded identity), so the cast never collides with it (Pierre's call — a rename beats disambiguating copy).
+// §5.2 / §13 CAST — the LOCKED four, NOT invented ones. The doc's hard-stop character collapses: architect =
+// Colette, images = Thierry (Gemini), critique = Pierre (the caged adversary). Everything else (engineer, tester,
+// researcher, user-defender) stays a ROLE you give a plain Claude — NOT a cast character (prototype line 238).
+// A CHARACTER is a recurring identity (name + persona + its own persistent, already-authed config volume = P4);
+// CLAUDE is the base agent (add many, name by use, role in Advanced). Rendered as the 🎭 modal (openCastModal),
+// not chips. login-status ("ready — no login") is the P4 persistent-volume payoff → NOT hardcoded here (honest
+// until P4 wires it). Pierre carries NO ★ (§14: an adversary never escalates to the human — spec beats the
+// prototype's star:true). caged-Pierre-as-a-roster-member is expressible; its LAUNCH is rebuild-gated (§5 4b).
 const CAST = [
-  { key:'colette', name:'Colette', role:'architect', label:'Architect', title:'Colette — the architect: plans structure, interfaces, and the shape of the work' },
-  { key:'camille', name:'Camille', role:'engineer',  label:'Engineer',  title:'Camille — an engineer: implements features in its territory' },
-  { key:'herve',   name:'Hervé',   role:'critic',    label:'Critic',    title:'Hervé — an in-team critic: pushes back on the plan (a full team member — not the sandboxed red-teamer you /summon)' },
-  { key:'margot',  name:'Margot',  role:'tester',    label:'Tester',    title:'Margot — a tester: verifies output with the in-container headless browser' },
-  { key:'thierry', name:'Thierry', role:'designer',  label:'Designer',  title:'Thierry — the designer: generates image assets (needs a Gemini key in the repo .env)' },
+  { key:'claude',  name:'Claude',  role:'generalist', label:'plain session', plain:true, generalist:true, blurb:'The base agent — a plain session. Add as many as you like, name them by use, and (in Advanced) optionally give one a role.' },
+  { key:'colette', name:'Colette', role:'architect',  label:'architect', character:true, blurb:'Your recurring architect — owns the plan, not the code; breaks the goal into steps and hands them to the engineer. Need an architect? Summon Colette.' },
+  { key:'thierry', name:'Thierry', role:'designer',   label:'designer', character:true, worker:true, backend:'gemini', blurb:'Makes image assets (Gemini) on @mention into his territory. Need an image? Summon Thierry.' },
+  { key:'pierre',  name:'Pierre',  role:'adversary',  label:'adversary', character:true, caged:true, attach:true, blurb:'The faultfinding step-brother — caged, read-only, grounded in your repo. Need a critic? Summon Pierre. Always Pierre.' },
 ]
 // #42: the role chooser lists built-in roles PLUS this project's custom personas (so a member can pick
 // @advertiser). Custom keys that shadow a built-in are de-duped (the parser already forbids alias/media
@@ -776,7 +784,7 @@ function amForm(t) {
       <span id="amBackendWrap" style="flex:1;display:flex">${amBackendControl('engineer')}</span></div>
     <div class="row" style="margin-top:6px"><input id="amName" placeholder="name — optional (e.g. Colette)" style="flex:1"><input id="amTerr" placeholder="territory — optional" style="flex:1"></div>
     <div class="row" style="margin-top:6px"><button class="btn tiny primary" data-team="${esc(t)}" onclick="submitAddMember(this.dataset.team)">Add</button><button class="btn tiny" onclick="cancelAddMember()">Cancel</button> <span id="amMsg" class="muted"></span></div>
-    <div class="row" style="margin-top:6px;gap:5px;flex-wrap:wrap;align-items:center"><span class="muted" style="font-size:11px">or from cast:</span>${CAST.map(c=>`<button class="btn tiny castchip" title="${esc(c.title)}" data-team="${esc(t)}" data-key="${esc(c.key)}" onclick="castAddMember(this.dataset.team,this.dataset.key)">${esc(c.name)} · ${esc(c.label)}</button>`).join('')}</div>
+    <div class="row" style="margin-top:6px"><button class="btn tiny" onclick="openCastModal('project')">🎭 Add from cast</button></div>
   </div>`
 }
 
@@ -1462,7 +1470,7 @@ function bRenderTeams() {
           : `<select onchange="bSet(${ti},${mi},'backend',this.value)">${BACKENDS.map(o=>`<option ${o===m.backend?'selected':''}>${o}</option>`).join('')}</select>`}
         <label class="lead" title="★ — this agent can reach you directly (it joins the escalation room with @user). Non-★ agents escalate up to a ★ instead. Several ★ per team are fine; a team with none gets one automatically."><input type="checkbox" ${m.lead?'checked':''} onchange="bSet(${ti},${mi},'lead',this.checked)"> ★ reaches you</label>
         <input value="${esc(m.territory)}" placeholder="territory" oninput="bSet(${ti},${mi},'territory',this.value)"></div>`:''}</div>`}).join('')}
-    <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><button class="btn tiny" onclick="bAddMem(${ti})">＋ agent</button><span class="muted" style="font-size:11px">or from cast:</span>${CAST.map(c=>`<button class="btn tiny castchip" title="${esc(c.title)}" data-ti="${ti}" data-key="${esc(c.key)}" onclick="bAddCast(this.dataset.ti,this.dataset.key)">${esc(c.name)} · ${esc(c.label)}</button>`).join('')}</div></div>`).join('')
+    <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><button class="btn tiny" onclick="bAddMem(${ti})">＋ agent</button><button class="btn tiny" data-ti="${ti}" onclick="openCastModal('builder',this.dataset.ti)">🎭 Add from cast</button></div></div>`).join('')
 }
 // §14: ★ ("reaches you") is a per-agent toggle and MULTIPLE are allowed per team (was: a radio that forced
 // exactly one lead). Zero is fine in the form — parseRoster defaults one per team (the ≥1-★ floor).
@@ -1480,16 +1488,7 @@ window.bToggleAdv=()=>{S.builder.advanced=!S.builder.advanced;renderBuilder($('#
 window.bAddTeam=()=>{S.builder.teams.push({name:'team'+(S.builder.teams.length+1),territory:'.',members:[{role:'generalist',backend:'claude',lead:true,territory:'',name:bSuggest(),_nameAuto:true}]});bRenderTeams();bPreview()}
 window.bDelTeam=(ti)=>{S.builder.teams.splice(ti,1);bRenderTeams();bPreview()}
 window.bAddMem=(ti)=>{S.builder.teams[ti].members.push({role:'generalist',backend:'claude',lead:false,territory:'',name:bSuggest(),_nameAuto:true});bRenderTeams();bPreview()}
-// §5.2 cast add: append a named character to team ti. The member object is the SAME shape bAddMem pushes —
-// {role,backend,lead,territory,name} — so at launch it's byte-indistinguishable from a hand-added member (no
-// cast-specific launch path; bRoster→parseRoster re-validates it). The name is PINNED (_nameAuto:false) so a
-// style change / autofill never re-rolls it. Media roles (designer) derive their backend via mediaBackend. If
-// the cast name is already taken in this build, suffix a digit so the handle stays unique + recognizable.
-window.bAddCast=(ti,key)=>{ const c=CAST.find(x=>x.key===key); if(!c)return
-  const backend = mediaBackend(c.role) || 'claude'
-  let name=c.name; const taken=allBuilderNames(); if(taken.has(name.toLowerCase())){ let n=2; while(taken.has((c.name+n).toLowerCase()))n++; name=c.name+n }
-  S.builder.teams[ti].members.push({role:c.role,backend,lead:false,territory:'',name,_nameAuto:false})
-  bRenderTeams();bPreview() }
+// (cast add is now the 🎭 openCastModal('builder',ti) → castDoAdd path — the old bAddCast chip is retired.)
 window.bDelMem=(ti,mi)=>{S.builder.teams[ti].members.splice(mi,1);bRenderTeams();bPreview()}
 // Hand-typing a name clears _nameAuto so a style change / 🎲 never clobbers it. No re-render (focus) —
 // update the inline #36 error span directly.
@@ -1736,6 +1735,75 @@ function fcRender() {
 }
 function fcPick() { if (!_fc || !_fc.path) return; const cb = _fc.onPick, p = _fc.path; fcClose(); if (cb) cb(p) }
 
+// ---- 🎭 cast modal (§5.2 / §13 prototype openCast) — the LOCKED four; roles≠characters ----
+// Reuse-verbatim seam: renders through esc() (character strings are ours, but the pattern holds), and adds via
+// the EXISTING paths — builder ctx pushes to S.builder (client), project ctx → cap-gated /api/team-add-member.
+let _cast = null
+window.openCastModal = (ctx, ti) => { _cast = { ctx, ti: (ti==null?0:Number(ti)) }; castRender() }
+function castClose() { _cast = null; const h=$('#castModal'); if(h)h.innerHTML='' }
+const castInitials = (n) => String(n||'').replace(/^[^-]*-/,'').slice(0,2)
+function castRender() {
+  const h = $('#castModal'); if(!h) return
+  if(!_cast){ h.innerHTML=''; return }
+  const taken = _cast.ctx==='builder'
+    ? new Set((S.builder.teams[_cast.ti]?.members||[]).map(m=>String(m.name||'').split('-')[0]))
+    : new Set(orgMembers().map(m=>String(m.first||m.handle||'').split('-')[0]))
+  const cards = CAST.map(c=>{
+    const here = taken.has(c.name) && !c.generalist
+    const tags = [ c.caged?'<span class="ctag caged">caged · isolated</span>':'', c.worker?'<span class="ctag">on-demand</span>':'', c.character?'<span class="ctag">character</span>':'' ].filter(Boolean).join('')
+    // Pierre (caged) from the dashboard is the rebuild-gated caged-member port (§5 4b) — honestly gated, not faked.
+    const gated = !!c.caged
+    const btn = gated
+      ? `<button class="btn tiny" disabled title="Summon Pierre from a session — dashboard caged-add is the rebuild-gated caged-member port">⛓ summon from a session</button>`
+      : `<button class="btn tiny ${here?'':'primary'}" ${here?'disabled':''} data-k="${esc(c.key)}" onclick="castAdd(this.dataset.k)">${here?'✓ already on the team':(c.generalist?'＋ Add a Claude':'＋ Add '+esc(c.name))}</button>`
+    return `<div class="cc ${c.plain?'plain':''}"><span class="cav">${esc(castInitials(c.name))}</span><div class="cbody">
+      <div class="cnm">${esc(c.name)}${c.plain?' <span class="ctag accent">default</span>':''}</div>
+      <div class="crole">@${esc(c.key)} · ${esc(c.label)}</div>
+      <div class="cblurb">${esc(c.blurb)}</div>
+      <div class="cmeta">${tags}</div>${btn}
+    </div></div>`
+  }).join('')
+  h.innerHTML = `<div class="scrim" onclick="if(event.target===this)castClose()">
+    <div class="modalcard" role="dialog" aria-modal="true" aria-label="Add an agent" tabindex="-1" style="max-width:680px">
+      <div class="modalhead"><h2 style="margin:0;font-size:14px">🎭 Add an agent</h2><button class="btn tiny" onclick="castClose()">✕</button></div>
+      <div class="modalbody"><div class="castgrid">${cards}</div>
+        <div class="castnote"><b>Characters</b> (Colette, Thierry, Pierre) are recurring identities — same persona every time (persistent already-authed login arrives with P4). <b>Claude</b> is the base agent: add as many as you like, name by use, give it a role in Advanced. Roles are the collaboration contract; the only character hard-stops are <b>architect = Colette</b>, <b>images = Thierry</b>, <b>critique = Pierre</b>. Everything else (engineer, tester, researcher…) is a role on a Claude.</div>
+      </div></div></div>`
+  const card=h.querySelector('.modalcard'); if(card){try{card.focus()}catch{}; card.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();castClose()}})}
+}
+window.castAdd = (key) => {
+  const c = CAST.find(x=>x.key===key); if(!c || !_cast) return
+  const ctx = _cast.ctx, ti = _cast.ti   // CAPTURE now — the name-by-use modal closes _cast before the callback fires
+  if (c.generalist) { openNameByUse((nm)=>castDoAdd(c, nm, ctx, ti)); return }   // a plain Claude → name it by use
+  castDoAdd(c, c.name, ctx, ti)
+}
+function castDoAdd(c, nm, ctx, ti) {
+  const backend = c.backend || mediaBackend(c.role) || 'claude'
+  if (ctx==='builder') {
+    S.builder.teams[ti].members.push({ role:c.role, backend, lead:false, territory:'', name:nm, _nameAuto:false })
+    castClose(); bRenderTeams(); bPreview()
+  } else {
+    const team = orgMembers()[0]?.team || undefined; castClose()
+    ;(async()=>{ const r = await postJSON('/api/team-add-member', { org:S.org, team, role:c.role, backend, name:nm }).catch(()=>({ok:false,error:'network'})); if(!r||!r.ok){ flashFail(r||{error:'add failed'}) } else { tick() } })()
+  }
+}
+// name-by-use modal (a plain Claude): a name by its USE (client/server/worker/…) helps you remember what it's for.
+let _nameCb = null
+function openNameByUse(cb) {
+  _nameCb = cb; const h=$('#castModal'); if(!h) return
+  const picks = ['client','server','worker','api']
+  h.innerHTML = `<div class="scrim" onclick="if(event.target===this)castClose()">
+    <div class="modalcard" role="dialog" aria-modal="true" aria-label="Name this session" tabindex="-1" style="max-width:460px">
+      <div class="modalhead"><h2 style="margin:0;font-size:14px">Name this session</h2><button class="btn tiny" onclick="castClose()">✕</button></div>
+      <div class="modalbody"><div class="muted" style="font-size:12.5px;margin-bottom:8px">A name by its use helps you remember what it's for. Must be unique in the project.</div>
+        <div class="row" style="gap:6px;flex-wrap:wrap;margin-bottom:10px">${picks.map(p=>`<button class="btn tiny" data-n="${esc(p)}" onclick="document.getElementById('nbuIn').value=this.dataset.n">${esc(p)}</button>`).join('')}</div>
+        <input id="nbuIn" placeholder="or type a name (client, api, scraper…)" style="width:100%" onkeydown="if(event.key==='Enter')nbuConfirm()">
+        <div class="row" style="justify-content:flex-end;gap:8px;margin-top:12px"><button class="btn tiny" onclick="castClose()">Cancel</button><button class="btn tiny primary" onclick="nbuConfirm()">Add agent</button></div>
+      </div></div></div>`
+  const inp=$('#nbuIn'); if(inp){try{inp.focus()}catch{}}
+}
+window.nbuConfirm = () => { const inp=$('#nbuIn'); const v=(inp&&inp.value.trim())||'claude'; const cb=_nameCb; castClose(); if(cb)cb(v||'claude') }
+
 // Render the Settings modal — centered card + scrim over the whole app. EVENT-DRIVEN (openSettings /
 // closeSettings / the tg handlers / enableNotifyPerm) — deliberately NOT called from paint()/tick(), so
 // it never runs on the 1.5s poll. The `_modalShown` transition-guard makes repeated calls safe regardless:
@@ -1875,15 +1943,7 @@ window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('
   const msg=$('#amMsg'); if(msg)msg.textContent='adding…'
   const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role,backend,territory,name})
   if(r&&r.ok){ S.addingTo=null; tick() } else { const m=$('#amMsg'); if(m)m.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
-// P3 cast-on-live-add: one-click add a recognizable named specialist to a RUNNING team — same guarded door as
-// the manual Add (/api/team-add-member → cap-gated addmember → materializeRoster re-validates name+role). If the
-// cast name is already taken in this live org, parse rejects it (handle-uniqueness) and the error surfaces here;
-// retry via the manual name field. Media roles (designer) derive their backend via mediaBackend.
-window.castAddMember = async (t,key)=>{ const c=CAST.find(x=>x.key===key); if(!c)return
-  const backend=mediaBackend(c.role)||'claude'
-  const msg=$('#amMsg'); if(msg)msg.textContent=`adding ${c.name}…`
-  const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role:c.role,backend,name:c.name,territory:''})
-  if(r&&r.ok){ S.addingTo=null; tick() } else { const m=$('#amMsg'); if(m)m.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
+// (live cast-add is now the 🎭 openCastModal('project') → castDoAdd path — the old castAddMember chip is retired.)
 window.selRoom = (id, openCu)=>{ if(!confirmLeaveBuilder())return; S.selRoom=id; S.selInbox=null; S.selMember=null; S.selHome=false; S.building=false; if(openCu)S.tab='catchups'; else S.tab='thread'; S.room=null; tick() }
 window.openRoom = (id)=>{ selRoom(id) }
 // #47: open the @you CHANNEL. `i` is 'channel' (the nav row) or a numeric item id (an OS-notification
