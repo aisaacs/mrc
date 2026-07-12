@@ -647,3 +647,31 @@ test('parseRoster Model B (Inc 3 Site 2): explicit authorized member.repo requir
     assert.equal(legacy.members[0].crossRepo, false)
   } finally { rmSync(rootReal, { recursive: true, force: true }); try { unlinkSync(_authPathForTest(org)) } catch {} }
 })
+
+// §14 CONTAINMENT parse-gates (the rebuild's create-form ad-hoc-rooms surface): the UI can express ★/rooms
+// freely, but a hand-edited team.json (or a manual ad-hoc room) must not slip a containment breach past parse.
+test('validateRoster gate (a): @user seated beside a non-★ member is REJECTED at parse (escalation wall)', () => {
+  const base = { org: 'o', repo: '/tmp', teams: [], customPersonas: {} }
+  // a MANUAL ad-hoc room composing @user next to a NON-★ engineer → leaks the human to a non-★ → reject
+  const bad = validateRoster({ ...base,
+    members: [{ handle: 'colette/claude', lead: true, role: 'architect' }, { handle: 'margaux/claude', lead: false, role: 'engineer' }],
+    rooms: [{ roomId: 'r', kind: 'adhoc', members: ['colette/claude', 'margaux/claude', '@user'] }] })
+  assert.ok(!bad.ok, 'a non-★ in an @user room is rejected')
+  assert.ok(bad.errors.some((e) => /@user/.test(e) && /wall|non-★/.test(e)), 'the error names the wall breach')
+  // @user seated ONLY with ★ members → OK (the derived-escalation shape)
+  const good = validateRoster({ ...base,
+    members: [{ handle: 'colette/claude', lead: true, role: 'architect' }, { handle: 'margaux/claude', lead: false, role: 'engineer' }],
+    rooms: [{ roomId: 'r', kind: 'leads', members: ['colette/claude', '@user'] }] })
+  assert.ok(good.ok, 'an @user room of only ★ passes')
+})
+
+test('validateRoster gate (b): an adversary/caged member carrying ★ (lead) is REJECTED at parse (§14 never-★)', () => {
+  const base = { org: 'o', repo: '/tmp', teams: [], rooms: [], customPersonas: {} }
+  const advStar = validateRoster({ ...base, members: [{ handle: 'pierre/claude', lead: true, role: 'adversary' }] })
+  assert.ok(!advStar.ok && advStar.errors.some((e) => /adversary|never be ★/.test(e)), 'a ★-adversary is rejected')
+  const cagedStar = validateRoster({ ...base, members: [{ handle: 'p/claude', lead: true, role: 'engineer', cage: 'contained' }] })
+  assert.ok(!cagedStar.ok && cagedStar.errors.some((e) => /caged|never be ★/.test(e)), 'a ★-caged member is rejected')
+  // an adversary that is NOT ★ → this gate does not fire
+  const advOk = validateRoster({ ...base, members: [{ handle: 'pierre/claude', lead: false, role: 'adversary' }, { handle: 'a/claude', lead: true, role: 'architect' }] })
+  assert.ok(!advOk.errors.some((e) => /never be ★/.test(e)), 'a non-★ adversary is fine by this gate')
+})

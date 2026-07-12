@@ -386,6 +386,24 @@ export function validateRoster(norm) {
       }
     }
   }
+  // §14 CONTAINMENT parse-gates (Pierre) — the UI can EXPRESS ★/rooms freely, but the enforcement is HERE, so a
+  // hand-edited team.json can't slip a containment breach past a green UI. Both reject at parse; a preview/launch
+  // surfaces the reject.
+  // (a) @user ∈ a room ⟹ every OTHER member of that room is ★. The escalation room is DERIVED (filter(★)+@user)
+  //     so a normal roster can't violate it — but a MANUAL ad-hoc Rooms card (create-form) can compose @user
+  //     beside a non-★, which would reach the human directly and break the escalation wall (§14). Reject.
+  const starHandles = new Set(norm.members.filter((m) => m.lead).map((m) => m.handle))
+  for (const r of (norm.rooms || [])) {
+    if (!r.members || !r.members.includes('@user')) continue
+    const leak = r.members.filter((h) => h !== '@user' && !starHandles.has(h))
+    if (leak.length) errors.push(`room "${r.team || r.roomId}" seats @user beside non-★ member(s) ${leak.map((h) => '@' + h).join(', ')} — @user may share a room ONLY with ★ (leads); a non-★ in an @user room reaches the human directly, breaking the escalation wall (§14). Make them ★, or drop them from this room.`)
+  }
+  // (b) an adversary/caged member can NEVER be ★. §14: an adversary relays to the session it consults, it never
+  //     escalates to the human. The cast modal can't produce a ★-Pierre, but a text-edited team.json could — so
+  //     the wall is at PARSE (completing the caged-member triple-gate: modal-disabled + cage.js fail-closed + this).
+  for (const m of norm.members) {
+    if ((m.role === 'adversary' || m.role === 'ultracritical' || m.cage) && m.lead) errors.push(`member @${m.handle}: an adversary/ultracritical/caged member can never be ★ (lead) — a critique/adversary reports UP the chain to a ★ lead, it never escalates to the human directly (§14). Drop its lead.`)
+  }
   return { errors, warnings, ok: errors.length === 0 }
 }
 
