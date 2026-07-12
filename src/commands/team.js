@@ -816,6 +816,10 @@ export function addMemberToRoster(roster, teamName, member) {
   const m = { role: member.role || 'engineer', backend: member.backend || 'claude' }
   if (member.lead) m.lead = true
   if (member.territory) m.territory = member.territory
+  // P3: an OPTIONAL explicit name (e.g. a cast-picked "Colette") — parseRoster validates it downstream
+  // (assertSafeName + org-wide handle-uniqueness), so a bad/duplicate name is rejected at the mint, exactly
+  // like the create-form. Absent → parseRoster deterministically auto-assigns a free name (existing behavior).
+  if (member.name && String(member.name).trim()) m.name = String(member.name).trim()
   team.members.push(m)
   return r
 }

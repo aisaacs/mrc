@@ -773,8 +773,9 @@ function amForm(t) {
     <div class="muted" style="margin-bottom:5px">Add a member to <b>${esc(t)}</b>:</div>
     <div class="row"><select id="amRole" style="flex:1.2" onchange="amSyncBackend()">${ROLES.concat((S.addCustomRoles||[]).filter(k=>!ROLES.includes(k))).map(r=>`<option ${r==='engineer'?'selected':''}>${esc(r)}</option>`).join('')}</select>
       <span id="amBackendWrap" style="flex:1;display:flex">${amBackendControl('engineer')}</span></div>
-    <input id="amTerr" placeholder="territory (e.g. server) — optional" style="margin-top:6px">
+    <div class="row" style="margin-top:6px"><input id="amName" placeholder="name — optional (e.g. Colette)" style="flex:1"><input id="amTerr" placeholder="territory — optional" style="flex:1"></div>
     <div class="row" style="margin-top:6px"><button class="btn tiny primary" data-team="${esc(t)}" onclick="submitAddMember(this.dataset.team)">Add</button><button class="btn tiny" onclick="cancelAddMember()">Cancel</button> <span id="amMsg" class="muted"></span></div>
+    <div class="row" style="margin-top:6px;gap:5px;flex-wrap:wrap;align-items:center"><span class="muted" style="font-size:11px">or from cast:</span>${CAST.map(c=>`<button class="btn tiny castchip" title="${esc(c.title)}" data-team="${esc(t)}" data-key="${esc(c.key)}" onclick="castAddMember(this.dataset.team,this.dataset.key)">${esc(c.name)} · ${esc(c.label)}</button>`).join('')}</div>
   </div>`
 }
 
@@ -1825,9 +1826,18 @@ window.startAddMember = async (t)=>{ S.addingTo=t; S.addCustomRoles=[]; renderMa
   if (S.org) { const r = await api('/api/personas?org='+encodeURIComponent(S.org)).catch(()=>null)
     if (r && r.ok && r.custom && S.addingTo===t) { S.addCustomRoles = Object.keys(r.custom); renderMain() } } }
 window.cancelAddMember = ()=>{ S.addingTo=null; S.addCustomRoles=[]; renderMain() }
-window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('#amBackend').value, territory=$('#amTerr').value.trim()
+window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('#amBackend').value, territory=$('#amTerr').value.trim(), name=($('#amName')&&$('#amName').value.trim())||''
   const msg=$('#amMsg'); if(msg)msg.textContent='adding…'
-  const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role,backend,territory})
+  const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role,backend,territory,name})
+  if(r&&r.ok){ S.addingTo=null; tick() } else { const m=$('#amMsg'); if(m)m.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
+// P3 cast-on-live-add: one-click add a recognizable named specialist to a RUNNING team — same guarded door as
+// the manual Add (/api/team-add-member → cap-gated addmember → materializeRoster re-validates name+role). If the
+// cast name is already taken in this live org, parse rejects it (handle-uniqueness) and the error surfaces here;
+// retry via the manual name field. Media roles (designer) derive their backend via mediaBackend.
+window.castAddMember = async (t,key)=>{ const c=CAST.find(x=>x.key===key); if(!c)return
+  const backend=mediaBackend(c.role)||'claude'
+  const msg=$('#amMsg'); if(msg)msg.textContent=`adding ${c.name}…`
+  const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role:c.role,backend,name:c.name,territory:''})
   if(r&&r.ok){ S.addingTo=null; tick() } else { const m=$('#amMsg'); if(m)m.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
 window.selRoom = (id, openCu)=>{ if(!confirmLeaveBuilder())return; S.selRoom=id; S.selInbox=null; S.selMember=null; S.selHome=false; S.building=false; if(openCu)S.tab='catchups'; else S.tab='thread'; S.room=null; tick() }
 window.openRoom = (id)=>{ selRoom(id) }

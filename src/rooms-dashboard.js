@@ -339,7 +339,7 @@ async function handle(req, res) {
         // authorizerepo records it via addAuthorizedRepo. Additive + un-gated: it's the GUI form of the CLI cross-repo (Mouth B)
         // authorize, useful today; the launch path only READS the set (resolveMemberRepo) — a session can request, never authorize.
         if (url.pathname === '/api/authorize-repo') return sendJSON(res, 200, await ctrl(cp, 'authorizerepo', { org: j.org, repo: j.repo, secret: sec }))
-        if (url.pathname === '/api/team-add-member') return sendJSON(res, 200, await ctrl(cp, 'addmember', { org: j.org, team: j.team, role: j.role, backend: j.backend, territory: j.territory, secret: sec }))
+        if (url.pathname === '/api/team-add-member') return sendJSON(res, 200, await ctrl(cp, 'addmember', { org: j.org, team: j.team, role: j.role, backend: j.backend, territory: j.territory, name: j.name, secret: sec }))
         if (url.pathname === '/api/team-remove-member') return sendJSON(res, 200, await ctrl(cp, 'removemember', { org: j.org, handle: j.handle, secret: sec }))
         if (url.pathname === '/api/team-relaunch-member') return sendJSON(res, 200, await ctrl(cp, 'relaunchmember', { org: j.org, handle: j.handle, secret: sec }))   // #41: orphan recovery (kill-first → respawn)
         if (url.pathname === '/api/kill-session') return sendJSON(res, 200, await ctrl(cp, 'killsession', { id: j.id }))

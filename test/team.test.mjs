@@ -135,6 +135,55 @@ test('add-member preserves existing members\' names and appends the new one', ()
   assert.equal(added.role, 'engineer'); assert.equal(added.team, 'client'); assert.equal(added.territory, 'server')
 })
 
+// P3: add-member accepts an OPTIONAL explicit name (a cast-picked "Colette" from the live +Add form). It's
+// validated downstream by parseRoster (assertSafeName + org-wide handle-uniqueness), so a cast name reaches
+// the launch identical to a hand-added one — and a duplicate/unsafe name is REJECTED at the mint, not silently.
+test('add-member honors an explicit name, and parse validates it (dup/unsafe rejected)', () => {
+  const n0 = parseRoster({ org: 'shop', teams: [{ name: 'client', territory: '.', members: [
+    { role: 'architect', backend: 'claude', name: 'Roland', lead: true },
+  ] }] }, { repo: '/tmp/shop' })
+  const pinned = rosterFromDef({ org: n0.org, repo: n0.repo, members: n0.members })
+  // a named cast add → the member carries exactly that first name (deterministic, not auto-rolled)
+  const withName = parseRoster(addMemberToRoster(pinned, 'client', { role: 'architect', backend: 'claude', name: 'Colette' }), { repo: '/tmp/shop' })
+  const colette = withName.members.find((m) => m.first === 'Colette')
+  assert.ok(colette, 'the explicit name is honored on the added member')
+  assert.equal(colette.role, 'architect')
+  // a DUPLICATE name (Roland already taken) is rejected at parse — the mint, not the launch
+  assert.throws(() => parseRoster(addMemberToRoster(pinned, 'client', { role: 'engineer', backend: 'claude', name: 'Roland' }), { repo: '/tmp/shop' }), /handle|duplicate|unique|taken/i)
+  // an UNSAFE name (shell metachar) is rejected at parse (assertSafeName)
+  assert.throws(() => parseRoster(addMemberToRoster(pinned, 'client', { role: 'engineer', backend: 'claude', name: 'bad;rm' }), { repo: '/tmp/shop' }), /name|invalid|letters/i)
+})
+
+// P3 — THE ADDITIVE INVARIANT (Pierre's demotion edge): adding a member to a LIVE team must not perturb the
+// running members. The one way it could silently break: a lone member that was a DEFAULTED ★ (no declared lead)
+// gets DEMOTED when an architect joins and the architect-first default re-fires on re-parse — dropping the
+// original ★ from the escalation room mid-run. It's closed because rosterFromDef preserves lead:true (so the def
+// stores the defaulted ★ as a DECLARED lead → the default doesn't re-fire). This test is the regression guard:
+// if a future refactor drops that lead-carry, this goes RED instead of an owner's live ★ quietly losing its seat.
+test('add-member is ADDITIVE — a DEFAULTED lone ★ keeps its lead + escalation seat when an architect joins', () => {
+  // a 1-member team, NO declared lead → the lone member is the DEFAULTED ★, and it seats the escalation room
+  const n0 = parseRoster({ org: 'shop', teams: [{ name: 'client', territory: '.', members: [
+    { role: 'engineer', backend: 'claude', name: 'Ludivine' },
+  ] }] }, { repo: '/tmp/shop' })
+  const lone = n0.members[0]
+  assert.equal(lone.lead, true, 'the lone member is the defaulted ★')
+  const esc0 = n0.rooms.find((r) => r.kind === 'leads')
+  assert.ok(esc0 && esc0.members.includes(lone.handle), 'the defaulted ★ seats the escalation (leads) room')
+
+  // rosterFromDef stores the defaulted ★ as lead:true → re-parse must NOT re-fire the architect-first default
+  const pinned = rosterFromDef({ org: n0.org, repo: n0.repo, members: n0.members })
+  const n1 = parseRoster(addMemberToRoster(pinned, 'client', { role: 'architect', backend: 'claude', name: 'Colette' }), { repo: '/tmp/shop' })
+
+  const loneAfter = n1.members.find((m) => m.handle === lone.handle)
+  assert.ok(loneAfter, 'the original member survives the add')
+  assert.equal(loneAfter.lead, true, 'the original ★ KEEPS lead — the joining architect does NOT steal the default seat')
+  const esc1 = n1.rooms.find((r) => r.kind === 'leads')
+  assert.ok(esc1 && esc1.members.includes(lone.handle), 'the original ★ keeps its escalation-room seat (no demotion)')
+  const colette = n1.members.find((m) => m.first === 'Colette')
+  assert.ok(colette && colette.role === 'architect', 'the architect is added')
+  assert.equal(!!colette.lead, false, 'the joining architect is NOT auto-★ (a declared lead already exists)')
+})
+
 function seededRng(seed = 1) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 0x100000000 } }
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-5[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 

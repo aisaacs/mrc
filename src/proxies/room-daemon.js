@@ -1470,7 +1470,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           try {
             const prev = new Set(def.members.map((m) => m.handle))
             const team = f.team || def.members[0]?.team
-            const updated = teamMod.addMemberToRoster(teamMod.rosterFromDef(def), team, { role: f.role, backend: f.backend, territory: f.territory })
+            const updated = teamMod.addMemberToRoster(teamMod.rosterFromDef(def), team, { role: f.role, backend: f.backend, territory: f.territory, name: f.name })
             const { norm, rosterPath } = teamMod.materializeRoster(updated, def.repo, predictModelB())   // Model B: parse agrees with defineOrg's mode
             orgRoster.set(norm.org, updated)
             defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
