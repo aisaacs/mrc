@@ -96,20 +96,29 @@
   .app.projects-takeover .tabwrap { visibility:hidden }
   #detail { grid-column:2; grid-row:1 }
   h1.home-link { cursor:pointer } h1.home-link:hover { opacity:.82 } h1.home-link:focus-visible { outline:2px solid var(--accent); outline-offset:3px; border-radius:4px }
-  .projwrap { padding:20px 22px; max-width:920px }
-  .projgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(240px,1fr)); gap:14px; margin-top:14px }
-  .projtile { border:1px solid var(--line); border-radius:12px; padding:14px 15px; background:var(--panel); display:flex; flex-direction:column; gap:9px; text-align:left; cursor:pointer; transition:border-color .12s, transform .06s }
-  .projtile:hover { border-color:var(--accent) } .projtile:active { transform:translateY(1px) }
-  .projtile:focus-visible { outline:2px solid var(--accent); outline-offset:2px }
-  .projtile .pt-top { display:flex; align-items:center; gap:8px }
-  .projtile .pt-name { font-weight:700; font-size:15px; flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
-  .projtile .pt-need { font-size:11px; font-weight:700; color:#fff; background:var(--danger,#c0392b); border-radius:10px; padding:1px 7px; flex:0 0 auto }
-  .projtile .pt-state { font-size:11.5px; font-weight:700; padding:1px 8px; border-radius:11px; border:1px solid var(--line); flex:0 0 auto }
-  .projtile .pt-state.on { color:var(--online); border-color:#2f6b3f } .projtile .pt-state.off { color:var(--dim) } .projtile .pt-state.go { color:var(--accent); border-color:var(--accent) }
-  .projtile .pt-meta { font-size:12px; color:var(--dim); display:flex; flex-wrap:wrap; gap:4px 10px }
-  .projtile .pt-acts { display:flex; gap:6px; margin-top:2px }
-  .projtile.add { align-items:center; justify-content:center; color:var(--dim); border-style:dashed; min-height:96px; font-weight:600 }
-  .projtile.add:hover { color:var(--accent) }
+  /* §2/§13 command-center HOME — 3 sections, prototype tile, no delete */
+  .projwrap { padding:22px 24px 70px; max-width:1040px; width:100%; margin:0 auto }   /* width:100% so a flex child with margin:auto stretches to the cap (else it shrinks to content → 1 column) */
+  .home-head { display:flex; align-items:flex-end; justify-content:space-between; gap:20px; margin-bottom:6px }
+  .home-head h1 { margin:5px 0 2px; font-size:23px; letter-spacing:-.01em }
+  .psec { margin-top:24px } .psech { display:flex; align-items:center; gap:10px; margin-bottom:11px }
+  .pcount { font-family:ui-monospace,monospace; font-size:11px; color:var(--dim); background:var(--panel2); border:1px solid var(--line); border-radius:999px; padding:1px 8px }
+  .pgrid { display:grid; grid-template-columns:repeat(auto-fill,minmax(270px,1fr)); gap:14px }
+  .ptile { position:relative; text-align:left; background:var(--panel); border:1px solid var(--line); border-radius:12px; padding:15px; min-height:120px; display:flex; flex-direction:column; gap:9px; color:var(--fg); cursor:pointer; transition:.15s }
+  .ptile:hover { border-color:var(--accent); transform:translateY(-2px); box-shadow:0 12px 34px -14px rgba(0,0,0,.5) } .ptile:focus-visible { outline:2px solid var(--accent); outline-offset:2px }
+  .ptile .pt-top { display:flex; align-items:center; justify-content:space-between; gap:8px }
+  .ptile .pt-name { font-weight:640; font-size:16px; font-family:ui-monospace,monospace; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+  .ptile .pt-need { font-size:11px; font-weight:650; color:var(--accent); background:var(--accent-soft,#2b2547); border:1px solid var(--accent); border-radius:999px; padding:2px 8px; flex:0 0 auto; white-space:nowrap }
+  .ptile .pt-meta { color:var(--dim); font-size:12.5px; display:flex; gap:7px; align-items:center } .ptile .psep { color:var(--dim); opacity:.5 }
+  .pstate { display:inline-flex; align-items:center; gap:6px; font-weight:600 } .pstate .pd { width:8px; height:8px; border-radius:50% }
+  .pstate.work { color:var(--online) } .pstate.work .pd { background:var(--online); box-shadow:0 0 0 0 var(--online); animation:ppulse 1.8s infinite }
+  .pstate.idle { color:var(--dim) } .pstate.idle .pd { background:var(--dim) }
+  .pstate.go { color:var(--accent) } .pstate.go .pd { background:var(--accent); animation:ppulse 1.2s infinite }
+  .pstate.susp { color:var(--dim) } .pstate.susp .pd { background:transparent; border:2px solid var(--dim); width:9px; height:9px }
+  @keyframes ppulse { 0%{ box-shadow:0 0 0 0 color-mix(in srgb,currentColor 55%,transparent) } 70%{ box-shadow:0 0 0 6px transparent } 100%{ box-shadow:0 0 0 0 transparent } }
+  .ptile .pt-foot { margin-top:auto; display:flex; align-items:center; justify-content:space-between; gap:8px; font-size:11.5px; color:var(--dim) }
+  .pavs { display:flex } .pav { width:22px; height:22px; border-radius:50%; margin-left:-6px; border:2px solid var(--panel); display:grid; place-items:center; font-size:9px; font-weight:700; color:#fff } .pav:first-child { margin-left:0 }
+  .ptile.new { border-style:dashed; align-items:center; justify-content:center; color:var(--dim); gap:5px; text-align:center; font-weight:600 } .ptile.new:hover { color:var(--accent) }
+  details.parch { margin-top:18px } details.parch summary { cursor:pointer; list-style:none; display:flex; align-items:center; gap:8px; padding:6px 0; color:var(--dim) } details.parch summary::-webkit-details-marker { display:none }
   .termblock { display:none; flex-direction:column; flex:1 1 0; min-height:0 }
   .termhdr { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px }
   .termframe { width:100%; flex:1 1 0; min-height:0; border:1px solid var(--line); border-radius:8px; background:#000 }
@@ -1654,56 +1663,48 @@ window.openProjectHome = ()=>{ if (!confirmLeaveBuilder()) return; leaveUnread()
 // (Pierre): "pick" is a pure CLIENT switch over origin-gated reads; every state-CHANGING tile action reuses an
 // EXISTING actJSON (CSRF-token) → cap-gated daemon endpoint — resume→/api/team-launch, suspend→/api/team-stop,
 // delete→/api/team-delete. No tile affordance is a new or unguarded write; no "▶" is a GET.
-function projectsSig() {
-  return (S.teams.orgs||[]).map(o=>{ const g=o.org; return g+':'+(orgRunning(g)?'r':orgLaunching(g)?'l':orgFailed(g)?'f':'s')+':'+orgNeed(g) }).join('|')
+// §2/§13 the command-center HOME: three buckets (Active / Recently used / Archived), tiles = the project picker.
+// NO delete anywhere (§13 "nothing is ever deleted" — the only lifecycle verb is Close project = suspend). A tile
+// is ONE click → open the project; resume (for a suspended one) happens INSIDE the project view. All reads +
+// client switches — zero state-change on this surface.
+function bucketOf(org) {
+  if (orgRunning(org) || orgLaunching(org)) return 'active'
+  const at = (orgLaunchRec(org)||{}).at
+  if (!at) return 'recent'
+  return ((Date.now() - at) / 86400000) <= 14 ? 'recent' : 'archived'
 }
+function projectsSig() {
+  return (S.teams.orgs||[]).map(o=>{ const g=o.org; return g+':'+bucketOf(g)+':'+(orgRunning(g)?(orgOnline(g)?'w':'i'):'s')+':'+orgNeed(g) }).join('|') + (S.showArchived?'|A':'')
+}
+const orgOnline = (org)=>(S.teams.members||[]).some(m=>m.org===org && m.tier==='live' && m.online)
+const avColor = (n)=>{ let h=0; const s=String(n||''); for(let i=0;i<s.length;i++)h=(h*31+s.charCodeAt(i))>>>0; return `hsl(${h%360} 42% 52%)` }
 window.openProjects = ()=>{ if (!confirmLeaveBuilder()) return; leaveUnread(); S.projects=true; S.building=false; S.selHome=S.selRoom=S.selInbox=S.selMember=null; paint() }
-// pick = client switch (read); for the currently-active org, "open" lands on its home.
+// pick = a client switch (read); a suspended project opens to its view where ▶ Resume lives (§13: resume is not
+// a home-tile control — the tile just opens). For the currently-active org, "open" lands on its home.
 window.openProject = (org)=>{ S.projects=false; if (org===S.org) openProjectHome(); else switchOrg(org) }
-// resume = the EXISTING cap-gated launchteam write (resumeTeam → actJSON /api/team-launch); enter first so the
-// launching panel gives immediate feedback, then fire the guarded relaunch.
-window.resumeAndOpen = (org)=>{ if (org===S.org) { S.projects=false; S.selHome=true; S.building=false; paint() } else openProject(org); resumeTeam(org) }
-// delete = the EXISTING cap-gated removeorg write (forget the org; nothing on disk deleted), param'd for a tile
-// that may target a non-active org. Confirms first (destructive), clears active-selection if it was the target.
-window.projDelete = async (org)=>{ if(!org||!confirm(`Delete "${org}" from Mister Claude? Its sessions stop and the tab is removed. Nothing on disk is deleted — transcripts and team.json stay, so you can re-add it any time with \`mrc team up\`.`))return
-  const r=await actJSON('/api/team-delete',{org}); if(!r.ok)return flashFail(r); S.flash=null
-  if(org===S.org){ S.org=null; S.selRoom=S.selInbox=S.selMember=null; S.selHome=false }
-  if(S.building && S.builder?.org===org) S.building=false; tick() }
+window.toggleArchived = ()=>{ S.showArchived=!S.showArchived }
+function projTile(org) {
+  const running=orgRunning(org), launching=orgLaunching(org), online=orgOnline(org)
+  const mem = (S.teams.members||[]).filter(m=>m.org===org)
+  const need = orgNeed(org)
+  const st = launching ? {c:'go',t:'launching'} : running ? (online?{c:'work',t:'working'}:{c:'idle',t:'idle'}) : {c:'susp',t:'suspended'}
+  const at = (orgLaunchRec(org)||{}).at
+  const ts = launching?'launching…' : running ? (online?'working now':'idle') : (at?('used '+relTime(at)):'suspended')
+  const avatars = mem.slice(0,4).map(m=>`<span class="pav" style="background:${avColor(m.first||m.handle)}">${esc(castInitials(m.first||m.handle||'?'))}</span>`).join('')
+  return `<button class="ptile" data-org="${esc(org)}" onclick="openProject(this.dataset.org)" title="Open ${esc(org)}">
+    <div class="pt-top"><span class="pt-name">${esc(org)}</span>${need?`<span class="pt-need" title="${need} agent${need>1?'s':''} waiting on you">❓ needs human</span>`:''}</div>
+    <div class="pt-meta"><span class="pstate ${st.c}"><span class="pd"></span>${st.t}</span><span class="psep">·</span><span>${mem.length} agent${mem.length===1?'':'s'}</span></div>
+    <div class="pt-foot"><div class="pavs">${avatars}</div><span class="mono">${esc(ts)}</span></div></button>`
+}
 function renderProjects(d) {
   const orgs = (S.teams.orgs||[]).map(o=>o.org)
-  const tile = (org) => {
-    const running=orgRunning(org), launching=orgLaunching(org), failed=orgFailed(org)
-    const mem = (S.teams.members||[]).filter(m=>m.org===org)
-    const teams = new Set(mem.map(m=>m.team).filter(Boolean)).size
-    const live = mem.filter(m=>m.tier==='live'); const ready = live.filter(m=>m.online).length
-    const workers = mem.filter(m=>m.tier==='worker').length
-    const need = orgNeed(org)
-    const stateCls = running?'on':launching?'go':'off'
-    const stateLbl = launching?'🚀 launching':running?'● running':failed?'⚠ failed':'○ suspended'
-    const metaBits = [ teams?`${teams} team${teams>1?'s':''}`:'', `${mem.length} member${mem.length===1?'':'s'}`, running&&live.length?`${ready}/${live.length} ready`:'', workers?`${workers} worker${workers>1?'s':''}`:'' ].filter(Boolean)
-    // action row — primary (open/resume/retry) + secondary (suspend/open-peek/delete). Every WRITE = an
-    // existing actJSON (CSRF → cap-gated); Open/peek are client switches. data-org keeps the org out of the
-    // interpolated JS string (#65 — the fixed onclick reads this.dataset.org).
-    let acts = ''
-    if (running || launching) {
-      acts = `<button class="btn primary tiny" data-org="${esc(org)}" onclick="openProject(this.dataset.org)">Open</button>`
-        + `<button class="btn tiny" data-org="${esc(org)}" title="Suspend — stop members, keep the team, transcripts &amp; history" onclick="closeTab(this.dataset.org)">⏸ Suspend</button>`
-    } else if (failed) {
-      acts = `<button class="btn primary tiny" data-org="${esc(org)}" onclick="resumeAndOpen(this.dataset.org)">↻ Retry</button>`
-        + `<button class="btn tiny" data-org="${esc(org)}" onclick="openProject(this.dataset.org)">Open</button>`
-    } else {
-      acts = `<button class="btn primary tiny" data-org="${esc(org)}" onclick="resumeAndOpen(this.dataset.org)">▶ Resume</button>`
-        + `<button class="btn tiny" data-org="${esc(org)}" title="Open without resuming — read transcripts &amp; history" onclick="openProject(this.dataset.org)">Open</button>`
-    }
-    acts += `<button class="btn tiny" data-org="${esc(org)}" title="Delete — forget this project (files kept)" onclick="projDelete(this.dataset.org)" style="margin-left:auto">🗑</button>`
-    return `<div class="projtile">
-      <div class="pt-top"><span class="pt-name" title="${esc(org)}">${esc(org)}</span>${need?`<span class="pt-need" title="${need} need you">❓${need}</span>`:''}<span class="pt-state ${stateCls}">${stateLbl}</span></div>
-      <div class="pt-meta">${metaBits.map(b=>`<span>${esc(b)}</span>`).join('')}</div>
-      <div class="pt-acts">${acts}</div></div>`
-  }
-  d.innerHTML = `<div class="projwrap"><div class="modalhead" style="margin-bottom:2px"><h2 style="margin:0;font-size:17px">Projects</h2></div>
-    <div class="muted" style="font-size:12px">Pick a project to open, or ▶ resume a suspended one — each live member --continues its own conversation.</div>
-    <div class="projgrid">${orgs.map(tile).join('')}<div class="projtile add" role="button" tabindex="0" title="New project" onclick="newProject()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();newProject()}">＋ New project</div></div>
+  const active = orgs.filter(o=>bucketOf(o)==='active'), recent = orgs.filter(o=>bucketOf(o)==='recent'), archived = orgs.filter(o=>bucketOf(o)==='archived')
+  const newTile = `<button class="ptile new" onclick="newProject()"><span style="font-size:22px;line-height:1">＋</span><span>New project</span><span class="muted" style="font-size:11px">light as <code>mrc pick</code></span></button>`
+  d.innerHTML = `<div class="projwrap">
+    <div class="home-head"><div><div class="eyebrow">Command &amp; control</div><h1>Your projects</h1><div class="muted" style="font-size:12.5px">Live, recent, and archived — open one, or start fresh.</div></div><button class="btn primary" onclick="newProject()">＋ New project</button></div>
+    <div class="psec"><div class="psech"><span class="eyebrow">Active</span><span class="pcount">${active.length} live</span></div><div class="pgrid">${active.map(projTile).join('')}${newTile}</div></div>
+    ${recent.length?`<div class="psec"><div class="psech"><span class="eyebrow">Recently used</span><span class="pcount">no live terminals · last 14 days</span></div><div class="pgrid">${recent.map(projTile).join('')}</div></div>`:''}
+    ${archived.length?`<details class="parch"${S.showArchived?' open':''}><summary onclick="toggleArchived()"><span class="eyebrow">Archived</span> <span class="pcount">${archived.length}</span></summary><div class="pgrid" style="margin-top:10px">${archived.map(projTile).join('')}</div></details>`:''}
     ${orgs.length?'':`<div class="muted" style="margin-top:16px">No projects yet — ＋ New project to build one.</div>`}</div>`
 }
 const sBadge = (scope,mut)=>`<span class="stag ${scope==='global'?'g':'p'}">${scope==='global'?'GLOBAL':'PER-PROJECT'}</span><span class="stag ${mut==='runtime'?'r':'l'}">${mut==='runtime'?'RUNTIME':'LAUNCH-TIME'}</span>`

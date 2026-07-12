@@ -1296,7 +1296,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             const failed = !!ls.failed && !hasMembers
             const launching = !!ls.launching && !hasMembers && !failed && fresh
             const running = !failed && (fresh || Object.values(members).some((m) => m.state && m.state !== 'dead'))
-            return { org, repo: v.repo || ls.repo || null, members, running, launching, failed, error: ls.error || null }
+            return { org, repo: v.repo || ls.repo || null, members, running, launching, failed, error: ls.error || null, at: v.at || ls.at || null }   // REBUILD home: last-launch time → the tile timestamp + the Active/Recently-used/Archived bucketing
           }) })
           continue
         }
