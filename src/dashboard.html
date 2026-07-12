@@ -423,7 +423,7 @@ const MEDIA_ROLE_BACKEND = { designer:'gemini', 'sound-designer':'elevenlabs', c
 const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
 
 const S = {
-  building: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, replyTo: null, jumpTarget: null, flash: null, roomDrafts: {},
+  building: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, showHandled: false, replyTo: null, jumpTarget: null, flash: null, roomDrafts: {},
   _wmCur: null, _wmLatest: 0, _openWm: {},   // #63-F unread watermark: the room/channel currently open + its latest position + the per-key captured-at-open boundary
   notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
   notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
@@ -500,16 +500,27 @@ function inbox() {
   // FYI — split so they render + count differently. Legacy/undefined type → notification (safe default).
   const all = (S.teams.userInbox||[]).filter(q => q.org===S.org)
   const open = all.filter(q => !q.answered && !q.dismissed)
-  const questions = open.filter(q => q.type==='question')
-  const notifications = open.filter(q => q.type!=='question')
+  // (d): a QUIET triaged QUESTION is with its lead, not you yet — it must NOT nag (excluded from questions/need).
+  // It surfaces in `triaging` (in-flight, no badge); it moves into `questions` only when the timer/lead escalates
+  // it LOUD (quiet flips false). `leadHandled` = the REQUIRED audit surface: items a lead resolved ON YOUR
+  // BEHALF (resolvedByLead) — always visible so a lead can't quietly bury a dissent it was the subject of.
+  const questions = open.filter(q => q.type==='question' && !q.quiet)
+  const notifications = open.filter(q => q.type!=='question')   // FYIs (incl. quiet lead-copies); never nag
+  const triaging = open.filter(q => q.quiet && q.triage && !q.triage.fyi)
+  // resolvedByLead is answered=true → it can't fall into `dismissed` (which is answered-FALSE). We filter on
+  // resolvedByLead ALONE (not `&& !dismissed`) ON PURPOSE (Pierre): a lead-handled item that ever ALSO became
+  // dismissed would otherwise land in NO section (live excludes resolvedByLead; dismissed excludes answered) →
+  // INVISIBLE, the exact bury this surface prevents. It stays here always. If a "mark reviewed / dismiss"
+  // action is ever added to the audit list, render a "reviewed" state on `q.dismissed` items — do NOT drop them.
+  const leadHandled = all.filter(q => q.resolvedByLead)
   const dismissed = all.filter(q => q.dismissed && !q.answered)   // recoverable via the show-dismissed toggle
   const cu = mergedRooms().filter(r => (r.unreviewed||0)>0 && inOrg(r))
-  return { all, open, questions, notifications, dismissed, cu, need: questions.length + cu.reduce((a,c)=>a+(c.unreviewed||0),0) }
+  return { all, open, questions, notifications, triaging, leadHandled, dismissed, cu, need: questions.length + cu.reduce((a,c)=>a+(c.unreviewed||0),0) }
 }
 // Per-project needs-you count (drives each tab's badge): open QUESTIONS only + unreviewed catch-ups in
 // that org — notifications never nag. Strict org match (harmonized with inbox()). Derived, not stored.
 function orgNeed(org) {
-  const qs = (S.teams.userInbox||[]).filter(q => q.org===org && q.type==='question' && !q.answered && !q.dismissed).length
+  const qs = (S.teams.userInbox||[]).filter(q => q.org===org && q.type==='question' && !q.answered && !q.dismissed && !q.quiet).length   // (d): a quiet triaged question is with its lead — no badge until it escalates
   const cu = mergedRooms().filter(r => (r.unreviewed||0)>0 && r.org===org).reduce((a,c)=>a+(c.unreviewed||0),0)
   return qs + cu
 }
@@ -1179,7 +1190,7 @@ const hhmm = (at) => { try { return new Date(at).toLocaleTimeString([], { hour:'
 function channelSig() {
   if (S.replyTo != null) return 'compose:' + S.replyTo
   const ib = inbox()
-  return ib.all.length + (S.showDismissed?'|d':'') + '|' + ib.all.map(q => q.id + (q.answered?'a':q.dismissed?'x':'o')).join(',')
+  return ib.all.length + (S.showDismissed?'|d':'') + (S.showHandled?'|h':'') + '|' + ib.all.map(q => q.id + (q.answered?(q.resolvedByLead?'l':'a'):q.dismissed?'x':(q.quiet?'t':'o'))).join(',')
 }
 // The @you inbox rendered as a CHANNEL (replaces the single-item detail): a scrolling, room-transcript-
 // style feed of every @you item for the active org (oldest→newest), grouped by sender, with the
@@ -1194,8 +1205,11 @@ function renderInboxChannel(d) {
   const wasAtBottom = prevSc ? (prevSc.scrollHeight - prevSc.scrollTop - prevSc.clientHeight < 40) : true
   const prevTop = prevSc ? prevSc.scrollTop : 0
   const ib = inbox()
-  const live = ib.all.filter(q => !q.dismissed).slice().sort((a,b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id - b.id))
-  const unanswered = live.filter(q => !q.answered && q.type==='question')
+  // (d): lead-handled items leave the main feed for the dedicated "handled by leads — review" audit section
+  // below (visible, never buried). A QUIET triaged question stays in the feed but renders as in-flight
+  // ("being handled by @lead"), and is excluded from the "unanswered" pill — it isn't yours to answer yet.
+  const live = ib.all.filter(q => !q.dismissed && !q.resolvedByLead).slice().sort((a,b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : a.id - b.id))
+  const unanswered = live.filter(q => !q.answered && q.type==='question' && !q.quiet)
   // #63-B2-inbox: build the LIVE feed as DOM nodes via the shared slackRow — body → safeMD, the [#N] chip
   // DOM-appended (the #5 property), author header (role-color) grouped by from+room with the 7-min gap-break,
   // ❓/🔔 as the per-message rowIcon. The per-item reply/answered/acts STATE rides as the row's `extra` node
@@ -1217,6 +1231,10 @@ function renderInboxChannel(d) {
         : `<div class="ich-ans"><span class="muted">↳ you · re #${q.id} · ${esc(q.answer||'')}</span> <span class="good">✓ Answered${viaTg?' via Telegram':''}</span> ${openRoomBtn}</div>`
     } else if (S.replyTo===q.id) {
       state = `<div class="ich-reply"><textarea id="ansTx" placeholder="Your reply — routes back as a [Human reply] to @${esc(q.fromName||q.from)}…"></textarea><div class="row" style="margin-top:6px;gap:6px"><button class="btn primary tiny" onclick="answer(${q.id})">Send</button> <button class="btn tiny" onclick="dismissInbox(${q.id})">✕ Dismiss</button> ${openRoomBtn} <button class="btn tiny" onclick="cancelReply()">cancel</button></div></div>`
+    } else if (q.quiet && q.triage && !q.triage.fyi) {
+      // (d): in-flight — triaged to a lead, not escalated yet. Not nagging you; shown so you can jump ahead.
+      const leadNames = (q.triage.leads||[]).map(hd => { const m=(S.teams.members||[]).find(x=>x.handle===hd); return '@'+(m?m.first:hd) }).join(', ') || 'a lead'
+      state = `<div class="ich-ans"><span class="muted">🕓 Triaged to ${esc(leadNames)} — being handled; reaches you if unresolved.</span> <button class="btn tiny" onclick="openReply(${q.id})">↩ Answer it yourself</button> ${openRoomBtn}</div>`
     } else {
       state = `<div class="row ich-acts" style="gap:6px"><button class="btn tiny" onclick="openReply(${q.id})">↩ Reply</button>${isQ?'':`<button class="btn tiny" onclick="dismissInbox(${q.id})">✕ Dismiss</button>`}${openRoomBtn}</div>`
     }
@@ -1228,7 +1246,7 @@ function renderInboxChannel(d) {
     // at-a-glance "which still needs my reply" cue the old .ib.q rail gave (glyph+color, color not load-bearing).
     // FYIs are reply-OPTIONAL → always `.msg-fyi`-dim (never needs-you, even unanswered — no crying wolf);
     // an answered question → plain. So only the actionable rows pop.
-    const cls = isQ ? (q.answered ? '' : 'msg-needs') : 'msg-fyi'
+    const cls = isQ ? (q.answered ? '' : (q.quiet ? 'msg-fyi' : 'msg-needs')) : 'msg-fyi'   // (d): a quiet triaged question is dim (in-flight), not needs-you
     if (unread && !placed && (q.id || 0) > boundary) { feedFrag.appendChild(unreadDivider(unread)); placed = true }   // #63-F divider before first unread
     feedFrag.appendChild(slackRow({ from: q.fromName || ('@'+q.from), role: q.role, at: q.at, text: q.text,
       qid: q.id, anchorId: q.id, rowIcon: isQ?'❓':'🔔', roomTag: q.room, cls, newGroup, extra }))
@@ -1239,9 +1257,18 @@ function renderInboxChannel(d) {
     dism = `<div class="muted focusable" role="button" tabindex="0" aria-expanded="${S.showDismissed}" style="padding:6px;cursor:pointer;font-size:12px;user-select:none;border-radius:5px;margin-top:8px" onclick="toggleDismissed()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleDismissed()}else if(event.key==='Escape'&&S.showDismissed){toggleDismissed()}">${S.showDismissed?'▾':'▸'} ${ib.dismissed.length} dismissed</div>`
     if (S.showDismissed) dism += ib.dismissed.slice().sort((a,b)=>(a.at<b.at?-1:1)).map(q=>`<div class="ib dism" id="q${q.id}"><div class="ich-line"><span class="qicon">${q.type==='question'?'❓':'🔔'}</span><span class="ich-body">${esc(q.text)}</span><span class="ich-meta"><span class="muted">${esc(q.fromName||('@'+q.from))} · ${hhmm(q.at)}</span> <span class="qnum">#${q.id}</span></span></div><div class="row ich-acts"><button class="btn tiny primary" onclick="reopenInbox(${q.id})">↺ Re-open</button></div></div>`).join('')
   }
+  // (d) REQUIRED audit surface: an always-present "N handled by leads — review" — the count is visible even
+  // collapsed, so a lead can't quietly bury a question it resolved/dismissed on your behalf (esp. a critique
+  // OF the lead itself). Renders from the TRUSTED daemon fields (resolver/answer), not any member-parsed text.
+  let handled = ''
+  if (ib.leadHandled.length) {
+    const rn = (q) => { const m=(S.teams.members||[]).find(x=>x.handle===q.resolver); return '@'+(m?m.first:(q.resolver||'lead')) }
+    handled = `<div class="focusable" role="button" tabindex="0" aria-expanded="${!!S.showHandled}" style="padding:6px;cursor:pointer;font-size:12px;user-select:none;border-radius:5px;margin-top:8px;color:var(--lead)" onclick="toggleHandled()" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();toggleHandled()}">${S.showHandled?'▾':'▸'} ✓ ${ib.leadHandled.length} handled by leads — review</div>`
+    if (S.showHandled) handled += ib.leadHandled.slice().sort((a,b)=>(a.at<b.at?-1:1)).map(q=>`<div class="ib" id="q${q.id}"><div class="ich-line"><span class="qicon">✓</span><span class="ich-body">${esc(q.text)}</span><span class="ich-meta"><span class="muted">${esc(q.fromName||('@'+q.from))} · ${hhmm(q.at)}</span> <span class="qnum">#${q.id}</span></span></div><div class="muted" style="padding:2px 0 4px 24px">↳ ${esc(rn(q))} answered: ${esc(q.answer||'')}</div><div class="row ich-acts"><button class="btn tiny" data-room="${esc(q.roomId)}" onclick="openRoomAt(this.dataset.room,${q.id})">↗ Open room</button></div></div>`).join('')
+  }
   const triage = unanswered.length ? `<div class="ich-triage focusable" role="button" tabindex="0" onclick="jumpToQ(${unanswered[0].id})" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();jumpToQ(${unanswered[0].id})}" title="jump to the next open question">${unanswered.length} unanswered ⌄</div>` : ''
   // triage floats over the top — pad the scroll content so it doesn't sit over row 1.
-  d.innerHTML = `<div class="ich-wrap">${triage}<div class="ich-scroll" id="ichScroll" tabindex="0"${triage?' style="padding-top:36px"':''}><div id="ichFeed"></div>${emptyMsg}${dism}</div></div>`
+  d.innerHTML = `<div class="ich-wrap">${triage}<div class="ich-scroll" id="ichScroll" tabindex="0"${triage?' style="padding-top:36px"':''}><div id="ichFeed"></div>${emptyMsg}${handled}${dism}</div></div>`
   const feedHost = $('#ichFeed'); if (feedHost) feedHost.appendChild(feedFrag)   // #63-B2-inbox: the slackRow DOM feed
   const sc = $('#ichScroll'); if (!sc) return
   if (S.replyTo!=null) { const tx=$('#ansTx'); if(tx){ try{tx.focus()}catch{} } const row=$('#q'+S.replyTo); if(row)row.scrollIntoView({block:'center'}) }
@@ -1694,6 +1721,7 @@ window.tgUnpair = async ()=>{ if(!confirm('Unpair Telegram? The linked chat stop
 // Delete project (#13): forget it from the daemon + stop sessions; nothing on disk is deleted.
 window.deleteProject = async ()=>{ const org=S.org; if(!org||!confirm(`Delete "${org}" from Mister Claude? Its sessions stop and the tab is removed. Nothing on disk is deleted — your transcripts and team.json stay, so you can re-add it any time with \`mrc team up\`.`))return; const r=await actJSON('/api/team-delete',{org}); if(!r.ok)return flashFail(r); S.flash=null; S.org=null; S.selRoom=S.selInbox=S.selMember=null; S.selHome=false; if (S.building && S.builder?.org === org) S.building=false; tick() }   // #55-2: only drop the build if it's the org being deleted — deleting project X must not discard an unrelated in-progress build of Y (the builder pane runs off S.builder, independent of S.org)
 window.toggleDismissed = ()=>{ S.showDismissed=!S.showDismissed; paint() }
+window.toggleHandled = ()=>{ S.showHandled=!S.showHandled; paint() }   // (d) audit: expand "handled by leads — review"
 
 // ---- Browser notifications + chime for new @you messages (Notification API, behind the explicit 🔔 toggle) ----
 // Branded chime, inlined as a data-URI (swappable — @user auditions vs the inbox-ping). Self-contained,
