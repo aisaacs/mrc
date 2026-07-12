@@ -343,9 +343,12 @@ export function validateRoster(norm) {
   const EXEMPT = new Set(['designer', 'sound-designer', 'composer', 'tester'])
   const writers = norm.members.filter((m) => m.mount === 'rw' && !EXEMPT.has(m.role))
   for (let i = 0; i < writers.length; i++) for (let j = i + 1; j < writers.length; j++) {
-    if (territoriesOverlap(writers[i].territory, writers[j].territory)) {
+    // Contention is only real when two writers share the SAME repo. Under Model B each agent has its OWN
+    // repo (member.repo, distinct + canonical), so "." vs "." in DIFFERENT repos is not a collision — don't
+    // warn on it. Legacy shared-repo members carry the same default repoPath → still equal → still warned.
+    if (writers[i].repo === writers[j].repo && territoriesOverlap(writers[i].territory, writers[j].territory)) {
       warnings.push(`writers @${writers[i].handle} and @${writers[j].handle} share write territory ` +
-        `("${writers[i].territory}" vs "${writers[j].territory}") — risk of edit contention`)
+        `("${writers[i].territory}" vs "${writers[j].territory}") in ${writers[i].repo} — risk of edit contention`)
     }
   }
   // #49 (Pierre): a rw member's territory must realpath-resolve WITHIN the repo — surfaced LEGIBLY here, both

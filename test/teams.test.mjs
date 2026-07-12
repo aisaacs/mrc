@@ -375,6 +375,14 @@ test('roster: validate flags overlapping write territories', () => {
   assert.ok(v.warnings.some((w) => /write territory/.test(w)), 'overlap warned')
 })
 
+test('roster: writers on DIFFERENT repos do NOT trip the contention warning; same repo still does (Model B per-agent repos)', () => {
+  const mk = (handle, territory, repo) => ({ handle, first: handle, role: 'engineer', roleLabel: 'Engineer', backend: 'claude', mount: 'rw', territory, repo, team: 't', lead: false, tier: 'live' })
+  const diff = { org: 'x', members: [mk('aa/claude', 'src', '/repoA'), mk('bb/claude', 'src/deep', '/repoB')], teams: [], rooms: [], customPersonas: {} }
+  assert.ok(!validateRoster(diff).warnings.some((w) => /write territory/.test(w)), 'different repos ("." vs "." across repos) → NO contention warning (the false positive the owner hit)')
+  const same = { org: 'x', members: [mk('aa/claude', 'src', '/repoA'), mk('bb/claude', 'src/deep', '/repoA')], teams: [], rooms: [], customPersonas: {} }
+  assert.ok(validateRoster(same).warnings.some((w) => /write territory/.test(w)), 'same repo + overlapping territory → the warning is REAL, still fires')
+})
+
 test('roster: media roles DERIVE their backend from the role, ignoring the declared field (#32)', () => {
   const json = { org: 'm', teams: [ { name: 't', territory: '.', members: [
     { role: 'architect', name: 'lead', lead: true },
