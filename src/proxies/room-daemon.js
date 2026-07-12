@@ -1472,8 +1472,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             const team = f.team || def.members[0]?.team
             const updated = teamMod.addMemberToRoster(teamMod.rosterFromDef(def), team, { role: f.role, backend: f.backend, territory: f.territory, name: f.name })
             const { norm, rosterPath } = teamMod.materializeRoster(updated, def.repo, predictModelB())   // Model B: parse agrees with defineOrg's mode
-            orgRoster.set(norm.org, updated)
             defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
+            orgRoster.set(norm.org, updated)   // AFTER defineOrg succeeds (match launchteam's discipline, Pierre): a thrown define must NOT leave a rejected `updated` roster cached, or a later rosterFromDef/resume reading orgRoster.get would see a phantom member. materializeRoster already validated, so a throw here is near-impossible — but the two launch doors now follow the SAME set-after-define ordering.
             const added = norm.members.find((m) => !prev.has(m.handle))
             let launched = false
             // #34: launchMember is async (port alloc); the control handler is sync, so fire-and-forget and
