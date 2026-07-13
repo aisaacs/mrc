@@ -1418,7 +1418,7 @@ function renderBuilder(d) {
     <div style="display:grid;grid-template-columns:1fr 340px;gap:16px;align-items:start">
     <div>
       <div class="row" style="align-items:flex-end;gap:10px"><div style="flex:1"><label>Project</label><input id="bOrg" value="${esc(B.org)}" placeholder="my-project"></div>
-        <button class="btn tiny" title="Roles, backends, territories, name style, custom roles, and manual rooms" onclick="bToggleAdv()">${B.advanced?'▾ Advanced':'▸ Advanced'}</button></div>
+        <button class="btn tiny" title="Roles, backends, territories, name style, and custom roles" onclick="bToggleAdv()">${B.advanced?'▾ Advanced':'▸ Advanced'}</button></div>
       ${B.advanced?`<div class="grid2" style="margin-top:8px"><div><label>Start from a preset (optional)</label><select id="bPreset"><option value="">— preset —</option></select></div>
         <div><label>Name style</label><select id="bNameStyle" onchange="bSetStyle(this.value)">${((S.namePools&&S.namePools.styles)||['french']).map(st=>`<option value="${esc(st)}" ${st===(B.nameStyle||'french')?'selected':''}>${esc(st)}</option>`).join('')}</select>${(B.teams||[]).some(t=>(t.members||[]).some(m=>m._nameAuto===false && m.name))?`<div class="muted" style="font-size:11px;margin-top:3px">existing names are kept on a style change — 🎲 a member to restyle it</div>`:''}</div></div>`:''}
       <h2>Agents</h2><div id="bTeams"></div><button class="btn" onclick="bAddTeam()">＋ Add team</button>
