@@ -1425,7 +1425,7 @@ function shortRepo(p) { const parts=String(p||'').replace(/\/+$/,'').split('/').
 window.fcOpen = (ti,mi) => openFolderChooser((path) => bPickRepo(Number(ti), Number(mi), path))
 // §3/§13 Session picker — after a repo is picked, "the GUI for mrc pick": fresh, or a prior session in that repo
 // (the owner's own sessions only — the endpoint reads the getId(repoPath) slice, disjoint from any member slice).
-window.bSetSession = (ti,mi,v) => { const m=S.builder.teams[ti]?.members[mi]; if(m){ m.session=v } bPreview() }
+window.bSetSession = (ti,mi,v) => { const m=S.builder.teams[ti]?.members[mi]; if(m){ m.session=v; m.sessionRef=(v&&v!=='fresh')?'you':undefined } bPreview() }   // #43: the create-form picker lists the agent's repoId sessions only → owner-ref "you". @handle sources arrive with the daemon path.
 function sessLabel(s) { const nm = s.name || s.preview || String(s.id||'').slice(0,8); return nm + (s.ts ? ' · ' + relTime(s.ts) : '') }
 async function bLoadSessions(ti,mi) {
   const m = S.builder.teams[ti]?.members[mi]; if(!m || !m.repo) return
@@ -1544,7 +1544,7 @@ window.bSetName=(ti,mi,v)=>{ const m=S.builder.teams[ti].members[mi]; m.name=v; 
   bPreview() }
 window.bRerollName=(ti,mi)=>{ const m=S.builder.teams[ti].members[mi]; const taken=allBuilderNames(); if(m.name)taken.delete(String(m.name).toLowerCase()); m.name=suggestName(S.builder.nameStyle||'french',taken); m._nameAuto=true; bRenderTeams(); bPreview() }
 window.bSetStyle=(v)=>{ S.builder.nameStyle=v; autofillNames(true); bRenderTeams(); bPreview() }   // re-roll AUTO names only; hand-typed stay
-function bRoster(){const B=S.builder;const r={org:B.org||'org',repo:B.repo||undefined,teams:B.teams.map(t=>({name:t.name,territory:t.territory||'.',members:t.members.map(m=>{const o={role:m.role,backend:m.backend};if(m.lead)o.lead=true;if(m.territory)o.territory=m.territory;if(m.name&&String(m.name).trim())o.name=String(m.name).trim();if(m.repo)o.repo=m.repo;if(m.session&&m.session!=='fresh')o.session=m.session;return o})}))};if(B.personas&&Object.keys(B.personas).length)r.personas=B.personas;return r}   // P1 (Model B): each member carries its OWN repo (o.repo); under Model B parseRoster requires it + ignores the top-level repo (identity is the neutral anchor). Top-level repo kept for legacy (cap=1) compat.
+function bRoster(){const B=S.builder;const r={org:B.org||'org',repo:B.repo||undefined,teams:B.teams.map(t=>({name:t.name,territory:t.territory||'.',members:t.members.map(m=>{const o={role:m.role,backend:m.backend};if(m.lead)o.lead=true;if(m.territory)o.territory=m.territory;if(m.name&&String(m.name).trim())o.name=String(m.name).trim();if(m.repo)o.repo=m.repo;if(m.session&&m.session!=='fresh'){o.session=m.session;o.sessionRef=m.sessionRef||'you'}return o})}))};if(B.personas&&Object.keys(B.personas).length)r.personas=B.personas;return r}   // P1 (Model B): each member carries its OWN repo (o.repo); under Model B parseRoster requires it + ignores the top-level repo (identity is the neutral anchor). Top-level repo kept for legacy (cap=1) compat.
 // P1 (Model B): each agent picks its OWN repo, and the human's PICK is the authorization — /api/authorize-repo
 // (CSRF + capOk, human-only) lands it in the org's authorized-set BEFORE launch, since the Model B floor THROWS on
 // an un-authorized member.repo (a session can request a repo, never authorize one). Best-effort with inline result;

@@ -154,6 +154,12 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
         // member's repo vs the org repo) if a caller passed a mint-less member, so this holds without depending on
         // the caller having stamped it. `repo` here is the org repo (defineOrg arg) — the same root the mint used.
         crossRepo: m.crossRepo != null ? !!m.crossRepo : !!(m.repo && repo && String(m.repo) !== String(repo)),
+        // #43 (Pierre t66/t68): PRESERVE the host-authoritative `cage` through the engine projection. The daemon's
+        // raw orgDefs already carries it (roster.js:292), and projectSessionSlices reads from there — but mirroring
+        // it here makes the containment signal live on BOTH member shapes, so a future caller that routes the
+        // symmetric-session enumerator off the engine's projected list can't silently drop it (a caged member
+        // whose real store is its m- slice must never be enumerable/graftable). Belt, not the current path.
+        ...(m.cage ? { cage: m.cage } : {}),
         sessionId: prev?.sessionId ?? null,   // keep an existing live binding across a re-define
       })
     }

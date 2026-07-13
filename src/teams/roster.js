@@ -297,6 +297,12 @@ export function parseRoster(input, { repo, rng, modelB = false, cwdFallback = tr
         // the member's store). Wiring the launch-side resume needs that scoping decision first (task #43). Carrying
         // it now is harmless (absent-consumer = the existing fresh/auto behavior) and keeps the choice available.
         ...(m.session && /^[\w-]{1,80}$/.test(String(m.session)) ? { session: String(m.session) } : {}),
+        // #43 (Pierre t70): the OWNER-REF of the picked session ("you" = the member's repoId slice, or "@handle"
+        // = another agent's slice). Rides the norm → the --member-def blob so the launch-side graft can SELF-CHECK
+        // its source: the member launch grafts ONLY a "you"/repoId source and ASSERTS ref==='you' (an @handle
+        // source resolves through the daemon path where orgDefs lives). Sanitized to you-or-@handle so a crafted
+        // ref can name nothing else.
+        ...(m.sessionRef && /^(you|@[\w./-]{1,80})$/.test(String(m.sessionRef)) ? { sessionRef: String(m.sessionRef) } : {}),
         ...(backendNote ? { backendNote } : {}),
       }
     })

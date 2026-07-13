@@ -548,3 +548,20 @@ test('Model B (Inc 3) e2e-logic: materialize a full authorized roster → anchor
     for (const m of norm.members) assert.equal(memberConfigVolName(m, norm.repo, org, true), volumeName(`${org}#${m.handle}`, 1))
   } finally { process.env.HOME = prevHome; fs.rmSync(root, { recursive: true, force: true }); fs.rmSync(home, { recursive: true, force: true }) }
 })
+
+test('#43 parseRoster carries the picked session + its owner-ref (you/@handle), sanitized', () => {
+  const dir = fs.mkdtempSync(join(os.tmpdir(), 'mrc-43sess-'))
+  const tj = { project: 'x', teams: [{ name: 't', members: [
+    { name: 'Zoe', role: 'architect', backend: 'claude', lead: true, session: 'aa11bb22-cc33-dd44-ee55-ff6677889900', sessionRef: 'you' },
+    { name: 'Kip', role: 'engineer', backend: 'claude', session: 'deadbeef', sessionRef: 'not a ref!!' },  // bad ref → dropped
+  ] }] }
+  fs.writeFileSync(join(dir, 'team.json'), JSON.stringify(tj, null, 2))
+  const norm = parseRoster(tj, { repo: dir })
+  const zoe = norm.members.find(m => m.handle === 'zoe/claude')
+  const kip = norm.members.find(m => m.handle === 'kip/claude')
+  assert.equal(zoe.session, 'aa11bb22-cc33-dd44-ee55-ff6677889900')
+  assert.equal(zoe.sessionRef, 'you', 'valid "you" ref carried')
+  assert.equal(kip.session, 'deadbeef')
+  assert.equal(kip.sessionRef, undefined, 'a malformed sessionRef is dropped (sanitized), never carried')
+  fs.rmSync(dir, { recursive: true, force: true })
+})

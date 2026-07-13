@@ -491,3 +491,112 @@ test('PICKABLE⟺MIGRATED: the SAME exclude at the picker AND the migration → 
     for (const u of listed) assert.ok(migrated.has(u), `every listed session must be migrated — ${u} would be a GHOST otherwise`)
   } finally { rmSync(legacy, { recursive: true, force: true }); rmSync(join(slice, '..'), { recursive: true, force: true }) }
 })
+
+// ---------- #43 SYMMETRIC SESSIONS: the enumerator whitelist + the cross-slice graft + the (b) pointer ----------
+import { projectSessionSlices, graftSession, writeActiveSessionPointer, readActiveSessionPointer } from '../src/mrc-store.js'
+
+const U1 = '11111111-1111-1111-1111-111111111111'
+const U2 = '22222222-2222-2222-2222-222222222222'
+
+test('projectSessionSlices: WHITELIST-ADD — repoId "you" + each non-contained member "@handle"', () => {
+  const members = [{ handle: 'alice/claude', role: 'engineer' }, { handle: 'bob/claude', role: 'architect' }]
+  const out = projectSessionSlices({ repoPath: '/r', org: 'acme', members }, { repoStoreId: () => U1 })
+  const refs = out.map(o => o.ref)
+  assert.deepEqual(refs, ['you', '@alice/claude', '@bob/claude'], 'you + both members, computed order')
+  assert.equal(out[0].owner, 'you')
+  assert.equal(out[1].owner, '@alice/claude')
+})
+
+test('projectSessionSlices: CONTAINED members are unreachable — cage / adversary-role / ultracritical-role all skipped', () => {
+  const members = [
+    { handle: 'good/claude', role: 'engineer' },
+    { handle: 'pierre/claude', role: 'adversary' },        // role-labeled critique
+    { handle: 'ultra/claude', role: 'ultracritical' },     // role-labeled critique
+    { handle: 'caged/claude', role: 'engineer', cage: 'adversary' },   // host-authoritative cage (even non-adversary role)
+  ]
+  const out = projectSessionSlices({ repoPath: '/r', org: 'acme', members }, { repoStoreId: () => U1 })
+  const refs = out.map(o => o.ref)
+  assert.deepEqual(refs, ['you', '@good/claude'], 'only the clean member + you; every contained member skipped')
+})
+
+test('projectSessionSlices: NEVER constructs an adv-/iso- slice dir (whitelist-by-construction, not filter)', () => {
+  const members = [{ handle: 'a/claude', role: 'engineer' }, { handle: 'p/claude', role: 'adversary' }]
+  const out = projectSessionSlices({ repoPath: '/r', org: 'acme', members }, { repoStoreId: () => U1 })
+  for (const o of out) {
+    assert.ok(!/\/adv-/.test(o.dir) && !/\/iso-/.test(o.dir), `no contained slice may be NAMED — ${o.dir}`)
+  }
+})
+
+test('projectSessionSlices: a throwing repoId (no .mrc-id) drops "you" but still lists members', () => {
+  const out = projectSessionSlices({ repoPath: '/r', org: 'acme', members: [{ handle: 'a/claude', role: 'engineer' }] }, { repoStoreId: () => { throw new Error('no id') } })
+  assert.deepEqual(out.map(o => o.ref), ['@a/claude'], 'no repoId → no "you" entry, members still enumerated')
+})
+
+test('graftSession: copies ONLY the picked uuid transcript + its subtree — no siblings, no session-names', () => {
+  const src = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-graft-src-')))
+  const dst = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-graft-dst-'))), 'member')
+  try {
+    writeFileSync(join(src, `${U1}.jsonl`), '{"t":"picked"}\n')
+    writeFileSync(join(src, `${U2}.jsonl`), '{"t":"sibling"}\n')          // must NOT be copied
+    writeFileSync(join(src, 'session-names'), '{"names":"secret"}')       // must NOT be copied
+    mkdirSync(join(src, U1), { recursive: true }); writeFileSync(join(src, U1, 'sub.jsonl'), '{"t":"subagent"}\n')   // subtree copied
+    mkdirSync(join(src, 'session-summaries'), { recursive: true }); writeFileSync(join(src, 'session-summaries', `${U1}.md`), 'preview')  // scoped summary copied
+    const r = graftSession(src, U1, dst)
+    assert.ok(r.grafted >= 2, 'at least the transcript + subagent leaf copied')
+    assert.ok(existsSyncT(join(dst, `${U1}.jsonl`)), 'picked transcript present')
+    assert.ok(existsSyncT(join(dst, U1, 'sub.jsonl')), 'subagent subtree present')
+    assert.ok(existsSyncT(join(dst, 'session-summaries', `${U1}.md`)), 'scoped summary present (preview kept)')
+    assert.ok(!existsSyncT(join(dst, `${U2}.jsonl`)), 'sibling NOT leaked')
+    assert.ok(!existsSyncT(join(dst, 'session-names')), 'session-names NOT leaked (no sibling names)')
+    assert.ok(!existsSyncT(join(dst, '.mrc-store-migrated-v2')), 'a graft never writes the migration sentinel')
+  } finally { rmSync(src, { recursive: true, force: true }); rmSync(join(dst, '..'), { recursive: true, force: true }) }
+})
+
+test('graftSession: a bad uuid (fails SESSION_ID_RE) copies NOTHING and reports badUuid', () => {
+  const src = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-graft-src-')))
+  const dst = join(realpathSync(mkdtempSync(join(tmpdir(), 'mrc-graft-dst-'))), 'member')
+  try {
+    const r = graftSession(src, '../../etc/passwd', dst)
+    assert.equal(r.badUuid, true)
+    assert.equal(r.grafted, 0)
+  } finally { rmSync(src, { recursive: true, force: true }); rmSync(join(dst, '..'), { recursive: true, force: true }) }
+})
+
+test('graftSession: copy-if-absent never clobbers a newer dst transcript', () => {
+  const src = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-graft-src-')))
+  const dst = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-graft-dst-')))
+  try {
+    writeFileSync(join(src, `${U1}.jsonl`), 'OLD-from-source')
+    writeFileSync(join(dst, `${U1}.jsonl`), 'NEW-in-dst')
+    const r = graftSession(src, U1, dst)
+    assert.equal(r.skipped >= 1, true)
+    assert.equal(readFileSync(join(dst, `${U1}.jsonl`), 'utf8'), 'NEW-in-dst', 'dst not clobbered')
+  } finally { rmSync(src, { recursive: true, force: true }); rmSync(dst, { recursive: true, force: true }) }
+})
+
+test('graftSession: refuses a symlinked source transcript (no escape/exfil)', () => {
+  const src = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-graft-src-')))
+  const secret = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-secret-')))
+  const dst = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-graft-dst-')))
+  try {
+    writeFileSync(join(secret, 'stuff'), 'SECRET')
+    symlinkSync(join(secret, 'stuff'), join(src, `${U1}.jsonl`))   // a symlinked transcript
+    const r = graftSession(src, U1, dst)
+    assert.ok(!existsSyncT(join(dst, `${U1}.jsonl`)), 'a symlinked source transcript is refused, never followed')
+    assert.ok(r.refused.some(x => /symlink/.test(x.reason)), 'refusal recorded')
+  } finally { rmSync(src, { recursive: true, force: true }); rmSync(secret, { recursive: true, force: true }); rmSync(dst, { recursive: true, force: true }) }
+})
+
+test('active-session pointer: write/read round-trip; dangling → null; bad uuid → refused', () => {
+  const slice = realpathSync(mkdtempSync(join(tmpdir(), 'mrc-ptr-')))
+  try {
+    // dangling: pointer written but no transcript → null
+    assert.equal(writeActiveSessionPointer(slice, U1), true)
+    assert.equal(readActiveSessionPointer(slice), null, 'a pointer whose target transcript is absent is ignored (dangling)')
+    // now the transcript exists → honored
+    writeFileSync(join(slice, `${U1}.jsonl`), '{}')
+    assert.equal(readActiveSessionPointer(slice), U1, 'pointer honored once the target exists')
+    // bad uuid never written
+    assert.equal(writeActiveSessionPointer(slice, '../evil'), false)
+  } finally { rmSync(slice, { recursive: true, force: true }) }
+})

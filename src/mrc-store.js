@@ -131,6 +131,43 @@ export function sliceKeyFor(ctx, { repoStoreId: getId = repoStoreId } = {}) {
 // ONLY Class-1 (Class-2 .env/config reads stay repo-relative, asserted by their own tests; they never call this).
 export function mrcStoreDir(ctx, opts) { return sliceDir(sliceKeyFor(ctx, opts)) }
 
+// #43 SYMMETRIC SESSIONS — the reachable session-slice WHITELIST for a project, COMPUTED from host-verified
+// inputs, NEVER a directory scan (Pierre t64). This is the security hinge of "resume any conversation from
+// anywhere": it decides which slices a picker may list and a graft may copy FROM. Two invariants make it as
+// strong as surface-3's single-hardcoded-slice read:
+//   1. WHITELIST-ADD, never scan-and-filter — the set is built by COMPUTING keys (the repoId slice + each
+//      member's memberSliceKey). It has NO code path that constructs advSliceKey/isoSliceKey, so a CONTAINED
+//      slice is unreachable BY CONSTRUCTION (it can't be NAMED), not "checked out." adv-'s exclusion is then
+//      belt (the caged/critique skip below), not the wall.
+//   2. `members` MUST be the HOST-VERIFIED roster — the daemon's `orgDefs.get(org).members` or `loadOrgs()`
+//      def.members, NEVER a client-supplied roster. memberSessionId = sha1(org\0handle), so a crafted
+//      {org, handle} would compute ANOTHER org's slice; feeding only host-verified members is the cross-org
+//      fence (Pierre t64). The daemon's orgDefs stores the RAW norm def (roster.js:292 carries `cage`,
+//      JSON-preserved through saveOrgs→loadOrgs), so the containment predicate below is LIVE on this input —
+//      NOT the engine's projected member list (room-engine.js), which historically dropped `cage`.
+// CONTAINMENT PIN (Pierre t66, load-bearing): the caged/critique skip gates on the host-authoritative `cage`
+// (+ adversary/ultracritical role). Today an adversary-identity member routes to adv- (empty m-), so the skip
+// is belt for it; but a NON-adversary cage tier whose real store IS its m- slice is COVERED here ONLY because
+// `cage` rides the orgDef member. Keep `cage` on the def (it's also mirrored onto the engine projection now),
+// or gate a future looser cage tier on the launch-record cageProfile before it ships — else its m- sessions
+// would leak into the picker/graft. The client sends an owner-REF ("you"/"@handle"), NEVER a slice path; the
+// caller resolves ref→dir against THIS computed set, so the only reachable dirs are the whitelist.
+export function projectSessionSlices({ repoPath, org, members = [] }, { repoStoreId: getId = repoStoreId } = {}) {
+  const out = []
+  // 1. the user's OWN solo slice (repoId) — owner "you". Non-minting getId on the read path (throw → skip); a
+  //    symlinked/invalid slice throws in sliceDir → skip that entry, never crash the whole enumeration.
+  try { out.push({ ref: 'you', owner: 'you', dir: sliceDir(getId(repoPath)) }) } catch {}
+  // 2. each HOST-VERIFIED, NON-contained member — owner "@handle". The key is COMPUTED (memberSliceKey); an
+  //    adv-/iso- key is NEVER constructed here. The skip predicate matches roster.js:412's canonical
+  //    critique/adversary boundary + the host-authoritative `cage` signal (see CONTAINMENT PIN above).
+  for (const m of (members || [])) {
+    if (!m || !m.handle) continue
+    if (m.cage || m.role === 'adversary' || m.role === 'ultracritical') continue
+    try { out.push({ ref: `@${m.handle}`, owner: `@${m.handle}`, dir: sliceDir(memberSliceKey(org, String(m.handle))) }) } catch {}
+  }
+  return out
+}
+
 // #5 GATE-3 EPHEMERAL fork: a per-launch side slice for a concurrent opener the host detected is already live (a
 // cp'd repo opened twice, or the same repo opened twice). EPHEMERAL by construction — a fresh random key NEVER
 // derived from .mrc-id, so it exists for THIS launch only and the repo re-adopts its normal slice on the next solo
@@ -308,6 +345,79 @@ export function migrateAndNormalize(legacyDir, sliceDir, opts = {}) {
   const r = migrateToStore(legacyDir, sliceDir, opts)
   normalizeSliceMtimes(sliceDir, legacyDir)
   return r
+}
+
+// #43 SYMMETRIC SESSIONS — the cross-slice GRAFT: copy ONE conversation (the picked uuid) from a source slice
+// into a destination slice, so a solo conversation can be resumed AS an agent, or an agent's conversation
+// resumed in the terminal. This is how "resume anything anywhere" crosses a principal boundary WITHOUT breaking
+// runtime isolation — it is a HOST-side snapshot COPY done before the container mounts, never a live cross-slice
+// mount. Both src and dst dirs are resolved HOST-side (from projectSessionSlices' whitelist); the caller passes
+// a uuid the CLIENT chose, so the uuid is the ONLY attacker-influenced input and it is fully fenced:
+//   • SESSION_ID_RE (uuid-or-40hex) — no `../`, absolute, or NUL survives, so it can't redirect the copy.
+//   • planMigration({include:{uuid}}) copies ONLY files that BOTH match SESSION_ID_RE AND EXIST in the walked
+//     src dir (symlink-refusing, TOCTOU-re-lstat), so a forged-but-valid uuid that isn't there copies nothing.
+//   • include-scope copies the `<uuid>.jsonl` transcript + its `<uuid>/` subagent subtree ONLY — it REFUSES the
+//     shared `session-names` and does NOT walk shared dirs, so ZERO sibling names / other summaries / memory
+//     leak out of the source (Pierre t64: the back-graft leak is closed by construction).
+// UNLIKE migrateAndNormalize, a graft NEVER reads or writes the MIGRATED_SENTINEL: the dst slice already owns
+// its own migration state, and a graft is an additive copy, not a legacy→slice relocation. copy-if-absent (never
+// clobber a newer dst), atomic per file, source mtime preserved. The single `session-summaries/${uuid}.md` is
+// copied explicitly (include-scope skips the shared summaries dir) so the grafted convo keeps its picker preview
+// (Pierre t66) — scoped to the uuid, NOT a widening of include-scope. Returns { grafted, skipped, refused, uuid }.
+export function graftSession(srcSliceDir, uuid, dstSliceDir) {
+  const id = String(uuid || '')
+  if (!SESSION_ID_RE.test(id)) return { grafted: 0, skipped: 0, refused: [{ path: id, reason: 'bad-uuid' }], uuid: id, badUuid: true }
+  const plan = planMigration(srcSliceDir, { include: new Set([id]) })   // transcript + <uuid>/ subtree, symlink-refusing
+  // the scoped summary file (include-scope skips the shared dir) — add it to the copy set if present + not a symlink
+  const summaryRel = `session-summaries/${id}.md`
+  try { const lst = lstatSync(join(srcSliceDir, summaryRel)); if (lst.isFile()) plan.manifest.push(summaryRel) } catch {}
+  mkdirSync(dstSliceDir, { recursive: true })
+  let grafted = 0, skipped = 0
+  const refused = [...plan.refused]
+  for (const rel of plan.manifest) {
+    const dst = join(dstSliceDir, rel)
+    if (existsSync(dst)) { skipped++; continue }                                  // copy-if-absent — never clobber newer dst data
+    try {
+      const src = join(srcSliceDir, rel)
+      const lst = lstatSync(src)                                                  // re-lstat (TOCTOU): a symlink swapped in AFTER planMigration must still be refused
+      if (lst.isSymbolicLink()) { refused.push({ path: rel, reason: 'symlink-swapped' }); continue }
+      mkdirSync(dirname(dst), { recursive: true })
+      const tmp = `${dst}.${process.pid}.graft.tmp`
+      copyFileSync(src, tmp); renameSync(tmp, dst)                                // atomic per-file
+      try { utimesSync(dst, lst.atime, lst.mtime) } catch {}                      // preserve SOURCE mtime (recency)
+      grafted++
+    } catch { /* raced/vanished → skip */ }
+  }
+  return { grafted, skipped, refused, uuid: id }
+}
+
+// #43 SYMMETRIC SESSIONS — the (b) POINTER (Pierre t66): a grafted convo keeps its ORIGINAL uuid (the transcript
+// is byte-untouched — no bet on Claude tolerating a renamed transcript whose embedded id differs). An MRC-owned
+// pointer file in the member's slice records "the conversation to resume is <uuid>", which the member launch reads
+// INSTEAD of its deterministic `<memberSessionId>.jsonl`. The pointer is OURS to control; it never touches Claude's
+// format. Written atomically; the uuid is SESSION_ID_RE-validated so a tampered pointer can't redirect a resume.
+const ACTIVE_SESSION_POINTER = '.mrc-active-session'
+export function writeActiveSessionPointer(sliceDir, uuid) {
+  const id = String(uuid || '')
+  if (!SESSION_ID_RE.test(id)) return false
+  try {
+    mkdirSync(sliceDir, { recursive: true })
+    const p = join(sliceDir, ACTIVE_SESSION_POINTER)
+    const tmp = `${p}.${process.pid}.tmp`
+    writeFileSync(tmp, id + '\n'); renameSync(tmp, p)
+    return true
+  } catch { return false }
+}
+// Read the active-session pointer, but ONLY honor it if the pointed-at transcript actually EXISTS in the slice
+// (a dangling pointer → null → the caller falls back to its own memberSessionId / fresh). SESSION_ID_RE-guarded
+// so a corrupted/hostile pointer file can never name anything but a plain uuid within this slice.
+export function readActiveSessionPointer(sliceDir) {
+  try {
+    const raw = readFileSync(join(sliceDir, ACTIVE_SESSION_POINTER), 'utf8').trim()
+    if (!SESSION_ID_RE.test(raw)) return null
+    if (!existsSync(join(sliceDir, `${raw}.jsonl`))) return null   // dangling → ignore
+    return raw
+  } catch { return null }
 }
 
 // #5 DE-ACTIVATION AMNESIA GUARD (Pierre t5). A LEGACY launch (store-mode INACTIVE — e.g. the image lost its

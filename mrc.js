@@ -13,7 +13,7 @@ import { setVerbose, dbg } from './src/output.js'
 import { readMrcrc, loadEnv, parseArgs, sanitizeRepoConfig } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
 import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer, heldUuids, repoLiveContainers } from './src/docker.js'
-import { resolveStoreMode, storeCtx, mrcStoreDir, migrateAndNormalize, noticePopulatedSliceOnLegacy } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable
+import { resolveStoreMode, storeCtx, mrcStoreDir, migrateAndNormalize, noticePopulatedSliceOnLegacy, graftSession, writeActiveSessionPointer, readActiveSessionPointer } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable. #43: symmetric-session graft + pointer
 import { rosterMemberSessionIds, memberConfigVolName } from './src/commands/team.js'   // #5 PICKABLE⟺MIGRATED: the roster's memberSessionId exclude, shared by the picker + the migration; #49 multi-repo: the ONE config-vol keying helper (org-scoped when cross-repo), shared with execWorker so they can't drift
 import { runMigrate, repoSliceDir } from './src/commands/migrate.js'   // #12: the explicit, guarded `mrc migrate` runner (replaces the silent auto-migrate)
 import { storeActivation, memberStoreActive } from './src/migrations/registry.js'   // #13: launch-time activation (capability-as-version + explicit-migration-gated)
@@ -821,13 +821,56 @@ if (storeActive && migrateOpts.migrate) {
 // correctly-owned dir. Idempotent + harmless when migrate already created it.
 if (storeActive) { mkdirSync(mrcDir, { recursive: true }); volumes.push('-v', `${mrcDir}:/mrc`) }
 
+// #43 SYMMETRIC SESSIONS — graft a PICKED conversation into this member's slice so it resumes AS the agent
+// ("resume my solo session as @claude", the create-form Session picker). The picked uuid rides the host-set
+// --member-def blob (memberCtx.member.session); its SOURCE is the member's OWN repo repoId slice — the user's
+// solo sessions there are exactly what /api/repo-sessions listed in the picker (owner="you"). This is the
+// terminal→agent direction; agent→agent / agent→terminal (owner="@handle") route through the daemon where the
+// host-verified member list lives (projectSessionSlices). The graft is a HOST-side snapshot COPY into a slice we
+// own, BEFORE docker mounts it — never a live cross-slice mount, so runtime isolation is untouched. Gated on
+// !skipWrite (never graft into a slice a live container holds) + a real source transcript. Idempotent: copy-if-
+// absent + the pointer make a relaunch re-apply the same seed harmlessly. Option (b): the transcript is copied
+// byte-untouched under its ORIGINAL uuid and an MRC-owned pointer records "resume this" — no bet on Claude
+// tolerating a renamed transcript.
+if (memberCtx && storeActive && !skipWrite && memberCtx.member && memberCtx.member.session) {
+  const picked = String(memberCtx.member.session)
+  // #43 SELF-CHECK (Pierre t70): this member-launch graft sources ONLY the member's OWN repo repoId slice
+  // (owner "you"). The create-form picker lists repoId sessions only (a new org has no orgDefs members, so the
+  // enumerator surfaces just "you"), so every pick is ref="you" TODAY. An @handle source (agent→agent, agent→
+  // terminal) MUST resolve through the daemon path where the host-verified orgDefs member list lives — not here.
+  // ASSERT ref==='you' so the day the picker ever surfaces an @handle pick, this fails LOUD (member keeps its own
+  // conversation) instead of silently mis-sourcing `repoId/<@handle-uuid>.jsonl` (wrong slice → no-graft, or a
+  // uuid-collision → wrong session). When the daemon @handle path lands, it resolves ref→srcDir and this assert
+  // is replaced by that resolution.
+  const ref = memberCtx.member.sessionRef || 'you'
+  if (ref !== 'you') {
+    console.error(`  ! mrc: @${memberCtx.member.handle}'s picked session has a non-repoId source (${ref}) — a cross-agent resume routes through the daemon, not the member launch. Keeping this agent on its own conversation.`)
+  } else {
+    let srcDir = null
+    try { srcDir = mrcStoreDir(storeCtx({ solo: false, memberCtx: null, cagedAdversary: false, repoPath: memberCtx.member.repo || repoPath })) } catch {}
+    // graft only when the picked uuid is a REAL transcript in the source (the picker read the same slice); a stale/
+    // bogus uuid copies nothing and leaves the member on its own id.
+    if (srcDir && srcDir !== mrcDir && existsSync(resolve(srcDir, `${picked}.jsonl`))) {
+      try {
+        graftSession(srcDir, picked, mrcDir)
+        if (existsSync(resolve(mrcDir, `${picked}.jsonl`))) writeActiveSessionPointer(mrcDir, picked)
+      } catch {}
+    }
+  }
+}
+
 // #5: the member resume-vs-fresh decision (deferred here from the member block so it reads the POST-build store dir).
 // Read the member's OWN phase dir — mrcDir is its (org,handle) slice in store-mode (where 2c makes it write),
 // repo/.mrc in legacy — NOT raw repo/.mrc. Its own transcript was just migrated INTO that slice (include-scoped,
 // above), so a member RESUMES on the first store launch; it starts fresh only when it genuinely has no prior
 // transcript. This is the no-bypass fix for the member path.
+// #43: a grafted PICKED conversation (the pointer) wins over the member's own deterministic id — that's how the
+// agent "picks up where your solo session left off". readActiveSessionPointer only honors a pointer whose target
+// transcript actually exists (dangling → null → fall through), so a cleared/missing pointer degrades safely.
 if (memberCtx) {
-  if (existsSync(resolve(mrcDir, `${memberCtx.sessionId}.jsonl`))) config.resumeSession = memberCtx.sessionId
+  const pointed = readActiveSessionPointer(mrcDir)
+  if (pointed) config.resumeSession = pointed
+  else if (existsSync(resolve(mrcDir, `${memberCtx.sessionId}.jsonl`))) config.resumeSession = memberCtx.sessionId
   else config.newSession = true
 }
 
