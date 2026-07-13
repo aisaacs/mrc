@@ -868,3 +868,19 @@ test('#56 addTransientConsult refuses a non-member consult target (host-verified
   const h = harness(TEAM)
   assert.equal(h.engine.addTransientConsult('shop', { pierre: PIERRE_T, withHandle: 'ghost/claude', roomId: 'shop--consult--x' }).ok, false)
 })
+
+test('#56 orphan-reap: dismissing the consult member reaps its Pierre + the consult room (no zombie)', () => {
+  const h = harness(TEAM)
+  const engineer = h.handle('engineer')
+  const consultId = 'shop--consult--engineer-pierre'
+  h.engine.addTransientConsult('shop', { pierre: PIERRE_T, withHandle: engineer, roomId: consultId })
+  h.engine.bindSession('shop', 'pierre/claude', 'sess:pierre/claude')
+  // dismiss the engineer: redefine the org WITHOUT it (the roster minus that member)
+  const kept = h.norm.members.filter((m) => m.handle !== engineer)
+  const keptRooms = h.norm.rooms.map((r) => ({ ...r, members: r.members.filter((x) => x !== engineer) }))
+  h.engine.defineOrg({ org: h.norm.org, repo: h.norm.repo, members: kept, rooms: keptRooms })
+  assert.equal(h.engine.roomsForHandle('pierre/claude', 'shop').length, 0, 'Pierre reaped when its consult peer left')
+  assert.equal(h.engine.roomsForHandle(engineer, 'shop').length, 0, 'the dismissed member is gone')
+  // a surviving member is untouched
+  assert.ok(h.engine.roomsForHandle(h.handle('architect'), 'shop').length > 0)
+})

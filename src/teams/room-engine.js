@@ -143,7 +143,20 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
       // containment gate — deriveRooms never seats it in a team/escalation room), so keepHandles can't hold it;
       // without this exemption an unrelated addmember/relaunch/daemon-refresh would silently prune its binding and
       // break the live consult. Narrow: only `transient` is spared — a real member gone from the def still prunes.
-      if (!keepHandles.has(h) && !m.transient) { if (m.sessionId) bySession.delete(m.sessionId); omap.delete(h) }
+      if (!keepHandles.has(h) && !m.transient) {
+        if (m.sessionId) bySession.delete(m.sessionId); omap.delete(h)
+        // #56 (Pierre orphan-reap): a consult room's reason-to-exist is the REAL member it was opened FOR. When
+        // that member is pruned (dismissed/removed), reap the consult room AND the transient Pierre sitting in it
+        // — else a caged Pierre zombies in a dead-peer room (not a breach — still consult-only, can't reach
+        // @user/team — but an unreaped caged container + a dangling room). The consult is spared the GENERAL
+        // prune (below) but must NOT outlive its own anchor member.
+        for (const [id, r] of [...rooms]) {
+          if (r.org === orgId && r.kind === 'consult' && r.members.has(h)) {
+            for (const ph of [...r.members.keys()]) { const pm = omap.get(ph); if (pm && pm.transient) { if (pm.sessionId) bySession.delete(pm.sessionId); omap.delete(ph) } }
+            _append(id, `${ts()} [closed — consult peer @${h} left]`); rooms.delete(id)
+          }
+        }
+      }
     }
     // Same exemption for the consult ROOM: it's created out-of-band (kind:'consult'), never in the roster's rms,
     // so keepRooms can't hold it. A real team/escalation/leads room gone from the def still prunes. (Legacy 2-party
