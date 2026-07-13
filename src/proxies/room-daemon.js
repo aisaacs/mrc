@@ -1324,7 +1324,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         if (f.action === 'launchteam') {
           if (!capOk(f)) { reply({ ok: false, error: 'launchteam requires the control-capability secret (it ACTIVATES — reads the pinned repo\'s .env, starts its Telegram bridge, and spawns containers)' }); continue }   // guard-1 (Pierre): activate+spawn is a CAPABILITY — gate the whole launch door on the secret, like removeorg. A cross-uid raw frame (belt eats HTTP preambles, not a bare host-local frame) can't reach it.
           if (!teamMod) { reply({ ok: false, error: 'launch helpers still loading — retry in a moment' }); continue }
-          const roster = f.roster || orgRoster.get(f.org)
+          // RESUME (no f.roster) must read the PERSISTED store, not the volatile in-memory orgRoster cache: a daemon
+          // restart wipes orgRoster but the def survives (orgDefs ← loadOrgs on boot), so reconstruct the roster from
+          // the persisted def via rosterFromDef — the SAME fallback getroster/relaunchmember already use. Without this,
+          // resuming any project created in a PRIOR daemon session fails "no roster for this org" after a restart.
+          const _def = orgDefs.get(f.org)
+          const roster = f.roster || orgRoster.get(f.org) || (_def ? teamMod.rosterFromDef(_def) : null)
           if (!roster) { reply({ ok: false, error: 'no roster for this org — launch from the builder, or run mrc team up' }); continue }
           try {
             // Site 5: ONE predict for this whole launch flow → threaded to materializeRoster (parse) + defineOrg
@@ -1332,7 +1337,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             // drift within the flow. The inner mrc.js's own resolveStoreMode stays AUTHORITATIVE; this is the daemon's
             // prediction, which the OUTER launchMembers asserts against before the dtach spawn.
             const modelB = predictModelB()
-            const { norm, rosterPath } = teamMod.materializeRoster(roster, f.repo, modelB)
+            const { norm, rosterPath } = teamMod.materializeRoster(roster, f.repo || _def?.repo, modelB)   // resume: thread the persisted def.repo (f.repo is absent on a tile-resume) so legacy orgs resolve their root
             defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms }, { trusted: capOk(f), activate: true, modelB })   // guard-1 legacy: first-pins the human's PICKED repo + activates. Model B: identity is the neutral anchor (defineOrg ignores repo, uses orgAnchorDir), no pin/activation. trusted derived from capOk (the handler is already capOk-gated).
             orgRoster.set(norm.org, roster)   // guard-1 (Pierre): AFTER defineOrg succeeds — a THROWN define (existing-pin mismatch) must NOT persist its roster into orgRoster, or a rejected op would leave poison a later first-pin fallback (orgRoster.get) could read.
             // #49 (Pierre — the enumeration's daemon-side miss): the GUI-launch log is a repo-relative write,
