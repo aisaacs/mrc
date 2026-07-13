@@ -138,9 +138,17 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     const keepHandles = new Set(mem_.map((m) => lc(m.handle)))
     const keepRooms = new Set(rms.map((r) => r.roomId))
     for (const [h, m] of [...omap]) {
-      if (!keepHandles.has(h)) { if (m.sessionId) bySession.delete(m.sessionId); omap.delete(h) }
+      // #56 (Pierre): EXEMPT a transient consult participant (a summoned/cast caged adversary added out-of-band
+      // via addTransientConsult) from the redefine prune. It is NOT in the roster's norm.members (that's the
+      // containment gate — deriveRooms never seats it in a team/escalation room), so keepHandles can't hold it;
+      // without this exemption an unrelated addmember/relaunch/daemon-refresh would silently prune its binding and
+      // break the live consult. Narrow: only `transient` is spared — a real member gone from the def still prunes.
+      if (!keepHandles.has(h) && !m.transient) { if (m.sessionId) bySession.delete(m.sessionId); omap.delete(h) }
     }
-    for (const [id, r] of [...rooms]) if (r.org === orgId && !keepRooms.has(id)) rooms.delete(id)
+    // Same exemption for the consult ROOM: it's created out-of-band (kind:'consult'), never in the roster's rms,
+    // so keepRooms can't hold it. A real team/escalation/leads room gone from the def still prunes. (Legacy 2-party
+    // consults live in the daemon's `pairings` map, not here, so this only ever spares a #56 transient consult.)
+    for (const [id, r] of [...rooms]) if (r.org === orgId && !keepRooms.has(id) && r.kind !== 'consult') rooms.delete(id)
     for (const m of mem_) {
       const h = lc(m.handle)
       const prev = omap.get(h)
@@ -188,6 +196,55 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
       state: 'Running', pauseReason: null, turn: 0, turnCap, lastActivityAt: now(),
       held: [], autoCatchup: false, pendingCatchup: null,   // default OFF (owner pref): a pause doesn't interrupt members for a handoff unless opted in (🔔). Catch-up-now still on demand.
     }
+  }
+
+  // #56 (Pierre fork B): add a TRANSIENT consult participant — a summoned/cast caged adversary ("Pierre") — to an
+  // OUT-OF-BAND consult room [member, pierre]. THIS is the containment core, and it holds by three gates:
+  //  (1) Pierre is added HERE, never via defineOrg's roster (norm.members). deriveRooms builds the team/escalation
+  //      rooms from norm.members ONLY, so it structurally CANNOT seat Pierre in a team or escalation room, and Pierre
+  //      can never be ★ or reach @user — the wall is by construction, not by a check.
+  //  (2) Pierre is flagged `transient`, so defineOrg's redefine-prune spares it (an unrelated addmember/relaunch
+  //      won't kill the live consult); the consult room is kind:'consult', likewise spared.
+  //  (3) The room contains EXACTLY [the real member, pierre] and NO @user — a caged adversary reaches neither the
+  //      human nor any other peer (§14). The caller (daemon) builds Pierre's launch-norm.rooms = [this roomId]
+  //      host-side, so the caged mount (cagedRoomVolumes) resolves to this one room and nothing else.
+  // `withHandle` MUST be a real (non-transient) member of the org — you consult FOR a member, and it's the daemon's
+  // host-verified target (never a wire value). Returns the consult roomId for the caged launch to mount.
+  function addTransientConsult(org, { pierre, withHandle, roomId }) {
+    const orgId = String(org)
+    if (!members.has(orgId)) return { ok: false, error: `unknown org ${orgId}` }
+    if (!pierre || !pierre.handle || !roomId || !withHandle) return { ok: false, error: 'addTransientConsult needs { pierre.handle, withHandle, roomId }' }
+    const omap = members.get(orgId)
+    const target = lc(withHandle)
+    const t = omap.get(target)
+    if (!t || t.transient) return { ok: false, error: `consult target @${withHandle} is not a real member of ${orgId}` }
+    const ph = lc(pierre.handle)
+    if (omap.has(ph) && !omap.get(ph).transient) return { ok: false, error: `@${pierre.handle} collides with a real member of ${orgId}` }
+    omap.set(ph, {
+      handle: pierre.handle, first: pierre.first || pierre.handle, role: pierre.role || 'adversary', team: null,
+      lead: false, backend: pierre.backend || 'claude', tier: 'live', territory: null, mount: 'ro', org: orgId,
+      repo: pierre.repo || null, crossRepo: false, ...(pierre.cage ? { cage: pierre.cage } : {}),
+      sessionId: omap.get(ph)?.sessionId ?? null, transient: true,
+    })
+    const memberMap = new Map()
+    memberMap.set(target, { role: t.role || '', lead: false })
+    memberMap.set(ph, { role: pierre.role || 'adversary', lead: false })   // NO '@user' — the consult never reaches the human
+    const existing = rooms.get(roomId)
+    if (existing) { existing.members = memberMap; existing.kind = 'consult'; existing.team = null; existing.org = orgId }
+    else rooms.set(roomId, freshRoom(roomId, 'consult', null, orgId, memberMap))
+    return { ok: true, roomId, members: [target, ph] }
+  }
+  // Tear down a transient consult (Pierre dismissed / his tab closed). Only ever removes a `transient` participant
+  // (never a real member) + the consult room(s) it sits in — the destructive twin of addTransientConsult.
+  function removeTransientConsult(org, pierreHandle) {
+    const orgId = String(org); const ph = lc(pierreHandle)
+    const omap = members.get(orgId); if (!omap) return { ok: false, error: `unknown org ${orgId}` }
+    const m = omap.get(ph)
+    if (!m || !m.transient) return { ok: false, error: `@${pierreHandle} is not a transient consult participant` }
+    if (m.sessionId) bySession.delete(m.sessionId)
+    omap.delete(ph)
+    for (const [id, r] of [...rooms]) if (r.org === orgId && r.kind === 'consult' && r.members.has(ph)) { _append(id, `${ts()} [closed]`); rooms.delete(id) }
+    return { ok: true }
   }
 
   // Bind a live session to its member. The daemon resolves WHICH org's member is connecting via its
@@ -801,6 +858,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
 
   return {
     defineOrg, bindSession, unbindSession, route, endRoom, removeOrg, post,
+    addTransientConsult, removeTransientConsult,   // #56: caged-adversary-in-a-team consult (fork B — engine-routed, containment by construction)
     roomsForSession, roomsForHandle, resolveTargets, resolveInRoom, findRoom,
     doBrake, doResume, doSteer, answerUser, dismissUser, reopenUser, restoreInbox, status, setStatus, memberView, viewForSession, claimWorkerBatches, notifyRoom,
     resolveEscalation, checkTriageTimers,   // (d) triage-before-the-human

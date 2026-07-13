@@ -819,3 +819,52 @@ test('§(d): route() returns `triaged` info for a non-★ ask (feeds the ask-ack
   const rs = h.engine.route({ fromHandle: arch, roomId: teamRoomId('shop', 'client'), text: '@user loud?', kind: 'question' })
   assert.equal(rs.triaged, null, 'a ★ is not triaged → no descriptor (the ack says the human was pinged)')
 })
+
+// #56 — caged-adversary-in-a-team CONSULT (Pierre fork B): the containment CORE. Pierre is a TRANSIENT consult
+// participant added out-of-band via addTransientConsult, NEVER via the roster → deriveRooms (which builds
+// team/escalation rooms from norm.members only) structurally cannot seat it there.
+const PIERRE_T = { handle: 'pierre/claude', first: 'pierre', role: 'adversary', backend: 'claude', cage: 'adversary' }
+test('#56 transient consult: Pierre lands ONLY in the consult room — never the team or escalation room', () => {
+  const h = harness(TEAM)
+  const engineer = h.handle('engineer')
+  const consultId = 'shop--consult--engineer-pierre'
+  const r = h.engine.addTransientConsult('shop', { pierre: PIERRE_T, withHandle: engineer, roomId: consultId })
+  assert.equal(r.ok, true)
+  const pRooms = h.engine.roomsForHandle('pierre/claude', 'shop').map((x) => x.roomId)
+  assert.deepEqual(pRooms, [consultId], 'Pierre is in the consult room and nothing else')
+  assert.ok(!pRooms.includes(teamRoomId('shop', 'client')), 'never the team room')
+  assert.ok(!pRooms.includes(leadsRoomId('shop')), 'never the escalation room')
+  const eRooms = h.engine.roomsForHandle(engineer, 'shop').map((x) => x.roomId)
+  assert.ok(eRooms.includes(teamRoomId('shop', 'client')) && eRooms.includes(consultId), 'the member is in BOTH its team room and the consult')
+})
+test('#56 transient consult: team-room traffic never reaches Pierre (deliverTo membership gate — the provable wall)', () => {
+  const h = harness(TEAM)
+  const arch = h.handle('architect'), engineer = h.handle('engineer')
+  h.engine.addTransientConsult('shop', { pierre: PIERRE_T, withHandle: engineer, roomId: 'shop--consult--e-p' })
+  h.engine.bindSession('shop', 'pierre/claude', 'sess:pierre/claude')
+  h.engine.route({ fromHandle: arch, roomId: teamRoomId('shop', 'client'), text: 'team broadcast for everyone' })
+  assert.equal(h.deliveriesTo('pierre/claude').length, 0, 'Pierre is not in the team room → never sees team traffic')
+})
+test('#56 transient consult SURVIVES a redefine (an unrelated addmember/relaunch does not prune it)', () => {
+  const h = harness(TEAM)
+  const engineer = h.handle('engineer')
+  const consultId = 'shop--consult--engineer-pierre'
+  h.engine.addTransientConsult('shop', { pierre: PIERRE_T, withHandle: engineer, roomId: consultId })
+  h.engine.bindSession('shop', 'pierre/claude', 'sess:pierre/claude')
+  h.engine.defineOrg({ org: h.norm.org, repo: h.norm.repo, members: h.norm.members, rooms: h.norm.rooms })   // relaunch/refresh with the roster (no Pierre in it)
+  const pRooms = h.engine.roomsForHandle('pierre/claude', 'shop').map((x) => x.roomId)
+  assert.deepEqual(pRooms, [consultId], 'Pierre + the consult room survive the prune (transient-exempt)')
+})
+test('#56 removeTransientConsult drops Pierre + consult, leaves real members intact; refuses a real member', () => {
+  const h = harness(TEAM)
+  const engineer = h.handle('engineer'), arch = h.handle('architect')
+  h.engine.addTransientConsult('shop', { pierre: PIERRE_T, withHandle: engineer, roomId: 'shop--consult--e-p' })
+  assert.equal(h.engine.removeTransientConsult('shop', engineer).ok, false, 'never removes a REAL member via this path')
+  assert.equal(h.engine.removeTransientConsult('shop', 'pierre/claude').ok, true)
+  assert.equal(h.engine.roomsForHandle('pierre/claude', 'shop').length, 0, 'Pierre gone')
+  assert.ok(h.engine.roomsForHandle(arch, 'shop').length > 0, 'real members untouched')
+})
+test('#56 addTransientConsult refuses a non-member consult target (host-verified withHandle)', () => {
+  const h = harness(TEAM)
+  assert.equal(h.engine.addTransientConsult('shop', { pierre: PIERRE_T, withHandle: 'ghost/claude', roomId: 'shop--consult--x' }).ok, false)
+})
