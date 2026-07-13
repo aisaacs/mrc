@@ -841,11 +841,10 @@ function amForm(t) {
 function amRepoField() {
   const picks = S.amRepoPicks || { authorized: [], recent: [] }
   const list = bAllRecentRepos(picks)
-  const chip = (p) => `<span style="display:inline-flex;align-items:center;gap:2px;max-width:100%"><button class="btn tiny" title="${esc(p)}" data-p="${esc(p)}" onclick="amPickRepo(this.dataset.p)" style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(shortRepo(p))}</button><button class="btn tiny" title="Remove from recent" data-p="${esc(p)}" onclick="forgetRecentRepo(this.dataset.p)" style="padding:1px 4px;opacity:.6">×</button></span>`
   return `<datalist id="amRepoPicks">${list.map(p=>`<option value="${esc(p)}"></option>`).join('')}</datalist>
     ${amLbl('📁 Repo (this agent\'s own)')}
     <div class="row" style="gap:6px"><input id="amRepo" list="amRepoPicks" value="${esc(S.amRepo||'')}" placeholder="~/code/app — type or pick below" style="flex:1;min-width:0;box-sizing:border-box" oninput="amSetRepo(this.value)"><button class="btn tiny" style="flex:0 0 auto" onclick="amRepoChoose()" title="Browse folders">📁</button></div>
-    ${list.length?`${amLbl('Recent repos')}<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;max-width:100%">${list.slice(0,12).map(chip).join('')}</div>`:''}`
+    ${list.length?`${amLbl('Recent repos')}<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center;max-width:100%">${list.slice(0,12).map(p=>repoPillHTML(p, 'amPickRepo(this.dataset.p)')).join('')}</div>`:''}`
 }
 window.amToggleAdv = ()=>{ S.amAdvanced = !S.amAdvanced; renderMain() }
 window.amSetRole = (v)=>{ S.amRole = v; const mb=mediaBackend(v); if(mb) S.amBackend=mb; else if(!BACKENDS.includes(S.amBackend)) S.amBackend='claude'; renderMain() }
@@ -1461,11 +1460,17 @@ function bAllRecentRepos(picks) {
   for (const p of [...(picks.authorized||[]), ...(picks.recent||[])]) { if (p && !seen.has(p)) { seen.add(p); out.push(p) } }
   return orderRecentRepos(out)
 }
-// A labeled row of repo quick-pick chips (empty → nothing). Each chip shows the folder NAME (basename); the full
-// path is the title. An × removes it from the recent list (curation — #46b). shortRepo trims to the basename.
+// #46c: ONE pill = [repo name … ×]. The name (left) picks; the × (inside the same pill, with real spacing so it's
+// easy to hit) forgets it from recent. A touch larger than a plain chip. Shared by the create-form + add-agent.
+function repoPillHTML(p, pickOnclick) {
+  return `<span style="display:inline-flex;align-items:center;gap:9px;max-width:100%;border:1px solid var(--line);border-radius:13px;padding:5px 6px 5px 12px;font-size:11.5px;line-height:1.5;background:var(--card,transparent)">`
+    + `<span role="button" tabindex="0" title="${esc(p)}" data-p="${esc(p)}" onclick="${pickOnclick}" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" style="cursor:pointer;max-width:170px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(shortRepo(p))}</span>`
+    + `<span role="button" tabindex="0" title="Remove from recent" aria-label="remove ${esc(shortRepo(p))} from recent" data-p="${esc(p)}" onclick="forgetRecentRepo(this.dataset.p)" onkeydown="if(event.key==='Enter'||event.key===' '){event.preventDefault();this.click()}" style="cursor:pointer;padding:0 3px;opacity:.5;font-weight:700;font-size:13px">×</span></span>`
+}
+// A labeled row of repo quick-pick pills (empty → nothing).
 function repoPickRow(label, list, ti, mi) {
   if (!list || !list.length) return ''
-  return `<div class="memrow reporecents" style="margin-top:3px;gap:5px;flex-wrap:wrap;align-items:center"><span class="muted" style="font-size:10.5px;flex:0 0 auto;text-transform:uppercase;letter-spacing:.04em">${esc(label)}</span>${list.slice(0,12).map(p=>`<span class="repochip" style="display:inline-flex;align-items:center;gap:2px;max-width:100%"><button class="btn tiny" title="${esc(p)}" data-p="${esc(p)}" onclick="bPickRepo(${ti},${mi},this.dataset.p)" style="max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(shortRepo(p))}</button><button class="btn tiny" title="Remove from recent" data-p="${esc(p)}" onclick="forgetRecentRepo(this.dataset.p)" style="padding:1px 4px;opacity:.6">×</button></span>`).join('')}</div>`
+  return `<div class="memrow reporecents" style="margin-top:3px;gap:6px;flex-wrap:wrap;align-items:center"><span class="muted" style="font-size:10.5px;flex:0 0 auto;text-transform:uppercase;letter-spacing:.04em">${esc(label)}</span>${list.slice(0,12).map(p=>repoPillHTML(p, `bPickRepo(${ti},${mi},this.dataset.p)`)).join('')}</div>`
 }
 // §13 "recent-repo quick-picks by folder name" — the chip shows the folder NAME (basename); the full path is the
 // title (hover) and lands in the field on select (bPickRepo sets m.repo = the full path).
