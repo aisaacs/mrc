@@ -126,6 +126,19 @@ test('daemon team rooms: define org, directed delivery, @user round-trip, brake/
   assert.equal(forgedSteer.ok, false, 'a no-secret steer is refused (capOk)')
   assert.match(forgedSteer.error || '', /control-capability secret/)
 
+  // #44 graftresume — a CONTENT TRANSFER (copies a conversation into an agent's slice), so it's capOk-gated +
+  // fenced by the orgDefs whitelist. (1) no secret → refused (never agent-initiated). (2) a non-member target →
+  // refused LOUD (Pierre a: targetHandle validated against orgDefs, not client-trusted). (3) an unknown source ref
+  // → refused (a ref must be a whitelist label, never a client slice path).
+  const someHandle = norm.members[0].handle
+  const forgedGraft = await controlCall(controlPort, { action: 'graftresume', org: norm.org, handle: someHandle, ref: 'you', uuid: '11111111-1111-1111-1111-111111111111' })   // NO secret
+  assert.equal(forgedGraft.ok, false, 'a no-secret graftresume is refused (capOk) — a content transfer is human-mediated, never session-callable')
+  assert.match(forgedGraft.error || '', /control-capability secret/)
+  const nonMember = await controlCall(controlPort, { action: 'graftresume', org: norm.org, handle: 'nobody/claude', ref: 'you', uuid: '11111111-1111-1111-1111-111111111111', secret: controlSecret() })
+  assert.equal(nonMember.ok, false, 'graftresume into a NON-member handle is refused (targetHandle validated against orgDefs, not client-trusted)')
+  const badRef = await controlCall(controlPort, { action: 'graftresume', org: norm.org, handle: someHandle, ref: '@nobody/claude', uuid: '11111111-1111-1111-1111-111111111111', secret: controlSecret() })
+  assert.equal(badRef.ok, false, 'graftresume from an unknown source ref is refused (a ref must be a whitelist label, never a client path)')
+
   // 4b) (d) triage over the WIRE: a non-★ (ludivine) @user QUESTION is triaged to its lead (roland) — the
   // lead gets an ESCALATION, resolves it via a `resolve` frame, and the answer reaches ludivine as PEER data.
   // The engine enforces auth against the AUTHENTICATED sessionId (proves the daemon passes the real caller):

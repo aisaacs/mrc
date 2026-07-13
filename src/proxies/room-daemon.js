@@ -8,7 +8,7 @@
 // before. One daemon serves all sessions, so it outlives any single session.
 import net from 'node:net'
 import { spawn, execFileSync } from 'node:child_process'
-import { openSync, mkdirSync, appendFileSync, readFileSync, writeFileSync, renameSync, statSync, unlinkSync, utimesSync, chmodSync } from 'node:fs'
+import { openSync, mkdirSync, appendFileSync, readFileSync, writeFileSync, renameSync, statSync, unlinkSync, utimesSync, chmodSync, existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -26,7 +26,7 @@ import { resolveTerritoryImage } from '../safe-path.js'   // #56: shared dual-co
 import { leadsRoomId } from '../teams/roster.js'
 import { repoEnvKeyStrict } from '../config.js'
 import { resolveOrgRootForOrg, recordActivatedRoot, isActivatedRoot, clearOrgRoot, clearActivatedRoots, addAuthorizedRepo, orgAnchorDir } from '../teams/repo-auth.js'   // guard-1: write-once org root + pin/activate separation; addAuthorizedRepo = the human-only cross-repo/Model-B authorize (SOLE set writer besides the CLI); orgAnchorDir = Model B's neutral host-only identity anchor
-import { decideModelB } from '../mrc-store.js'   // Model B: PREDICT the HIGHER Model-B capability (cap=2) from the image label — SEPARATE from #5's store-mode (cap∈{1,2}), so Model B stays inert on a #5-only cap=1 image (same signal the inner mrc.js reads authoritatively; fails-toward-legacy without docker)
+import { decideModelB, projectSessionSlices, graftSession, writeActiveSessionPointer } from '../mrc-store.js'   // Model B PREDICT (cap=2 label) + #44 symmetric-resume: the host-verified session-slice whitelist + the cross-slice graft/pointer primitives (same as c7f55b8's create-form path)
 import { imageIdAndLabels } from '../docker.js'
 
 const MRC_JS = fileURLToPath(new URL('../../mrc.js', import.meta.url))
@@ -1444,6 +1444,49 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             // unlink-guard sees no live master; the old container was already docker-killed synchronously → no dup.
             setTimeout(() => { teamMod.launchMember(f.org, def.repo, rosterPath, member).catch((e) => daemonLog(`relaunchmember ${f.org}/@${f.handle} spawn: ${e?.message || e}`)) }, 800)
             daemonLog(`relaunchmember ${f.org}: @${f.handle}`)
+            reply({ ok: true })
+          } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
+          continue
+        }
+        // #44 SYMMETRIC SESSIONS — the daemon @handle-source graft: resume a LIVE agent from a DIFFERENT session
+        // (its own history, another agent's slice, or a solo session on its repo). A CONTENT TRANSFER (copies ONE
+        // conversation into the target's slice), so it is capOk-gated → HUMAN-mediated, never agent-initiated
+        // (a session can't provide the secret → no agent unilaterally grafts its context into a peer). Both the
+        // SOURCE and the DST come from projectSessionSlices off orgDefs — the host-verified whitelist: the source
+        // `ref` is a LABEL matched in the whitelist (never a client slice path; adv-/iso- never constructed),
+        // and `targetHandle` is validated by its dst entry EXISTING (a non-member → no entry → refused, Pierre a).
+        // Carries NO repo grant (no addAuthorizedRepo) — the connect/authorize split holds: graft = content copy,
+        // authorize = the separate cap-gated /api/authorize-repo. graftSession is single-uuid + symlink-refusing +
+        // copy-if-absent (c7f55b8); the target relaunches and resumes via the pointer (cd1ca81).
+        if (f.action === 'graftresume' && f.org && f.handle) {
+          if (!capOk(f)) { reply({ ok: false, error: 'graftresume requires the control-capability secret (a content transfer between agents is human-mediated, never session-callable)' }); continue }
+          if (!teamMod) { reply({ ok: false, error: 'launch helpers still loading — retry' }); continue }
+          const def = orgDefs.get(f.org)
+          if (!def) { reply({ ok: false, error: 'unknown org' }); continue }
+          try {
+            const { norm, rosterPath } = teamMod.materializeRoster(teamMod.rosterFromDef(def), def.repo, predictModelB())
+            const target = norm.members.find((mm) => mm.handle === f.handle)
+            if (!target || target.tier !== 'live') { reply({ ok: false, error: 'not a live member' }); continue }
+            // the whitelist — SAME host-verified fence as the enumerator. `def.members` is orgDefs' raw norm (carries
+            // cage), so caged/adversary members are never enumerated → never a source OR a dst. repoPath = the
+            // TARGET's own repo (the "you"/repoId source = solo sessions on its repo).
+            const slices = projectSessionSlices({ repoPath: target.repo || def.repo, org: norm.org, members: def.members })
+            const dstEntry = slices.find((s) => s.ref === `@${f.handle}`)
+            if (!dstEntry) { reply({ ok: false, error: 'target is not a resumable member of this project' }); continue }   // Pierre (a): handle not in orgDefs → fail LOUD
+            const ref = String(f.ref || 'you')
+            const srcEntry = slices.find((s) => s.ref === ref)
+            if (!srcEntry) { reply({ ok: false, error: `unknown session source "${ref}"` }); continue }   // a ref not in the computed whitelist → refused (never a client slice path)
+            const uuid = String(f.uuid || '')
+            if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(uuid) && !/^[0-9a-f]{40}$/.test(uuid)) { reply({ ok: false, error: 'invalid session id' }); continue }
+            if (srcEntry.dir === dstEntry.dir) { reply({ ok: false, error: 'source and target are the same conversation store' }); continue }
+            if (!existsSync(join(srcEntry.dir, `${uuid}.jsonl`))) { reply({ ok: false, error: 'that conversation is not in the chosen source' }); continue }
+            // stop the target FIRST so its slice is free (never graft into a live agent's store), THEN graft, THEN relaunch.
+            teamMod.killMember(f.org, f.handle)
+            graftSession(srcEntry.dir, uuid, dstEntry.dir)
+            if (!existsSync(join(dstEntry.dir, `${uuid}.jsonl`))) { reply({ ok: false, error: 'graft copied nothing — the source conversation may have vanished' }); continue }
+            writeActiveSessionPointer(dstEntry.dir, uuid)
+            setTimeout(() => { teamMod.launchMember(f.org, def.repo, rosterPath, target).catch((e) => daemonLog(`graftresume ${f.org}/@${f.handle} spawn: ${e?.message || e}`)) }, 800)
+            daemonLog(`graftresume ${norm.org}: @${f.handle} ← ${ref}/${uuid.slice(0, 8)}`)
             reply({ ok: true })
           } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
           continue
