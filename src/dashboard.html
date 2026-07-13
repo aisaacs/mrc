@@ -599,7 +599,21 @@ function orgNeed(org) {
 // A project is "running" if it has a launch record or any live member up (online/launched).
 // A launch record only counts as "running" if the daemon reconciled it as live (≥1 member session up,
 // or still building) — a stale record from a crash reports running:false, so ▶ Resume/🚀 Launch comes back.
-const orgRunning = (org) => (S.teams.launch||[]).some(l=>l.org===org && l.running) || (S.teams.members||[]).some(m=>m.org===org && m.tier==='live' && (m.online||m.launched))
+// A just-closed project must read not-running IMMEDIATELY. stopteam removes the launch record synchronously,
+// but each member's online/launched flag (engine registry) LAGS the container kill until the socket-close
+// propagates — so without this, orgRunning's members-clause reads stale-true and the closed project lingers in
+// the tab bar + Active bucket (and the close looks like it "didn't take"). Suppress the members-clause for a
+// closed org until a real relaunch lands (launch record running/launching) or a short grace elapses.
+const _justClosed = new Map()   // org -> ts
+function orgRunning(org) {
+  if (_justClosed.has(org)) {
+    const rec = (S.teams.launch||[]).find(l=>l.org===org)
+    if (rec && (rec.running || rec.launching)) _justClosed.delete(org)        // genuine relaunch → stop suppressing
+    else if (Date.now() - _justClosed.get(org) < 15000) return false          // within the grace → not running
+    else _justClosed.delete(org)                                              // grace elapsed → trust live state
+  }
+  return (S.teams.launch||[]).some(l=>l.org===org && l.running) || (S.teams.members||[]).some(m=>m.org===org && m.tier==='live' && (m.online||m.launched))
+}
 // P1a: the daemon reports a provisional `launching` record (org comes up live in one gesture — no "stopped" flash)
 // and flips it to `failed` on a build error / 3-min timeout instead of a phantom-running org.
 const orgLaunchRec = (org) => (S.teams.launch||[]).find(l=>l.org===org)
@@ -664,13 +678,15 @@ window.closeTab = async (org) => {
   if (!confirm(`Close "${org}"? Its agents stop (like Ctrl-C). The team, transcripts, and history stay — reopen it from your projects any time to resume where you left off. (Nothing is deleted.)`)) return
   if (org === S.org) leaveUnread()   // #63-F: closing the active project leaves its open room — flush its watermark
   const r = await actJSON('/api/team-stop', { org }); if(!r.ok)return flashFail(r); S.flash=null
+  _justClosed.set(org, Date.now())   // reflect the close NOW — don't wait for the member online/launched flags to trail the kill
   // #48b: just CLOSE — don't jump to the command center. If the closed project was active, land on another OPEN
   // (running) project if there is one, else the neutral empty pane; never the projects landing.
   if (org === S.org) {
     const others = (S.teams.orgs||[]).map(o=>o.org).filter(o=>o!==org && orgRunning(o))
     S.org = others[0] || null; S.selRoom=S.selInbox=S.selMember=null; S.projects=false; S.roomsHome=false; S.building=false; S.selHome = !!S.org
-    setOrgUrl(S.org||''); paint()
-  } else { tick() }
+    setOrgUrl(S.org||'')
+  }
+  paint(); tick()   // paint reflects the close immediately (grace); tick reconciles from the daemon (grace protects orgRunning from the stale re-fetch)
 }
 // Resume = relaunch the saved roster (deterministic members rebind, each --continues its own convo).
 window.resumeTeam = async (org) => { const r=await actJSON('/api/team-launch', { org: org||S.org }); if(!r.ok)return flashFail(r); S.flash=null; tick() }
