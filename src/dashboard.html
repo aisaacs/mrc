@@ -706,7 +706,7 @@ const launchFor = () => (S.teams.launch||[]).find(x=>x.org===S.org && x.running)
 // #47: the @you channel's detailKey uses channelSig() (folds every item's RESOLUTION into the key, so a
 // REMOTE resolve — e.g. answered via Telegram — re-renders the channel) and FREEZES while composing.
 const detailKey = () => S.building ? 'build'
-  : S.roomsHome ? 'roomshome:'+mergedRooms().map(r=>r.roomId+':'+r.state).join(',')   // §13 daemon Rooms screen
+  : S.roomsHome ? (S.selRoom ? 'roomshome:room:'+S.selRoom+':'+S.tab : 'roomshome:list:'+mergedRooms().map(r=>r.roomId+':'+r.state).join(','))   // §13 daemon Rooms screen (list, or a dedicated room view)
   : S.projects ? 'projects:'+projectsSig()   // P2: re-render the landing when any project's state/needs-you changes
   : S.selHome ? 'home:'+(S.org||'')+':'+(S.settings?'s':'-')   // #61: rebuild once settings load (for the --web note)
   : S.selMember ? (memberByHandle(S.selMember)?.tier==='worker' ? 'wlog:'+S.selMember : 'terminal:'+S.selMember+':'+(launchFor()?.members?.[S.selMember]?.state||'none'))
@@ -1103,7 +1103,7 @@ function followScroll(el, mutate) {
   el.scrollTop = atBottom ? el.scrollHeight : keepTop
 }
 
-function renderRoom(d) {
+function renderRoom(d, opts={}) {
   const r = mergedRooms().find(x=>x.roomId===S.selRoom) || { roomId:S.selRoom, state:'History', kind:'room' }
   const isTeam = !!(S.teams.rooms||[]).find(x=>x.roomId===S.selRoom)
   const mem = roomMembers(S.selRoom)
@@ -1116,7 +1116,7 @@ function renderRoom(d) {
   // its trusted-[Human directive] send semantics are unchanged (doSteer → act('steer')), just the UX.
   d.innerHTML = `<div class="roomview">
     <div class="row wrap" style="justify-content:space-between;align-items:flex-start">
-      <div><b>${esc(r.team||label2(r))}</b> <span class="muted">[${esc(r.kind||'room')}]</span> <span class="state ${r.state}">${esc(r.state)}${r.state==='Paused'&&r.pauseReason?(' · '+esc(pauseLabel(r.pauseReason))):''}</span></div>
+      <div>${opts.back?`<button class="btn tiny" onclick="${opts.back}" style="margin-right:8px">← Rooms</button>`:''}<b>${esc(r.team||label2(r))}</b> <span class="muted">[${esc(r.kind||'room')}]</span>${r.org?` <span class="muted">· ${esc(r.org)}</span>`:''} <span class="state ${r.state}">${esc(r.state)}${r.state==='Paused'&&r.pauseReason?(' · '+esc(pauseLabel(r.pauseReason))):''}</span></div>
       <div class="row">${r.state==='Paused'
         ? `<button class="btn primary" onclick="roomAct('resume')" title="${esc(r.pauseReason==='turnCap'?'turn-cap check-in — resume to grant another window':r.pauseReason==='stall'?'looked idle — resume to continue':'you paused this — resume to continue')}">▶ Resume</button>`
         : r.state==='Running' ? `<button class="btn" onclick="roomAct('brake')">⏸ Pause</button>` : ''
@@ -1796,8 +1796,15 @@ function drawerRender() {
 // injects a trusted [Human directive] — the one authoritative message class — so it stays behind the room's own
 // gated composer. "Steer…" here just OPENS the room, where doSteer→act('steer') is the same gated path; no new door.
 window.rmCtrl = async (id, action)=>{ const r=await act(action,{roomId:id}); if(!r||!r.ok)return flashFail(r||{error:'failed'}); S.flash=null; tick() }
-window.rmOpen = (id, org)=>{ S.roomsHome=false; S.drawerOpen=false; if(org && org!==S.org){ S.org=org; try{setOrgUrl(org)}catch{} } selRoom(id) }
+// Open a room from the daemon Rooms screen INTO a dedicated full-width view (stay in the Rooms takeover — do
+// NOT drop into the project 3-pane). Keep S.roomsHome true + set S.selRoom; renderRoomsHome renders the room
+// with a ← Rooms back button. tick() fetches the room data (S.room) as usual.
+window.rmOpen = (id, org)=>{ if(!confirmLeaveBuilder())return; S.drawerOpen=false; S.roomsHome=true; S.projects=false; S.building=false; S.selHome=S.selInbox=S.selMember=null
+  if(org && org!==S.org){ S.org=org; try{setOrgUrl(org)}catch{} }
+  S.selRoom=id; S.room=null; S.tab='thread'; paintedKey=null; tick() }
+window.roomsBack = ()=>{ S.selRoom=null; S.room=null; paintedKey=null; paint() }   // ← Rooms: back to the daemon Rooms list (stay in the takeover)
 function renderRoomsHome(d) {
+  if (S.selRoom) return renderRoom(d, { back: 'roomsBack()' })   // dedicated full-width room view (opened from the Rooms screen), not the project 3-pane
   const rooms = mergedRooms()
   const card = (r)=>{ const nm=r.team||label2(r)||r.roomId; const running=/running/i.test(r.state||'')
     return `<div class="rmcard"><div class="rmh"><span class="rmn">${esc(nm)}</span><span class="statechip ${esc(r.state||'')}">${esc(r.state||'')}</span><span class="rmproj">${esc(r.org||'consult')}${r.turn?` · ${r.turn} msgs`:''}${r.unreviewed?` · ${r.unreviewed}📥`:''}</span></div>
@@ -1904,8 +1911,8 @@ function castRender() {
     const btn = gated
       ? `<button class="btn tiny" disabled title="Summon Pierre from a session — dashboard caged-add is the rebuild-gated caged-member port">⛓ summon from a session</button>`
       : `<button class="btn tiny ${here?'':'primary'}" ${here?'disabled':''} data-k="${esc(c.key)}" onclick="castAdd(this.dataset.k)">${here?'✓ already on the team':(c.generalist?'＋ Add a Claude':'＋ Add '+esc(c.name))}</button>`
-    return `<div class="cc ${c.plain?'plain':''}"><span class="cav">${esc(castInitials(c.name))}</span><div class="cbody">
-      <div class="cnm">${esc(c.name)}${c.plain?' <span class="ctag accent">default</span>':''}</div>
+    return `<div class="cc"><span class="cav">${esc(castInitials(c.name))}</span><div class="cbody">
+      <div class="cnm">${esc(c.name)}${c.plain?' <span class="ctag">default</span>':''}</div>
       <div class="crole">@${esc(c.key)} · ${esc(c.label)}</div>
       <div class="cblurb">${esc(c.blurb)}</div>
       <div class="cmeta">${tags}</div>${btn}
