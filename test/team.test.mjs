@@ -121,6 +121,21 @@ test('rosterFromDef round-trips a multi-team project (no team or member is lost)
   assert.equal(new Set(n1.members.map((m) => m.team)).size, 2, 'both teams present')
 })
 
+test('#57/containment: rosterFromDef carries `cage` so a relaunched caged member stays caged (all 3 egress belts derive from member.cage)', () => {
+  const n0 = parseRoster({ org: 'shop', teams: [{ name: 'client', territory: '.', members: [
+    { role: 'architect', backend: 'claude', lead: true },
+    { role: 'adversary', backend: 'claude', name: 'pierre', cage: 'adversary' },
+  ] }] }, { repo: '/tmp/shop' })
+  const caged0 = n0.members.find((m) => m.cage)
+  assert.ok(caged0 && caged0.cage === 'adversary', 'parse carries cage')
+  // reconstruct as the relaunch path does (materializeRoster(rosterFromDef(def))) and re-parse
+  const rebuilt = parseRoster(rosterFromDef({ org: n0.org, repo: n0.repo, members: n0.members }), { repo: '/tmp/shop' })
+  const caged1 = rebuilt.members.find((m) => m.handle === caged0.handle)
+  assert.ok(caged1 && caged1.cage === 'adversary', 'cage SURVIVES the rosterFromDef reconstruction — the relaunch path stays caged')
+  // belt-1 consequence: even with the team web ON, the reconstructed caged member gets no --web
+  assert.ok(!memberArgv('/tmp/shop', caged1, '/r.json', 'shop', { web: true }).includes('--web'), 'reconstructed caged member still gets no --web')
+})
+
 test('add-member preserves existing members\' names and appends the new one', () => {
   const n0 = parseRoster({ org: 'shop', teams: [{ name: 'client', territory: '.', members: [
     { role: 'architect', backend: 'claude', lead: true }, { role: 'engineer', backend: 'claude' },

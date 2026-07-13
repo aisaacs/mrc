@@ -749,6 +749,14 @@ export function rosterFromDef(def) {
     // `cage` (which the engine projection also stripped): a reconstruction that omits a load-bearing field.
     if (m.session) mm.session = m.session
     if (m.sessionRef) mm.sessionRef = m.sessionRef
+    // CONTAINMENT (the drop-class the comment above named but never carried): `cage` MUST survive the
+    // reconstruction. All three of a caged member's egress belts derive from member.cage — memberArgv's --web
+    // skip, mrc.js cagedAdversary→allowWeb=false, and MRC_ADVERSARY_FW→firewall 443-drop — via the --member-def
+    // blob. Dropping cage here re-launches a caged member UNCAGED on the relaunch path (relaunchmember →
+    // materializeRoster(rosterFromDef(def))): rw /workspace, no SNI-pin, AND (with #57 web on) open 443. Carrying
+    // it only ever RESTRICTS (parseRoster re-runs assertCageAllowed), never elevates. Pre-existing latent bug;
+    // #57's per-project --web would have turned it into an egress leak.
+    if (m.cage) mm.cage = m.cage
     teams[m.team].members.push(mm)
   }
   const roster = { org: def?.org, repo: def?.repo, teams: Object.values(teams) }
