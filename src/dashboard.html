@@ -495,7 +495,7 @@ const MEDIA_ROLE_BACKEND = { designer:'gemini', 'sound-designer':'elevenlabs', c
 const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
 
 const S = {
-  building: false, projects: false, roomsHome: false, drawerOpen: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], amRepo: '', amRepoPicks: null, showDismissed: false, showHandled: false, replyTo: null, jumpTarget: null, flash: null, roomDrafts: {},
+  building: false, projects: false, roomsHome: false, drawerOpen: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addingToOrg: null, addCustomRoles: [], amRepo: '', amRepoPicks: null, showDismissed: false, showHandled: false, replyTo: null, jumpTarget: null, flash: null, roomDrafts: {},
   _wmCur: null, _wmLatest: 0, _openWm: {},   // #63-F unread watermark: the room/channel currently open + its latest position + the per-key captured-at-open boundary
   notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
   notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
@@ -616,7 +616,10 @@ window.switchOrg = switchOrg
 // that SUSPENDS (stop + preserve), and a trailing ＋ → Build.
 function renderTabs() {
   const el = $('#tabs'); if (!el) return
-  const orgs = (S.teams.orgs||[]).map(o=>o.org)   // STABLE order — never re-sorted by active/running state
+  // #48: the tab bar is the OPEN working set — running projects + the one you're actively viewing. A closed
+  // (stopped, non-active) project drops OUT of the nav and lives on in the command center (home → Recently used),
+  // reopened from there. So the × (stop) actually removes the tab, matching "kill it + reopen from home".
+  const orgs = (S.teams.orgs||[]).map(o=>o.org).filter(o => orgRunning(o) || o === S.org)   // STABLE order — never re-sorted by active/running state
   const tab = (o) => {
     const need = orgNeed(o), cls = o===S.org ? 'active' : orgRunning(o) ? 'running' : 'closed'
     // A pending Telegram link is a "verify me" event — surfaced on the OWNING tab regardless of which
@@ -653,13 +656,16 @@ function updateTabHints() {
   if (needR) R.textContent = needR + '›'
 }
 window.scrollTabs = (dir) => { const el = $('#tabs'); if (!el) return; el.scrollBy({ left: dir * Math.max(120, el.clientWidth * 0.7), behavior: 'smooth' }); setTimeout(updateTabHints, 360) }
-// Close a tab = SUSPEND: stop the member containers but keep the team defined, transcripts, and
-// history — the tab stays as closed-dormant and ▶ Resume brings it back. (Delete is deferred.)
+// #48 Close (×) = SUSPEND + LEAVE THE NAV: stop the member containers (all terminals Ctrl-C'd) AND drop the tab
+// from the bar. The team, transcripts, and history stay — the project moves to the command center (home →
+// Recently used), where you reopen + ▶ Resume it. (Delete-from-Mister-Claude is the separate 🗑 in project
+// settings.) renderTabs shows only running-or-active projects, so once stopped + un-selected the tab is gone.
 window.closeTab = async (org) => {
-  if (!confirm(`Close "${org}"? Members stop; the team, transcripts, and history stay — reopen to resume.`)) return
+  if (!confirm(`Close "${org}"? Its agents stop and it leaves the tab bar. The team, transcripts, and history stay — reopen it from the home any time. (Nothing is deleted.)`)) return
   if (org === S.org) leaveUnread()   // #63-F: closing the active project leaves its open room — flush its watermark
   const r = await actJSON('/api/team-stop', { org }); if(!r.ok)return flashFail(r); S.flash=null
-  tick()
+  // land on the command center so the just-closed project isn't the active tab (which would keep it pinned).
+  if (org === S.org) { S.org=null; S.selRoom=S.selInbox=S.selMember=null; S.selHome=false; openProjects() } else { tick() }
 }
 // Resume = relaunch the saved roster (deterministic members rebind, each --continues its own convo).
 window.resumeTeam = async (org) => { const r=await actJSON('/api/team-launch', { org: org||S.org }); if(!r.ok)return flashFail(r); S.flash=null; tick() }
@@ -701,6 +707,10 @@ function paint() {
   $('.app').classList.toggle('projects-takeover', S.projects && !S.building)   // P2: the command-center Projects landing
   $('.app').classList.toggle('rooms-takeover', S.roomsHome && !S.building)   // §13: the daemon-wide Rooms screen
   drawerRender()
+  // #47: the add-agent form freezes renderMain (to protect its inputs during polls) — but if the project CHANGED
+  // out from under an open add-form (switching tabs mid-add), that freeze would leave the left pane STALE on the old
+  // project. Drop a cross-project add-form so the pane re-renders for the newly selected project.
+  if (S.addingTo && S.addingToOrg && S.addingToOrg !== S.org) { S.addingTo = null; S.addingToOrg = null; S.amRepo = ''; S.amRepoPicks = null }
   if (!S.addingTo) renderMain()   // freeze the list while the add-member form is open (don't clobber inputs)
   const key = detailKey()
   if (key!==paintedKey) { renderDetail(); paintedKey=key } else patchDetail()
@@ -807,25 +817,31 @@ function amBackendControl(role) {
   return `<select id="amBackend" style="width:100%">${BACKENDS.map(b=>`<option ${b===cur?'selected':''}>${b}</option>`).join('')}</select>`
 }
 window.amSyncBackend = ()=>{ const w=$('#amBackendWrap'); if(w) w.innerHTML = amBackendControl($('#amRole').value) }
+// #46: the add-agent form is in the NARROW left pane — every field is FULL-WIDTH on its own row (no side-by-side
+// rows that overflow), territory is tucked under Advanced (rarely used), and the repo chips truncate.
+const amLbl = (t) => `<div class="muted" style="font-size:10.5px;text-transform:uppercase;letter-spacing:.04em;margin:8px 0 3px">${t}</div>`
 function amForm(t) {
   return `<div class="amf">
-    <div class="muted" style="margin-bottom:5px">Add an agent to <b>${esc(t)}</b>:</div>
-    <div class="row"><select id="amRole" style="flex:1.2" onchange="amSyncBackend()">${ROLES.concat((S.addCustomRoles||[]).filter(k=>!ROLES.includes(k))).map(r=>`<option ${r==='engineer'?'selected':''}>${esc(r)}</option>`).join('')}</select>
-      <span id="amBackendWrap" style="flex:1;display:flex">${amBackendControl('engineer')}</span></div>
-    <div class="row" style="margin-top:6px"><input id="amName" placeholder="name — optional (e.g. Colette)" style="flex:1"><input id="amTerr" placeholder="territory — optional" style="flex:1"></div>
+    <div class="muted" style="margin-bottom:4px">Add an agent to <b>${esc(t)}</b>:</div>
+    ${amLbl('Role')}<select id="amRole" style="width:100%;box-sizing:border-box" onchange="amSyncBackend()">${ROLES.concat((S.addCustomRoles||[]).filter(k=>!ROLES.includes(k))).map(r=>`<option ${r==='engineer'?'selected':''}>${esc(r)}</option>`).join('')}</select>
+    ${amLbl('Backend')}<span id="amBackendWrap" style="display:flex">${amBackendControl('engineer')}</span>
+    ${amLbl('Name (optional)')}<input id="amName" placeholder="e.g. Colette — or leave blank" style="width:100%;box-sizing:border-box">
     ${amRepoField()}
-    <div class="row" style="margin-top:6px"><button class="btn tiny primary" data-team="${esc(t)}" onclick="submitAddMember(this.dataset.team)">Add</button><button class="btn tiny" onclick="cancelAddMember()">Cancel</button> <span id="amMsg" class="muted"></span></div>
-    <div class="row" style="margin-top:6px"><button class="btn tiny" onclick="openCastModal('project')">🎭 Add from cast</button></div>
+    <div class="row" style="margin-top:10px;gap:6px;flex-wrap:wrap"><button class="btn tiny primary" data-team="${esc(t)}" onclick="submitAddMember(this.dataset.team)">Add</button><button class="btn tiny" onclick="cancelAddMember()">Cancel</button><button class="btn tiny" onclick="openCastModal('project')">🎭 Cast</button></div>
+    <div id="amMsg" class="muted" style="font-size:11px;margin-top:5px"></div>
+    <details style="margin-top:8px"><summary class="muted" style="font-size:11px;cursor:pointer">Advanced</summary>${amLbl('Territory (optional)')}<input id="amTerr" placeholder="a subfolder this agent may write" style="width:100%;box-sizing:border-box"></details>
   </div>`
 }
-// #45: the added agent's repo picker — same pattern as the create-form (datalist + 📁 Choose + quick-pick chips).
-// Every agent needs its OWN repo (each is org-scoped); "This project" chips are the org's already-authorized repos
-// (one tap, no new grant), "Recent" are other projects' (picking one authorizes it on Add, human pick = grant).
+// #45/#46: the added agent's repo picker — full-width input, 📁 Choose below, quick-pick chips that TRUNCATE
+// (long/internal paths won't overflow the narrow pane). "This project" chips are the org's already-authorized
+// repos (one tap, no new grant); "Recent" are other projects' (picking one authorizes it on Add — human = grant).
 function amRepoField() {
   const picks = S.amRepoPicks || { authorized: [], recent: [] }
-  const chips = (label, list) => (!list || !list.length) ? '' : `<div class="memrow reporecents" style="margin-top:3px;gap:5px;flex-wrap:wrap;align-items:center"><span class="muted" style="font-size:10.5px;flex:0 0 auto;text-transform:uppercase;letter-spacing:.04em">${esc(label)}</span>${list.slice(0,8).map(p=>`<button class="btn tiny" title="${esc(p)}" data-p="${esc(p)}" onclick="amPickRepo(this.dataset.p)">${esc(shortRepo(p))}</button>`).join('')}</div>`
+  const chip = (p) => `<button class="btn tiny" title="${esc(p)}" data-p="${esc(p)}" onclick="amPickRepo(this.dataset.p)" style="max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;display:inline-block">${esc(shortRepo(p))}</button>`
+  const chips = (label, list) => (!list || !list.length) ? '' : `${amLbl(label)}<div style="display:flex;gap:5px;flex-wrap:wrap;align-items:center;max-width:100%">${list.slice(0,8).map(chip).join('')}</div>`
   return `<datalist id="amRepoPicks">${[...(picks.authorized||[]),...(picks.recent||[])].map(p=>`<option value="${esc(p)}"></option>`).join('')}</datalist>
-    <div class="memrow" style="margin-top:6px"><span class="muted" style="font-size:11px;flex:0 0 auto">📁 repo</span><input id="amRepo" list="amRepoPicks" value="${esc(S.amRepo||'')}" placeholder="this agent's repo — type ~/code/app or pick one" style="flex:1" oninput="amSetRepo(this.value)"><button class="btn tiny" style="flex:0 0 auto" onclick="amRepoChoose()" title="Browse folders">📁 Choose…</button></div>
+    ${amLbl('📁 Repo (this agent\'s own)')}
+    <div class="row" style="gap:6px"><input id="amRepo" list="amRepoPicks" value="${esc(S.amRepo||'')}" placeholder="~/code/app — type or pick below" style="flex:1;min-width:0;box-sizing:border-box" oninput="amSetRepo(this.value)"><button class="btn tiny" style="flex:0 0 auto" onclick="amRepoChoose()" title="Browse folders">📁</button></div>
     ${chips('This project', picks.authorized)}${chips('Recent · other projects', picks.recent)}`
 }
 window.amSetRepo = (v)=>{ S.amRepo = String(v||'').trim() }
@@ -2030,7 +2046,7 @@ window.launchTeam = async ()=>{ const r=await postJSON('/api/team-launch',{org:S
 // #43: a project-defined role is addable from EVERY surface — load this org's custom personas so the
 // live add-member chooser lists built-in + custom (mirrors the builder's roleOptions). Fetched on open
 // (the persona set is per-org and small); re-renders the open form once they arrive.
-window.startAddMember = async (t)=>{ S.addingTo=t; S.addCustomRoles=[]; S.amRepo=''; S.amRepoPicks=null; renderMain()
+window.startAddMember = async (t)=>{ S.addingTo=t; S.addingToOrg=S.org; S.addCustomRoles=[]; S.amRepo=''; S.amRepoPicks=null; renderMain()
   if (S.org) {
     const [pr, per] = await Promise.all([
       api('/api/repos?org='+encodeURIComponent(S.org)).catch(()=>null),
@@ -2041,7 +2057,7 @@ window.startAddMember = async (t)=>{ S.addingTo=t; S.addCustomRoles=[]; S.amRepo
     if (per && per.ok && per.custom) S.addCustomRoles = Object.keys(per.custom)
     renderMain()
   } }
-window.cancelAddMember = ()=>{ S.addingTo=null; S.addCustomRoles=[]; S.amRepo=''; S.amRepoPicks=null; renderMain() }
+window.cancelAddMember = ()=>{ S.addingTo=null; S.addingToOrg=null; S.addCustomRoles=[]; S.amRepo=''; S.amRepoPicks=null; renderMain() }
 window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('#amBackend').value, territory=$('#amTerr').value.trim(), name=($('#amName')&&$('#amName').value.trim())||''
   const repo = ($('#amRepo')&&$('#amRepo').value.trim())||''
   const msg=$('#amMsg')

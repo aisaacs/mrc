@@ -413,8 +413,12 @@ async function handle(req, res) {
       const bad = rejectRead(req); if (bad) return sendJSON(res, bad.code, { error: bad.error })
       const org = String(url.searchParams.get('org') || '').trim()
       const mine = org ? loadAuthorizedRepos(org) : new Set()
-      const authorized = [...mine].sort()
-      const recent = listAllAuthorizedRepos().filter((p) => !mine.has(p)).sort()   // union minus this org's own set
+      // #46: exclude mrc-INTERNAL paths (org-anchors, the store, sockets — under ~/.local/share/mrc/) from the
+      // quick-picks; those are never a user repo to pick (they showed up as unreadable `.mrc-g2-*` hex chips).
+      const mrcDataDir = join(homedir(), '.local', 'share', 'mrc')
+      const isInternal = (p) => String(p || '').startsWith(mrcDataDir + '/') || String(p || '') === mrcDataDir
+      const authorized = [...mine].filter((p) => !isInternal(p)).sort()
+      const recent = listAllAuthorizedRepos().filter((p) => !mine.has(p) && !isInternal(p)).sort()   // union minus this org's own set, minus mrc-internal
       return sendJSON(res, 200, { ok: true, authorized, recent })
     }
     // REBUILD (create-form §3/§13 Session picker): the prior sessions to resume for a repo — "the GUI for
