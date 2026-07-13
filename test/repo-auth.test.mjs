@@ -88,8 +88,8 @@ test('resolveMemberRepo Model B (Inc 3): SOLE-gate — own-repo grant deleted; e
     // The org repo itself is NOT auto-granted under Model B — no special-casing; unauthorized → throw.
     assert.throws(() => resolveMemberRepo(s.orgRepo, s.orgRepo, s.org, { modelB: true }), /not authorized/, 'own-repo grant is GONE — the org repo is just another repo')
     // A missing member.repo is an ERROR (no org-root default to fall back to under Model B).
-    assert.throws(() => resolveMemberRepo(s.orgRepo, undefined, s.org, { modelB: true }), /explicit repo is required/)
-    assert.throws(() => resolveMemberRepo(s.orgRepo, '', s.org, { modelB: true }), /explicit repo is required/)
+    assert.throws(() => resolveMemberRepo(s.orgRepo, undefined, s.org, { modelB: true }), /choose its own repo/)
+    assert.throws(() => resolveMemberRepo(s.orgRepo, '', s.org, { modelB: true }), /choose its own repo/)
     // An unauthorized cross-repo → refused (fail-closed).
     assert.throws(() => resolveMemberRepo(s.orgRepo, s.other, s.org, { modelB: true }), /not authorized/)
     // After a HUMAN addAuthorizedRepo, it resolves — the set is the ONLY way in.

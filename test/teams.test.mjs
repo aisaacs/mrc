@@ -633,7 +633,7 @@ test('parseRoster Model B (Inc 3 Site 2): explicit authorized member.repo requir
   const mk = (members) => ({ org, teams: [{ name: 't', members }] })
   try {
     // No member.repo under Model B → THROW (no org-root default to fall back to).
-    assert.throws(() => parseRoster(mk([{ role: 'engineer', backend: 'claude' }]), { repo: repoA, modelB: true }), /explicit repo is required/)
+    assert.throws(() => parseRoster(mk([{ role: 'engineer', backend: 'claude' }]), { repo: repoA, modelB: true }), /choose its own repo/)
     // An UNAUTHORIZED member.repo → THROW (fail-closed — the set is empty).
     assert.throws(() => parseRoster(mk([{ role: 'engineer', backend: 'claude', repo: repoB }]), { repo: repoA, modelB: true }), /not authorized/)
     // A human authorizes repoB → parses; the member's repo is canonical repoB; crossRepo forced true (org-scoped).

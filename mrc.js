@@ -12,7 +12,7 @@ import { BANNER } from './src/constants.js'
 import { setVerbose, dbg } from './src/output.js'
 import { readMrcrc, loadEnv, parseArgs, sanitizeRepoConfig } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
-import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer, heldUuids, repoLiveContainers } from './src/docker.js'
+import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, charSlug, charVolName, nextCharSlot, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer, heldUuids, repoLiveContainers } from './src/docker.js'
 import { resolveStoreMode, storeCtx, mrcStoreDir, migrateAndNormalize, noticePopulatedSliceOnLegacy, graftSession, writeActiveSessionPointer, readActiveSessionPointer } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable. #43: symmetric-session graft + pointer
 import { rosterMemberSessionIds, memberConfigVolName } from './src/commands/team.js'   // #5 PICKABLE⟺MIGRATED: the roster's memberSessionId exclude, shared by the picker + the migration; #49 multi-repo: the ONE config-vol keying helper (org-scoped when cross-repo), shared with execWorker so they can't drift
 import { runMigrate, repoSliceDir } from './src/commands/migrate.js'   // #12: the explicit, guarded `mrc migrate` runner (replaces the silent auto-migrate)
@@ -609,6 +609,8 @@ volumes.push(...processSandboxignores(repoPath))
 // persistent identity); a normal session uses per-repo multi-instance numbering.
 let volName
 let adversarySlot = 0
+let charVolSlug = ''
+let charVolSlot = 0
 if (memberCtx) {
   // #49 multi-repo (Mouth B): org-scoped ONLY when the member lives in a SHARED foreign repo (crossRepo, stamped
   // authoritatively in the --member-def blob) — else `${repoPath}#${handle}`, byte-identical to today (repoPath IS
@@ -618,6 +620,18 @@ if (memberCtx) {
   // so passing it here threads the ONE decision into the key. modelB → `${org}#${handle}` (repo-independent login);
   // NOT Model B (incl. a #5-only cap=1 image) → today's key. Reads store.modelB, NEVER store.storeMode (zero-crossover).
   volName = memberConfigVolName(memberCtx.member, repoPath, memberCtx.org, store.modelB)
+  // #43/P4 RECURRING CHARACTERS: a NON-CAGED Claude member is a CHARACTER — key its ~/.claude on the character
+  // (its name), not the project, so the login PERSISTS across projects (spec §5.2; the owner's #1 daily pain).
+  // A char-scoped O_EXCL slot claim (docker.js nextCharSlot) prevents concurrent-RW corruption of the login vol:
+  // sequential same-character → one durable `mrc-char-<slug>` (login persists); concurrent same-character → a
+  // benign next slot (one re-auth). Gated `!cagedAdversary` (a caged/adversary member NEVER gets a user-login
+  // char vol — cage-vs-identity; the login-family refuse at :~684 stays the belt) + claude-backend only (the char
+  // vol is ~/.claude; codex has its own). Fail-closed: a lost oracle → keep the per-project vol (isolation).
+  if (!cagedAdversary && String(memberCtx.member.backend || 'claude') === 'claude') {
+    const slug = charSlug(memberCtx.member.first || memberCtx.member.handle)
+    const slot = nextCharSlot(slug)
+    if (slot) { charVolSlug = slug; charVolSlot = slot; volName = charVolName(slug, slot) }
+  }
 } else if (adversaryVolume) {
   // Dedicated per-repo Pierre config-volume pool (mrc-config-<hash>-pierre-N) via a race-free O_EXCL claim, so
   // a summoned adversary NEVER mounts the user's login/config and its transcript can't be auto-resumed by a
@@ -675,7 +689,13 @@ if (cagedAdversary && resolvedVolIsUserLogin(volName, repoPath, volumeName)) {
   process.exit(1)
 }
 volumes.push('-v', `${volName}:/home/coder/.claude`)
-if (!adversaryVolume) volumes.push('-v', `${volName.replace('mrc-config-', 'mrc-codex-')}:/home/coder/.codex`)   // an adversary (Pierre) is Claude-only — no codex volume (and never the user's mrc-codex-<hash> — #11: keyed on adversaryVolume so an uncaged resume doesn't mount it either)
+// #43/P4: a char vol (`mrc-char-<slug>`) doesn't match the `mrc-config-` replace, so derive its codex counterpart
+// EXPLICITLY (`mrc-charcodex-<slug>[-N]`) — else the same volume would mount at BOTH ~/.claude AND ~/.codex,
+// cross-contaminating them. A Claude character never writes ~/.codex, but the mount must still be a DISTINCT vol.
+if (!adversaryVolume) {
+  const codexVol = charVolSlug ? `mrc-charcodex-${charVolSlug}${charVolSlot > 1 ? '-' + charVolSlot : ''}` : volName.replace('mrc-config-', 'mrc-codex-')
+  volumes.push('-v', `${codexVol}:/home/coder/.codex`)   // an adversary (Pierre) is Claude-only — no codex volume (and never the user's mrc-codex-<hash> — #11: keyed on adversaryVolume so an uncaged resume doesn't mount it either)
+}
 
 // #5 LAUNCH-phase session-store dir. `store` (from the POST-build pinned image) decides. This session's slice comes
 // from its FULL ctx: a plain/solo session → its repoId slice, MIGRATED so its repo/.mrc history carries in (and its
@@ -1160,7 +1180,8 @@ const roomLabels = roomInfo
   ? ['--label', 'mrc.room=1', '--label', `mrc.room.session=${roomInfo.sessionId}`,
      ...(memberCtx ? ['--label', `mrc.member=${memberCtx.member.handle}`, '--label', `mrc.team=${memberCtx.member.team}`, '--label', `mrc.project=${memberCtx.org}`] : []),   // #49-SEC: authoritative org (blob/solo), not the member-writable roster's norm.org
      ...(cagedAdversary ? ['--label', 'mrc.adversary=1'] : []),                                  // #49 (4b): IDENTITY label — a caged member is a legit adversary, gets this
-     ...(adversarySlot > 0 ? ['--label', `mrc.adversary.slot=${adversarySlot}`] : [])]           // POOL label ONLY for a real pierre-pool slot — a caged member (adversarySlot=0) is NOT in the pool, so it never stamps a pool label
+     ...(adversarySlot > 0 ? ['--label', `mrc.adversary.slot=${adversarySlot}`] : []),           // POOL label ONLY for a real pierre-pool slot — a caged member (adversarySlot=0) is NOT in the pool, so it never stamps a pool label
+     ...(charVolSlug ? ['--label', `mrc.charvol=${charVolSlug}`, '--label', `mrc.charvol.slot=${charVolSlot}`] : [])]   // #43/P4: the char-pool labels — the CHARACTER-scoped oracle (nextCharSlot) filters mrc.charvol=<slug> GLOBALLY (across repos) so a cross-project same-character mount is seen + the next claimant falls to a free slot
   : []
 const exitCode = await runContainer({
   repoPath,

@@ -75,6 +75,36 @@ export function nextAdversarySlot(repoPath, preferredSlot = 0, { exact = false }
   return r ? r.slot : null
 }
 
+// #43/P4 RECURRING CHARACTERS — a non-caged Claude member keys its ~/.claude config volume on the CHARACTER (its
+// name), NOT the project (org#handle), so "Claude" across every project shares ONE durable login volume (the
+// re-auth fix, spec §5.2). Reuses the generic `claimLowestFree` O_EXCL primitive, but with a CHARACTER-scoped
+// oracle + claim dir — Pierre t76: the pierre/instance pools are REPO-scoped (each repo isolated); a char vol is
+// the OPPOSITE (one `mrc-char-<slug>` shared ACROSS repos). If the char pool inherited repo-scoping, two projects
+// would get different claim dirs + repo-filtered oracles → both claim slot 1 → concurrent RW on the LOGIN volume
+// = the exact corruption O_EXCL exists to prevent. So the oracle filters the GLOBAL `mrc.charvol=<slug>` label
+// (all repos, char-targeted) and the claim dir keys on the SLUG — so two projects CONTEND on the same O_EXCL files
+// and one falls to slot 2 (one benign re-auth), never a corrupting concurrent share.
+export function charSlug(name) {
+  return String(name || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40) || 'agent'
+}
+// The config volume name for a character slot: slot 1 = the durable base (the common case), slot N>1 = -N.
+export function charVolName(slug, slot) { return slot > 1 ? `mrc-char-${slug}-${slot}` : `mrc-char-${slug}` }
+// Claim the lowest-free slot for a character ACROSS ALL projects. The oracle is char-scoped + global (docker ps
+// for containers labelled mrc.charvol=<slug>, every repo) so it SEES a same-character mount in a different project;
+// the O_EXCL claim dir is char-keyed so the two projects contend. Fail-closed null on a lost oracle → the caller
+// keeps the per-project vol (isolation, never a corrupting share). `listCharSlots` injectable for tests.
+export function nextCharSlot(slug, { listCharSlots } = {}) {
+  const used = new Set()
+  try {
+    const rows = listCharSlots
+      ? listCharSlots(slug)
+      : execFileSync('docker', ['ps', '--filter', `label=mrc.charvol=${slug}`, '--format', '{{.Label "mrc.charvol.slot"}}'], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim().split('\n')
+    for (const s of (rows || [])) { const n = parseInt(s, 10); if (n > 0) used.add(n) }
+  } catch { return null }   // lost global oracle → fail closed → caller keeps the per-project vol (never collide onto a live login vol)
+  const r = claimLowestFree(slotsDir('char-slots', slug), used, 0)
+  return r ? r.slot : null
+}
+
 /** D8 — lowest FREE config-volume instance slot for a repo (`mrc-config-<hash>` = slot 1, `-<N>` = slot N).
  *  Replaces `getExistingCount()+1`, which used the running-container CARDINALITY: start A(1),B(2); stop A → count 1
  *  → next launch picks 2 = B's LIVE volume → two sessions racing one ~/.claude/refresh-token. The oracle is the

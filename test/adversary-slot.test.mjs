@@ -189,3 +189,32 @@ test('heldUuids: FAIL-CLOSED at the inspect grain — an env read that throws �
   const r = heldUuids({ runningIds: () => ['a'], envOf: () => { throw new Error('inspect timeout') }, attempts: 2, backoffMs: 1 })
   assert.deepEqual(r, { held: new Set(), determined: false }, 'can\'t read a container\'s session → can\'t rule its uuid out → undetermined')
 })
+
+// #43/P4 RECURRING CHARACTERS — the character-scoped config-volume slot (login persists across projects).
+import { charSlug, charVolName, nextCharSlot } from '../src/docker.js'
+
+test('charSlug: docker-safe stable slug from a character name', () => {
+  assert.equal(charSlug('Claude'), 'claude')
+  assert.equal(charSlug('Côme!! 2'), 'c-me-2')
+  assert.equal(charSlug(''), 'agent')
+})
+test('charVolName: slot 1 = the durable base, slot N>1 = -N', () => {
+  assert.equal(charVolName('claude', 1), 'mrc-char-claude')
+  assert.equal(charVolName('claude', 3), 'mrc-char-claude-3')
+})
+test('nextCharSlot: CROSS-PROJECT fallback — a same-character mount in another project forces the next slot (no concurrent login share)', () => {
+  const home = fs.mkdtempSync(join(os.tmpdir(), 'mrc-charhome-')); const prev = process.env.HOME; process.env.HOME = home
+  try {
+    const a = nextCharSlot('claude', { listCharSlots: () => [] })
+    assert.equal(a, 1, 'first claimant → durable base slot 1 (login persists here)')
+    // the GLOBAL char oracle sees A's slot-1 mount (a DIFFERENT project) → B must fall to slot 2, never RW-share the login
+    const b = nextCharSlot('claude', { listCharSlots: () => ['1'] })
+    assert.equal(b, 2, 'a same-character mount in another project → slot 2 (benign re-auth), never a concurrent login-vol share')
+  } finally { process.env.HOME = prev; fs.rmSync(home, { recursive: true, force: true }) }
+})
+test('nextCharSlot: fail-closed on a lost oracle (never collide onto a live login vol)', () => {
+  const home = fs.mkdtempSync(join(os.tmpdir(), 'mrc-charhome-')); const prev = process.env.HOME; process.env.HOME = home
+  try {
+    assert.equal(nextCharSlot('claude', { listCharSlots: () => { throw new Error('docker down') } }), null, 'lost global oracle → null → caller keeps the per-project vol (isolation)')
+  } finally { process.env.HOME = prev; fs.rmSync(home, { recursive: true, force: true }) }
+})
