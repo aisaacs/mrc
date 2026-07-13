@@ -495,7 +495,7 @@ const MEDIA_ROLE_BACKEND = { designer:'gemini', 'sound-designer':'elevenlabs', c
 const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
 
 const S = {
-  building: false, projects: false, roomsHome: false, drawerOpen: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], showDismissed: false, showHandled: false, replyTo: null, jumpTarget: null, flash: null, roomDrafts: {},
+  building: false, projects: false, roomsHome: false, drawerOpen: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addCustomRoles: [], amRepo: '', amRepoPicks: null, showDismissed: false, showHandled: false, replyTo: null, jumpTarget: null, flash: null, roomDrafts: {},
   _wmCur: null, _wmLatest: 0, _openWm: {},   // #63-F unread watermark: the room/channel currently open + its latest position + the per-key captured-at-open boundary
   notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
   notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
@@ -813,10 +813,24 @@ function amForm(t) {
     <div class="row"><select id="amRole" style="flex:1.2" onchange="amSyncBackend()">${ROLES.concat((S.addCustomRoles||[]).filter(k=>!ROLES.includes(k))).map(r=>`<option ${r==='engineer'?'selected':''}>${esc(r)}</option>`).join('')}</select>
       <span id="amBackendWrap" style="flex:1;display:flex">${amBackendControl('engineer')}</span></div>
     <div class="row" style="margin-top:6px"><input id="amName" placeholder="name — optional (e.g. Colette)" style="flex:1"><input id="amTerr" placeholder="territory — optional" style="flex:1"></div>
+    ${amRepoField()}
     <div class="row" style="margin-top:6px"><button class="btn tiny primary" data-team="${esc(t)}" onclick="submitAddMember(this.dataset.team)">Add</button><button class="btn tiny" onclick="cancelAddMember()">Cancel</button> <span id="amMsg" class="muted"></span></div>
     <div class="row" style="margin-top:6px"><button class="btn tiny" onclick="openCastModal('project')">🎭 Add from cast</button></div>
   </div>`
 }
+// #45: the added agent's repo picker — same pattern as the create-form (datalist + 📁 Choose + quick-pick chips).
+// Every agent needs its OWN repo (each is org-scoped); "This project" chips are the org's already-authorized repos
+// (one tap, no new grant), "Recent" are other projects' (picking one authorizes it on Add, human pick = grant).
+function amRepoField() {
+  const picks = S.amRepoPicks || { authorized: [], recent: [] }
+  const chips = (label, list) => (!list || !list.length) ? '' : `<div class="memrow reporecents" style="margin-top:3px;gap:5px;flex-wrap:wrap;align-items:center"><span class="muted" style="font-size:10.5px;flex:0 0 auto;text-transform:uppercase;letter-spacing:.04em">${esc(label)}</span>${list.slice(0,8).map(p=>`<button class="btn tiny" title="${esc(p)}" data-p="${esc(p)}" onclick="amPickRepo(this.dataset.p)">${esc(shortRepo(p))}</button>`).join('')}</div>`
+  return `<datalist id="amRepoPicks">${[...(picks.authorized||[]),...(picks.recent||[])].map(p=>`<option value="${esc(p)}"></option>`).join('')}</datalist>
+    <div class="memrow" style="margin-top:6px"><span class="muted" style="font-size:11px;flex:0 0 auto">📁 repo</span><input id="amRepo" list="amRepoPicks" value="${esc(S.amRepo||'')}" placeholder="this agent's repo — type ~/code/app or pick one" style="flex:1" oninput="amSetRepo(this.value)"><button class="btn tiny" style="flex:0 0 auto" onclick="amRepoChoose()" title="Browse folders">📁 Choose…</button></div>
+    ${chips('This project', picks.authorized)}${chips('Recent · other projects', picks.recent)}`
+}
+window.amSetRepo = (v)=>{ S.amRepo = String(v||'').trim() }
+window.amPickRepo = (p)=>{ S.amRepo = String(p||'').trim(); const el=$('#amRepo'); if(el) el.value = S.amRepo }   // fill the field directly (renderMain is frozen while the add form is open)
+window.amRepoChoose = ()=>{ openFolderChooser((path)=>{ S.amRepo = path; const el=$('#amRepo'); if(el) el.value = path }) }
 
 // ---- detail renderers ----
 function renderDetail() {
@@ -1855,8 +1869,17 @@ function castDoAdd(c, nm, ctx, ti) {
     S.builder.teams[ti].members.push({ role:c.role, backend, lead:false, territory:'', name:nm, _nameAuto:false })
     castClose(); bRenderTeams(); bPreview()
   } else {
-    const team = orgMembers()[0]?.team || undefined; castClose()
-    ;(async()=>{ const r = await postJSON('/api/team-add-member', { org:S.org, team, role:c.role, backend, name:nm }).catch(()=>({ok:false,error:'network'})); if(!r||!r.ok){ flashFail(r||{error:'add failed'}) } else { tick() } })()
+    const team = orgMembers()[0]?.team || undefined
+    // #45: a cast member added to a project needs its OWN repo too (Model B). The cast modal is opened from the
+    // add-agent form, which defaults S.amRepo to a project repo — authorize it (human pick = grant), then add.
+    const repo = (S.amRepo||'').trim() || (S.amRepoPicks&&(S.amRepoPicks.authorized||[])[0]) || ''
+    castClose()
+    ;(async()=>{
+      if(!repo){ flashFail({error:'pick a repo for this agent in the add-agent form first, then add from cast'}); return }
+      const a = await api('/api/authorize-repo',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({org:S.org,repo})}).catch(()=>({ok:false,error:'network'}))
+      if(!a||!a.ok){ flashFail(a||{error:'authorize failed'}); return }
+      const r = await postJSON('/api/team-add-member', { org:S.org, team, role:c.role, backend, name:nm, repo }).catch(()=>({ok:false,error:'network'})); if(!r||!r.ok){ flashFail(r||{error:'add failed'}) } else { tick() }
+    })()
   }
 }
 // name-by-use modal (a plain Claude): a name by its USE (client/server/worker/…) helps you remember what it's for.
@@ -2007,14 +2030,29 @@ window.launchTeam = async ()=>{ const r=await postJSON('/api/team-launch',{org:S
 // #43: a project-defined role is addable from EVERY surface — load this org's custom personas so the
 // live add-member chooser lists built-in + custom (mirrors the builder's roleOptions). Fetched on open
 // (the persona set is per-org and small); re-renders the open form once they arrive.
-window.startAddMember = async (t)=>{ S.addingTo=t; S.addCustomRoles=[]; renderMain()
-  if (S.org) { const r = await api('/api/personas?org='+encodeURIComponent(S.org)).catch(()=>null)
-    if (r && r.ok && r.custom && S.addingTo===t) { S.addCustomRoles = Object.keys(r.custom); renderMain() } } }
-window.cancelAddMember = ()=>{ S.addingTo=null; S.addCustomRoles=[]; renderMain() }
+window.startAddMember = async (t)=>{ S.addingTo=t; S.addCustomRoles=[]; S.amRepo=''; S.amRepoPicks=null; renderMain()
+  if (S.org) {
+    const [pr, per] = await Promise.all([
+      api('/api/repos?org='+encodeURIComponent(S.org)).catch(()=>null),
+      api('/api/personas?org='+encodeURIComponent(S.org)).catch(()=>null)
+    ])
+    if (S.addingTo!==t) return
+    if (pr && pr.ok) { S.amRepoPicks = { authorized: pr.authorized||[], recent: pr.recent||[] }; if(!S.amRepo) S.amRepo = (pr.authorized||[])[0] || '' }   // default to an already-authorized project repo (one tap)
+    if (per && per.ok && per.custom) S.addCustomRoles = Object.keys(per.custom)
+    renderMain()
+  } }
+window.cancelAddMember = ()=>{ S.addingTo=null; S.addCustomRoles=[]; S.amRepo=''; S.amRepoPicks=null; renderMain() }
 window.submitAddMember = async (t)=>{ const role=$('#amRole').value, backend=$('#amBackend').value, territory=$('#amTerr').value.trim(), name=($('#amName')&&$('#amName').value.trim())||''
-  const msg=$('#amMsg'); if(msg)msg.textContent='adding…'
-  const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role,backend,territory,name})
-  if(r&&r.ok){ S.addingTo=null; tick() } else { const m=$('#amMsg'); if(m)m.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
+  const repo = ($('#amRepo')&&$('#amRepo').value.trim())||''
+  const msg=$('#amMsg')
+  if(!repo){ if(msg)msg.innerHTML='<span class="bad">pick a repo for this agent first</span>'; return }
+  // human pick = grant: authorize the repo for the org FIRST (idempotent — an already-authorized project repo is a no-op), then add.
+  if(msg)msg.textContent='authorizing repo…'
+  const a = await api('/api/authorize-repo',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({org:S.org,repo})}).catch(()=>({ok:false,error:'network'}))
+  if(!a||!a.ok){ if(msg)msg.innerHTML=`<span class="bad">${esc((a&&a.error)||'authorize failed')}</span>`; return }
+  if(msg)msg.textContent='adding…'
+  const r = await postJSON('/api/team-add-member',{org:S.org,team:t,role,backend,territory,name,repo})
+  if(r&&r.ok){ S.addingTo=null; S.amRepo=''; tick() } else { if(msg)msg.innerHTML=`<span class="bad">${esc((r&&r.error)||'failed')}</span>` } }
 // (live cast-add is now the 🎭 openCastModal('project') → castDoAdd path — the old castAddMember chip is retired.)
 window.selRoom = (id, openCu)=>{ if(!confirmLeaveBuilder())return; S.selRoom=id; S.selInbox=null; S.selMember=null; S.selHome=false; S.building=false; if(openCu)S.tab='catchups'; else S.tab='thread'; S.room=null; tick() }
 window.openRoom = (id)=>{ selRoom(id) }

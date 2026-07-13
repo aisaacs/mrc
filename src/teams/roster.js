@@ -161,7 +161,7 @@ export function parseRoster(input, { repo, rng, modelB = false, cwdFallback = tr
   const explicitName = data.project || data.org
   // Model B: identity is the NEUTRAL ANCHOR derived from the project NAME → a name is REQUIRED (the anchor path is
   // hex(name); there is no org repo to name the project after).
-  if (modelB && !explicitName) throw new Error('Model B: a project name is required — the project identity is a neutral anchor derived from the name (there is no org repo to name it after).')
+  if (modelB && !explicitName) throw new Error('a project name is required — the project is identified by its name, not by a repo.')
   // Legacy (non-Model-B) LAUNCH with no repo → FAIL CLOSED, never fall back to the daemon's cwd. Placed
   // before the basename(repoHint) org derivation below so an empty repoHint is never stringified. (cap=2
   // is unaffected: repoPath is the anchor and repoHint feeds nothing.)

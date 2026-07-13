@@ -823,6 +823,10 @@ export function addMemberToRoster(roster, teamName, member) {
   const m = { role: member.role || 'engineer', backend: member.backend || 'claude' }
   if (member.lead) m.lead = true
   if (member.territory) m.territory = member.territory
+  // #45: an added agent carries its OWN repo (Model B requires it — each agent picks its own authorized repo).
+  // parseRoster's resolveMemberRepo gates it against the org's human-authorized set downstream, so an
+  // unauthorized repo is rejected at the mint (the dashboard authorizes the picked repo first, human-gated).
+  if (member.repo) m.repo = member.repo
   // P3: an OPTIONAL explicit name (e.g. a cast-picked "Colette") — parseRoster validates it downstream
   // (assertSafeName + org-wide handle-uniqueness), so a bad/duplicate name is rejected at the mint, exactly
   // like the create-form. Absent → parseRoster deterministically auto-assigns a free name (existing behavior).

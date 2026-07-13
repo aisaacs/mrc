@@ -1486,7 +1486,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           try {
             const prev = new Set(def.members.map((m) => m.handle))
             const team = f.team || def.members[0]?.team
-            const updated = teamMod.addMemberToRoster(teamMod.rosterFromDef(def), team, { role: f.role, backend: f.backend, territory: f.territory, name: f.name })
+            const updated = teamMod.addMemberToRoster(teamMod.rosterFromDef(def), team, { role: f.role, backend: f.backend, territory: f.territory, name: f.name, repo: f.repo })   // #45: the added agent's OWN repo (Model B) — the dashboard authorized it first (human pick = grant)
             const { norm, rosterPath } = teamMod.materializeRoster(updated, def.repo, predictModelB())   // Model B: parse agrees with defineOrg's mode
             defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })
             orgRoster.set(norm.org, updated)   // AFTER defineOrg succeeds (match launchteam's discipline, Pierre): a thrown define must NOT leave a rejected `updated` roster cached, or a later rosterFromDef/resume reading orgRoster.get would see a phantom member. materializeRoster already validated, so a throw here is near-impossible — but the two launch doors now follow the SAME set-after-define ordering.

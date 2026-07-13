@@ -132,7 +132,7 @@ export function removeAuthorizedRepo(org, repoPath) {
 export function resolveMemberRepo(orgRepo, requested, org, { modelB = false } = {}) {
   if (modelB) {
     // Model B: SOLE-gate. No own-repo-grant, no orgRepo return — request required, realpath, set-check or throw.
-    if (requested == null || requested === '') throw new Error(`Model B: an explicit repo is required for a member of org "${org}" — every agent picks its own authorized repo (there is no org-root default to fall back to).`)
+    if (requested == null || requested === '') throw new Error(`this project needs each agent to choose its own repo — pick a folder for this agent (there's no shared project repo to fall back to).`)
     let reqReal
     try { reqReal = realpathSync(expandHome(requested)) } catch { throw new Error(`member repo "${requested}" not found on disk`) }
     if (loadAuthorizedRepos(org).has(reqReal)) return reqReal

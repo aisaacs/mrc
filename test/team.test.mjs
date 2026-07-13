@@ -578,3 +578,13 @@ test('#43 rosterFromDef carries session + sessionRef (relaunch/team.json must no
   assert.equal(claude.sessionRef, 'you', 'and its owner-ref')
   assert.equal(bob.session, undefined, 'a member with no picked session gets no session field')
 })
+
+test('#45 addMemberToRoster carries the added agent\'s repo (Model B requires per-agent repo)', () => {
+  const base = { org: 'x', teams: [{ name: 't', members: [{ role: 'architect', backend: 'claude', lead: true, repo: '/r1' }] }] }
+  const out = addMemberToRoster(base, 't', { role: 'critic', backend: 'claude', repo: '/r2' })
+  const added = out.teams[0].members.find((m) => m.role === 'critic')
+  assert.equal(added.repo, '/r2', 'the added agent keeps its own repo')
+  // no repo → no field (parseRoster then rejects under Model B with the scrubbed message)
+  const out2 = addMemberToRoster(base, 't', { role: 'engineer', backend: 'claude' })
+  assert.equal(out2.teams[0].members.find((m) => m.role === 'engineer').repo, undefined)
+})
