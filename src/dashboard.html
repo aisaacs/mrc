@@ -473,9 +473,13 @@ const aliasRole = (r) => r==='writer'?'engineer':(r==='qa'?'tester':r)
 // server boundary (parseRoster/team-preview) still enforces it; this is defense-in-depth + fast feedback.
 const SAFE_NAME_RE = /^[\p{L}\p{N}](?:[\p{L}\p{N}-]*[\p{L}\p{N}])?$/u
 const allBuilderNames = ()=>{ const s=new Set(); for(const t of (S.builder.teams||[])) for(const m of (t.members||[])) if(m.name) s.add(String(m.name).toLowerCase()); return s }
+// The random namer never generates a RESERVED cast-character name (Colette/Thierry/Pierre) — those are summoned
+// deliberately from the cast, not rolled onto a plain Claude.
+const reservedCastLc = ()=> new Set((typeof CAST!=='undefined'?CAST:[]).filter(c=>c.character).map(c=>String(c.name).toLowerCase()))
 function suggestName(style, taken){ const pool=S.namePools&&S.namePools.pools&&S.namePools.pools[style]; if(!pool||!pool.length) return ''
-  const free=pool.filter(n=>!taken.has(n.toLowerCase())); if(free.length) return free[Math.floor(Math.random()*free.length)]
-  for(let i=2;;i++){ const c=pool[Math.floor(Math.random()*pool.length)]+i; if(!taken.has(c.toLowerCase())) return c } }
+  const reserved=reservedCastLc()
+  const free=pool.filter(n=>!taken.has(n.toLowerCase()) && !reserved.has(n.toLowerCase())); if(free.length) return free[Math.floor(Math.random()*free.length)]
+  for(let i=2;;i++){ const c=pool[Math.floor(Math.random()*pool.length)]+i; if(!taken.has(c.toLowerCase()) && !reserved.has(c.toLowerCase())) return c } }
 // Fill suggested names for AUTO members (those not hand-typed). Idempotent by default: only fills EMPTY
 // auto names (so a re-render never re-rolls a stable name). force=true (style change) clears auto names
 // first for a full re-roll. 'custom' style = free-type → leave auto names blank.
@@ -1502,7 +1506,7 @@ function bRenderTeams() {
       ${adv?`<div style="flex:2"><label>Territory</label><input value="${esc(t.territory)}" placeholder="." oninput="bSet(${ti},null,'territory',this.value)"></div>`:''}
       ${B.teams.length>1?`<button class="btn tiny" title="remove this team" onclick="bDelTeam(${ti})">✕</button>`:''}</div>
     ${t.members.map((m,mi)=>{ const style=B.nameStyle||'french'; const nmErr=(m.name && !SAFE_NAME_RE.test(m.name))?'<span class="bad" style="font-size:11px">letters, digits, internal hyphens only</span>':''; return `<div class="bmem">
-      <div class="bmemname"><input class="bnm" value="${esc(m.name||'')}" placeholder="${style==='custom'?'name (free-type)':'(auto)'}" aria-label="agent name" oninput="bSetName(${ti},${mi},this.value)">${style!=='custom'?`<button class="btn tiny" title="suggest another name" onclick="bRerollName(${ti},${mi})">🎲</button>`:''}<span id="nmerr-${ti}-${mi}">${nmErr}</span>${totalAgents>1?`<button class="btn tiny" title="remove this agent" onclick="bDelMem(${ti},${mi})">✕</button>`:''}</div>
+      <div class="bmemname"><input class="bnm" value="${esc(m.name||'')}" placeholder="${style==='custom'?'name (free-type)':'(auto)'}" aria-label="agent name" oninput="bSetName(${ti},${mi},this.value)">${(style!=='custom' && m.role==='generalist')?`<button class="btn tiny" title="suggest another name" onclick="bRerollName(${ti},${mi})">🎲</button>`:''}<span id="nmerr-${ti}-${mi}">${nmErr}</span>${totalAgents>1?`<button class="btn tiny" title="remove this agent" onclick="bDelMem(${ti},${mi})">✕</button>`:''}</div>
       <div class="memrow" style="margin-top:4px"><span class="muted" style="font-size:11px;flex:0 0 auto">📁 repo</span><input style="flex:1" list="bRepoPicks" value="${esc(m.repo||'')}" placeholder="this agent's repo — type ~/code/app or pick a recent one" oninput="bRepoInput(${ti},${mi},this.value)" onchange="bSetRepo(${ti},${mi},this.value)"><button class="btn tiny" style="flex:0 0 auto" data-ti="${ti}" data-mi="${mi}" onclick="fcOpen(this.dataset.ti,this.dataset.mi)" title="Browse folders">📁 Choose…</button><span id="repomsg-${ti}-${mi}" style="font-size:11px;flex:0 0 auto">${m._repoMsg||''}</span></div>
       ${(!m.repo) ? repoPickRow('This project', (picks.authorized||[]), ti, mi) + repoPickRow('Recent · other projects', (picks.recent||[]), ti, mi) : ''}
       ${m.repo ? `<div class="memrow" style="margin-top:4px"><span class="muted" style="font-size:11px;flex:0 0 auto">session</span><select style="flex:1" onchange="bSetSession(${ti},${mi},this.value)" aria-label="session to resume"><option value="fresh"${(m.session||'fresh')==='fresh'?' selected':''}>✦ fresh session</option>${(m._sessions||[]).map(s=>`<option value="${esc(s.id)}"${m.session===s.id?' selected':''}>${esc(sessLabel(s))}</option>`).join('')}</select>${(m._sessLoading?'<span class="muted" style="font-size:11px;flex:0 0 auto">…</span>':'')}</div>` : ''}
@@ -1598,7 +1602,7 @@ function bPreview(){clearTimeout(bTimer);bTimer=setTimeout(async()=>{
 },250)}
 window.bSave=async()=>{const B=S.builder;const msg=$('#bMsg');if(!B.repo){msg.innerHTML='<span class="bad">set a repo path</span>';return}
   const r=await api('/api/team-save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({repo:B.repo,roster:bRoster()})});msg.innerHTML=r.ok?`<span class="good">✓ ${esc(r.path)}</span>`:`<span class="bad">✗ ${esc(r.error)}</span>`; if(r.ok)markBuilderClean()}
-window.bDefine=async()=>{const r=await api('/api/team-define',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})});$('#bMsg').innerHTML=r.ok?`<span class="good">◎ defined ${(r.rooms||[]).length} room(s)</span> <a href="#" onclick="closeBuilder();return false">view</a>`:`<span class="bad">✗ ${esc(r.error||'daemon down')}</span>`; if(r.ok){markBuilderClean(); S._builderReturn=null; S.org=bRoster().org||null; setOrgUrl(S.org); tick()}}   // #55: defining switches S.org to the new org → drop the now-stale pre-builder return so the "view" link (closeBuilder) lands on what was just defined, not the entry view
+window.bDefine=async()=>{const msg=$('#bMsg'); const auth=await bAuthorizeAllRepos(); if(!auth.ok){ if(msg)msg.innerHTML=`<span class="bad">✗ ${esc(auth.error)}</span>`; return } const r=await api('/api/team-define',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})});$('#bMsg').innerHTML=r.ok?`<span class="good">◎ defined ${(r.rooms||[]).length} room(s)</span> <a href="#" onclick="closeBuilder();return false">view</a>`:`<span class="bad">✗ ${esc(r.error||'daemon down')}</span>`; if(r.ok){markBuilderClean(); S._builderReturn=null; S.org=bRoster().org||null; setOrgUrl(S.org); tick()}}   // #55: defining switches S.org to the new org → drop the now-stale pre-builder return so the "view" link (closeBuilder) lands on what was just defined, not the entry view
 
 // ---- actions ----
 // #55: a content signature of the builder for the discard-on-cancel guard. Covers what represents real
@@ -2137,7 +2141,19 @@ window.closeMemberSession = async (h, first)=>{ if(!confirm(`Close @${first}'s s
 // The agent's conversation resumes (--continue). Goes through actJSON → CSRF-guarded + confirms a 2xx
 // before clearing (no optimistic success; a 403/error surfaces via flashFail).
 window.relaunchMember = async (h, first)=>{ if(!confirm(`Relaunch @${first}'s terminal? Its agent keeps running — this restores the terminal view (the conversation resumes; an in-flight turn may restart).`))return; const r=await actJSON('/api/team-relaunch-member',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
-window.bLaunch = async ()=>{ const msg=$('#bMsg'); if(!msg)return; msg.innerHTML='<span class="muted">launching… first run builds the image (~minutes)</span>'
+// Authorize every member's picked repo for THIS project before Define/Launch — the human clicking the button IS
+// the grant (Model B requires each member.repo in the org's authorized-set). This backstops the ordering gap:
+// bSetRepo skips authorize if the repo is picked BEFORE the project is named, so without this, Define/Launch fail
+// "not authorized" on a repo you clearly chose. Cap-gated /api/authorize-repo (human-only); idempotent.
+async function bAuthorizeAllRepos() {
+  const B=S.builder; if(!B||!B.org||!String(B.org).trim()) return { ok:false, error:'name the project first' }
+  const repos=new Set(); for(const t of (B.teams||[])) for(const m of (t.members||[])) if(m.repo) repos.add(m.repo)
+  for(const repo of repos){ const r=await api('/api/authorize-repo',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({org:B.org, repo})}).catch(()=>({ok:false,error:'network'})); if(!r.ok) return { ok:false, error:`repo "${repo}": ${r.error||'authorize failed'}` } }
+  return { ok:true }
+}
+window.bLaunch = async ()=>{ const msg=$('#bMsg'); if(!msg)return
+  const auth=await bAuthorizeAllRepos(); if(!auth.ok){ msg.innerHTML=`<span class="bad">✗ ${esc(auth.error)}</span>`; return }
+  msg.innerHTML='<span class="muted">launching… first run builds the image (~minutes)</span>'
   const r=await postJSON('/api/team-launch',{roster:bRoster()})
   if(r&&r.ok){ markBuilderClean(); msg.innerHTML='<span class="good">🚀 launching — pick each member to open its terminal and log in</span>'; S.org=bRoster().org||null; setOrgUrl(S.org); setTimeout(()=>{S.building=false;tick()},700) }
   else msg.innerHTML=`<span class="bad">✗ ${esc((r&&r.error)||'failed')}</span>` }

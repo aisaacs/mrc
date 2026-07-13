@@ -54,13 +54,17 @@ const defaultRng = () => Math.random()
 // A member may still be PINNED to one in team.json only if it passes assertSafeName (these all do) — the
 // reservation is against the auto-DRAW, the only place the pool is consulted blindly.
 export const RESERVED_FIRST_NAMES = new Set(['you', 'user', 'human'])
+// The §5.2 cast characters are RESERVED from the auto-draw too — a plain Claude is never randomly named Colette/
+// Thierry/Pierre (those identities are summoned deliberately from the cast). (Pierre is also absent from the pool
+// entirely; Colette/Thierry stay valid French names but are never auto-DRAWN.)
+export const RESERVED_CAST_NAMES = new Set(['colette', 'thierry', 'pierre'])
 
 // Pick a first name not already in `taken` (a Set of lowercased first names) NOR reserved, from the given
 // style's pool (default + fallback `french`; an unknown/`custom` style falls back to french). Falls back
 // to a numbered name if the pool is somehow exhausted, so assignment never throws.
 export function pickFirstName(taken = new Set(), rng = defaultRng, style = 'french') {
   const pool = NAME_STYLES[style] || NAME_STYLES.french
-  const free = pool.filter((n) => !taken.has(n.toLowerCase()) && !RESERVED_FIRST_NAMES.has(n.toLowerCase()))
+  const free = pool.filter((n) => !taken.has(n.toLowerCase()) && !RESERVED_FIRST_NAMES.has(n.toLowerCase()) && !RESERVED_CAST_NAMES.has(n.toLowerCase()))
   if (free.length) return free[Math.floor(rng() * free.length)]
   for (let i = 2; ; i++) {
     const base = pool[Math.floor(rng() * pool.length)]
