@@ -290,6 +290,13 @@ export function parseRoster(input, { repo, rng, modelB = false, cwdFallback = tr
         // apply uniformly. (Config-vol keying already flips on modelB, Inc 2, independent of crossRepo.)
         crossRepo: modelB || String(memberRepo) !== String(repoPath),
         ...(cage ? { cage } : {}),
+        // §3 member-level resume — FOUNDATION only (not yet end-to-end): the create-form Session picker's chosen
+        // prior-session uuid rides the norm → the --member-def blob, sanitized to a bounded token. NOT yet consumed
+        // at launch: the store-scoping is unresolved (the picker reads the repoId slice = the user's own repo
+        // sessions, but a team member launches against its own m-<memberSessionId> slice — a picked session isn't in
+        // the member's store). Wiring the launch-side resume needs that scoping decision first (task #43). Carrying
+        // it now is harmless (absent-consumer = the existing fresh/auto behavior) and keeps the choice available.
+        ...(m.session && /^[\w-]{1,80}$/.test(String(m.session)) ? { session: String(m.session) } : {}),
         ...(backendNote ? { backendNote } : {}),
       }
     })
