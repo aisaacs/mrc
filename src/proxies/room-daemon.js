@@ -429,6 +429,10 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   const predictModelB = modelBPredict
 
   function defineOrg(def, { trusted = false, activate = false, modelB = predictModelB() } = {}) {
+    // #57: carry the per-project --web egress setting across a redefine/relaunch. A launch rebuilds `def` from the
+    // roster, which doesn't carry `web` (it's a project setting, not a roster field) — without this the toggle would
+    // silently reset to off on every relaunch. setorgweb writes it; this preserves it when the incoming def omits it.
+    if (def.web === undefined) { const _prev = orgDefs.get(def.org); if (_prev && _prev.web !== undefined) def = { ...def, web: _prev.web } }
     if (modelB) {
       // MODEL B (Inc 3, Sites 3+4): identity is the NEUTRAL ANCHOR (orgAnchorDir — derived hex(org), host-only,
       // NEVER mounted). The write-once PIN and the ACTIVATION gate BOTH RETIRE (owner-signed) — subsumed by the
@@ -1284,7 +1288,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           const BUILD_GRACE_MS = 5 * 60_000
           const lstate = loadLaunchState()
           const launchOrgs = new Set([...Object.keys(launches), ...Object.keys(lstate)])
-          reply({ ok: true, ...st, telegram, launch: [...launchOrgs].map((org) => {
+          const orgWeb = Object.fromEntries([...orgDefs].map(([o, d]) => [o, !!d.web]))   // #57: per-project egress state → the dashboard toggle reflects it (running + suspended)
+          reply({ ok: true, ...st, telegram, orgWeb, launch: [...launchOrgs].map((org) => {
             const v = launches[org] || {}; const ls = lstate[org] || {}
             const fresh = (Date.now() - (v.at || 0) < BUILD_GRACE_MS) || (Date.now() - (ls.at || 0) < BUILD_GRACE_MS)
             const members = teamMod ? teamMod.memberTtyds(org, { repo: v.repo || ls.repo, onlineHandles: onlineByOrg[org], withinGrace: fresh }) : {}
@@ -1356,7 +1361,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             // `decideModelB(the-image) === MRC_MODEL_B_PREDICT` BEFORE spawning the dtach master (mismatch → throw
             // → this child exits non-zero → failLaunch flips launching→failed CLEAN; the throw precedes the dtach, so
             // no orphaned-ALIVE master — the dtach master's `read` shell would otherwise keep a self-killed inner "up").
-            const child = spawn(process.execPath, [MRC_JS, 'team', 'up', norm.repo, '--roster', rosterPath], { detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, MRC_MODEL_B_PREDICT: modelB ? '1' : '0' } })
+            const _web = !!(_def?.web ?? roster?.web)   // #57: per-project egress — thread the org's web setting into `mrc team up` → each live memberArgv gets --web (caged members excluded in memberArgv). f.repo absent on resume, so read the persisted def.
+            const child = spawn(process.execPath, [MRC_JS, 'team', 'up', norm.repo, '--roster', rosterPath, ...(_web ? ['--web'] : [])], { detached: true, stdio: ['ignore', fd, fd], env: { ...process.env, MRC_MODEL_B_PREDICT: modelB ? '1' : '0' } })
             const failLaunch = (why) => { try { if (Object.keys(loadLaunches()[norm.org]?.members || {}).length) return; const st = loadLaunchState()[norm.org]; if (st && st.launching) saveLaunchState(norm.org, { ...st, launching: false, failed: true, error: why }) } catch {} }   // members present (subprocess's file, read-only here) ⇒ not a failure; only the daemon writes launch-state ⇒ a timeout that straddles a slow build can't clobber the member write
             child.on('exit', (code) => { if (code) failLaunch(`the launch process exited with code ${code} before any member came up — see ${logPath || '<repo>/.mrc/launch.log'}`) })   // fast path
             try { setTimeout(() => failLaunch('launch timed out — no member came up within 3 min (see <repo>/.mrc/launch.log)'), 3 * 60_000).unref() } catch {}   // honest backstop: the subprocess can exit 0 yet still bring up nothing
@@ -1370,6 +1376,18 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           if (!capOk(f)) { reply({ ok: false, error: 'stopteam requires the control-capability secret' }); continue }   // guard-1: activate/spawn/state-change capability
           if (teamMod) teamMod.killTeamSession(f.org)   // #34: kills every member's ttyd (→ container stops)
           removeLaunch(f.org); try { removeLaunchState(f.org) } catch {}; reply({ ok: true }); continue   // P1a: drop the transient launch state too
+        }
+        if (f.action === 'setorgweb' && f.org) {
+          // #57: the per-project --web toggle. Changing container egress is a CAPABILITY → capOk-gated like
+          // launchteam/stopteam (a cross-uid host frame must not widen a project's egress). It's a LAUNCH-TIME
+          // setting: it lands on the persisted def and applies on the next launch/relaunch (no live container is
+          // re-firewalled mid-flight). Caged members never receive it (memberArgv + mrc.js + init-firewall belts).
+          if (!capOk(f)) { reply({ ok: false, error: 'setorgweb requires the control-capability secret (it changes container egress — human-only)' }); continue }
+          const _wdef = orgDefs.get(f.org)
+          if (!_wdef) { reply({ ok: false, error: 'unknown org' }); continue }
+          orgDefs.set(f.org, { ..._wdef, web: !!f.web }); saveOrgs([...orgDefs.values()])
+          daemonLog(`setorgweb ${f.org}: ${!!f.web} (applies on next launch/relaunch)`)
+          reply({ ok: true, web: !!f.web }); continue
         }
         // Delete a project (#13): forget it from the live daemon entirely — stop sessions + the TG
         // bridge, then purge ALL per-org state so it stays gone across a restart. Deletes NOTHING on
@@ -1447,7 +1465,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             teamMod.killMember(f.org, f.handle)   // reap master(sock) + container(label) + unlink, synchronously
             // respawn AFTER the master is gone (killHostPlumbingForSock escalates to SIGKILL at 600ms) so the
             // unlink-guard sees no live master; the old container was already docker-killed synchronously → no dup.
-            setTimeout(() => { teamMod.launchMember(f.org, def.repo, rosterPath, member).catch((e) => daemonLog(`relaunchmember ${f.org}/@${f.handle} spawn: ${e?.message || e}`)) }, 800)
+            setTimeout(() => { teamMod.launchMember(f.org, def.repo, rosterPath, member, { web: !!def.web }).catch((e) => daemonLog(`relaunchmember ${f.org}/@${f.handle} spawn: ${e?.message || e}`)) }, 800)   // #57: a relaunched member inherits the org's --web egress setting (caged members excluded in memberArgv)
             daemonLog(`relaunchmember ${f.org}: @${f.handle}`)
             reply({ ok: true })
           } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }

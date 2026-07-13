@@ -469,6 +469,21 @@ test('#49 memberArgv: cross-repo member launches in member.repo, crossRepo=true,
   assert.notEqual(def.org, 'shared')
 })
 
+// #57 per-project --web: the org egress setting threads into the member's OWN launch argv — but NEVER for a
+// caged member (the outermost of three belts: memberArgv here, mrc.js config.allowWeb=false, init-firewall drop).
+test('#57 memberArgv: web=true appends --web for a normal (uncaged) member', () => {
+  const argv = memberArgv('/home/alice/team', { handle: 'ludivine/claude', repo: '/home/alice/team' }, '/r.json', 'myorg', { web: true })
+  assert.ok(argv.includes('--web'), 'the inner launch carries --web → ALLOW_WEB=1 → firewall opens 443')
+})
+test('#57 memberArgv: web defaults off — no --web when unset', () => {
+  const argv = memberArgv('/home/alice/team', { handle: 'ludivine/claude', repo: '/home/alice/team' }, '/r.json', 'myorg')
+  assert.ok(!argv.includes('--web'), 'egress stays closed by default')
+})
+test('#57 memberArgv: a CAGED member NEVER gets --web even when the team is web-enabled (belt 3)', () => {
+  const argv = memberArgv('/home/alice/team', { handle: 'pierre/claude', repo: '/home/alice/team', cage: 'adversary' }, '/r.json', 'myorg', { web: true })
+  assert.ok(!argv.includes('--web'), 'a caged adversary stays walled regardless of the project web setting')
+})
+
 // memberWorkspaceVolumes mounts the member's OWN repo (its authorized member.repo), not the team home.
 test('#49 memberWorkspaceVolumes: a cross-repo member mounts member.repo, not the passed repoPath', () => {
   const teamRepo = fs.realpathSync(fs.mkdtempSync(join(os.tmpdir(), 'mrc-team-')))

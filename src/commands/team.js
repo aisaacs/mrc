@@ -334,10 +334,15 @@ export function resolveMemberIdentity(config, norm, handle) {
 // we PREFER that authoritative value and only compute it as a legacy belt for a mint-less member (tests) — so the
 // inner keys its config-vol org-scoped without re-deriving it (it can't: argv[1] is member.repo, the team home
 // isn't visible downstream). The mint is the single source; this belt agrees with it (same formula).
-export function memberArgv(repoPath, member, rosterPath, org) {
+export function memberArgv(repoPath, member, rosterPath, org, { web = false } = {}) {
   const crossRepo = member.crossRepo != null ? !!member.crossRepo : !!(member.repo && String(member.repo) !== String(repoPath))
   const def = Buffer.from(JSON.stringify({ ...member, org, crossRepo }), 'utf8').toString('base64')
-  return [MRC_JS, member.repo || repoPath, '--member', member.handle, '--roster', rosterPath, '--member-def', def]
+  // #57 per-project --web: thread the org's egress setting into the member's OWN launch → the inner mrc.js sets
+  // ALLOW_WEB=1 → init-firewall.sh opens 443. NEVER for a caged member (belt 3): mrc.js forces allowWeb=false for
+  // a cagedAdversary and init-firewall.sh drops 443 for MRC_ADVERSARY_FW — this !member.cage gate is the outermost
+  // of the three, so a web-enabled team can never hand egress to its contained adversary.
+  const webFlag = (web && !member.cage) ? ['--web'] : []
+  return [MRC_JS, member.repo || repoPath, '--member', member.handle, '--roster', rosterPath, '--member-def', def, ...webFlag]
 }
 
 // Is a recorded process still alive? (signal 0 = existence check; EPERM still means it exists.)
@@ -474,8 +479,8 @@ export function classifyTerminal(info, { containerAlive, online, withinGrace } =
 const shq = (a) => `'${String(a).replace(/'/g, `'\\''`)}'`
 // The shell command ttyd runs for a member: the member session, then a persisted exit line so the browser
 // terminal shows "[@x exited — press enter]" instead of ttyd dropping the session the instant Claude exits.
-const memberShellCmd = (repoPath, m, rosterPath, org) =>
-  `node ${memberArgv(repoPath, m, rosterPath, org).map(shq).join(' ')}; echo; echo ${shq(`[@${m.first} exited — press enter]`)}; read`
+const memberShellCmd = (repoPath, m, rosterPath, org, { web = false } = {}) =>
+  `node ${memberArgv(repoPath, m, rosterPath, org, { web }).map(shq).join(' ')}; echo; echo ${shq(`[@${m.first} exited — press enter]`)}; read`
 
 // dtach sockets (one per member, stable across reconnects) live under the daemon dir.
 const socketDir = () => join(homedir(), '.local', 'share', 'mrc', 'sockets')
@@ -556,7 +561,7 @@ export async function assertTtydUnixSocket(ttydPid, ttydSock, { timeoutMs = 3000
 
 // #34: launch each live member as its own persistent dtach session + ttyd viewer. Reuses a member's
 // existing session if its dtach master is still alive (idempotent relaunch). Returns the registry map.
-async function launchMembers(norm, repoPath, rosterPath, live) {
+async function launchMembers(norm, repoPath, rosterPath, live, { web = false } = {}) {
   // Site 5 (Model B) — the daemon-predict → OUTER-assert, the assertTtydUnixSocket shape applied to Model-B mode.
   // The daemon threaded its ONE prediction as MRC_MODEL_B_PREDICT; this process reads the AUTHORITATIVE actual from
   // the exact image it's about to launch (decideModelB). Assert they AGREE **before spawning any dtach master** —
@@ -584,7 +589,7 @@ async function launchMembers(norm, repoPath, rosterPath, live) {
     already = false
     const port = await findFreePort(nextPort); nextPort = port + 1
     try {
-      const entry = spawnMemberSession(norm.org, m.handle, port, memberShellCmd(repoPath, m, rosterPath, norm.org))
+      const entry = spawnMemberSession(norm.org, m.handle, port, memberShellCmd(repoPath, m, rosterPath, norm.org, { web }))
       // guard-4: fail LOUD if ttyd didn't actually bind a unix socket (a host ttyd change → TCP-0.0.0.0 fallback).
       // Throws (after SIGKILLing the ttyd) → the boundary catch flags this member orphaned, never a silent open port.
       await assertTtydUnixSocket(entry.ttydPid, entry.ttydSock)
@@ -674,7 +679,7 @@ export function killTeamSession(org) {
 // Build the image once, then launch each live member as its own dtach session + ttyd viewer; persist the
 // per-member registry. dtach (holds the session) AND ttyd (serves the browser terminal) are both REQUIRED
 // — no tmux fallback. Returns { ok, members, already, live }.
-export async function startTeamSession(norm, repoPath, { rosterPath } = {}) {
+export async function startTeamSession(norm, repoPath, { rosterPath, web = false } = {}) {
   const live = norm.members.filter((m) => m.tier === 'live')
   if (!live.length) return { ok: false, error: 'no live members to launch' }
   if (!hasTtyd()) return { ok: false, error: 'ttyd not found — it now hosts each member terminal (brew install ttyd / apt install ttyd)' }
@@ -687,7 +692,7 @@ export async function startTeamSession(norm, repoPath, { rosterPath } = {}) {
     await ensureDocker(false, {})
     buildImage(resolveContextDir(dirname(MRC_JS)), { rebuild: false, verbose: false, uid: process.getuid?.() ?? 1000, gid: process.getgid?.() ?? 1000 })
   } catch (e) { /* members will each build on their own */ }
-  const { members, already } = await launchMembers(norm, repoPath, rosterPath, live)
+  const { members, already } = await launchMembers(norm, repoPath, rosterPath, live, { web })
   saveLaunch(norm.org, { repo: repoPath, members })
   return { ok: true, members, already, live: live.map((m) => ({ handle: m.handle, first: m.first, role: m.role })) }
 }
@@ -837,7 +842,7 @@ export function addMemberToRoster(roster, teamName, member) {
 
 // #34: launch ONE member into an already-running org as its own dtach session + ttyd viewer (image
 // already built — safe from the daemon). No-op if the team isn't launched or the member's session is up.
-export async function launchMember(org, repoPath, rosterPath, member) {
+export async function launchMember(org, repoPath, rosterPath, member, { web = false } = {}) {
   const rec = loadLaunches()[org]
   if (!rec) return { ok: false, error: 'team not launched' }
   const prev = (rec.members || {})[member.handle]
@@ -847,7 +852,7 @@ export async function launchMember(org, repoPath, rosterPath, member) {
   if (masterAliveForSock(memberSock(org, member.handle))) return { ok: false, error: 'session orphaned — use Relaunch (stops the live master first) to restore the terminal', orphaned: true }
   try {
     const port = await findFreePort(Number(process.env.MRC_TTYD_PORT) || 7681)
-    setMemberLaunch(org, member.handle, spawnMemberSession(org, member.handle, port, memberShellCmd(repoPath, member, rosterPath, org)))
+    setMemberLaunch(org, member.handle, spawnMemberSession(org, member.handle, port, memberShellCmd(repoPath, member, rosterPath, org, { web })))
     return { ok: true }
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
@@ -993,7 +998,7 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
         for (const m of live) console.log(`      node ${memberArgv(repoPath, m, path, norm.org).join(' ')}`)
         return
       }
-      const r = await startTeamSession(norm, repoPath, { rosterPath: path })
+      const r = await startTeamSession(norm, repoPath, { rosterPath: path, web: rest.includes('--web') })   // #57: per-project egress — the daemon spawns `mrc team up … --web` when the org's web setting is on
       if (!r.ok) { console.error(`  ✗ ${r.error}`); process.exit(1) }
       console.log(r.already
         ? '  ◎ team already running — its member terminals are up in the dashboard Console:'

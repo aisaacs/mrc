@@ -690,6 +690,9 @@ window.closeTab = async (org) => {
 }
 // Resume = relaunch the saved roster (deterministic members rebind, each --continues its own convo).
 window.resumeTeam = async (org) => { const r=await actJSON('/api/team-launch', { org: org||S.org }); if(!r.ok)return flashFail(r); S.flash=null; tick() }
+// #57: per-project --web egress toggle. Launch-time (applies on next launch/relaunch) → cap+CSRF-gated /api/team-web.
+// Optimistically reflect the new state (orgWeb map), then tick() reconciles from the daemon.
+window.toggleWeb = async (on)=>{ const r=await actJSON('/api/team-web',{org:S.org, web:!!on}); if(!r.ok)return flashFail(r); S.flash=null; if(!S.teams.orgWeb)S.teams.orgWeb={}; S.teams.orgWeb[S.org]=!!on; tick() }
 // Readiness: workers are on-demand; a live member is 'ready' once its channel registers, 'starting'
 // while its terminal is up but not connected yet (loading / awaiting login).
 function memberState(m) {
@@ -912,7 +915,8 @@ function renderProjectHome(d) {
     <div class="sgrouph" style="margin-top:18px">Project settings</div>
     <div class="sblk"><div class="srow"><b>Telegram</b> ${sBadge('project','runtime')}</div><span id="tgSection">${tgSectionHtml()}</span></div>
     <div class="sblk"><div class="srow"><b>Outbound egress (--web)</b> ${sBadge('project','launch')}</div>
-      <div class="shelp">${S.settings ? esc(web.note||'Not enabled — this project reaches only the sanctioned proxy + whitelisted domains.') : '<span class="muted">loading…</span>'}</div></div>
+      <label style="display:flex;gap:8px;align-items:center;margin:6px 0;font-size:12.5px;cursor:pointer"><input type="checkbox" ${((S.teams.orgWeb||{})[org])?'checked':''} onchange="toggleWeb(this.checked)"> Allow this project's live agents outbound HTTPS to any host</label>
+      <div class="shelp">${((S.teams.orgWeb||{})[org]) ? 'On — live agents reach the open web. A caged adversary (e.g. Pierre) stays walled regardless.' : 'Off — agents reach only the sanctioned proxy + whitelisted domains.'} Launch-time: applies on the next launch — <b>relaunch</b> a running project to change it.</div></div>
   </div>`
 }
 // §13 "nothing is ever deleted": the dashboard Delete-project UI is RETIRED — the only lifecycle verb is Close
