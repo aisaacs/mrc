@@ -661,7 +661,7 @@ window.scrollTabs = (dir) => { const el = $('#tabs'); if (!el) return; el.scroll
 // Recently used), where you reopen + ▶ Resume it. (Delete-from-Mister-Claude is the separate 🗑 in project
 // settings.) renderTabs shows only running-or-active projects, so once stopped + un-selected the tab is gone.
 window.closeTab = async (org) => {
-  if (!confirm(`Close "${org}"? Its agents stop and it leaves the tab bar. The team, transcripts, and history stay — reopen it from the home any time. (Nothing is deleted.)`)) return
+  if (!confirm(`Close "${org}"? Its agents stop (like Ctrl-C). The team, transcripts, and history stay — reopen it from your projects any time to resume where you left off. (Nothing is deleted.)`)) return
   if (org === S.org) leaveUnread()   // #63-F: closing the active project leaves its open room — flush its watermark
   const r = await actJSON('/api/team-stop', { org }); if(!r.ok)return flashFail(r); S.flash=null
   // #48b: just CLOSE — don't jump to the command center. If the closed project was active, land on another OPEN
@@ -787,11 +787,12 @@ function renderMain() {
       + `<div class="step">${esc((orgLaunchRec(S.org)||{}).error || 'the launch failed — check the console for details')}</div>`
       + `<div style="margin-top:10px"><button class="btn launch" data-org="${esc(S.org)}" onclick="resumeTeam(this.dataset.org)">↻ Retry launch</button></div></div>`
   } else if (S.org && teams.length && !orgRunning(S.org)) {
-    const live = orgMembers().filter(m=>m.tier==='live')
-    html += `<div class="resume"><h3>⏸ "${esc(S.org)}" is stopped</h3>`
-      + `<div class="step">Resume relaunches the saved team — each live agent <b>--continues its own conversation</b> from where it left off.</div>`
-      + `<div class="step">First run rebuilds the image (~minutes); each live agent comes up in its Console${live.length?`: ${live.map(m=>'@'+esc(m.first)).join(', ')}`:''}. Workers are on-demand.</div>`
-      + `<div style="margin-top:10px"><button class="btn launch" data-org="${esc(S.org)}" onclick="resumeTeam(this.dataset.org)">▶ Resume team</button></div></div>`
+    // §5.1: the distinct "▶ Resume team" control is retired — resuming is just opening the project from the
+    // home (its tile relaunches it). This suspended panel only shows in edge cases (a project stopped while
+    // you're viewing it); it points home rather than offering a second resume button.
+    html += `<div class="resume"><h3>⏸ "${esc(S.org)}" is suspended</h3>`
+      + `<div class="step">Its agents are stopped. <b>Open it from your projects to resume</b> — each live agent <b>--continues its own conversation</b> from where it left off (first run rebuilds the image, ~minutes). You can read any room's <code>thread.log</code> meanwhile from ☰ Rooms.</div>`
+      + `<div style="margin-top:10px"><button class="btn launch" onclick="openProjects()">🗂 Go to projects</button></div></div>`
   }
 
   if (teams.length) html += `<h2>Teams</h2>` + teams.map(teamCard).join('')
@@ -889,7 +890,8 @@ function renderProjectHome(d) {
   const web = (S.settings && S.settings.web) || {}
   d.innerHTML = `<div class="home">
     <div class="homehd"><h2 style="margin:0;font-size:17px">${esc(org)}</h2>
-      <span class="homestat ${running?'on':'off'}">${running?'● running':'○ suspended'}</span></div>
+      <span class="homestat ${running?'on':'off'}">${running?'● running':'○ suspended'}</span>
+      ${running?`<button class="btn danger" style="margin-left:auto" onclick="closeTab(S.org)" title="Suspend this project — its agents stop; the team, transcripts, and history stay. Reopen from your projects to resume.">✕ Close project</button>`:''}</div>
     <div id="homeOverview" class="homeov">${homeOverviewHTML()}</div>
     <div class="sgrouph" style="margin-top:18px">Project settings</div>
     <div class="sblk"><div class="srow"><b>Telegram</b> ${sBadge('project','runtime')}</div><span id="tgSection">${tgSectionHtml()}</span></div>
@@ -943,7 +945,7 @@ function renderTerminal(d, m) {
 function termHeaderHTML(m, url) {
   const live = orgMembers().filter(x=>x.tier==='live'); const ready=live.filter(x=>x.online).length; const starting=live.filter(x=>!x.online && x.launched).length
   return `<b>@${esc(m.first)} <span class="muted">· terminal</span></b>
-    <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(url)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny" style="margin-left:8px" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="closeMemberSession(this.dataset.h,this.dataset.f)" title="Ctrl-C this agent — stop its session, keep it in the team (resume anytime)">⤓ Close session</button> <button class="btn tiny" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="removeMember(this.dataset.h,this.dataset.f)" title="Dismiss — remove this agent from the team entirely">✕ dismiss</button> <button class="btn tiny danger" onclick="stopTeam()">■ Stop team</button>`
+    <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(url)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny" style="margin-left:8px" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="closeMemberSession(this.dataset.h,this.dataset.f)" title="Ctrl-C this agent — stop its session, keep it in the team (resume anytime)">⤓ Close session</button> <button class="btn tiny" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="removeMember(this.dataset.h,this.dataset.f)" title="Dismiss — remove this agent from the team entirely">✕ dismiss</button>`
 }
 function syncTermHost() {
   const host = $('#termhost'), detail = $('#detail')
@@ -1559,7 +1561,7 @@ function bRenderTeams() {
   $('#bTeams').innerHTML = `<datalist id="bRepoPicks">${dlOpts.map(o=>`<option value="${esc(o.p)}" label="${esc(o.lbl)}"></option>`).join('')}</datalist>` + B.teams.map((t,ti)=>`<div class="team">
     <div class="row" style="align-items:flex-end;gap:8px"><div style="flex:2"><label>Team</label><input value="${esc(t.name)}" oninput="bSet(${ti},null,'name',this.value)"></div>
       ${adv?`<div style="flex:2"><label>Territory</label><input value="${esc(t.territory)}" placeholder="." oninput="bSet(${ti},null,'territory',this.value)"></div>`:''}
-      ${B.teams.length>1?`<button class="btn tiny" title="remove this team" onclick="bDelTeam(${ti})">✕</button>`:''}</div>
+      ${(ti>0 && t.members.length===0)?`<button class="btn tiny" title="remove this empty team" onclick="bDelTeam(${ti})">✕ remove empty team</button>`:''}</div>
     ${t.members.map((m,mi)=>{ const style=B.nameStyle||'french'; const nmErr=(m.name && !SAFE_NAME_RE.test(m.name))?'<span class="bad" style="font-size:11px">letters, digits, internal hyphens only</span>':''; return `<div class="bmem">
       <div class="bmemname"><input class="bnm" value="${esc(m.name||'')}" placeholder="${style==='custom'?'name (free-type)':'(auto)'}" aria-label="agent name" oninput="bSetName(${ti},${mi},this.value)">${(style!=='custom' && m.role==='generalist')?`<button class="btn tiny" title="suggest another name" onclick="bRerollName(${ti},${mi})">🎲</button>`:''}<span id="nmerr-${ti}-${mi}">${nmErr}</span>${totalAgents>1?`<button class="btn tiny" title="remove this agent" onclick="bDelMem(${ti},${mi})">✕</button>`:''}</div>
       <div class="memrow" style="margin-top:4px"><span class="muted" style="font-size:11px;flex:0 0 auto">📁 repo</span><input style="flex:1" list="bRepoPicks" value="${esc(m.repo||'')}" placeholder="this agent's repo — type ~/code/app or pick a recent one" oninput="bRepoInput(${ti},${mi},this.value)" onchange="bSetRepo(${ti},${mi},this.value)"><button class="btn tiny" style="flex:0 0 auto" data-ti="${ti}" data-mi="${mi}" onclick="fcOpen(this.dataset.ti,this.dataset.mi)" title="Browse folders">📁 Choose…</button><span id="repomsg-${ti}-${mi}" style="font-size:11px;flex:0 0 auto">${m._repoMsg||''}</span></div>
@@ -1741,13 +1743,12 @@ window.openProjectHome = ()=>{ if (!confirmLeaveBuilder()) return; leaveUnread()
 // ---- P2: command-center Projects landing (pick / resume) ----
 // A glanceable, full-width grid of EVERY project (running + suspended), doubling as the pick-project picker —
 // the "as light as `mrc pick`" bar. Opened from the header logo (or when no project is entered). Trust-split
-// (Pierre): "pick" is a pure CLIENT switch over origin-gated reads; every state-CHANGING tile action reuses an
-// EXISTING actJSON (CSRF-token) → cap-gated daemon endpoint — resume→/api/team-launch, suspend→/api/team-stop,
-// delete→/api/team-delete. No tile affordance is a new or unguarded write; no "▶" is a GET.
+// (Pierre): opening a RUNNING project is a pure CLIENT switch over origin-gated reads; opening a SUSPENDED one
+// resumes it, which reuses the EXISTING actJSON (CSRF-token) → cap-gated /api/team-launch — the same guarded
+// write ▶ Resume used, no new or unguarded door. No tile affordance is a GET-that-writes or a raw fetch.
 // §2/§13 the command-center HOME: three buckets (Active / Recently used / Archived), tiles = the project picker.
-// NO delete anywhere (§13 "nothing is ever deleted" — the only lifecycle verb is Close project = suspend). A tile
-// is ONE click → open the project; resume (for a suspended one) happens INSIDE the project view. All reads +
-// client switches — zero state-change on this surface.
+// NO delete anywhere (§13 "nothing is ever deleted" — the only lifecycle verb is Close project = suspend). §5.1:
+// a suspended tile is ONE click → resume (the tile IS the resume; the distinct "Resume team" button is retired).
 function bucketOf(org) {
   if (orgRunning(org) || orgLaunching(org)) return 'active'
   const at = (orgLaunchRec(org)||{}).at
@@ -1792,9 +1793,12 @@ function renderRoomsHome(d) {
     <div class="muted" style="font-size:12.5px;margin-bottom:16px">Every open room across all projects and consults — with its controls and full <code>thread.log</code>, without opening the project. You know a room by its members.</div>
     ${rooms.length?rooms.map(card).join(''):'<div class="muted">No open rooms.</div>'}</div>`
 }
-// pick = a client switch (read); a suspended project opens to its view where ▶ Resume lives (§13: resume is not
-// a home-tile control — the tile just opens). For the currently-active org, "open" lands on its home.
-window.openProject = (org)=>{ S.projects=false; if (org===S.org) openProjectHome(); else switchOrg(org) }
+// §5.1: the tile IS the resume — opening a SUSPENDED project relaunches it (one gesture; each live agent
+// --continues its own conversation). A running project just opens (home for the active org, else switch).
+// Peek-without-launch stays available via ☰ Rooms (read any thread.log without spinning up containers).
+window.openProject = (org)=>{ const suspended = !orgRunning(org) && !orgLaunching(org)
+  if (org===S.org) openProjectHome(); else switchOrg(org)
+  if (suspended && !S.building) resumeTeam(org) }   // !S.building: a cancelled dirty-build confirm left us put — don't relaunch
 window.toggleArchived = ()=>{ S.showArchived=!S.showArchived }
 function projTile(org) {
   const running=orgRunning(org), launching=orgLaunching(org), online=orgOnline(org)
@@ -1806,7 +1810,7 @@ function projTile(org) {
   const avatars = mem.slice(0,4).map(m=>`<span class="pav" style="background:${avColor(m.first||m.handle)}">${esc(castInitials(m.first||m.handle||'?'))}</span>`).join('')
   return `<button class="ptile" data-org="${esc(org)}" onclick="openProject(this.dataset.org)" title="Open ${esc(org)}">
     <div class="pt-top"><span class="pt-name">${esc(org)}</span>${need?`<span class="pt-need" title="${need} agent${need>1?'s':''} waiting on you">❓ needs human</span>`:''}</div>
-    <div class="pt-meta"><span class="pstate ${st.c}"><span class="pd"></span>${st.t}</span><span class="psep">·</span><span>${mem.length} agent${mem.length===1?'':'s'}</span></div>
+    <div class="pt-meta"><span class="pstate ${st.c}"><span class="pd"></span>${st.t}</span><span class="psep">·</span><span>${(()=>{const nt=new Set(mem.map(m=>m.team)).size; return (nt>1?`${nt} teams · `:'')+`${mem.length} agent${mem.length===1?'':'s'}`})()}</span></div>
     <div class="pt-foot"><div class="pavs">${avatars}</div><span class="mono">${esc(ts)}</span></div></button>`
 }
 function renderProjects(d) {
@@ -2236,7 +2240,12 @@ window.bLaunch = async ()=>{ const msg=$('#bMsg'); if(!msg)return
   const auth=await bAuthorizeAllRepos(); if(!auth.ok){ msg.innerHTML=`<span class="bad">✗ ${esc(auth.error)}</span>`; return }
   msg.innerHTML='<span class="muted">launching… first run builds the image (~minutes)</span>'
   const r=await postJSON('/api/team-launch',{roster:bRoster()})
-  if(r&&r.ok){ markBuilderClean(); msg.innerHTML='<span class="good">🚀 launching — pick each member to open its terminal and log in</span>'; S.org=bRoster().org||null; setOrgUrl(S.org); setTimeout(()=>{S.building=false;tick()},700) }
+  if(r&&r.ok){ markBuilderClean(); S.org=bRoster().org||null; setOrgUrl(S.org); msg.innerHTML='<span class="good">🚀 launching…</span>'
+    // §9: hand off from the builder to the live project view on the LAUNCH SIGNAL (the daemon writes launching:true
+    // synchronously before replying), not a blind 700ms timer. tick's own reconcile loop keeps refreshing after.
+    const org=S.org; let n=0
+    const settle=async()=>{ await tick(); if(orgLaunching(org)||orgRunning(org)){ if(S.building){ S.building=false; paint() } } else if(++n<12){ setTimeout(settle,300) } else { if(S.building){ S.building=false; paint() } } }
+    settle() }
   else msg.innerHTML=`<span class="bad">✗ ${esc((r&&r.error)||'failed')}</span>` }
 
 // Scoped launch (mrc gui [repo]): pre-fill the builder from ?repo=&org=, then land on Build (or Teams
