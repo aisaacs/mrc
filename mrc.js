@@ -832,20 +832,12 @@ if (storeActive) { mkdirSync(mrcDir, { recursive: true }); volumes.push('-v', `$
 // absent + the pointer make a relaunch re-apply the same seed harmlessly. Option (b): the transcript is copied
 // byte-untouched under its ORIGINAL uuid and an MRC-owned pointer records "resume this" — no bet on Claude
 // tolerating a renamed transcript.
-if (memberCtx && storeActive && !skipWrite && memberCtx.member && memberCtx.member.session) {
+if (memberCtx && memberCtx.member && memberCtx.member.session) {
   const picked = String(memberCtx.member.session)
-  // #43 SELF-CHECK (Pierre t70): this member-launch graft sources ONLY the member's OWN repo repoId slice
-  // (owner "you"). The create-form picker lists repoId sessions only (a new org has no orgDefs members, so the
-  // enumerator surfaces just "you"), so every pick is ref="you" TODAY. An @handle source (agent→agent, agent→
-  // terminal) MUST resolve through the daemon path where the host-verified orgDefs member list lives — not here.
-  // ASSERT ref==='you' so the day the picker ever surfaces an @handle pick, this fails LOUD (member keeps its own
-  // conversation) instead of silently mis-sourcing `repoId/<@handle-uuid>.jsonl` (wrong slice → no-graft, or a
-  // uuid-collision → wrong session). When the daemon @handle path lands, it resolves ref→srcDir and this assert
-  // is replaced by that resolution.
   const ref = memberCtx.member.sessionRef || 'you'
-  if (ref !== 'you') {
-    console.error(`  ! mrc: @${memberCtx.member.handle}'s picked session has a non-repoId source (${ref}) — a cross-agent resume routes through the daemon, not the member launch. Keeping this agent on its own conversation.`)
-  } else {
+  // #43 SELF-CHECK (Pierre t70): the member-launch graft sources ONLY the member's OWN repo repoId slice (owner
+  // "you"); an @handle source resolves through the daemon path, not here — so ASSERT ref==='you'.
+  if (storeActive && !skipWrite && ref === 'you') {
     let srcDir = null
     try { srcDir = mrcStoreDir(storeCtx({ solo: false, memberCtx: null, cagedAdversary: false, repoPath: memberCtx.member.repo || repoPath })) } catch {}
     // graft only when the picked uuid is a REAL transcript in the source (the picker read the same slice); a stale/
@@ -853,9 +845,11 @@ if (memberCtx && storeActive && !skipWrite && memberCtx.member && memberCtx.memb
     if (srcDir && srcDir !== mrcDir && existsSync(resolve(srcDir, `${picked}.jsonl`))) {
       try {
         graftSession(srcDir, picked, mrcDir)
-        if (existsSync(resolve(mrcDir, `${picked}.jsonl`))) writeActiveSessionPointer(mrcDir, picked)
+        if (existsSync(resolve(mrcDir, `${picked}.jsonl`))) { writeActiveSessionPointer(mrcDir, picked); console.error(`  ✓ mrc: resuming your picked conversation (${picked.slice(0, 8)}) as @${memberCtx.member.handle}.`) }
       } catch {}
     }
+  } else if (ref !== 'you') {
+    console.error(`  ! mrc: @${memberCtx.member.handle}'s picked session has a non-repoId source (${ref}) — a cross-agent resume routes through the daemon, not the member launch. Keeping this agent on its own conversation.`)
   }
 }
 

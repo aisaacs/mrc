@@ -565,3 +565,16 @@ test('#43 parseRoster carries the picked session + its owner-ref (you/@handle), 
   assert.equal(kip.sessionRef, undefined, 'a malformed sessionRef is dropped (sanitized), never carried')
   fs.rmSync(dir, { recursive: true, force: true })
 })
+
+test('#43 rosterFromDef carries session + sessionRef (relaunch/team.json must not drop the resume target)', () => {
+  const def = { org: 'x', repo: '/r', members: [
+    { handle: 'claude/claude', first: 'Claude', role: 'generalist', backend: 'claude', team: 't', lead: true, repo: '/r', session: 'c1ed5ded-5013-457c-b29b-8d41c409ce44', sessionRef: 'you' },
+    { handle: 'bob/claude', first: 'Bob', role: 'engineer', backend: 'claude', team: 't', repo: '/r' },  // no session → no field
+  ] }
+  const r = rosterFromDef(def)
+  const claude = r.teams[0].members.find((m) => m.name === 'Claude')
+  const bob = r.teams[0].members.find((m) => m.name === 'Bob')
+  assert.equal(claude.session, 'c1ed5ded-5013-457c-b29b-8d41c409ce44', 'rosterFromDef must carry the picked session')
+  assert.equal(claude.sessionRef, 'you', 'and its owner-ref')
+  assert.equal(bob.session, undefined, 'a member with no picked session gets no session field')
+})

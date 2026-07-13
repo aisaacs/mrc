@@ -737,6 +737,13 @@ export function rosterFromDef(def) {
     // member's m.repo === repoPath re-parses to the own-repo grant (byte-identical); a cross-repo member's authorized
     // repo re-parses through the set (already authorized). So carrying it is safe in BOTH modes.
     if (m.repo) mm.repo = m.repo
+    // #43: carry the picked SESSION + its owner-ref through the roster reconstruction. rosterFromDef feeds BOTH the
+    // anchor's team.json (writeTeamFile) AND relaunchmember (materializeRoster(rosterFromDef(def))) — and findRoster
+    // PREFERS team.json over team.runtime.json, so without this a relaunch (or any team.json read) drops the picked
+    // session and the agent silently re-starts fresh instead of resuming the grafted conversation. Same drop-class as
+    // `cage` (which the engine projection also stripped): a reconstruction that omits a load-bearing field.
+    if (m.session) mm.session = m.session
+    if (m.sessionRef) mm.sessionRef = m.sessionRef
     teams[m.team].members.push(mm)
   }
   const roster = { org: def?.org, repo: def?.repo, teams: Object.values(teams) }

@@ -160,6 +160,10 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
         // symmetric-session enumerator off the engine's projected list can't silently drop it (a caged member
         // whose real store is its m- slice must never be enumerable/graftable). Belt, not the current path.
         ...(m.cage ? { cage: m.cage } : {}),
+        // #43: carry the picked resume SESSION + its owner-ref through the projection too (belt — same reasoning as
+        // `cage`), so a member reconstructed off the engine's projected list keeps its resume target.
+        ...(m.session ? { session: m.session } : {}),
+        ...(m.sessionRef ? { sessionRef: m.sessionRef } : {}),
         sessionId: prev?.sessionId ?? null,   // keep an existing live binding across a re-define
       })
     }
