@@ -13,7 +13,7 @@ import { homedir } from 'node:os'
 import { join, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createHash } from 'node:crypto'
-import { ensureRoom, appendThread, appendTranscript, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadLaunches, removeLaunch, loadLaunchState, saveLaunchState, removeLaunchState, loadTgStates, saveTgStates, loadInbox, saveInbox, loadUserPrefs, saveUserPrefs, roomsRoot, removeRoomDir, controlSecret } from '../rooms.js'
+import { ensureRoom, appendThread, appendTranscript, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadConsults, saveConsults, loadLaunches, removeLaunch, loadLaunchState, saveLaunchState, removeLaunchState, loadTgStates, saveTgStates, loadInbox, saveInbox, loadUserPrefs, saveUserPrefs, roomsRoot, removeRoomDir, controlSecret } from '../rooms.js'
 import { createRoomEngine } from '../teams/room-engine.js'
 import { createWorkerRunner, workerLogPath, parseWorkerLog } from '../teams/worker-runner.js'
 import { memberSessionId } from '../teams/session-id.js'
@@ -410,6 +410,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   function reapTransientSessions(org, handles) {
     for (const h of (handles || [])) {
       try { sessionIndex.delete(memberSessionId(org, h)) } catch {}
+      try { removeConsultEntry(org, h) } catch {}   // #56 Inc1: EXPLICIT-death store-remove — this is the ONE place all 3 death paths (dismiss + orphan-reap + reapPartial) funnel through, so a reaped/dismissed Pierre never resurrects on the next boot
       try { if (teamMod) teamMod.killMember(org, h) } catch {}   // reap master(sock) + caged container(label) + unlink
     }
   }
@@ -428,6 +429,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   }
   rebuildSessionIndex()
   try { engine.restoreInbox(loadInbox()) } catch {}   // #16: restore the @user inbox AFTER orgs/rooms exist (sets inboxSeq past max id → no collision)
+  try { restoreConsults() } catch (e) { daemonLog(`[consult-restore] failed: ${e?.message || e}`) }   // #56 Inc1: re-seat persisted/orphaned caged consults BEFORE the control socket listens (Pierre #2) → a summoned Pierre survives this restart instead of orphaning
   // (d) boot triage-timer fire is DEFERRED to just after the Telegram bridges are set up (below) — else a
   // restart-gap escalation would reach the dashboard + desktop but MISS the phone (tgStates still empty here).
   // guard-1: the org root is pinned WRITE-ONCE (the chokepoint loads the pin internally — no caller can pass a
@@ -863,42 +865,95 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // security-bearing is HOST-BUILT here from the daemon's own state (the summoner's tamper-proof record, the roomId
   // WE create), NEVER a wire value — the same host-authoritative discipline as the legacy onSummon's repo/roomId.
   // Caps (one-per-summoner, global-8) + R3 (verified-normal + secret) were already enforced in onSummon before this.
+  // #56 Inc1 (Pierre-signed #1 — persist IDENTITY, re-derive POLICY): the SINGLE most security-load-bearing seam. A
+  // caged consult Pierre is a PURE FUNCTION of {org, summonerHandle}: repo re-derived from the summoner's OWN
+  // tamper-proof record (loadSessionRecord(memberSessionId(org, summoner)).repoPath — identical to what onSummon reads,
+  // since a bound summoner's issuerId IS its memberSessionId), and cage/role/mount/handle/consultId all re-derived
+  // CONSTANTS or deterministic functions — NEVER read from disk. BOTH summon and restore call this, so a restored Pierre
+  // can never be under-caged by a stale/skewed store (cage:'adversary' → mrc.js:462 verifies-or-refuses the launch;
+  // a garbled summoner → addTransientConsult's "not a real member" gate refuses). Fail-closed: no summoner repo → refuse.
+  function buildCagedConsult(org, summonerHandle) {
+    const sh = String(summonerHandle).toLowerCase()
+    const repo = loadSessionRecord(memberSessionId(org, sh)).repoPath
+    if (!repo) return { ok: false, error: `no host repo path on record for the summoner @${summonerHandle}` }
+    const pierreHandle = `pierre.${sh.replace('/', '-')}/claude`        // "."-keyspace (SAFE_NAME-disjoint), unique+stable per summoner
+    const consultId = safeName(`consult-${sh.replace('/', '-')}-pierre`)  // human-readable, deterministic, traversal-clean (validated handle)
+    const pierreSessionId = memberSessionId(org, pierreHandle)
+    const pierre = { handle: pierreHandle, first: 'Pierre', role: 'adversary', backend: 'claude', cage: 'adversary', repo }   // for addTransientConsult (cage a CONSTANT)
+    const pierreMember = { handle: pierreHandle, first: 'Pierre', role: 'adversary', roleLabel: 'Pierre', team: null, lead: false, backend: 'claude', tier: 'live', mount: 'ro', territory: '.', org: String(org), repo, cage: 'adversary', consultRooms: [consultId] }   // the launch blob
+    return { ok: true, org: String(org), summonerHandle: sh, pierreHandle, consultId, pierreSessionId, pierre, pierreMember, repo }
+  }
+  // Persist ONLY the minimal identity {org, summonerHandle} (+ derived handle/consultId as belt-assert values).
+  // Declared `function` (HOISTED): restoreConsults() runs at boot BEFORE these lines execute — a const arrow would be
+  // in the temporal dead zone there (ReferenceError). Same reason for removeConsultEntry (reapTransientSessions calls it).
+  function saveConsultEntry(org, summonerHandle, pierreHandle, consultId) { try { const same = (c) => c.org === String(org) && String(c.pierreHandle).toLowerCase() === String(pierreHandle).toLowerCase(); const list = loadConsults().filter((c) => !same(c)); list.push({ org: String(org), summonerHandle: String(summonerHandle).toLowerCase(), pierreHandle: String(pierreHandle).toLowerCase(), consultId }); saveConsults(list) } catch {} }
+  function removeConsultEntry(org, pierreHandle) { try { saveConsults(loadConsults().filter((c) => !(c.org === String(org) && String(c.pierreHandle).toLowerCase() === String(pierreHandle).toLowerCase()))) } catch {} }
+  // Direct docker liveness (teamMod is lazy-loaded → null at boot). SPECIFIC label pair; 'alive'|'dead'|'unknown'
+  // (docker unreachable). Caller SKIPS a KNOWN-'dead' (never DELETEs — a host-reboot-mid-restart reads dead), and
+  // re-seats on 'unknown'/'alive' (a probe blip must not orphan a live Pierre).
+  function cagedContainerState(org, pierreHandle) { ensureDockerHost(); try { return execFileSync('docker', ['ps', '-q', '--filter', `label=mrc.member=${pierreHandle}`, '--filter', `label=mrc.project=${org}`], { encoding: 'utf8' }).trim() ? 'alive' : 'dead' } catch { return 'unknown' } }
+  // Re-seat ROUTING for a re-derived consult (shared by store-restore + label-recovery). Idempotent. The cage lives on
+  // the ALREADY-RUNNING container (mount-invariant, Pierre #5) — a restart can't widen it; this only rebuilds routing.
+  function reseatConsult(built) {
+    const rr = engine.addTransientConsult(built.org, { pierre: built.pierre, withHandle: built.summonerHandle, roomId: built.consultId })
+    if (!rr.ok) { daemonLog(`[consult-restore] ${built.org}/@${built.summonerHandle}: ${rr.error}`); return false }
+    sessionIndex.set(built.pierreSessionId, { org: built.org, handle: built.pierreHandle, transient: true })
+    ensureRoom(built.consultId, built.org, 'Pierre')
+    return true
+  }
+  // #56 Inc1: re-seat persisted consults on boot BEFORE the control socket listens (Pierre #2 — a retrying register
+  // finds its pin, no zombie race). (1) the STORE (Pierres summoned under Inc1); (2) a DEGRADED record-VERIFIED
+  // label-recovery for a running caged container NOT in the store (summoned before Inc1 → rescues the current Pierre):
+  // the label is only a LOOKUP KEY; the tamper-proof host record (adversary:true + secret) is the AUTHORITY — NEVER
+  // mint a caged identity from a label alone (Pierre f).
+  function restoreConsults() {
+    const seen = new Set()
+    for (const e of loadConsults()) {
+      if (!orgDefs.has(e.org)) continue   // org deleted while down → leave the entry (removeorg/GC cleans; skip≠delete)
+      const built = buildCagedConsult(e.org, e.summonerHandle)
+      if (!built.ok) { daemonLog(`[consult-restore] skip ${e.org}/@${e.summonerHandle}: ${built.error}`); continue }
+      if (e.consultId && e.consultId !== built.consultId) { daemonLog(`[consult-restore] SKIP ${e.org}: consultId mismatch (stored ${e.consultId} != derived ${built.consultId})`); continue }   // Pierre #5 belt-assert
+      if (cagedContainerState(e.org, built.pierreHandle) === 'dead') continue   // KNOWN-dead → SKIP (not delete)
+      if (reseatConsult(built)) { seen.add(`${e.org}\0${built.pierreHandle}`); daemonLog(`[consult-restore] re-seated @${built.pierreHandle} in ${e.org}`) }
+    }
+    try {
+      ensureDockerHost()
+      const out = execFileSync('docker', ['ps', '--filter', 'label=mrc.adversary=1', '--format', '{{.Label "mrc.member"}}\t{{.Label "mrc.project"}}'], { encoding: 'utf8' })
+      for (const line of out.split('\n').map((s) => s.trim()).filter(Boolean)) {
+        const [ph, org] = line.split('\t')
+        if (!ph || !org || !ph.toLowerCase().startsWith('pierre.') || !orgDefs.has(org)) continue
+        const omap = engine._members.get(String(org)); let summoner = null
+        if (omap) for (const m of omap.values()) { if (m.transient) continue; const b = buildCagedConsult(org, m.handle); if (b.ok && b.pierreHandle === ph.toLowerCase()) { summoner = m.handle; break } }
+        if (!summoner) { daemonLog(`[consult-recover] ${org}: no real summoner matches ${ph} — skip`); continue }
+        const built = buildCagedConsult(org, summoner)
+        if (!built.ok || seen.has(`${org}\0${built.pierreHandle}`)) continue
+        const rec = loadSessionRecord(built.pierreSessionId)
+        if (!(rec && rec.adversary === true && rec.secret)) { daemonLog(`[consult-recover] ${org}/@${built.pierreHandle}: REFUSED — no adversary host record (the label is a hint; the record is authority)`); continue }
+        if (reseatConsult(built)) { saveConsultEntry(org, summoner, built.pierreHandle, built.consultId); daemonLog(`[consult-recover] recovered orphaned caged Pierre @${built.pierreHandle} in ${org} (record-verified)`) }
+      }
+    } catch (e) { daemonLog(`[consult-recover] label-scan skipped: ${e?.message || e}`) }
+  }
   function onSummonIntoTeam(issuerId, memberIdx, brief, ack) {
     const org = memberIdx.org, summonerHandle = memberIdx.handle
-    // V1: the caged Pierre mounts the SUMMONER's repo :ro — from the TAMPER-PROOF host record, never the wire frame.
-    const repo = loadSessionRecord(issuerId).repoPath
-    if (!repo) { send(issuerId, { type: 'notice', text: '[Cannot summon — no host repo path on record for this session. Relaunch it with a current mrc.]' }); return ack('summon-error') }
+    // #56 (Pierre #1): the ONE re-derive seam — repo (V1: summoner's tamper-proof record) + cage/handle/consultId.
+    const built = buildCagedConsult(org, summonerHandle)
+    if (!built.ok) { send(issuerId, { type: 'notice', text: `[Cannot summon — ${built.error}. Relaunch this session with a current mrc.]` }); return ack('summon-error') }
+    const { pierreHandle, consultId, pierreSessionId, pierre, pierreMember, repo } = built
     const def = orgDefs.get(org)
     if (!def || !teamMod) { send(issuerId, { type: 'notice', text: '[Cannot summon — the team is not fully defined yet, or launch helpers are still loading. Try again in a moment.]' }); return ack('summon-error') }
-    // Deterministic transient handle in the reserved "."-keyspace (engine keyspace gate; SAFE_NAME-disjoint from real
-    // members), UNIQUE per summoner + STABLE (a re-summon after dismiss reuses the handle → its caged config-vol →
-    // login persists). The roomId hashes (org, pierreHandle) so it's the daemon's OWN value (Pierre 3a), never a wire.
-    const pierreHandle = `pierre.${summonerHandle.replace('/', '-')}/claude`
-    // Human-readable + deterministic + filesystem-safe roomId (owner: the raw hash wasn't legible). Unique per
-    // summoner (its flattened handle) → a re-summon reuses the same consult. safeName strips anything unsafe.
-    const consultId = safeName(`consult-${summonerHandle.replace('/', '-')}-pierre`)
-    const reapPartial = () => { try { engine.removeTransientConsult(org, pierreHandle) } catch {} ; reapTransientSessions(org, [pierreHandle.toLowerCase()]); summoningPrivate.delete(issuerId) }
-    // ENGINE containment core (Pierre-signed): seat Pierre in the [summoner, pierre] consult room. Host-built pierre obj.
-    const r = engine.addTransientConsult(org, { pierre: { handle: pierreHandle, first: 'Pierre', role: 'adversary', backend: 'claude', cage: 'adversary', repo }, withHandle: summonerHandle, roomId: consultId })
+    const reapPartial = () => { try { engine.removeTransientConsult(org, pierreHandle) } catch {} ; reapTransientSessions(org, [pierreHandle]); summoningPrivate.delete(issuerId) }
+    const r = engine.addTransientConsult(org, { pierre, withHandle: summonerHandle, roomId: consultId })
     if (!r.ok) { send(issuerId, { type: 'notice', text: `[Cannot summon Pierre: ${r.error}]` }); return ack('summon-error') }
-    // Pin the transient identity so its register can BIND (survives rebuildSessionIndex via the transient-preserve;
-    // reaped on every consult-death path). memberSessionId is exactly what mrc.js pins as the caged Pierre's session id.
-    const pierreSessionId = memberSessionId(org, pierreHandle)
-    sessionIndex.set(pierreSessionId, { org, handle: pierreHandle.toLowerCase(), transient: true })
-    // Room dir + brief on disk — Pierre reads /rooms/<consultId>/adversary-brief.md, mounted :ro via consultRooms.
+    sessionIndex.set(pierreSessionId, { org, handle: pierreHandle, transient: true })
+    saveConsultEntry(org, summonerHandle, pierreHandle, consultId)   // #56 Inc1: persist {org, summonerHandle} → a restart re-seats him (RE-DERIVED, never this blob)
     ensureRoom(consultId, nameOf(issuerId), 'Pierre')
     try { writeFileSync(join(roomsRoot(), consultId, 'adversary-brief.md'), adversaryBriefFile(String(brief ?? '').slice(0, 20000))) }
     catch (e) { reapPartial(); send(issuerId, { type: 'notice', text: `[Summon failed writing the brief: ${e.message}]` }); return ack('summon-error') }
-    // The team's REAL roster (parseRoster-valid, no "." handles) as display-only --roster — the same materialize the
-    // relaunch path uses. Pierre's identity is 100% the host-set --member-def blob; its team:null persona lists no one,
-    // and the roster file itself is never mounted into the cage, so nothing about the team leaks to Pierre.
+    // The team's REAL roster (parseRoster-valid, no "." handles) as display-only --roster. Pierre's identity is 100% the
+    // host-set --member-def blob; its team:null persona lists no one, and the roster file is never mounted into the cage.
     let rosterPath
     try { rosterPath = teamMod.materializeRoster(teamMod.rosterFromDef(def), def.repo, predictModelB()).rosterPath }
     catch (e) { reapPartial(); send(issuerId, { type: 'notice', text: `[Summon failed preparing the roster: ${e.message}]` }); return ack('summon-error') }
-    // HOST-BUILT caged member (never a wire value): cage:'adversary' + consultRooms=[the id WE created] + territory:'.'
-    // (inert — memberWorkspaceVolumes's cage branch is ro-only). mount:'ro'. This blob is what mrc.js derives the cage +
-    // the /rooms mount from, and it's baked into the dtach master shell → the container can't tamper it.
-    const pierreMember = { handle: pierreHandle, first: 'Pierre', role: 'adversary', roleLabel: 'Pierre', team: null, lead: false, backend: 'claude', tier: 'live', mount: 'ro', territory: '.', org, repo, cage: 'adversary', consultRooms: [consultId] }
     const sName = nameOf(issuerId)
     // Boot PROMPT (positional -- turn): a fresh session sits idle on a push, so this kickoff makes Pierre read its brief
     // and OPEN the volley (mirrors the legacy adversaryPrime). Pierre is in ONE room → a bare send_message reaches the peer.

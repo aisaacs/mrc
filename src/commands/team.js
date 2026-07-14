@@ -435,6 +435,17 @@ function dockerMemberHandles(org) {
     return new Set()
   }
 }
+// #56 Inc1 (Pierre-signed liveness gate): is a SPECIFIC member's container running RIGHT NOW? Matches the
+// MOST-SPECIFIC label pair (mrc.member=<handle> + mrc.project=<org>) so a consult restore never false-matches a
+// DIFFERENT Pierre's routing onto this handle. Docker-unreachable → false, but the CALLER must treat a miss as
+// SKIP-the-restore (never delete the store entry): a host reboot where docker hasn't re-started the container yet
+// reads as "dead," and a false-delete would drop a Pierre that's about to come back. Only explicit dismiss +
+// confirmed orphan-reap delete; the stale-GC ages out the truly-dead.
+export function memberContainerAlive(org, handle) {
+  if (!org || !handle) return false
+  try { return execFileSync('docker', ['ps', '-q', ...memberDockerFilter(org, handle)], { encoding: 'utf8' }).trim().length > 0 }
+  catch { return false }
+}
 // Is a live ttyd VIEWER (`dtach -a <sock>`) serving this member's terminal? (distinct from the master).
 // LOAD-BEARING INVARIANT: this MUST match the ttyd PROCESS's own cmdline (durable from spawn — ttyd runs
 // `dtach -a <sock>` eagerly, before any browser attaches), NEVER gate on a live browser connection. If a

@@ -226,6 +226,20 @@ export function loadOrgs() {
   return (loadJsonFile(orgsFile(), {}) || {}).orgs || []
 }
 
+// #56 Inc1: persisted TRANSIENT consults, so a summoned caged Pierre SURVIVES a daemon restart (re-seated on
+// boot → his still-running container rebinds). Stores ONLY the minimal IDENTITY {org, summonerHandle} (+ the
+// derived pierreHandle/consultId as belt-assert values) — the daemon RE-DERIVES the full caged member from
+// {org, summonerHandle} on restore (cage:'adversary' is a re-derived CONSTANT, never read from disk), so a
+// stale/skewed store can NEVER under-cage a restored Pierre (Pierre-signed: persist identity, re-derive policy).
+// Host-only, never mounted — same trust domain as room-orgs.json.
+const consultsFile = () => join(daemonDir(), 'room-consults.json')
+export function saveConsults(list) {
+  try { atomicWriteFileSync(consultsFile(), JSON.stringify({ at: Date.now(), consults: list }, null, 2)) } catch {}
+}
+export function loadConsults() {
+  return (loadJsonFile(consultsFile(), {}) || {}).consults || []
+}
+
 // --- global user prefs (#42 chunk C) --------------------------------------
 // Runtime knobs the human sets from the Settings tab that must survive a daemon restart — otherwise
 // they reset to the env/default each restart. Holds the GLOBAL runtime prefs (the team turn-cap + the
