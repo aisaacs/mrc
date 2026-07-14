@@ -865,6 +865,36 @@ export async function launchMember(org, repoPath, rosterPath, member, { web = fa
   } catch (e) { return { ok: false, error: String(e?.message || e) } }
 }
 
+// #56 (Pierre fork B): spawn a CAGED transient-consult Pierre into an ALREADY-RUNNING team as its own dtach
+// session + ttyd viewer — the caged-member launch primitive PLUS a boot PROMPT. A fresh session sits idle on a
+// pushed message (it takes no turn until prompted), so the positional `-- <prime>` gives Pierre a kickoff turn to
+// read its brief + open the volley, exactly like the legacy summon's adversaryPrime. Everything security-bearing
+// is HOST-BUILT by the daemon (onSummonIntoTeam) and rides the --member-def blob (container-untamperable):
+//   • handle in the reserved "."-keyspace (engine keyspace gate; SAFE_NAME-disjoint from real members)
+//   • cage:'adversary' → mrc.js memberCageIsAdversary → cagedAdversary (ro /workspace, SNI seal, adversary:true
+//     record, MRC_ADVERSARY_FW, no /mrc, forced allowWeb=false) — all three egress belts + identity isolation
+//   • repo = the SUMMONER's repo (V1: from the summoner's host record, never a wire value) — mounted :ro
+//   • territory:'.' (inert — memberWorkspaceVolumes's `if(member.cage)` is ro-only, never reads territory)
+//   • consultRooms:[consultId] (the daemon's OWN addTransientConsult roomId) → mrc.js caged /rooms mount
+// NO --web (caged; memberArgv drops it for member.cage anyway). rosterPath is the TEAM's real roster (display-only;
+// identity is 100% the blob, and Pierre's team:null persona filter yields no teammates → it leaks nothing).
+export async function launchTransientConsult(org, summonerRepo, rosterPath, member, prime) {
+  // Never spawn over a live master (orphans it) — a re-summon must dismiss the prior Pierre first (removeTransientConsult
+  // → killMember), same #41 discipline as launchMember. If one's alive, refuse LOUD rather than orphan it.
+  if (masterAliveForSock(memberSock(org, member.handle))) return { ok: false, error: 'a Pierre session already holds this consult slot — dismiss it first', orphaned: true }
+  try {
+    const port = await findFreePort(Number(process.env.MRC_TTYD_PORT) || 7681)
+    // memberArgv builds the caged inner launch from the blob (`{...member, org, crossRepo}`), so cage/consultRooms/
+    // territory all ride into --member-def. Append `-- <prime>` as the boot turn (claudeArgs → entrypoint "$@").
+    const argv = [...memberArgv(summonerRepo, member, rosterPath, org, { web: false }), '--', String(prime || '')]
+    const shellCmd = `node ${argv.map(shq).join(' ')}; echo; echo ${shq(`[@${member.first || 'Pierre'} exited — press enter]`)}; read`
+    const entry = spawnMemberSession(org, member.handle, port, shellCmd)
+    await assertTtydUnixSocket(entry.ttydPid, entry.ttydSock)   // guard-4: fail LOUD if ttyd didn't bind a unix socket
+    setMemberLaunch(org, member.handle, entry)
+    return { ok: true, entry }
+  } catch (e) { return { ok: false, error: String(e?.message || e) } }
+}
+
 // Parse a roster (object or JSON string), write it to <repo>/.mrc/team.runtime.json so launched
 // members can --roster it, and return { norm, rosterPath }. Used by the daemon's GUI launch.
 export function materializeRoster(rosterInput, repoHint, modelB = false) {

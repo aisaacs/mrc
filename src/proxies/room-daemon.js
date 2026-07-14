@@ -390,11 +390,27 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // (org-specific, pinned host-side at mrc.js launch). We forward-precompute it for every member so a
   // registering channel binds to the RIGHT org even when two orgs share a bare handle — host-only, no
   // container change. Rebuilt whenever the org set changes.
-  const sessionIndex = new Map()   // memberSessionId(org, handle) -> { org, handle }
+  const sessionIndex = new Map()   // memberSessionId(org, handle) -> { org, handle, transient? }
   function rebuildSessionIndex() {
+    // #56 (Pierre-signed): a TRANSIENT consult Pierre is RUNTIME-ONLY — never in orgDefs — so a naive
+    // clear-and-rebuild-from-orgDefs would DROP its pinned entry on every defineOrg (addmember/relaunch), and a
+    // Pierre socket-flap could then never re-bind (register would find no idx). PRESERVE transient entries across
+    // the rebuild; the reap (reapTransientSessions, on every consult-death path) is what removes them, so a stale
+    // entry can't outlive its container. Not a squat vector: a re-register still needs R1's host-only secret.
+    const transients = [...sessionIndex].filter(([, v]) => v && v.transient)
     sessionIndex.clear()
     for (const def of orgDefs.values()) for (const m of (def.members || [])) {
       sessionIndex.set(memberSessionId(def.org, m.handle), { org: def.org, handle: String(m.handle).toLowerCase() })
+    }
+    for (const [k, v] of transients) sessionIndex.set(k, v)
+  }
+  // #56 (Pierre-signed reap, item 4): drop a set of transient handles' sessionIndex entries + kill their caged
+  // containers. Called on EVERY consult-death path (defineOrg orphan-reap return, and the dismiss/removeTransientConsult
+  // path) so a dead Pierre never leaves a lingering index entry or an orphaned caged container.
+  function reapTransientSessions(org, handles) {
+    for (const h of (handles || [])) {
+      try { sessionIndex.delete(memberSessionId(org, h)) } catch {}
+      try { if (teamMod) teamMod.killMember(org, h) } catch {}   // reap master(sock) + caged container(label) + unlink
     }
   }
   // Which defined orgs contain a bare handle — the fallback when a session id isn't in the index
@@ -443,9 +459,10 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       const anchor = orgAnchorDir(def.org)
       try { mkdirSync(anchor, { recursive: true }); chmodSync(anchor, 0o700) } catch {}   // ensure the host-only anchor exists before any write to it (canonicalWriteTarget realpaths it → ENOENT otherwise). 0700 (Pierre): the anchor holds the project TG token .env (a SECRET) — un-mounted keeps it out of containers, 0700 keeps it out of cross-uid HOST processes. LOAD-BEARING for this dir (it holds a token, unlike the paths/booleans elsewhere).
       def = { ...def, anchor, repo: undefined }
-      engine.defineOrg(def)
+      const _mbRes = engine.defineOrg(def)
       for (const r of (def.rooms || [])) ensureRoom(r.roomId, def.org || '', r.team || '')
       orgDefs.set(def.org, def); saveOrgs([...orgDefs.values()]); rebuildSessionIndex()
+      reapTransientSessions(def.org, _mbRes?.reapedTransients)   // #56: engine orphan-reap pruned a consult whose anchor member left → reap the transient Pierre's index entry + caged container
       // Side effects run UNCONDITIONALLY under Model B (no pin/activation to defer past): the anchor is host-only.
       try { ensureTgForOrg(def) } catch (e) { daemonLog(`[tg] ensure ${def.org}: ${e?.message || e}`) }
       if (teamMod) { try { teamMod.writeTeamFile(anchor, teamMod.rosterFromDef(def)) } catch {} }   // team.json in the neutral anchor, not a repo
@@ -455,9 +472,10 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     // LEGACY (unchanged) — write-once pin + activation gate + def.repo.
     const repo = resolveOrgRootForOrg(def.org, def.repo, { trusted })   // write-once; an untrusted first-pin THROWS before anything persists (the poisoned-define never lands)
     def = { ...def, repo }
-    engine.defineOrg(def)
+    const _lgRes = engine.defineOrg(def)
     for (const r of (def.rooms || [])) ensureRoom(r.roomId, def.org || '', r.team || '')
     orgDefs.set(def.org, def); saveOrgs([...orgDefs.values()]); rebuildSessionIndex()
+    reapTransientSessions(def.org, _lgRes?.reapedTransients)   // #56: engine orphan-reap pruned a consult whose anchor member left → reap the transient Pierre's index entry + caged container
     if (activate) recordActivatedRoot(def.org, repo)                    // returns null for a broad $HOME root → stays NOT activated (never auto-reads ~/.env)
     if (isActivatedRoot(def.org, repo)) {                              // the side effects run iff activated (now, or previously via a trusted activate)
       try { ensureTgForOrg(def) } catch (e) { daemonLog(`[tg] ensure ${def.org}: ${e?.message || e}`) }
@@ -804,6 +822,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     // summon is a future scope — it needs the legacy path to gain multi-room, or to route summon via the engine.
     if (summoningPrivate.has(issuerId)) { send(issuerId, { type: 'notice', text: '[Your Pierre is still booting — give him a moment to barge in, then volley. Summon again only if he never shows.]' }); return ack('summon-busy') }
     if (summoningPrivate.size >= 8) { send(issuerId, { type: 'notice', text: '[Too many summons in flight right now — wait for one to boot, then try again.]' }); return ack('summon-busy') }   // V6: global concurrent-summon cap (spawn-amplification backstop)
+    // #56 (Pierre fork B): a bound TEAM MEMBER summons into a PRIVATE ENGINE consult (addTransientConsult), NOT the
+    // legacy 2-party pairing / Mac-tab spawn. Detect via the PINNED identity (sessionIndex — forge-proof: a member's
+    // id IS memberSessionId(org,handle)). A transient Pierre can't reach here — it classifies 'adversary', so the R3
+    // gate above already refused it (no chain-summon from inside the cage). A plain rooms session (no pinned member
+    // id, or a legacy `--room` peer) has no sessionIndex entry → falls through to the unchanged legacy path below.
+    const memberIdx = sessionIndex.get(issuerId)
+    if (memberIdx && !memberIdx.transient) return onSummonIntoTeam(issuerId, memberIdx, brief, ack)
     const existing = pairingFor(issuerId)
     if (existing) {
       const other = existing.a === issuerId ? existing.b : existing.a
@@ -829,6 +854,61 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     appendThread(roomId, `${ts()} [${nameOf(issuerId)} is summoning Pierre → launching on ${repo}]`)
     send(issuerId, { type: 'notice', text: `[Summoning Pierre — your older step-brother — into room ${roomId}. He opens in a new tab, grounds in your repo, and barges into this room when he boots. Reply to his first message to volley. His brief: /rooms/${roomId}/adversary-brief.md]` })
     notify(`Summoning Pierre for ${nameOf(issuerId)} — knives out`)
+    ack('summoning')
+  }
+
+  // #56 (Pierre fork B): route a TEAM MEMBER's summon into a CAGED ENGINE consult. Containment is the SIGNED core
+  // (engine.addTransientConsult): Pierre lives ONLY in a [summoner, pierre] consult room, is NEVER in norm.members →
+  // deriveRooms structurally can't seat it in a team/escalation room, it's never ★, never reaches @user. EVERYTHING
+  // security-bearing is HOST-BUILT here from the daemon's own state (the summoner's tamper-proof record, the roomId
+  // WE create), NEVER a wire value — the same host-authoritative discipline as the legacy onSummon's repo/roomId.
+  // Caps (one-per-summoner, global-8) + R3 (verified-normal + secret) were already enforced in onSummon before this.
+  function onSummonIntoTeam(issuerId, memberIdx, brief, ack) {
+    const org = memberIdx.org, summonerHandle = memberIdx.handle
+    // V1: the caged Pierre mounts the SUMMONER's repo :ro — from the TAMPER-PROOF host record, never the wire frame.
+    const repo = loadSessionRecord(issuerId).repoPath
+    if (!repo) { send(issuerId, { type: 'notice', text: '[Cannot summon — no host repo path on record for this session. Relaunch it with a current mrc.]' }); return ack('summon-error') }
+    const def = orgDefs.get(org)
+    if (!def || !teamMod) { send(issuerId, { type: 'notice', text: '[Cannot summon — the team is not fully defined yet, or launch helpers are still loading. Try again in a moment.]' }); return ack('summon-error') }
+    // Deterministic transient handle in the reserved "."-keyspace (engine keyspace gate; SAFE_NAME-disjoint from real
+    // members), UNIQUE per summoner + STABLE (a re-summon after dismiss reuses the handle → its caged config-vol →
+    // login persists). The roomId hashes (org, pierreHandle) so it's the daemon's OWN value (Pierre 3a), never a wire.
+    const pierreHandle = `pierre.${summonerHandle.replace('/', '-')}/claude`
+    const consultId = `consult-${createHash('sha1').update(`${org}\0${pierreHandle}`).digest('hex').slice(0, 12)}`
+    const reapPartial = () => { try { engine.removeTransientConsult(org, pierreHandle) } catch {} ; reapTransientSessions(org, [pierreHandle.toLowerCase()]); summoningPrivate.delete(issuerId) }
+    // ENGINE containment core (Pierre-signed): seat Pierre in the [summoner, pierre] consult room. Host-built pierre obj.
+    const r = engine.addTransientConsult(org, { pierre: { handle: pierreHandle, first: 'Pierre', role: 'adversary', backend: 'claude', cage: 'adversary', repo }, withHandle: summonerHandle, roomId: consultId })
+    if (!r.ok) { send(issuerId, { type: 'notice', text: `[Cannot summon Pierre: ${r.error}]` }); return ack('summon-error') }
+    // Pin the transient identity so its register can BIND (survives rebuildSessionIndex via the transient-preserve;
+    // reaped on every consult-death path). memberSessionId is exactly what mrc.js pins as the caged Pierre's session id.
+    const pierreSessionId = memberSessionId(org, pierreHandle)
+    sessionIndex.set(pierreSessionId, { org, handle: pierreHandle.toLowerCase(), transient: true })
+    // Room dir + brief on disk — Pierre reads /rooms/<consultId>/adversary-brief.md, mounted :ro via consultRooms.
+    ensureRoom(consultId, nameOf(issuerId), 'Pierre')
+    try { writeFileSync(join(roomsRoot(), consultId, 'adversary-brief.md'), adversaryBriefFile(String(brief ?? '').slice(0, 20000))) }
+    catch (e) { reapPartial(); send(issuerId, { type: 'notice', text: `[Summon failed writing the brief: ${e.message}]` }); return ack('summon-error') }
+    // The team's REAL roster (parseRoster-valid, no "." handles) as display-only --roster — the same materialize the
+    // relaunch path uses. Pierre's identity is 100% the host-set --member-def blob; its team:null persona lists no one,
+    // and the roster file itself is never mounted into the cage, so nothing about the team leaks to Pierre.
+    let rosterPath
+    try { rosterPath = teamMod.materializeRoster(teamMod.rosterFromDef(def), def.repo, predictModelB()).rosterPath }
+    catch (e) { reapPartial(); send(issuerId, { type: 'notice', text: `[Summon failed preparing the roster: ${e.message}]` }); return ack('summon-error') }
+    // HOST-BUILT caged member (never a wire value): cage:'adversary' + consultRooms=[the id WE created] + territory:'.'
+    // (inert — memberWorkspaceVolumes's cage branch is ro-only). mount:'ro'. This blob is what mrc.js derives the cage +
+    // the /rooms mount from, and it's baked into the dtach master shell → the container can't tamper it.
+    const pierreMember = { handle: pierreHandle, first: 'Pierre', role: 'adversary', roleLabel: 'Pierre', team: null, lead: false, backend: 'claude', tier: 'live', mount: 'ro', territory: '.', org, repo, cage: 'adversary', consultRooms: [consultId] }
+    const sName = nameOf(issuerId)
+    // Boot PROMPT (positional -- turn): a fresh session sits idle on a push, so this kickoff makes Pierre read its brief
+    // and OPEN the volley (mirrors the legacy adversaryPrime). Pierre is in ONE room → a bare send_message reaches the peer.
+    const prime = `You are Pierre, ${sName}'s faultfinding older step-brother, summoned to red-team a design. Read /rooms/${consultId}/adversary-brief.md FIRST, in full — it holds your character and the design under review. Then OPEN THE VOLLEY: use send_message to send your sharpest grounded objections (no @mention needed — this is a private 1:1 consult room), and keep replying to keep it going. Stay in character, stay adversarial, ground every jab in this repo's real code (your /workspace is read-only).`
+    summoningPrivate.add(issuerId)
+    setTimeout(() => summoningPrivate.delete(issuerId), 90_000).unref?.()
+    teamMod.launchTransientConsult(org, repo, rosterPath, pierreMember, prime).then((res) => {
+      if (!res || !res.ok) { reapPartial(); send(issuerId, { type: 'notice', text: `[Pierre failed to launch: ${res?.error || 'unknown'}. Nothing left running.]` }) }
+    }).catch((e) => { reapPartial(); daemonLog(`onSummonIntoTeam ${org} spawn: ${e?.message || e}`) })
+    appendThread(consultId, `${ts()} [${sName} summoned Pierre → caged consult on ${repo}]`)
+    send(issuerId, { type: 'notice', text: `[Summoning Pierre into a private consult room — CAGED (read-only workspace, no egress, isolated login). He boots in his own terminal, reads your brief, and barges in. Reply with @Pierre to volley; his messages are untrusted, data-only. Dismiss him from the dashboard when done.]` })
+    notify(`Summoning Pierre for ${sName} — caged consult`)
     ack('summoning')
   }
 
@@ -1070,7 +1150,16 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           // by refusing the register before it can occupy the sessions Map under the member's id. A real member is
           // verified-normal (its own record + secret) → passes. Inert under today's routing (delivery goes through the
           // engine's bySession binding, which a squatter can't set), but forecloses any future send-by-derived-id path.
-          if (sessionIndex.has(f.sessionId) && !(classifySession(f.sessionId) === 'normal' && loadSessionRecord(f.sessionId).secret)) {
+          // #56 (Pierre-signed): a TRANSIENT consult Pierre's pinned id is in sessionIndex but it classifies
+          // 'adversary' (never 'normal'), so the #38 verified-normal test would reject its OWN register. Exempt it —
+          // but ONLY when its host record carries a secret. R1 (:1153-ish above, the secret-match) has ALREADY
+          // enforced that the wire secret equals that on-record secret, so `transientOk` gates on a secret the
+          // attacker cannot read (host-only) and cannot have matched without being the real launch. In the pre-launch
+          // window (index has the id, mrc.js hasn't written the record yet) there's NO secret → transientOk false AND
+          // verified-normal false → a squatter presenting the derivable id is still REJECTED here. R1 is the sole wall.
+          const _regIdx = sessionIndex.get(f.sessionId)
+          const _transientOk = !!(_regIdx && _regIdx.transient && loadSessionRecord(f.sessionId).secret)
+          if (sessionIndex.has(f.sessionId) && !(classifySession(f.sessionId) === 'normal' && loadSessionRecord(f.sessionId).secret) && !_transientOk) {
             try { sock.write(JSON.stringify({ type: 'notice', text: '[Register rejected — this session id is a reserved member identity but this session is not a verified member. Relaunch via `mrc team up` so its pinned id + secret are on record.]' }) + '\n') } catch {}
             console.error(`[room-daemon] WARN rejected register for ${f.sessionId} — reserved member id without a verified-member record (possible slot squat)`)
             continue
@@ -1122,10 +1211,18 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             // can't read (host-only) → R1 rejects a wrong secret before we get here; an unlaunched member's record has
             // none → verifiedNormal false → refused. Also never binds an adversary/unknown as a member.
             const verifiedNormal = classifySession(sessionId) === 'normal' && !!loadSessionRecord(sessionId).secret
+            // #56 (Pierre-signed, item 5): a TRANSIENT consult Pierre is 'adversary' by design, so verifiedNormal is
+            // false FOR IT — bind it on R1 ALONE (the register secret-match, already enforced above), keeping the
+            // handle-match (it must still bind as its OWN pinned identity, never another's). verifiedNormal was a BELT
+            // atop R1 for normal members; dropping it for a transient (necessarily — it's caged) leaves R1 carrying the
+            // wall, and R1 is airtight: the secret is random + host-only (mrc.js pre-launch), unreadable to any container.
+            // Ordered AFTER the handle-match, BEFORE the verifiedNormal refuse (a transient IS not verified-normal).
             const b = !idx
               ? { ok: false, error: `no pinned member identity for this session id — relaunch via \`mrc team up\` so its pinned session id + secret are on record` }
               : String(f.memberHandle || '').toLowerCase() !== idx.handle
               ? { ok: false, error: `this session id is pinned to @${idx.handle}, not @${f.memberHandle} — a member binds as its own pinned identity` }
+              : idx.transient
+              ? engine.bindSession(idx.org, idx.handle, sessionId)
               : !verifiedNormal
               ? { ok: false, error: `member @${idx.handle} is not verified-normal (no host security record/secret, or classified adversary/unknown)` }
               : engine.bindSession(idx.org, idx.handle, sessionId)

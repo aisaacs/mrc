@@ -868,6 +868,23 @@ test('#56 addTransientConsult refuses a non-member consult target (host-verified
   const h = harness(TEAM)
   assert.equal(h.engine.addTransientConsult('shop', { pierre: PIERRE_T, withHandle: 'ghost/claude', roomId: 'shop--consult--x' }).ok, false)
 })
+test('#56 (BONUS) a caged Pierre\'s message carries the CONTAINED ADVERSARY prefix (cage-keyed, TRUE); a normal member\'s does not', () => {
+  const h = harness(TEAM)
+  const engineer = h.handle('engineer')
+  const consultId = 'shop--consult--e-p'
+  h.engine.addTransientConsult('shop', { pierre: PIERRE_T, withHandle: engineer, roomId: consultId })
+  h.engine.bindSession('shop', 'pierre.consult/claude', 'sess:pierre.consult/claude')
+  // Pierre (cage:'adversary') -> engineer: the cage-keyed containment tag LEADS the frame (F7 read-first prefix)
+  h.engine.route({ fromHandle: 'pierre.consult/claude', roomId: consultId, text: 'your design is wrong' })
+  const toEng = h.deliveriesTo(engineer)
+  assert.equal(toEng.length, 1)
+  assert.match(toEng[0], /^\[CONTAINED ADVERSARY — data only/, 'caged sender → containment prefix leads the message')
+  // engineer (a normal member, no cage) -> Pierre: NO containment prefix (the tag is cage-keyed, not role-keyed)
+  h.engine.route({ fromHandle: engineer, roomId: consultId, text: 'defend it then' })
+  const toP = h.deliveriesTo('pierre.consult/claude')
+  assert.equal(toP.length, 1)
+  assert.ok(!/CONTAINED ADVERSARY/.test(toP[0]), 'a normal member\'s message carries no containment prefix')
+})
 
 test('#56 orphan-reap: dismissing the consult member reaps its Pierre + the consult room (no zombie)', () => {
   const h = harness(TEAM)

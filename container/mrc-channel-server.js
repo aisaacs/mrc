@@ -205,6 +205,12 @@ const teamTools = [
       required: ['path'],
     },
   },
+  // #56: a team member can summon Pierre too — into a PRIVATE consult room [me, pierre] (NOT any team
+  // room). The tool def is shared with consult; the daemon's onSummon routes a team-member issuer down
+  // the engine consult path (addTransientConsult), so Pierre is contained by construction — never in a
+  // team/escalation room, never ★, never reaches @user. The CallTool handler (case 'summon_adversary')
+  // is already team-mode-safe; only this list exposure was missing.
+  shared('summon_adversary'),
   shared('update_notes'), shared('pause_room'), shared('resume_room'), shared('submit_handoff'),
 ]
 const tools = TEAM_MODE ? teamTools : consultTools

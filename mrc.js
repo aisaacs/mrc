@@ -1049,7 +1049,17 @@ if (roomsActive) {
       // would disclose every session's thread.log/consensus.md to an adversary). Its rooms come from authoritative
       // membership; cagedRoomVolumes `..`-guards each + fails CLOSED on an empty set (no /rooms, never roomsRoot).
       const h = memberCtx.member.handle.toLowerCase()
-      const ownRoomIds = (memberCtx.norm.rooms || []).filter(r => (r.members || []).some(m => String(m).toLowerCase() === h)).map(r => r.roomId)
+      // #56 (Pierre-signed): a TRANSIENT consult Pierre's room is RUNTIME-ONLY in the engine — never in any
+      // roster/norm.rooms — so the daemon stamps the consult room-id IT created (addTransientConsult's own return,
+      // host-side, NEVER a summoner-frame value) into the host-set --member-def blob as member.consultRooms. That
+      // IS the membership guarantee (3a): the only room in the set is the one the daemon just seated Pierre in.
+      // cagedRoomVolumes still `..`-guards + exists-checks each (3b), so the set can only ever mount real subdirs of
+      // roomsRoot. A normal caged member (roster-declared, e.g. Inc-1 cross-repo) has no consultRooms → unchanged
+      // norm.rooms membership filter. Blob is host-built + container-untamperable (config.js), so a member can't
+      // widen its own /rooms via consultRooms.
+      const ownRoomIds = Array.isArray(memberCtx.member.consultRooms) && memberCtx.member.consultRooms.length
+        ? memberCtx.member.consultRooms.map(String)
+        : (memberCtx.norm.rooms || []).filter(r => (r.members || []).some(m => String(m).toLowerCase() === h)).map(r => r.roomId)
       volumes.push(...cagedRoomVolumes(ownRoomIds, roomsRoot(), existsSync))
     } else {
       volumes.push('-v', `${roomsRoot()}:/rooms:ro`)
