@@ -15,6 +15,41 @@ import { mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, exists
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
+// ============================================================================================================
+// SOURCE-OF-TRUTH MIRROR MAP (#56 SoT pass, Pierre t163/t165). This file is the AUTHORITATIVE store for a
+// session's security metadata. The recurring bug family we keep hitting is: "a decision reads a MIRROR of one of
+// these fields — a stale copy, a wrong proxy, or an untrusted wire value — instead of THIS record at the moment
+// of use." The two failure modes are (a) a SoT write that doesn't reach all its MUTABLE mirrors, and (b) a SoT
+// write that PRETENDS to reach an IMMUTABLE one. Before adding a writer OR a reader of any field below, place it
+// on this map. Each field's mirrors + their sync-point + their mutability:
+//
+//   record.adversary / summonedBy  (CONTAINMENT — the sharp case: 3 mirrors, one IMMUTABLE)
+//     · classifySession() — reads THIS record fresh every call. The security-critical daemon sites
+//       (peerList, deliverTo tag, summon gate, register #38) all call it fresh → self-correct. ✓ AUTHORITATIVE.
+//     · daemon `adversaries`/`unverified` Sets — MUTABLE, re-synced every register from fresh classifySession
+//       (room-daemon.js:1327ff). Self-healing; DISPLAY/perf only (never a security decision). ✓
+//     · engine `omap.cage` — MUTABLE, but synced ONLY at defineOrg/addTransientConsult (LAUNCH/summon), NEVER
+//       re-derived from this record. Gates the "[CONTAINED ADVERSARY — data only]" relay label (room-engine.js:381).
+//       LATENT GAP: today cage + record are co-written at launch, so consistent. A future "mark-adversary in the
+//       daemon trust-view" path (anticipated at :~90 below) that writes record.adversary WITHOUT re-syncing the
+//       engine → the caged-relay label silently stops firing. COUPLING CONSTRAINT: any post-launch writer of
+//       record.adversary MUST push the engine cage (an engine.setCage(org,handle) the daemon calls), because the
+//       engine has injected I/O and cannot read this record itself. (Ticketed — see the mark-adversary tickets.)
+//     · the CONTAINER's firewall (MRC_ADVERSARY_FW) + `/workspace:ro` mount — IMMUTABLE post-boot. Real egress
+//       containment is a LAUNCH-TIME property; you cannot retroactively seal a running container. So a trust-view
+//       mark-adversary is INHERENTLY trust-view-only (it can label + scope, never egress-cage a running session) —
+//       actual re-containment REQUIRES a relaunch. record.adversary is authoritative for TRUST-VIEW at every read,
+//       but CONTAINMENT is owned by the container's boot config, and the two reconcile ONLY via relaunch.
+//
+//   record.secret       — single source (THIS record). Mirror: MRC_ROOM_SECRET in the container env, host-set at
+//                         launch from this record; R1 authenticates a register against THIS record. No stale mirror.
+//   record.repoPath     — authoritative for a normal session's repo; a MEMBER's mount authority is the org def
+//                         through resolveMemberRepo (authorized-set-gated), NOT a bare stored path (see buildCagedConsult).
+//   liveness (is it up?) — NOT in this record; authoritative source is the daemon `sessions` Map (live socket).
+//   org membership       — NOT here; authoritative source is orgDefs (loadOrgs). A member record's LIFETIME should
+//                         track org membership (reap on org-leave), not a transcript proxy and not never (task #59).
+// ============================================================================================================
+
 function recordDir() { return join(homedir(), '.local', 'share', 'mrc', 'session-meta') }
 function recordPath(uuid) { return join(recordDir(), `${uuid}.json`) }
 
