@@ -451,7 +451,11 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     // #57: carry the per-project --web egress setting across a redefine/relaunch. A launch rebuilds `def` from the
     // roster, which doesn't carry `web` (it's a project setting, not a roster field) — without this the toggle would
     // silently reset to off on every relaunch. setorgweb writes it; this preserves it when the incoming def omits it.
-    if (def.web === undefined) { const _prev = orgDefs.get(def.org); if (_prev && _prev.web !== undefined) def = { ...def, web: _prev.web } }
+    if (def.web === undefined) {
+      const _prev = orgDefs.get(def.org)
+      if (_prev && _prev.web !== undefined) def = { ...def, web: _prev.web }   // preserve an EXISTING project's choice across a redefine/relaunch
+      else if (!_prev) def = { ...def, web: true }                            // #57 (owner): a genuinely NEW project defaults to --web ON (live agents get the open web out of the box; a CAGED adversary stays walled by its own belts regardless — memberArgv drops --web for member.cage, mrc.js forces allowWeb=false, init-firewall drops 443 on MRC_ADVERSARY_FW). Existing projects (a _prev exists, even with web:undefined) are UNTOUCHED — only never-before-seen orgs default on.
+    }
     if (modelB) {
       // MODEL B (Inc 3, Sites 3+4): identity is the NEUTRAL ANCHOR (orgAnchorDir — derived hex(org), host-only,
       // NEVER mounted). The write-once PIN and the ACTIVATION gate BOTH RETIRE (owner-signed) — subsumed by the
