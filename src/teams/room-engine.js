@@ -137,6 +137,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     // so re-running `mrc team up` (or a daemon reload) never accumulates ghosts.
     const keepHandles = new Set(mem_.map((m) => lc(m.handle)))
     const keepRooms = new Set(rms.map((r) => r.roomId))
+    const reapedTransients = []   // #56: transient consult participants reaped by orphan-reap → daemon reaps their sessionIndex entries
     for (const [h, m] of [...omap]) {
       // #56 (Pierre): EXEMPT a transient consult participant (a summoned/cast caged adversary added out-of-band
       // via addTransientConsult) from the redefine prune. It is NOT in the roster's norm.members (that's the
@@ -152,7 +153,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
         // prune (below) but must NOT outlive its own anchor member.
         for (const [id, r] of [...rooms]) {
           if (r.org === orgId && r.kind === 'consult' && r.members.has(h)) {
-            for (const ph of [...r.members.keys()]) { const pm = omap.get(ph); if (pm && pm.transient) { if (pm.sessionId) bySession.delete(pm.sessionId); omap.delete(ph) } }
+            for (const ph of [...r.members.keys()]) { const pm = omap.get(ph); if (pm && pm.transient) { if (pm.sessionId) bySession.delete(pm.sessionId); omap.delete(ph); reapedTransients.push(ph) } }
             _append(id, `${ts()} [closed — consult peer @${h} left]`); rooms.delete(id)
           }
         }
@@ -199,7 +200,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
       if (existing) { existing.members = memberMap; existing.kind = r.kind; existing.team = r.team; existing.org = orgId }
       else rooms.set(r.roomId, freshRoom(r.roomId, r.kind, r.team, orgId, memberMap))
     }
-    return { orgId, rooms: rms.map((r) => r.roomId) }
+    return { orgId, rooms: rms.map((r) => r.roomId), reapedTransients }
   }
 
   function freshRoom(roomId, kind, team, orgId, memberMap) {
@@ -227,6 +228,13 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     const orgId = String(org)
     if (!members.has(orgId)) return { ok: false, error: `unknown org ${orgId}` }
     if (!pierre || !pierre.handle || !roomId || !withHandle) return { ok: false, error: 'addTransientConsult needs { pierre.handle, withHandle, roomId }' }
+    // #56 (Pierre t105) — THE keyspace gate: the transient handle MUST live where a real member can NEVER be, so
+    // the shared-key breach is impossible BY CONSTRUCTION. memberSessionId = sha1(org\0handle), so a transient and
+    // a later hand-named real member at the SAME handle collide on the omap/sessionIndex key, and defineOrg's
+    // `sessionId: prev ?? null` would hand the real member Pierre's caged session → team traffic routes to Pierre.
+    // A '.' in the name-part is SAFE_NAME-forbidden (roster.js:53), so makeHandle/parseRoster can never mint it →
+    // the keyspaces are DISJOINT. Reserve the whole transient keyspace, don't rely on a one-time collision refuse.
+    if (!String(pierre.handle).split('/')[0].includes('.')) return { ok: false, error: `transient consult handle "${pierre.handle}" must be in the reserved keyspace (a "." in the name-part — real members can never have one)` }
     const omap = members.get(orgId)
     const target = lc(withHandle)
     const t = omap.get(target)
@@ -257,7 +265,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     if (m.sessionId) bySession.delete(m.sessionId)
     omap.delete(ph)
     for (const [id, r] of [...rooms]) if (r.org === orgId && r.kind === 'consult' && r.members.has(ph)) { _append(id, `${ts()} [closed]`); rooms.delete(id) }
-    return { ok: true }
+    return { ok: true, handle: ph }   // #56: daemon reaps this handle's sessionIndex entry too
   }
 
   // Bind a live session to its member. The daemon resolves WHICH org's member is connecting via its

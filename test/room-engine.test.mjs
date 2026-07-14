@@ -484,7 +484,7 @@ test('engine: redefining an org prunes removed members and rooms (no ghosts)', (
   engine.defineOrg({ org: v2.org, repo: v2.repo, members: v2.members, rooms: v2.rooms })
   const handles = engine.status().members.map((m) => m.handle)
   assert.equal(handles.length, 2, 'pruned to the new member set')
-  assert.ok(!handles.includes('pierre/claude'), 'removed member is gone')
+  assert.ok(!handles.includes('pierre.consult/claude'), 'removed member is gone')
 })
 
 test('engine: notifyRoom announces to existing live members, not the new/excepted one', () => {
@@ -823,14 +823,14 @@ test('§(d): route() returns `triaged` info for a non-★ ask (feeds the ask-ack
 // #56 — caged-adversary-in-a-team CONSULT (Pierre fork B): the containment CORE. Pierre is a TRANSIENT consult
 // participant added out-of-band via addTransientConsult, NEVER via the roster → deriveRooms (which builds
 // team/escalation rooms from norm.members only) structurally cannot seat it there.
-const PIERRE_T = { handle: 'pierre/claude', first: 'pierre', role: 'adversary', backend: 'claude', cage: 'adversary' }
+const PIERRE_T = { handle: 'pierre.consult/claude', first: 'pierre', role: 'adversary', backend: 'claude', cage: 'adversary' }
 test('#56 transient consult: Pierre lands ONLY in the consult room — never the team or escalation room', () => {
   const h = harness(TEAM)
   const engineer = h.handle('engineer')
   const consultId = 'shop--consult--engineer-pierre'
   const r = h.engine.addTransientConsult('shop', { pierre: PIERRE_T, withHandle: engineer, roomId: consultId })
   assert.equal(r.ok, true)
-  const pRooms = h.engine.roomsForHandle('pierre/claude', 'shop').map((x) => x.roomId)
+  const pRooms = h.engine.roomsForHandle('pierre.consult/claude', 'shop').map((x) => x.roomId)
   assert.deepEqual(pRooms, [consultId], 'Pierre is in the consult room and nothing else')
   assert.ok(!pRooms.includes(teamRoomId('shop', 'client')), 'never the team room')
   assert.ok(!pRooms.includes(leadsRoomId('shop')), 'never the escalation room')
@@ -841,18 +841,18 @@ test('#56 transient consult: team-room traffic never reaches Pierre (deliverTo m
   const h = harness(TEAM)
   const arch = h.handle('architect'), engineer = h.handle('engineer')
   h.engine.addTransientConsult('shop', { pierre: PIERRE_T, withHandle: engineer, roomId: 'shop--consult--e-p' })
-  h.engine.bindSession('shop', 'pierre/claude', 'sess:pierre/claude')
+  h.engine.bindSession('shop', 'pierre.consult/claude', 'sess:pierre.consult/claude')
   h.engine.route({ fromHandle: arch, roomId: teamRoomId('shop', 'client'), text: 'team broadcast for everyone' })
-  assert.equal(h.deliveriesTo('pierre/claude').length, 0, 'Pierre is not in the team room → never sees team traffic')
+  assert.equal(h.deliveriesTo('pierre.consult/claude').length, 0, 'Pierre is not in the team room → never sees team traffic')
 })
 test('#56 transient consult SURVIVES a redefine (an unrelated addmember/relaunch does not prune it)', () => {
   const h = harness(TEAM)
   const engineer = h.handle('engineer')
   const consultId = 'shop--consult--engineer-pierre'
   h.engine.addTransientConsult('shop', { pierre: PIERRE_T, withHandle: engineer, roomId: consultId })
-  h.engine.bindSession('shop', 'pierre/claude', 'sess:pierre/claude')
+  h.engine.bindSession('shop', 'pierre.consult/claude', 'sess:pierre.consult/claude')
   h.engine.defineOrg({ org: h.norm.org, repo: h.norm.repo, members: h.norm.members, rooms: h.norm.rooms })   // relaunch/refresh with the roster (no Pierre in it)
-  const pRooms = h.engine.roomsForHandle('pierre/claude', 'shop').map((x) => x.roomId)
+  const pRooms = h.engine.roomsForHandle('pierre.consult/claude', 'shop').map((x) => x.roomId)
   assert.deepEqual(pRooms, [consultId], 'Pierre + the consult room survive the prune (transient-exempt)')
 })
 test('#56 removeTransientConsult drops Pierre + consult, leaves real members intact; refuses a real member', () => {
@@ -860,8 +860,8 @@ test('#56 removeTransientConsult drops Pierre + consult, leaves real members int
   const engineer = h.handle('engineer'), arch = h.handle('architect')
   h.engine.addTransientConsult('shop', { pierre: PIERRE_T, withHandle: engineer, roomId: 'shop--consult--e-p' })
   assert.equal(h.engine.removeTransientConsult('shop', engineer).ok, false, 'never removes a REAL member via this path')
-  assert.equal(h.engine.removeTransientConsult('shop', 'pierre/claude').ok, true)
-  assert.equal(h.engine.roomsForHandle('pierre/claude', 'shop').length, 0, 'Pierre gone')
+  assert.equal(h.engine.removeTransientConsult('shop', 'pierre.consult/claude').ok, true)
+  assert.equal(h.engine.roomsForHandle('pierre.consult/claude', 'shop').length, 0, 'Pierre gone')
   assert.ok(h.engine.roomsForHandle(arch, 'shop').length > 0, 'real members untouched')
 })
 test('#56 addTransientConsult refuses a non-member consult target (host-verified withHandle)', () => {
@@ -874,13 +874,33 @@ test('#56 orphan-reap: dismissing the consult member reaps its Pierre + the cons
   const engineer = h.handle('engineer')
   const consultId = 'shop--consult--engineer-pierre'
   h.engine.addTransientConsult('shop', { pierre: PIERRE_T, withHandle: engineer, roomId: consultId })
-  h.engine.bindSession('shop', 'pierre/claude', 'sess:pierre/claude')
+  h.engine.bindSession('shop', 'pierre.consult/claude', 'sess:pierre.consult/claude')
   // dismiss the engineer: redefine the org WITHOUT it (the roster minus that member)
   const kept = h.norm.members.filter((m) => m.handle !== engineer)
   const keptRooms = h.norm.rooms.map((r) => ({ ...r, members: r.members.filter((x) => x !== engineer) }))
   h.engine.defineOrg({ org: h.norm.org, repo: h.norm.repo, members: kept, rooms: keptRooms })
-  assert.equal(h.engine.roomsForHandle('pierre/claude', 'shop').length, 0, 'Pierre reaped when its consult peer left')
+  assert.equal(h.engine.roomsForHandle('pierre.consult/claude', 'shop').length, 0, 'Pierre reaped when its consult peer left')
   assert.equal(h.engine.roomsForHandle(engineer, 'shop').length, 0, 'the dismissed member is gone')
   // a surviving member is untouched
   assert.ok(h.engine.roomsForHandle(h.handle('architect'), 'shop').length > 0)
+})
+
+test('#56 keyspace gate: a transient handle WITHOUT a "." is refused (disjoint from real-member keyspace)', () => {
+  const h = harness(TEAM)
+  const engineer = h.handle('engineer')
+  // a bare "pierre/claude" could later collide with a hand-named real member "pierre" → refused
+  const bad = h.engine.addTransientConsult('shop', { pierre: { handle: 'pierre/claude', first: 'pierre', role: 'adversary', cage: 'adversary' }, withHandle: engineer, roomId: 'shop--consult--x' })
+  assert.equal(bad.ok, false, 'a non-namespaced transient handle is refused')
+  // the reserved keyspace ("." in the name-part, SAFE_NAME-forbidden for real members) is accepted
+  const ok = h.engine.addTransientConsult('shop', { pierre: { handle: 'pierre.consult/claude', first: 'pierre', role: 'adversary', cage: 'adversary' }, withHandle: engineer, roomId: 'shop--consult--x' })
+  assert.equal(ok.ok, true)
+})
+test('#56 defineOrg returns reapedTransients so the daemon can reap the sessionIndex entry', () => {
+  const h = harness(TEAM)
+  const engineer = h.handle('engineer')
+  h.engine.addTransientConsult('shop', { pierre: { handle: 'pierre.consult/claude', first: 'pierre', role: 'adversary', cage: 'adversary' }, withHandle: engineer, roomId: 'shop--consult--e-p' })
+  const kept = h.norm.members.filter((m) => m.handle !== engineer)
+  const keptRooms = h.norm.rooms.map((r) => ({ ...r, members: r.members.filter((x) => x !== engineer) }))
+  const r = h.engine.defineOrg({ org: h.norm.org, repo: h.norm.repo, members: kept, rooms: keptRooms })
+  assert.deepEqual(r.reapedTransients, ['pierre.consult/claude'], 'orphan-reap reports the reaped transient handle')
 })
