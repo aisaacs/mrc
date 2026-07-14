@@ -1704,6 +1704,14 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         }
         if (f.action === 'stopteam' && f.org) {
           if (!capOk(f)) { reply({ ok: false, error: 'stopteam requires the control-capability secret' }); continue }   // guard-1: activate/spawn/state-change capability
+          // #56 bug D (Pierre t171): SUSPEND reaps any transient consult SEAT too (mirror adminkillproject:1560). A
+          // suspend intends to stop EVERYTHING; without this the caged Pierre survives the redefine-exemption
+          // (room-engine.js:153 — specced for a LIVE consult, NOT a suspend-killed one) as a SEATED-but-dead limbo,
+          // which blocks the ▶ Resume affordance on reopen (activeTransients → resumableConsults skips it). Reaping
+          // the seat + container KEEPS the adversary record (reapTransientSessions never reapRecords → prune is the
+          // sole record-reaper + skips adversary:true), so reopen shows ▶ Resume — the human-gated respawn a caged
+          // adversary requires (it has NO roster standing to auto-return, unlike a real declared member).
+          try { const omap = engine._members.get(String(f.org)); if (omap) { const ts = [...omap.values()].filter((m) => m.transient).map((m) => m.handle); for (const h of ts) { try { engine.removeTransientConsult(f.org, h) } catch {} } if (ts.length) reapTransientSessions(f.org, ts) } } catch {}
           if (teamMod) teamMod.killTeamSession(f.org)   // #34: kills every member's ttyd (→ container stops)
           removeLaunch(f.org); try { removeLaunchState(f.org) } catch {}; reply({ ok: true }); continue   // P1a: drop the transient launch state too
         }
