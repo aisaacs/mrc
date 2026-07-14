@@ -960,9 +960,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       const key = `${org}\0${handle}`
       const state = cagedContainerState(org, handle)
       if (state === 'alive') { _transientDeadMisses.delete(key); continue }
-      if (state === 'unknown') continue   // docker blip — don't count it toward the grace
+      if (state === 'unknown') { _transientDeadMisses.delete(key); continue }   // docker blip — RESET the grace (Pierre t145 belt-max): only STRICTLY-CONSECUTIVE 'dead' reads reap, so a flap between two dead reads can't accumulate toward a false reap. A 'dead' is docker-reachable-and-absent (never a misreported live container), so 2 consecutive = genuinely gone.
       const misses = (_transientDeadMisses.get(key) || 0) + 1
-      if (misses < 2) { _transientDeadMisses.set(key, misses); continue }   // grace: 2 consecutive dead reads (~2 sweep intervals) before reaping
+      if (misses < 2) { _transientDeadMisses.set(key, misses); continue }   // grace: 2 consecutive dead reads (~2 sweep intervals ≈ 10 min) before reaping
       _transientDeadMisses.delete(key)
       try { engine.removeTransientConsult(org, handle) } catch {}
       reapTransientSessions(org, [handle])
