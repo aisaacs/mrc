@@ -92,6 +92,12 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
                              // surface (Telegram #12) address items by this, never by array index (which
                              // shifts as items resolve, so a stale reply could hit the wrong item)
   const workerQueue = []      // directed mentions to worker (non-live) members; each carries its `org`
+  // #56 Inc2 (Pierre): frames directed at a tier:'live' member whose session hasn't BOUND yet (mid-register — a
+  // just-attached transient Pierre, or ANY live member in its bind window). Keyed `${org}\0${handle}`, flushed on
+  // bindSession. This is the fix for mis-routing a live member as a task-worker (a dropped message) during its bind
+  // window; a NON-live (worker) member still worker-queues as before. Capped so a never-binding member can't grow it.
+  const pendingDeliveries = new Map()
+  const PENDING_CAP = 200
   const orgs = new Map()      // orgId -> { org, repo }
 
   // `meta` (optional) carries the daemon's TRUSTED per-message qid/reqid (#18) so the structured
@@ -145,7 +151,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
       // without this exemption an unrelated addmember/relaunch/daemon-refresh would silently prune its binding and
       // break the live consult. Narrow: only `transient` is spared — a real member gone from the def still prunes.
       if (!keepHandles.has(h) && !m.transient) {
-        if (m.sessionId) bySession.delete(m.sessionId); omap.delete(h)
+        if (m.sessionId) bySession.delete(m.sessionId); omap.delete(h); pendingDeliveries.delete(`${orgId}\0${h}`)   // #56 Inc2: clear any held frames for a pruned member
         // #56 (Pierre orphan-reap): a consult room's reason-to-exist is the REAL member it was opened FOR. When
         // that member is pruned (dismissed/removed), reap the consult room AND the transient Pierre sitting in it
         // — else a caged Pierre zombies in a dead-peer room (not a breach — still consult-only, can't reach
@@ -263,7 +269,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     const m = omap.get(ph)
     if (!m || !m.transient) return { ok: false, error: `@${pierreHandle} is not a transient consult participant` }
     if (m.sessionId) bySession.delete(m.sessionId)
-    omap.delete(ph)
+    omap.delete(ph); pendingDeliveries.delete(`${orgId}\0${ph}`)   // #56 Inc2: drop any held frames for a dismissed Pierre (never deliver to a reaped member)
     for (const [id, r] of [...rooms]) if (r.org === orgId && r.kind === 'consult' && r.members.has(ph)) { _append(id, `${ts()} [closed]`); rooms.delete(id) }
     return { ok: true, handle: ph }   // #56: daemon reaps this handle's sessionIndex entry too
   }
@@ -278,6 +284,10 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     if (!m) return { ok: false, error: `unknown member ${handle} in org ${orgId}` }
     m.sessionId = sessionId
     bySession.set(sessionId, { org: orgId, handle: h })
+    // #56 Inc2 (Pierre #1): flush any frames held while this member was mid-bind — deliver them NOW, in order, so a
+    // message sent in the attach/bind window reaches it instead of vanishing. Cleared once flushed.
+    const pk = `${orgId}\0${h}`; const held = pendingDeliveries.get(pk)
+    if (held && held.length) { pendingDeliveries.delete(pk); for (const frame of held) send?.(sessionId, frame) }
     const inRooms = [...rooms.values()].filter((r) => r.org === orgId && r.members.has(h)).map((r) => r.roomId)
     return { ok: true, handle: h, org: orgId, rooms: inRooms }
   }
@@ -373,6 +383,16 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     const frame = { type: 'deliver', room: room.roomId, from: fromHandle,
       text: `${cageTag}${prefix}${tag}Peer (${who}) says: "${defangTrustMarkers(text)}" [turn ${room.turn}/${room.turnCap}]` }
     if (m && m.tier === 'live' && m.sessionId) { send?.(m.sessionId, frame); return 'delivered' }
+    // #56 Inc2 (Pierre #1): a tier:'live' member whose session hasn't BOUND yet (sessionId null — mid-register, e.g. a
+    // just-attached transient Pierre) must NOT be worker-queued — that mis-routes a Claude member as a task-worker and
+    // the message is silently dropped, never reaching it. HOLD the frame keyed on the member; bindSession flushes it.
+    if (m && m.tier === 'live') {
+      const k = `${room.org}\0${lc(toHandle)}`
+      let q = pendingDeliveries.get(k); if (!q) { q = []; pendingDeliveries.set(k, q) }
+      q.push(frame); if (q.length > PENDING_CAP) q.shift()   // bound it — a never-binding member can't grow it unbounded
+      _append(room.roomId, `${ts()} [held for @${toHandle} until it binds]`)
+      return 'held'
+    }
     // Worker (non-live) member: enqueue an invocation request; drained by the worker runner.
     workerQueue.push({ org: room.org, roomId: room.roomId, toHandle: lc(toHandle), fromHandle, text, at: now() })
     _append(room.roomId, `${ts()} [queued for worker ${toHandle}]`)
@@ -811,6 +831,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     const orgId = String(org)
     const omap = members.get(orgId)
     if (omap) { for (const m of omap.values()) if (m.sessionId) bySession.delete(m.sessionId); members.delete(orgId) }
+    for (const k of [...pendingDeliveries.keys()]) if (k.startsWith(`${orgId}\0`)) pendingDeliveries.delete(k)   // #56 Inc2: drop held frames for a forgotten org
     for (const [id, r] of [...rooms]) if (r.org === orgId) rooms.delete(id)
     for (let i = userInbox.length - 1; i >= 0; i--) if (userInbox[i].org === orgId) userInbox.splice(i, 1)
     for (let i = workerQueue.length - 1; i >= 0; i--) if (workerQueue[i].org === orgId) workerQueue.splice(i, 1)

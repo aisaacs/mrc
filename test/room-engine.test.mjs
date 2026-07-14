@@ -885,6 +885,17 @@ test('#56 (BONUS) a caged Pierre\'s message carries the CONTAINED ADVERSARY pref
   assert.equal(toP.length, 1)
   assert.ok(!/CONTAINED ADVERSARY/.test(toP[0]), 'a normal member\'s message carries no containment prefix')
 })
+test('#56 Inc2 (Pierre #1): a message to a live-but-UNBOUND member is HELD (never worker-queued) + flushed on bind', () => {
+  const h = harness(TEAM, { bindAll: false })   // members are tier:'live' but NOT bound yet (mid-register window)
+  const arch = h.handle('architect'), engineer = h.handle('engineer')
+  const engFirst = h.norm.members.find((m) => m.handle === engineer).first
+  h.engine.route({ fromHandle: arch, roomId: teamRoomId('shop', 'client'), text: `@${engFirst} implement login` })
+  assert.equal(h.deliveriesTo(engineer).length, 0, 'not delivered yet — unbound')
+  assert.equal(h.engine._workerQueue.length, 0, 'a live member is HELD, NEVER worker-queued (the mis-route bug)')
+  h.engine.bindSession('shop', engineer, h.sid(engineer))   // binds → the held frame flushes in order
+  assert.equal(h.deliveriesTo(engineer).length, 1, 'the held frame is flushed on bind')
+  assert.match(h.deliveriesTo(engineer)[0], /implement login/)
+})
 
 test('#56 orphan-reap: dismissing the consult member reaps its Pierre + the consult room (no zombie)', () => {
   const h = harness(TEAM)

@@ -166,6 +166,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   const adversaries = new Set()
   const unverified = new Set()
   const summoningPrivate = new Set()  // issuer ids with a private summon in flight — block a 2nd until it registers or times out
+  const resumingConsults = new Set()  // #56 Inc2 (Pierre #2): pierreHandles with a resume relaunch in flight — coalesce a concurrent /api/consult-resume (double-click / two tabs) so two launches don't race one deterministic sessionId → orphaned zombie container
   // R1/#44: register-secret authentication. A register whose sessionId HAS a recorded secret MUST present the
   // matching wire secret or it is REJECTED (impersonation) — enforced UNCONDITIONALLY. (The former `secretsArmed`
   // soft-arm gate was removed: it was redundant with "the record has a secret" and, if its best-effort arm-bit
@@ -1660,14 +1661,18 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             reseatConsult(built); saveConsultEntry(f.org, f.summonerHandle, built.pierreHandle, built.consultId)
             daemonLog(`resumeconsult ${f.org}: @${built.pierreHandle} already live — attached`); broadcastEvent({ type: 'roster', org: f.org }); reply({ ok: true, attached: true }); continue
           }
+          if (resumingConsults.has(built.pierreHandle)) { reply({ ok: false, error: 'a resume for this Pierre is already in flight — give it a moment' }); continue }   // #56 Inc2 #2: coalesce concurrent resumes of the SAME Pierre (no double-launch on one sessionId)
+          resumingConsults.add(built.pierreHandle)
+          const clearResume = () => resumingConsults.delete(built.pierreHandle)
+          setTimeout(clearResume, 90_000).unref?.()   // backstop: never leak the guard if the launch hangs
           try {
             teamMod.killMember(f.org, built.pierreHandle)   // reap any orphaned master/plumbing (the container is already dead)
             reseatConsult(built); saveConsultEntry(f.org, f.summonerHandle, built.pierreHandle, built.consultId)
             const { rosterPath } = teamMod.materializeRoster(teamMod.rosterFromDef(def), def.repo, predictModelB())
             const resumePrime = `You are Pierre, RESUMED. Your prior consult with @${built.summonerHandle.split('/')[0]} is reopening — your conversation carries over, so continue where you left off. Re-read /rooms/${built.consultId}/adversary-brief.md if you need to reground, then keep volleying via send_message.`
-            setTimeout(() => { teamMod.launchTransientConsult(f.org, built.repo, rosterPath, built.pierreMember, resumePrime).then((res) => { if (!res || !res.ok) daemonLog(`resumeconsult ${f.org} relaunch: ${res?.error || '?'}`) }).catch((e) => daemonLog(`resumeconsult ${f.org}: ${e?.message || e}`)) }, 800)   // > killMember's 600ms SIGKILL escalation (matches relaunchmember's proven timing) so the respawn never races a still-dying master
+            setTimeout(() => { teamMod.launchTransientConsult(f.org, built.repo, rosterPath, built.pierreMember, resumePrime).then((res) => { if (!res || !res.ok) daemonLog(`resumeconsult ${f.org} relaunch: ${res?.error || '?'}`) }).catch((e) => daemonLog(`resumeconsult ${f.org}: ${e?.message || e}`)).finally(clearResume) }, 800)   // > killMember's 600ms SIGKILL escalation (matches relaunchmember's proven timing) so the respawn never races a still-dying master
             daemonLog(`resumeconsult ${f.org}: relaunching @${built.pierreHandle} (--continue his prior conversation)`); broadcastEvent({ type: 'roster', org: f.org }); reply({ ok: true, relaunched: true })
-          } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
+          } catch (e) { clearResume(); reply({ ok: false, error: String(e?.message || e) }) }
           continue
         }
         if (f.action === 'relaunchmember' && f.org && f.handle) {
