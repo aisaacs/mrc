@@ -1502,11 +1502,19 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           // routing reaped (removeTransientConsult + reapTransientSessions — the ▶ Resume record survives); a STANDALONE
           // is a raw `docker rm -f`. killContainer(id) is the belt in every case.
           if (!capOk(f)) { reply({ ok: false, error: 'adminkillone requires the control-capability secret' }); continue }
-          if (f.project && f.member && teamMod) { try { teamMod.killMember(f.project, f.member) } catch {} }
-          if (f.project && f.member && String(f.member).toLowerCase().startsWith('pierre.')) { try { engine.removeTransientConsult(f.project, f.member) } catch {} ; reapTransientSessions(f.project, [String(f.member).toLowerCase()]) }
-          const ok = killContainer(f.id)
-          daemonLog(`adminkill ${f.id}${f.member ? ` @${f.member}` : ''}${f.project ? ` in ${f.project}` : ''}`)
-          if (f.project) { try { broadcastEvent({ type: 'roster', org: f.project }) } catch {} }
+          // #ADMIN scope (Pierre t151): the kill may ONLY ever target an mrc container the admin list itself surfaces
+          // — resolve f.id against listMrcContainers() and REFUSE an unknown/stale/non-mrc id, so a malformed request
+          // or a CSRF-bypass can't `docker rm -f` a container OUTSIDE this tool's domain (the unguessable id is a
+          // mitigation, not a scope guarantee). And use the container's AUTHORITATIVE labels (not the client's
+          // project/member), so the reap targets exactly what the resolved container actually is.
+          const hit = listMrcContainers().find((c) => c.id === f.id)
+          if (!hit) { reply({ ok: false, error: 'not a current mrc container (unknown or already stopped) — refusing to rm a non-mrc / stale id' }); continue }
+          const kProject = hit.project, kMember = hit.member
+          if (kProject && kMember && teamMod) { try { teamMod.killMember(kProject, kMember) } catch {} }
+          if (kProject && kMember && String(kMember).toLowerCase().startsWith('pierre.')) { try { engine.removeTransientConsult(kProject, kMember) } catch {} ; reapTransientSessions(kProject, [String(kMember).toLowerCase()]) }
+          const ok = killContainer(hit.id)
+          daemonLog(`adminkill ${hit.id}${kMember ? ` @${kMember}` : ''}${kProject ? ` in ${kProject}` : ''}`)
+          if (kProject) { try { broadcastEvent({ type: 'roster', org: kProject }) } catch {} }
           reply({ ok }); continue
         }
         if (f.action === 'adminkillproject' && f.project) {
@@ -1515,6 +1523,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           // DEFINED + all transcripts/history on disk (this is a KILL, not a Delete-project) — reopen from the command
           // center. Any transient Pierre in the project reaps via killTeamSession's container kill + the GC.
           if (!capOk(f)) { reply({ ok: false, error: 'adminkillproject requires the control-capability secret' }); continue }
+          // #ADMIN (Pierre t151, consistency): reap any transient consult routing for this project IMMEDIATELY (mirror
+          // adminkillone) so there's no ~10-min zombie-routing window waiting on the GC. The ▶ Resume record survives.
+          try { const omap = engine._members.get(String(f.project)); if (omap) { const ts = [...omap.values()].filter((m) => m.transient).map((m) => m.handle); for (const h of ts) { try { engine.removeTransientConsult(f.project, h) } catch {} } if (ts.length) reapTransientSessions(f.project, ts) } } catch {}
           if (teamMod) { try { teamMod.killTeamSession(f.project) } catch {} }
           ensureDockerHost()
           try { const ids = execFileSync('docker', ['ps', '-q', '--filter', `label=mrc.project=${f.project}`], { encoding: 'utf8' }).split('\n').map((s) => s.trim()).filter(Boolean); for (const id of ids) killContainer(id) } catch {}
