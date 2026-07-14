@@ -167,6 +167,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   const unverified = new Set()
   const summoningPrivate = new Set()  // issuer ids with a private summon in flight — block a 2nd until it registers or times out
   const resumingConsults = new Set()  // #56 Inc2 (Pierre #2): pierreHandles with a resume relaunch in flight — coalesce a concurrent /api/consult-resume (double-click / two tabs) so two launches don't race one deterministic sessionId → orphaned zombie container
+  const _transientDeadMisses = new Map()  // #56 GC: pierreHandle -> consecutive dead-container reads (grace before reaping a stale transient consult)
   // R1/#44: register-secret authentication. A register whose sessionId HAS a recorded secret MUST present the
   // matching wire secret or it is REJECTED (impersonation) — enforced UNCONDITIONALLY. (The former `secretsArmed`
   // soft-arm gate was removed: it was redundant with "the record has a secret" and, if its best-effort arm-bit
@@ -943,6 +944,34 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         if (reseatConsult(built)) { saveConsultEntry(org, summoner, built.pierreHandle, built.consultId); daemonLog(`[consult-recover] recovered orphaned caged Pierre @${built.pierreHandle} in ${org} (record-verified)`) }
       }
     } catch (e) { daemonLog(`[consult-recover] label-scan skipped: ${e?.message || e}`) }
+  }
+  // #56 fast-follow: the stale-transient-consult GC. A low-rate sweep reaps a transient consult whose caged
+  // container is CONFIRMED gone (crashed / killed out-of-band / dismissed-container-lingered) — cleaning a zombie
+  // routing entry. It reaps ONLY on a container that reads 'dead' for 2 consecutive sweeps (a grace, so a brief flap
+  // or a mid-restart window never reaps a live Pierre); an 'unknown' (docker unreachable) never counts. It does NOT
+  // touch an alive-but-idle Pierre (idle ≠ dead — the human Dismisses those; a live session is never auto-killed).
+  // Reaping removes the store entry + kills any leftover plumbing, but the adversary RECORD + config vol persist, so
+  // the Pierre stays ▶ Resume-able (resumableConsults is record-based, not store-based). Snapshot-then-reap (no
+  // mutate-during-iterate). teamMod-null-safe via reapTransientSessions.
+  function sweepStaleConsults() {
+    const transients = []
+    for (const [orgId, omap] of engine._members) for (const m of omap.values()) if (m.transient) transients.push({ org: orgId, handle: m.handle })
+    for (const { org, handle } of transients) {
+      const key = `${org}\0${handle}`
+      const state = cagedContainerState(org, handle)
+      if (state === 'alive') { _transientDeadMisses.delete(key); continue }
+      if (state === 'unknown') continue   // docker blip — don't count it toward the grace
+      const misses = (_transientDeadMisses.get(key) || 0) + 1
+      if (misses < 2) { _transientDeadMisses.set(key, misses); continue }   // grace: 2 consecutive dead reads (~2 sweep intervals) before reaping
+      _transientDeadMisses.delete(key)
+      try { engine.removeTransientConsult(org, handle) } catch {}
+      reapTransientSessions(org, [handle])
+      daemonLog(`[consult-gc] reaped stale caged Pierre @${handle} in ${org} (container gone; the ▶ Resume record persists)`)
+      try { broadcastEvent({ type: 'roster', org }) } catch {}
+    }
+    // drop miss-counters for handles no longer transient (dismissed/reaped elsewhere) so the map stays bounded
+    const live = new Set(transients.map((t) => `${t.org}\0${t.handle}`))
+    for (const k of [..._transientDeadMisses.keys()]) if (!live.has(k)) _transientDeadMisses.delete(k)
   }
   function onSummonIntoTeam(issuerId, memberIdx, brief, ack) {
     const org = memberIdx.org, summonerHandle = memberIdx.handle
@@ -2026,6 +2055,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     }
   }, tickMs)
   stallTimer.unref?.()
+  // #56 fast-follow: low-rate (5-min) stale-transient-consult GC — a SEPARATE, slower interval than the stallTimer
+  // because it does one `docker ps` per transient (kept out of the 15s tick). The 2-miss grace → a container must be
+  // gone for ~10 min before its zombie routing is reaped; the ▶ Resume record survives. unref so it never holds the
+  // process up. Fires first at +5min (a just-launched Pierre gets his bind window before any sweep).
+  const consultGcTimer = setInterval(() => { try { sweepStaleConsults() } catch (e) { daemonLog(`[consult-gc] sweep failed: ${e?.message || e}`) } }, 5 * 60_000)
+  consultGcTimer.unref?.()
 
   return { server, control, sessions, pairings, engine, worker, subscribeEvents, broadcastEvent, noteDashboardActivity: () => { lastDashboardHit = Date.now() }, _caffeine: () => ({ working: anyWorking(), tracked: lastActivityAt.size, holding: !!caffeine, off: caffeineOff }), stop: () => { clearInterval(stallTimer); if (relayRetryTimer) clearTimeout(relayRetryTimer); releaseCaffeine(); worker.stop(); stopAllTg(); try { server.close(); control.close() } catch {} ; if (electSingleton) { try { unlinkSync(daemonLockPath) } catch {} } }, _relayBound: () => relayBound, _activePairingFor: activePairingFor, _daemonLockPath: () => daemonLockPath, deliver, _pruneDeadRooms: pruneDeadRooms }
 }
