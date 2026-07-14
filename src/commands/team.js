@@ -898,7 +898,11 @@ export async function launchTransientConsult(org, summonerRepo, rosterPath, memb
     // memberArgv builds the caged inner launch from the blob (`{...member, org, crossRepo}`), so cage/consultRooms/
     // territory all ride into --member-def. Append `-- <prime>` as the boot turn (claudeArgs → entrypoint "$@").
     const argv = [...memberArgv(summonerRepo, member, rosterPath, org, { web: false }), '--', String(prime || '')]
-    const shellCmd = `node ${argv.map(shq).join(' ')}; echo; echo ${shq(`[@${member.first || 'Pierre'} exited — press enter]`)}; read`
+    // Capture the inner mrc.js STDERR to a per-consult log so a caged-Pierre launch that exits (before the container
+    // comes up) is diagnosable — the dtach master's stdio is otherwise 'ignore', so the error would vanish with the
+    // pty. stdout stays on the pty (the interactive session). Overwrites per launch; the failure is on stderr.
+    const launchLog = join(homedir(), '.local', 'share', 'mrc', `consult-launch-${sockSlug(member.handle)}.log`)
+    const shellCmd = `node ${argv.map(shq).join(' ')} 2> ${shq(launchLog)}; echo; echo ${shq(`[@${member.first || 'Pierre'} exited — press enter]`)}; read`
     const entry = spawnMemberSession(org, member.handle, port, shellCmd)
     await assertTtydUnixSocket(entry.ttydPid, entry.ttydSock)   // guard-4: fail LOUD if ttyd didn't bind a unix socket
     setMemberLaunch(org, member.handle, entry)
