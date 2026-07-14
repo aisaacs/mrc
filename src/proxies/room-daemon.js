@@ -909,12 +909,18 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   function restoreConsults() {
     const seen = new Set()
     for (const e of loadConsults()) {
-      if (!orgDefs.has(e.org)) continue   // org deleted while down → leave the entry (removeorg/GC cleans; skip≠delete)
-      const built = buildCagedConsult(e.org, e.summonerHandle)
-      if (!built.ok) { daemonLog(`[consult-restore] skip ${e.org}/@${e.summonerHandle}: ${built.error}`); continue }
-      if (e.consultId && e.consultId !== built.consultId) { daemonLog(`[consult-restore] SKIP ${e.org}: consultId mismatch (stored ${e.consultId} != derived ${built.consultId})`); continue }   // Pierre #5 belt-assert
-      if (cagedContainerState(e.org, built.pierreHandle) === 'dead') continue   // KNOWN-dead → SKIP (not delete)
-      if (reseatConsult(built)) { seen.add(`${e.org}\0${built.pierreHandle}`); daemonLog(`[consult-restore] re-seated @${built.pierreHandle} in ${e.org}`) }
+      // #56 Inc1 (Pierre t129): PER-ENTRY guard — reseatConsult→ensureRoom does fs mkdir/write which CAN throw
+      // (EACCES/ENOSPC). Without this, a throw on one entry bubbles to the outer catch, abandoning EVERY remaining
+      // store Pierre AND the label-recovery scan below (path 2) — one bad entry orphans the whole fleet, the exact
+      // failure this feature prevents. Each Pierre restores independently; a thrower is skipped, the rest continue.
+      try {
+        if (!orgDefs.has(e.org)) continue   // org deleted while down → leave the entry (removeorg/GC cleans; skip≠delete)
+        const built = buildCagedConsult(e.org, e.summonerHandle)
+        if (!built.ok) { daemonLog(`[consult-restore] skip ${e.org}/@${e.summonerHandle}: ${built.error}`); continue }
+        if (e.consultId && e.consultId !== built.consultId) { daemonLog(`[consult-restore] SKIP ${e.org}: consultId mismatch (stored ${e.consultId} != derived ${built.consultId})`); continue }   // Pierre #5 belt-assert
+        if (cagedContainerState(e.org, built.pierreHandle) === 'dead') continue   // KNOWN-dead → SKIP (not delete)
+        if (reseatConsult(built)) { seen.add(`${e.org}\0${built.pierreHandle}`); daemonLog(`[consult-restore] re-seated @${built.pierreHandle} in ${e.org}`) }
+      } catch (err) { daemonLog(`[consult-restore] entry ${e?.org}/@${e?.summonerHandle} threw: ${err?.message || err} — skipped, others continue`) }
     }
     try {
       ensureDockerHost()
