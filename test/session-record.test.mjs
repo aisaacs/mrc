@@ -67,6 +67,18 @@ t('prune KEEPS an adversary record even when its transcript is gone (moved-repo 
   pruneSessionRecords()
   assert.equal(loadSessionRecord('p-adv').uuid, 'p-adv')
 })
+// #56 bug C: a team member's record is a deterministic AUTH ANCHOR (the daemon re-registers against its
+// secret via R1 + the #38 verified-member gate). Its transcript lives in a territorial/config-vol store, NOT
+// repoPath/.mrc, so it NEVER earns `.seen` → before the fix, the age backstop reaped it → the live member
+// became un-re-registerable after a daemon restart (register-limbo). Prune must skip it like an adversary.
+t('#56 prune KEEPS a team-member record past the age backstop, secret intact (auth anchor, not transcript-governed)', () => {
+  saveSessionRecord('p-member', { adversary: false, member: true, secret: 'MSEC', repoPath: repo('p-member', false) })
+  backdateRecord('p-member', 2 * 60 * 60 * 1000)   // 2h old, never-seen — the age backstop WOULD reap a plain normal record here
+  pruneSessionRecords()
+  assert.equal(loadSessionRecord('p-member').uuid, 'p-member')   // kept — a member's lifetime is NOT transcript-governed
+  assert.equal(loadSessionRecord('p-member').secret, 'MSEC')     // and its secret survives → R1 can still authenticate the re-register
+  assert.equal(classifySession('p-member'), 'normal')            // `member` does NOT change classification (keys on adversary||summonedBy)
+})
 t('prune KEEPS a normal record whose transcript still exists, and marks the SENTINEL', () => {
   saveSessionRecord('p-norm-live', { adversary: false, repoPath: repo('p-norm-live', true) })
   pruneSessionRecords()

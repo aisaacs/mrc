@@ -137,6 +137,15 @@ export function pruneSessionRecords() {
     const r = loadSessionRecord(uuid)
     if (r.uuid === undefined) continue                        // vanished since the snapshot → nothing to do
     if (r.adversary || r.summonedBy) continue                 // NEVER an adversary — keep forever
+    // #56 bug C (Pierre t163): NEVER a team member. A member's record is a deterministic AUTH ANCHOR the daemon
+    // re-registers against (R1 secret + #38 verified-member); its transcript lives in a territorial/config-vol
+    // store, NOT repoPath/.mrc, so the transcript heuristic below never earns it `.seen` and the age backstop
+    // would reap it → the live member becomes un-re-registerable after a daemon restart. The transcript-lifecycle
+    // model is simply WRONG for an auth anchor ("is its transcript still there?" is the wrong question), so skip it
+    // here. `member` is host-set at launch (mrc.js, isMemberLaunch) and never mounted → unforgeable. Keep forever
+    // for now; the exact lifecycle is an org-membership-scoped reap (drop when the member leaves the org def), the
+    // authoritative source — NOT a transcript probe and NOT never. (Follow-up: task #58 / SoT pass.)
+    if (r.member) continue
     if (!r.repoPath) continue                                 // no path → ambiguous → keep
     const mrcDir = join(r.repoPath, '.mrc')
     let dirOk, exists

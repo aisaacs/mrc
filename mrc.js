@@ -1117,6 +1117,14 @@ if (roomsActive) {
       adversary: cagedAdversary || !!existingSec.adversary,
       secret: roomSecret,
       ...(adversarySlot ? { slot: adversarySlot } : {}),
+      // #56 bug C (Pierre t163): mark a team member's record so prune NEVER reaps it. A member's record is a
+      // deterministic AUTH ANCHOR (R1's secret + the #38 verified-member check re-register against it); its
+      // transcript lives in a territorial/config-vol store, NOT repoPath/.mrc, so prune's transcript heuristic
+      // never earns it `.seen` → the 1h age backstop reaped it → post-restart re-register hit #38 (no secret) →
+      // register-limbo. Keyed on the HOST-authoritative isMemberLaunch (memberCtx from the --member-def blob),
+      // never a wire signal → unforgeable, exactly like adversary:true. classifySession ignores `member` (keys on
+      // adversary||summonedBy), so a member stays 'normal' and R1/#38 are unchanged — this only stops the reap.
+      ...(isMemberLaunch ? { member: true } : {}),
     })
     envFlags.push('-e', `MRC_ROOM_SECRET=${roomSecret}`)
   } catch (e) {
