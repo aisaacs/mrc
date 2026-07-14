@@ -323,7 +323,7 @@ async function handle(req, res) {
     // GUI launch lifecycle: start the live members (each in its own ttyd), stop them, add/remove a
     // member. All proxy to the daemon. (Member terminal switching is client-side now — each member has
     // its own ttyd, so the dashboard just swaps the iframe; the old /api/team-select is gone.)
-    if (req.method === 'POST' && (url.pathname === '/api/team-launch' || url.pathname === '/api/team-stop' || url.pathname === '/api/team-delete' || url.pathname === '/api/team-add-member' || url.pathname === '/api/team-remove-member' || url.pathname === '/api/team-relaunch-member' || url.pathname === '/api/team-close-session' || url.pathname === '/api/kill-session' || url.pathname === '/api/authorize-repo' || url.pathname === '/api/graftresume' || url.pathname === '/api/team-web' || url.pathname === '/api/consult-dismiss' || url.pathname === '/api/consult-resume' || url.pathname === '/api/cast-consult')) {
+    if (req.method === 'POST' && (url.pathname === '/api/team-launch' || url.pathname === '/api/team-stop' || url.pathname === '/api/team-delete' || url.pathname === '/api/team-add-member' || url.pathname === '/api/team-remove-member' || url.pathname === '/api/team-relaunch-member' || url.pathname === '/api/team-close-session' || url.pathname === '/api/kill-session' || url.pathname === '/api/authorize-repo' || url.pathname === '/api/graftresume' || url.pathname === '/api/team-web' || url.pathname === '/api/consult-dismiss' || url.pathname === '/api/consult-resume' || url.pathname === '/api/cast-consult' || url.pathname === '/api/admin-kill' || url.pathname === '/api/admin-kill-project')) {
       let body = ''
       req.on('data', (d) => { body += d; if (body.length > 1e6) req.destroy() })
       req.on('end', async () => {
@@ -351,6 +351,8 @@ async function handle(req, res) {
         if (url.pathname === '/api/consult-dismiss') return sendJSON(res, 200, await ctrl(cp, 'dismissconsult', { org: j.org, handle: j.handle, secret: sec }))   // #56: reap a caged consult Pierre (removeTransientConsult + kill container) — consult-scoped, never a team action
         if (url.pathname === '/api/consult-resume') return sendJSON(res, 200, await ctrl(cp, 'resumeconsult', { org: j.org, summonerHandle: j.summonerHandle, secret: sec }))   // #56 Inc2: resume a specific past caged Pierre (record-verified, cage re-derived, --continue his conversation)
         if (url.pathname === '/api/cast-consult') return sendJSON(res, 200, await ctrl(cp, 'castconsult', { org: j.org, targetHandle: j.targetHandle, secret: sec }))   // #56 Inc3: 🎭 cast-add — summon Pierre for a picked team member (targetHandle verified host-side against the roster)
+        if (url.pathname === '/api/admin-kill') return sendJSON(res, 200, await ctrl(cp, 'adminkillone', { id: j.id, project: j.project, member: j.member, secret: sec }))   // #ADMIN: ctrl+alt+delete one session (capOk)
+        if (url.pathname === '/api/admin-kill-project') return sendJSON(res, 200, await ctrl(cp, 'adminkillproject', { project: j.project, secret: sec }))   // #ADMIN: ctrl+alt+delete a whole project (capOk)
         if (url.pathname === '/api/kill-session') return sendJSON(res, 200, await ctrl(cp, 'killsession', { id: j.id }))
         return sendJSON(res, 404, { ok: false, error: 'unknown team action' })
       })
@@ -539,6 +541,12 @@ async function handle(req, res) {
     if (req.method === 'GET' && url.pathname === '/api/sessions') {
       const meta = daemonMeta()
       const r = meta?.controlPort ? await ctrl(meta.controlPort, 'sessions') : { ok: false }
+      return sendJSON(res, 200, r?.ok ? r : { ok: false, sessions: [] })
+    }
+    if (req.method === 'GET' && url.pathname === '/api/admin-sessions') {   // #ADMIN: the task-manager list (grouped-by-project on the client)
+      const bad = rejectRead(req); if (bad) return sendJSON(res, bad.code, { error: bad.error })
+      const meta = daemonMeta()
+      const r = meta?.controlPort ? await ctrl(meta.controlPort, 'runningsessions') : { ok: false }
       return sendJSON(res, 200, r?.ok ? r : { ok: false, sessions: [] })
     }
     // #69-B: the SSE delta stream — replaces the dashboard's full-payload poll. Origin-gated (DNS-rebinding read

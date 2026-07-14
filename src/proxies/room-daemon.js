@@ -43,9 +43,27 @@ function ensureDockerHost() {
 function listMrcContainers() {
   ensureDockerHost()
   try {
-    const out = execFileSync('docker', ['ps', '--filter', 'label=mrc=1', '--format', '{{.ID}}\t{{.RunningFor}}\t{{.Label "mrc.repo.name"}}\t{{.Label "mrc.member"}}\t{{.Label "mrc.project"}}'], { encoding: 'utf8' })
-    return out.split('\n').filter(Boolean).map((l) => { const [id, up, repo, member, project] = l.split('\t'); return { id, up, repo: repo || '?', member: member || null, project: project || null } })
+    const out = execFileSync('docker', ['ps', '--filter', 'label=mrc=1', '--format', '{{.ID}}\t{{.RunningFor}}\t{{.Label "mrc.repo.name"}}\t{{.Label "mrc.member"}}\t{{.Label "mrc.project"}}\t{{.Label "mrc.adversary"}}'], { encoding: 'utf8' })
+    return out.split('\n').filter(Boolean).map((l) => { const [id, up, repo, member, project, adv] = l.split('\t'); return { id, up, repo: repo || '?', member: member || null, project: project || null, adversary: adv === '1' } })
   } catch { return [] }
+}
+// #ADMIN: batched `docker inspect` → { shortContainerId: MRC_SESSION_ID } so a STANDALONE terminal session (no
+// project/member label) can be named by its session name (via the daemon's knownNames). One inspect for all ids.
+function containerSessionIds(ids) {
+  if (!ids || !ids.length) return {}
+  ensureDockerHost()
+  try {
+    const out = execFileSync('docker', ['inspect', '--format', '{{.Id}}\t{{json .Config.Env}}', ...ids], { encoding: 'utf8' })
+    const map = {}
+    for (const line of out.split('\n').filter(Boolean)) {
+      const tab = line.indexOf('\t'); if (tab < 0) continue
+      const full = line.slice(0, tab), envRaw = line.slice(tab + 1)
+      let env = []; try { env = JSON.parse(envRaw) } catch {}
+      const e = env.find((x) => typeof x === 'string' && x.startsWith('MRC_SESSION_ID='))
+      if (e) map[full.slice(0, 12)] = e.slice('MRC_SESSION_ID='.length)
+    }
+    return map
+  } catch { return {} }
 }
 function killContainer(id) { ensureDockerHost(); try { execFileSync('docker', ['rm', '-f', id], { stdio: 'ignore' }); return true } catch { return false } }
 
@@ -1457,6 +1475,53 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           continue
         }
         if (f.action === 'sessions') { reply({ ok: true, sessions: listMrcContainers() }); continue }
+        if (f.action === 'runningsessions') {
+          // #ADMIN: the task-manager list — every running mrc container, enriched so the dashboard can group by
+          // project + label each: a PROJECT member by its member handle; a caged Pierre with the summoner it consults
+          // FOR; a STANDALONE terminal (no project) by its session NAME (resolved via MRC_SESSION_ID→knownNames, else
+          // the repo basename). Only NAMES + summoner leave the daemon — the container env (which holds secrets) is
+          // parsed in-daemon and only MRC_SESSION_ID is extracted, never returned. Read-only; no capOk needed.
+          const cs = listMrcContainers()
+          const sidMap = containerSessionIds(cs.filter((c) => !c.member).map((c) => c.id))
+          const sessions = cs.map((c) => {
+            let name = null, summoner = null
+            if (c.member && String(c.member).toLowerCase().startsWith('pierre.') && c.project) {
+              // derive the real summoner whose flattened handle mints this pierre handle (no lossy un-flatten guess)
+              const omap = engine._members.get(String(c.project))
+              if (omap) for (const m of omap.values()) { if (m.transient) continue; if (`pierre.${String(m.handle).replace('/', '-')}/claude` === String(c.member).toLowerCase()) { summoner = m.handle; break } }
+              if (!summoner) { const flat = String(c.member).split('/')[0].slice('pierre.'.length); summoner = flat.includes('-') ? `${flat.slice(0, flat.lastIndexOf('-'))}/${flat.slice(flat.lastIndexOf('-') + 1)}` : flat }
+            }
+            if (!c.member) { const sid = sidMap[c.id]; name = (sid && knownNames.get(sid)) || c.repo }
+            return { ...c, name, summoner }
+          })
+          reply({ ok: true, sessions }); continue
+        }
+        if (f.action === 'adminkillone' && f.id) {
+          // #ADMIN: ctrl+alt+delete a single session. capOk-gated (destructive: removes a container). A PROJECT member
+          // is reaped via killMember (container + dtach master + ttyd + label-kill); a transient Pierre ALSO has its
+          // routing reaped (removeTransientConsult + reapTransientSessions — the ▶ Resume record survives); a STANDALONE
+          // is a raw `docker rm -f`. killContainer(id) is the belt in every case.
+          if (!capOk(f)) { reply({ ok: false, error: 'adminkillone requires the control-capability secret' }); continue }
+          if (f.project && f.member && teamMod) { try { teamMod.killMember(f.project, f.member) } catch {} }
+          if (f.project && f.member && String(f.member).toLowerCase().startsWith('pierre.')) { try { engine.removeTransientConsult(f.project, f.member) } catch {} ; reapTransientSessions(f.project, [String(f.member).toLowerCase()]) }
+          const ok = killContainer(f.id)
+          daemonLog(`adminkill ${f.id}${f.member ? ` @${f.member}` : ''}${f.project ? ` in ${f.project}` : ''}`)
+          if (f.project) { try { broadcastEvent({ type: 'roster', org: f.project }) } catch {} }
+          reply({ ok }); continue
+        }
+        if (f.action === 'adminkillproject' && f.project) {
+          // #ADMIN: ctrl+alt+delete a whole project — stop every member session (killTeamSession: ttyds+masters→
+          // containers) + force-remove any straggler container by the mrc.project label. capOk-gated. Leaves the team
+          // DEFINED + all transcripts/history on disk (this is a KILL, not a Delete-project) — reopen from the command
+          // center. Any transient Pierre in the project reaps via killTeamSession's container kill + the GC.
+          if (!capOk(f)) { reply({ ok: false, error: 'adminkillproject requires the control-capability secret' }); continue }
+          if (teamMod) { try { teamMod.killTeamSession(f.project) } catch {} }
+          ensureDockerHost()
+          try { const ids = execFileSync('docker', ['ps', '-q', '--filter', `label=mrc.project=${f.project}`], { encoding: 'utf8' }).split('\n').map((s) => s.trim()).filter(Boolean); for (const id of ids) killContainer(id) } catch {}
+          daemonLog(`adminkillproject ${f.project} (all sessions force-stopped; team + history kept)`)
+          try { broadcastEvent({ type: 'roster', org: f.project }) } catch {}
+          reply({ ok: true }); continue
+        }
         // #42 chunk C: global runtime prefs (turn-cap + notification prefs). getprefs reports the LIVE
         // values; setprefs applies the turn-cap live (engine + legacy pairings) and persists to
         // user-prefs.json so it survives a restart (else it resets to the env/default).

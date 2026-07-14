@@ -498,7 +498,7 @@ const MEDIA_ROLE_BACKEND = { designer:'gemini', 'sound-designer':'elevenlabs', c
 const mediaBackend = (role) => MEDIA_ROLE_BACKEND[role] || null
 
 const S = {
-  building: false, projects: false, roomsHome: false, drawerOpen: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addingToOrg: null, addCustomRoles: [], amRepo: '', amRepoPicks: null, amName: 'Claude', amRole: 'generalist', amBackend: 'claude', amLead: false, amTerr: '', amAdvanced: false, showDismissed: false, showHandled: false, replyTo: null, jumpTarget: null, flash: null, roomDrafts: {},
+  building: false, projects: false, roomsHome: false, adminHome: false, adminSessions: null, drawerOpen: false, org: null, selRoom: null, selInbox: null, selMember: null, selHome: false, settingsOpen: false, settings: null, workerLog: '', tab: 'thread', addingTo: null, addingToOrg: null, addCustomRoles: [], amRepo: '', amRepoPicks: null, amName: 'Claude', amRole: 'generalist', amBackend: 'claude', amLead: false, amTerr: '', amAdvanced: false, showDismissed: false, showHandled: false, replyTo: null, jumpTarget: null, flash: null, roomDrafts: {},
   _wmCur: null, _wmLatest: 0, _openWm: {},   // #63-F unread watermark: the room/channel currently open + its latest position + the per-key captured-at-open boundary
   notifyEnabled: (()=>{ try { return localStorage.getItem('mrc-notify')==='1' } catch { return false } })(),
   notifyPrefs: { chime:true, questions:true, fyis:true },   // server-backed (#42c); loaded once on boot, defaults preserve prior behavior
@@ -712,6 +712,7 @@ const launchFor = () => (S.teams.launch||[]).find(x=>x.org===S.org && x.running)
 // #47: the @you channel's detailKey uses channelSig() (folds every item's RESOLUTION into the key, so a
 // REMOTE resolve — e.g. answered via Telegram — re-renders the channel) and FREEZES while composing.
 const detailKey = () => S.building ? 'build'
+  : S.adminHome ? 'adminhome:'+(S.adminSessions ? S.adminSessions.map(s=>s.id+':'+(s.up||'')).join(',') : 'loading')   // #ADMIN task-manager
   : S.roomsHome ? (S.selRoom ? 'roomshome:room:'+S.selRoom+':'+S.tab : 'roomshome:list:'+mergedRooms().map(r=>r.roomId+':'+r.state).join(','))   // §13 daemon Rooms screen (list, or a dedicated room view)
   : S.projects ? 'projects:'+projectsSig()   // P2: re-render the landing when any project's state/needs-you changes
   : S.selHome ? 'home:'+(S.org||'')+':'+(S.settings?'s':'-')   // #61: rebuild once settings load (for the --web note)
@@ -732,7 +733,7 @@ function paint() {
   // (S.building=false) drops the class and restores the layout.
   $('.app').classList.toggle('build-takeover', S.building && builderIsFresh())
   $('.app').classList.toggle('projects-takeover', S.projects && !S.building)   // P2: the command-center Projects landing
-  $('.app').classList.toggle('rooms-takeover', S.roomsHome && !S.building)   // §13: the daemon-wide Rooms screen
+  $('.app').classList.toggle('rooms-takeover', (S.roomsHome || S.adminHome) && !S.building)   // §13: the daemon-wide Rooms screen; #ADMIN reuses the same full-width takeover
   drawerRender()
   // #47: the add-agent form freezes renderMain (to protect its inputs during polls) — but if the project CHANGED
   // out from under an open add-form (switching tabs mid-add), that freeze would leave the left pane STALE on the old
@@ -896,6 +897,7 @@ window.amRepoChoose = ()=>{ openFolderChooser((path)=>{ S.amRepo = path; recentR
 function renderDetail() {
   const d = $('#detail')
   if (S.building) return renderBuilder(d)
+  if (S.adminHome) return renderAdminHome(d)
   if (S.roomsHome) return renderRoomsHome(d)
   if (S.projects) return renderProjects(d)
   if (S.selHome) return renderProjectHome(d)
@@ -1808,8 +1810,12 @@ const avColor = (n)=>{ let h=0; const s=String(n||''); for(let i=0;i<s.length;i+
 window.openProjects = ()=>{ if (!confirmLeaveBuilder()) return; leaveUnread(); S.projects=true; S.roomsHome=false; S.building=false; S.selHome=S.selRoom=S.selInbox=S.selMember=null; paint() }
 // ---- ☰ drawer + daemon-wide Rooms screen (§13) ----
 window.toggleDrawer = ()=>{ S.drawerOpen=!S.drawerOpen; drawerRender() }
-window.drawerGo = (v)=>{ S.drawerOpen=false; drawerRender(); if(v==='projects') openProjects(); else openRoomsHome() }
-window.openRoomsHome = ()=>{ if(!confirmLeaveBuilder())return; leaveUnread(); S.roomsHome=true; S.projects=false; S.building=false; S.selHome=S.selRoom=S.selInbox=S.selMember=null; paint() }
+window.drawerGo = (v)=>{ S.drawerOpen=false; drawerRender(); if(v==='projects') openProjects(); else if(v==='admin') openAdminHome(); else openRoomsHome() }
+window.openRoomsHome = ()=>{ if(!confirmLeaveBuilder())return; leaveUnread(); S.roomsHome=true; S.adminHome=false; S.projects=false; S.building=false; S.selHome=S.selRoom=S.selInbox=S.selMember=null; paint() }
+// #ADMIN: the running-sessions task-manager (a full-width takeover like Rooms). Fetches /api/admin-sessions on open
+// + a manual refresh; groups by project client-side.
+window.openAdminHome = ()=>{ if(!confirmLeaveBuilder())return; leaveUnread(); S.adminHome=true; S.roomsHome=false; S.projects=false; S.building=false; S.selHome=S.selRoom=S.selInbox=S.selMember=null; S.adminSessions=null; refreshAdmin(); paint() }
+async function refreshAdmin(){ try{ const r=await api('/api/admin-sessions'); S.adminSessions = (r&&r.sessions)||[] }catch{ S.adminSessions=[] } if(S.adminHome) paint() }
 function drawerRender() {
   const h=$('#drawer'); if(!h)return
   if(!S.drawerOpen){ h.innerHTML=''; return }
@@ -1818,7 +1824,8 @@ function drawerRender() {
     <div class="dpanel" role="dialog" aria-label="Menu">
       <button class="ditem ${S.projects?'on':''}" onclick="drawerGo('projects')"><span>🗂</span> Projects <span class="dct">${nProj}</span></button>
       <button class="ditem ${S.roomsHome?'on':''}" onclick="drawerGo('rooms')"><span>◎</span> Rooms <span class="dct">${nRooms}</span></button>
-      <div style="margin-top:auto;font-size:11px;color:var(--dim);padding:8px 12px;line-height:1.5">Rooms lists every open room on the daemon — read any <code>thread.log</code> without opening its project.</div>
+      <button class="ditem ${S.adminHome?'on':''}" onclick="drawerGo('admin')"><span>🖥</span> Running sessions</button>
+      <div style="margin-top:auto;font-size:11px;color:var(--dim);padding:8px 12px;line-height:1.5">Running sessions is the task-manager — every live container across all projects, force-stop one or a whole project.</div>
     </div></div>`
 }
 // brake/resume via the EXISTING cap+CSRF-gated act()→/api/action door. STEER is NOT a button here (Pierre): it
@@ -1845,6 +1852,37 @@ function renderRoomsHome(d) {
     <div class="muted" style="font-size:12.5px;margin-bottom:16px">Every open room across all projects and consults — with its controls and full <code>thread.log</code>, without opening the project. You know a room by its members.</div>
     ${rooms.length?rooms.map(card).join(''):'<div class="muted">No open rooms.</div>'}</div>`
 }
+// #ADMIN: the running-sessions task-manager — every live mrc container, grouped by project. Labels: a project
+// member by its first name; a caged Pierre with the summoner it consults FOR; a standalone terminal by its
+// session name. Force-stop one session or a whole project (team + history stay — a KILL, not a Delete).
+function renderAdminHome(d){
+  const ss = S.adminSessions
+  if(!ss){ d.innerHTML=`<div class="rmwrap"><div class="eyebrow">Daemon</div><h1 style="margin:2px 0 4px;font-size:22px">Running sessions</h1><div class="muted">Loading…</div></div>`; return }
+  const cap=(s)=>s?s.charAt(0).toUpperCase()+s.slice(1):s
+  const first=(h)=>cap(String(h||'').split('/')[0])
+  const byProj={}; const standalone=[]
+  for(const s of ss){ if(s.project){(byProj[s.project] ||= []).push(s)} else standalone.push(s) }
+  const kill=(s)=>`<button class="btn tiny" style="color:var(--danger);border-color:var(--danger)" data-id="${esc(s.id)}" data-p="${esc(s.project||'')}" data-m="${esc(s.member||'')}" onclick="adminKillOne(this.dataset.id,this.dataset.p,this.dataset.m)" title="Force-stop this session (docker rm -f)">🗑 kill</button>`
+  const row=(s)=>{
+    let nm, sub
+    if(s.member && String(s.member).toLowerCase().startsWith('pierre.')){ nm=`⛓ Pierre`; sub=`caged adversary · consulting @${esc(first(s.summoner)||'?')}` }
+    else if(s.member){ nm=esc(first(s.member)); sub=`agent · @${esc(s.member)}` }
+    else { nm=esc(s.name||s.repo||'session'); sub=`terminal · ${esc(s.repo||'?')}` }
+    return `<div class="mem" style="cursor:default"><div class="who"><div class="nm" style="text-transform:none">${nm}</div><div class="role">${sub} <span class="bk">· up ${esc(s.up||'?')}</span></div></div>${kill(s)}</div>`
+  }
+  let html=`<div class="rmwrap"><div class="eyebrow">Daemon</div><h1 style="margin:2px 0 4px;font-size:22px">Running sessions <span class="muted" style="font-weight:400;font-size:13px">· ${ss.length}</span></h1>
+    <div class="muted" style="font-size:12.5px;margin-bottom:16px">Every live container across all projects — force-stop one session or a whole project (the team + all history stay; reopen from the command center). <button class="btn tiny" onclick="refreshAdmin()" style="margin-left:6px">↻ Refresh</button></div>`
+  for(const proj of Object.keys(byProj)){ const list=byProj[proj]
+    html+=`<div class="team"><div class="tn" style="display:flex;align-items:center">${esc(proj)} <span class="muted" style="font-weight:400;margin-left:6px">· ${list.length} session${list.length===1?'':'s'}</span>
+      <button class="btn tiny" style="margin-left:auto;color:var(--danger);border-color:var(--danger)" data-p="${esc(proj)}" onclick="adminKillProject(this.dataset.p)" title="Force-stop EVERY session in this project (team + history kept)">🗑 kill project</button></div>
+      ${list.map(row).join('')}</div>`
+  }
+  if(standalone.length){ html+=`<div class="team"><div class="tn">Terminal sessions <span class="muted" style="font-weight:400">· ${standalone.length}</span></div>${standalone.map(row).join('')}</div>` }
+  if(!ss.length){ html+=`<div class="muted">No running sessions.</div>` }
+  d.innerHTML = html+`</div>`
+}
+window.adminKillOne=async(id,project,member)=>{ if(!confirm('Force-stop this session? (docker rm -f — its terminal dies; a project team + its history stay)'))return; const r=await actJSON('/api/admin-kill',{id,project:project||undefined,member:member||undefined}); if(!r.ok)return flashFail(r); S.flash=null; refreshAdmin() }
+window.adminKillProject=async(project)=>{ if(!confirm('Force-stop EVERY session in "'+project+'"? The team + all transcripts/history stay — reopen from the command center. (A kill, not a Delete.)'))return; const r=await actJSON('/api/admin-kill-project',{project}); if(!r.ok)return flashFail(r); S.flash=null; refreshAdmin(); tick() }
 // §5.1: the tile IS the resume — opening a SUSPENDED project relaunches it (one gesture; each live agent
 // --continues its own conversation). A running project just opens (home for the active org, else switch).
 // Peek-without-launch stays available via ☰ Rooms (read any thread.log without spinning up containers).
