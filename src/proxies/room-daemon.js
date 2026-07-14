@@ -898,8 +898,15 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // a garbled summoner → addTransientConsult's "not a real member" gate refuses). Fail-closed: no summoner repo → refuse.
   function buildCagedConsult(org, summonerHandle) {
     const sh = String(summonerHandle).toLowerCase()
-    const repo = loadSessionRecord(memberSessionId(org, sh)).repoPath
-    if (!repo) return { ok: false, error: `no host repo path on record for the summoner @${summonerHandle}` }
+    // repo (V1): the summoner's OWN tamper-proof session record repoPath is primary. FALLBACK to the org def's member
+    // repo (also HOST-AUTHORITATIVE — the human-authorized roster value persisted in orgDefs/room-orgs.json, never
+    // member-written), because the session record is EPHEMERAL: pruneSessionRecords evicts old records, so a resume
+    // after a restart (+ other projects' launches pruning the dir) failed with "no host repo path". The def is durable.
+    // Both are host-set, so the fallback is safe — it never reads a wire value or a member-writable file.
+    const def = orgDefs.get(String(org))
+    const defMember = def && (def.members || []).find((m) => String(m.handle).toLowerCase() === sh)
+    const repo = loadSessionRecord(memberSessionId(org, sh)).repoPath || (defMember && defMember.repo) || (def && def.repo)
+    if (!repo) return { ok: false, error: `no repo on record for the summoner @${summonerHandle} — relaunch its team so its repo is on the org def` }
     const pierreHandle = `pierre.${sh.replace('/', '-')}/claude`        // "."-keyspace (SAFE_NAME-disjoint), unique+stable per summoner
     const consultId = safeName(`consult-${sh.replace('/', '-')}-pierre`)  // human-readable, deterministic, traversal-clean (validated handle)
     const pierreSessionId = memberSessionId(org, pierreHandle)
