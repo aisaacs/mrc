@@ -45,6 +45,14 @@ import { join } from 'node:path'
 //                         launch from this record; R1 authenticates a register against THIS record. No stale mirror.
 //   record.repoPath     — authoritative for a normal session's repo; a MEMBER's mount authority is the org def
 //                         through resolveMemberRepo (authorized-set-gated), NOT a bare stored path (see buildCagedConsult).
+//                         MOUNT ESCAPE-SAFE BY CONSTRUCTION (Pierre t167, both the caged :ro mount AND the normal
+//                         member repo/territory mount): canonicalMountSource (mount-guard.js:51) realpaths the
+//                         source — resolving ANY symlink, incl. one inside the repo pointing outward — and asserts
+//                         within(repoReal, target) (a `=== || startsWith(root+sep)` boundary, not sibling-prefix-
+//                         foolable), THROWING on escape. So even a malicious/symlinked territory in the def can't
+//                         escape the repo root at mount → this row is closed at USE regardless of def integrity, not
+//                         merely guard-3-dependent. (The cage source is ALSO re-gated through resolveMemberRepo at
+//                         mint — edee86f — so the highest-stakes mount is double-covered.)
 //   liveness (is it up?) — NOT in this record; authoritative source is the daemon `sessions` Map (live socket).
 //   org membership       — NOT here; authoritative source is orgDefs (loadOrgs). A member record's LIFETIME should
 //                         track org membership (reap on org-leave), not a transcript proxy and not never (task #59).
