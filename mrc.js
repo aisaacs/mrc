@@ -584,6 +584,14 @@ if (config.resumeSession && isAdversarySession(config.resumeSession)) {
 // together). The memberCtx-branch sites (workspace/rooms/config-vol) still differ via their own tested helpers.
 const memberCageIsAdversary = !!(memberCtx?.member?.cage && cageIsAdversary(memberCtx.member.cage))
 const cagedAdversary = !!(config.summonedBy || config.cageAdversary || memberCageIsAdversary)
+// #56 RESUME FIX: a caged/transient adversary MEMBER (Pierre) reuses its DETERMINISTIC session id (memberSessionId).
+// On a RELAUNCH — the dashboard ▶ Resume / a re-summon of a dead one — its prior conversation ALREADY exists in its
+// login vol, so the member path's default (`--session-id <id>`, the fresh-CREATE flag) collides: "Session ID … is
+// already in use" → the container exits on boot (why the resumed Pierre never came up). Route it through RESUME_SESSION
+// instead: container-setup writes `--resume <id>` WHEN the transcript exists, and SELF-CORRECTS to `--session-id`
+// create when it doesn't (a genuinely fresh summon). So this is safe for BOTH — fresh mints still create, relaunches
+// resume the prior conversation. Host-side (no rebuild); it just needs RESUME_SESSION set before the env is built.
+if (memberCageIsAdversary && memberCtx?.sessionId && !config.newSession) config.resumeSession = memberCtx.sessionId
 // #11 (coverage-critic): the CONFIG-VOLUME selection keys on adversary IDENTITY, not cage STATE. A recorded adversary
 // reopened with --open-adversary-unsafe is uncaged (cagedAdversary=false: rw /workspace + full egress, deliberately)
 // but is STILL an adversary — it must reattach its dedicated -pierre-N volume, NEVER the user's real login/config
