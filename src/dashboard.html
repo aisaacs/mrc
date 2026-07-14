@@ -1865,7 +1865,12 @@ function renderAdminHome(d){
   const kill=(s)=>`<button class="btn tiny" style="color:var(--danger);border-color:var(--danger)" data-id="${esc(s.id)}" data-p="${esc(s.project||'')}" data-m="${esc(s.member||'')}" onclick="adminKillOne(this.dataset.id,this.dataset.p,this.dataset.m)" title="Force-stop this session (docker rm -f)">🗑 kill</button>`
   const row=(s)=>{
     let nm, sub
-    if(s.member && String(s.member).toLowerCase().startsWith('pierre.')){ nm=`⛓ Pierre`; sub=`caged adversary · consulting @${esc(first(s.summoner)||'?')}` }
+    if(s.adversary){   // a Pierre — identity from the durable host record. Team-consult → who he consults FOR; legacy summon → the session he's attached to.
+      nm=`⛓ Pierre`
+      sub = (s.member && s.project)
+        ? `caged adversary · consulting @${esc(first(s.summoner)||'?')}`
+        : `adversary · attached to ${esc(s.summoner||s.name||s.repo||'a session')}`
+    }
     else if(s.member){ nm=esc(first(s.member)); sub=`agent · @${esc(s.member)}` }
     else { nm=esc(s.name||s.repo||'session'); sub=`terminal · ${esc(s.repo||'?')}` }
     return `<div class="mem" style="cursor:default"><div class="who"><div class="nm" style="text-transform:none">${nm}</div><div class="role">${sub} <span class="bk">· up ${esc(s.up||'?')}</span></div></div>${kill(s)}</div>`

@@ -1476,25 +1476,34 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         }
         if (f.action === 'sessions') { reply({ ok: true, sessions: listMrcContainers() }); continue }
         if (f.action === 'runningsessions') {
-          // #ADMIN: the task-manager list — every running mrc container, enriched so the dashboard can group by
-          // project + label each: a PROJECT member by its member handle; a caged Pierre with the summoner it consults
-          // FOR; a STANDALONE terminal (no project) by its session NAME (resolved via MRC_SESSION_ID→knownNames, else
-          // the repo basename). Only NAMES + summoner leave the daemon — the container env (which holds secrets) is
-          // parsed in-daemon and only MRC_SESSION_ID is extracted, never returned. Read-only; no capOk needed.
+          // #ADMIN: the task-manager list. Identity is driven by the SESSION META (the durable host record — the
+          // source of truth), NOT the volatile docker labels / in-memory names (which is why a just-restarted daemon
+          // shows "mrc" before a session re-registers). Every container's MRC_SESSION_ID → loadSessionRecord gives the
+          // TAMPER-PROOF `adversary` (is it a Pierre?) + `summonedBy` (what session it's attached to), both of which
+          // survive a restart. The display NAME comes from the registered-session meta (knownNames / sessions.label,
+          // repopulating as sessions re-register), else the repo. Only names/summoner/labels leave the daemon — the
+          // container env (which holds SECRETS) is parsed in-daemon, only MRC_SESSION_ID is extracted, never returned.
           const cs = listMrcContainers()
-          const sidMap = containerSessionIds(cs.filter((c) => !c.member).map((c) => c.id))
-          const sessions = cs.map((c) => {
+          const sidMap = containerSessionIds(cs.map((c) => c.id))   // inspect ALL now (need the record for every one)
+          const out = cs.map((c) => {
+            const sid = sidMap[c.id] || null
+            const rec = sid ? loadSessionRecord(sid) : {}
+            const isAdv = rec.adversary === true || c.adversary   // SOURCE OF TRUTH = the durable host record; the mrc.adversary label is a belt
             let name = null, summoner = null
-            if (c.member && String(c.member).toLowerCase().startsWith('pierre.') && c.project) {
-              // derive the real summoner whose flattened handle mints this pierre handle (no lossy un-flatten guess)
-              const omap = engine._members.get(String(c.project))
-              if (omap) for (const m of omap.values()) { if (m.transient) continue; if (`pierre.${String(m.handle).replace('/', '-')}/claude` === String(c.member).toLowerCase()) { summoner = m.handle; break } }
-              if (!summoner) { const flat = String(c.member).split('/')[0].slice('pierre.'.length); summoner = flat.includes('-') ? `${flat.slice(0, flat.lastIndexOf('-'))}/${flat.slice(flat.lastIndexOf('-') + 1)}` : flat }
+            if (isAdv) {
+              if (c.member && String(c.member).toLowerCase().startsWith('pierre.') && c.project) {
+                // a TEAM-consult Pierre → the summoner it consults FOR (match a real member's minted pierreHandle)
+                const omap = engine._members.get(String(c.project))
+                if (omap) for (const m of omap.values()) { if (m.transient) continue; if (`pierre.${String(m.handle).replace('/', '-')}/claude` === String(c.member).toLowerCase()) { summoner = m.handle; break } }
+              } else if (rec.summonedBy) {
+                // a LEGACY summon → the SESSION it's attached to (record.summonedBy → that session's name)
+                summoner = knownNames.get(rec.summonedBy) || sessions.get(rec.summonedBy)?.label || String(rec.summonedBy).slice(0, 8)
+              }
             }
-            if (!c.member) { const sid = sidMap[c.id]; name = (sid && knownNames.get(sid)) || c.repo }
-            return { ...c, name, summoner }
+            if (!c.member) name = (sid && (knownNames.get(sid) || sessions.get(sid)?.label)) || c.repo
+            return { ...c, adversary: isAdv, name, summoner }
           })
-          reply({ ok: true, sessions }); continue
+          reply({ ok: true, sessions: out }); continue
         }
         if (f.action === 'adminkillone' && f.id) {
           // #ADMIN: ctrl+alt+delete a single session. capOk-gated (destructive: removes a container). A PROJECT member
