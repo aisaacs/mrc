@@ -1496,8 +1496,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
                 const omap = engine._members.get(String(c.project))
                 if (omap) for (const m of omap.values()) { if (m.transient) continue; if (`pierre.${String(m.handle).replace('/', '-')}/claude` === String(c.member).toLowerCase()) { summoner = m.handle; break } }
               } else if (rec.summonedBy) {
-                // a LEGACY summon → the SESSION it's attached to (record.summonedBy → that session's name)
-                summoner = knownNames.get(rec.summonedBy) || sessions.get(rec.summonedBy)?.label || String(rec.summonedBy).slice(0, 8)
+                // a LEGACY summon → the SESSION it's attached to (record.summonedBy → that session's NAME). Pierre t155:
+                // resolve to a NAME only; the final fallback is a placeholder, NEVER a session-id fragment — a sessionId
+                // must never leave the daemon (the id-slice fallback was reachable right after a restart, before the
+                // summoner re-registers, which is exactly this change's window). Load the whole record for authority,
+                // but let ONLY display-class fields out (a bool, a resolved name).
+                summoner = knownNames.get(rec.summonedBy) || sessions.get(rec.summonedBy)?.label || 'a prior session'
               }
             }
             if (!c.member) name = (sid && (knownNames.get(sid) || sessions.get(sid)?.label)) || c.repo
