@@ -926,7 +926,7 @@ export function reposAction(sub, org, repoArg) {
   }
 }
 
-export async function teamCommand(argv) {
+export async function teamCommand(argv, { web = false } = {}) {   // #57: `web` = config.allowWeb, threaded by mrc.js (parseArgs strips --web from argv, so it can't be read here)
   const sub = argv[0] || 'status'
   const rest = argv.slice(1)
   const flag = (name) => { const i = rest.indexOf(name); return i >= 0 ? rest[i + 1] : null }
@@ -1006,7 +1006,7 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
         for (const m of live) console.log(`      node ${memberArgv(repoPath, m, path, norm.org).join(' ')}`)
         return
       }
-      const r = await startTeamSession(norm, repoPath, { rosterPath: path, web: rest.includes('--web') })   // #57: per-project egress — the daemon spawns `mrc team up … --web` when the org's web setting is on
+      const r = await startTeamSession(norm, repoPath, { rosterPath: path, web })   // #57: per-project egress — `web` (config.allowWeb) is threaded from mrc.js; the daemon spawns `mrc team up … --web` when the org's web setting is on
       if (!r.ok) { console.error(`  ✗ ${r.error}`); process.exit(1) }
       console.log(r.already
         ? '  ◎ team already running — its member terminals are up in the dashboard Console:'

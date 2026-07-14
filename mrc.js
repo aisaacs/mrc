@@ -180,7 +180,7 @@ if (remaining[0] === 'dashboard') {
 // --- Subcommand: mrc team (assemble/launch a team of agents from a roster; no API key) ---
 if (remaining[0] === 'team') {
   const { teamCommand } = await import('./src/commands/team.js')
-  await teamCommand(remaining.slice(1))
+  await teamCommand(remaining.slice(1), { web: config.allowWeb })   // #57: --web is a RECOGNIZED flag → parseArgs consumes it into config.allowWeb and strips it from `remaining`, so teamCommand can't see it via rest.includes('--web'). Thread the parsed value in directly.
   process.exit(0)
 }
 
