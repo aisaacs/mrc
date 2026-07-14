@@ -25,7 +25,7 @@ import { canonicalWriteTarget } from '../mount-guard.js'   // #49: realpath-cano
 import { resolveTerritoryImage } from '../safe-path.js'   // #56: shared dual-containment (repo + territory) image guard
 import { leadsRoomId } from '../teams/roster.js'
 import { repoEnvKeyStrict } from '../config.js'
-import { resolveOrgRootForOrg, recordActivatedRoot, isActivatedRoot, clearOrgRoot, clearActivatedRoots, addAuthorizedRepo, orgAnchorDir } from '../teams/repo-auth.js'   // guard-1: write-once org root + pin/activate separation; addAuthorizedRepo = the human-only cross-repo/Model-B authorize (SOLE set writer besides the CLI); orgAnchorDir = Model B's neutral host-only identity anchor
+import { resolveOrgRootForOrg, recordActivatedRoot, isActivatedRoot, clearOrgRoot, clearActivatedRoots, addAuthorizedRepo, orgAnchorDir, resolveMemberRepo } from '../teams/repo-auth.js'   // guard-1: write-once org root + pin/activate separation; addAuthorizedRepo = the human-only cross-repo/Model-B authorize (SOLE set writer besides the CLI); orgAnchorDir = Model B's neutral host-only identity anchor
 import { decideModelB, projectSessionSlices, graftSession, writeActiveSessionPointer } from '../mrc-store.js'   // Model B PREDICT (cap=2 label) + #44 symmetric-resume: the host-verified session-slice whitelist + the cross-slice graft/pointer primitives (same as c7f55b8's create-form path)
 import { imageIdAndLabels } from '../docker.js'
 
@@ -898,14 +898,22 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // a garbled summoner → addTransientConsult's "not a real member" gate refuses). Fail-closed: no summoner repo → refuse.
   function buildCagedConsult(org, summonerHandle) {
     const sh = String(summonerHandle).toLowerCase()
-    // repo (V1): the summoner's OWN tamper-proof session record repoPath is primary. FALLBACK to the org def's member
-    // repo (also HOST-AUTHORITATIVE — the human-authorized roster value persisted in orgDefs/room-orgs.json, never
-    // member-written), because the session record is EPHEMERAL: pruneSessionRecords evicts old records, so a resume
-    // after a restart (+ other projects' launches pruning the dir) failed with "no host repo path". The def is durable.
-    // Both are host-set, so the fallback is safe — it never reads a wire value or a member-writable file.
+    // repo = the caged :ro mount BASE. PRIMARY: the summoner's tamper-proof session record repoPath (V1 truth — where
+    // their work ACTUALLY is; strictly more correct than the def if they relaunched from a different path). FALLBACK
+    // (the record is EPHEMERAL — pruneSessionRecords evicts it, so a resume after a restart+prune hit "no host repo
+    // path"): the org def's member repo — but RE-GATED through resolveMemberRepo at MOUNT-BUILD (Pierre t159), so the
+    // def-derived path is re-verified against the org's human-authorized set at USE time, not merely trusted-as-stored.
+    // This makes the NEW cage-mount source authorized-set-verified regardless of how orgDefs got its value (a member
+    // can't reach defineOrg — control socket — but a cross-uid host write or a stale def can't slip an un-authorized
+    // path into the :ro mount either). Same discipline as the whole run: re-verify the security field, don't trust the
+    // stored projection.
     const def = orgDefs.get(String(org))
     const defMember = def && (def.members || []).find((m) => String(m.handle).toLowerCase() === sh)
-    const repo = loadSessionRecord(memberSessionId(org, sh)).repoPath || (defMember && defMember.repo) || (def && def.repo)
+    let repo = loadSessionRecord(memberSessionId(org, sh)).repoPath
+    if (!repo && def) {
+      const candidate = (defMember && defMember.repo) || def.repo   // member.repo IS the mount BASE (repo root), not a territory sub-path (Pierre b)
+      if (candidate) { try { repo = resolveMemberRepo(def.repo, candidate, String(org), { modelB: !!def.anchor }) } catch (e) { return { ok: false, error: `summoner @${summonerHandle}'s repo is not authorized for "${org}" (${e?.message || e})` } } }
+    }
     if (!repo) return { ok: false, error: `no repo on record for the summoner @${summonerHandle} — relaunch its team so its repo is on the org def` }
     const pierreHandle = `pierre.${sh.replace('/', '-')}/claude`        // "."-keyspace (SAFE_NAME-disjoint), unique+stable per summoner
     const consultId = safeName(`consult-${sh.replace('/', '-')}-pierre`)  // human-readable, deterministic, traversal-clean (validated handle)
