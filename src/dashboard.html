@@ -974,7 +974,14 @@ function renderTerminal(d, m) {
     body = `<div class="empty">Building @${esc(m.first)}'s image — first run takes a few minutes. The terminal appears here once it's up.</div>`
   } else if (state === 'starting') {
     body = `<div class="empty">@${esc(m.first)} is starting — its terminal appears here in a moment.</div>`
-  } else {   // dead / no live launch
+  } else if (m.online || m.launched) {
+    // #56: the member is ONLINE (the chip reads "ready") but its launch-record terminal state hasn't reconciled to
+    // 'serve' yet (the poll lags a fresh resume/summon). Show the TRUTH — it's up, the terminal is attaching — instead
+    // of a misleading "isn't launched" (which disagrees with the ready chip and made the owner refresh). tick() forces
+    // a fresh /api/teams fetch so the terminal appears without a manual refresh.
+    body = `<div class="empty">@${esc(m.first)} is up — attaching its terminal…<div style="margin-top:10px"><button class="btn tiny" onclick="tick()">↻ refresh now</button></div></div>`
+    try { setTimeout(() => { if (S.selMember === m.handle) tick() }, 700) } catch {}
+  } else {   // genuinely dead / no live launch
     body = `<div class="empty">@${esc(m.first)} isn't launched. Build + <b>🚀 Launch</b> the team (or <code>mrc team up</code>).</div>`
   }
   d.innerHTML = removeBtn + body
