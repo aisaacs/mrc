@@ -245,7 +245,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
       handle: pierre.handle, first: pierre.first || pierre.handle, role: pierre.role || 'adversary', team: null,
       lead: false, backend: pierre.backend || 'claude', tier: 'live', territory: null, mount: 'ro', org: orgId,
       repo: pierre.repo || null, crossRepo: false, ...(pierre.cage ? { cage: pierre.cage } : {}),
-      sessionId: omap.get(ph)?.sessionId ?? null, transient: true,
+      sessionId: omap.get(ph)?.sessionId ?? null, transient: true, consultWith: target,   // consultWith: the real member Pierre consults FOR — lets the dashboard attach him to THAT member's team card, not a phantom "null" team
     })
     const memberMap = new Map()
     memberMap.set(target, { role: t.role || '', lead: false })
@@ -873,7 +873,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     for (const omap of members.values()) for (const m of omap.values()) allMembers.push(m)
     return {
       orgs: [...orgs.values()],
-      members: allMembers.map((m) => ({ handle: m.handle, first: m.first, role: m.role, team: m.team, lead: m.lead, backend: m.backend, tier: m.tier, org: m.org, online: online(m.org, m.handle), status: m.status || null })),
+      members: allMembers.map((m) => ({ handle: m.handle, first: m.first, role: m.role, team: m.team, lead: m.lead, backend: m.backend, tier: m.tier, org: m.org, online: online(m.org, m.handle), status: m.status || null, ...(m.transient ? { transient: true, consultWith: m.consultWith || null } : {}) })),   // #56: mark a transient consult participant (caged Pierre) so the dashboard renders it as a consult chip on its summoner's team, not a "null" team
       rooms: [...rooms.values()].map((r) => ({
         roomId: r.roomId, kind: r.kind, team: r.team, org: r.org, state: r.state, pauseReason: r.pauseReason,
         turn: r.turn, turnCap: r.turnCap, members: [...r.members.keys()],

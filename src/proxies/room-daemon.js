@@ -874,7 +874,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     // members), UNIQUE per summoner + STABLE (a re-summon after dismiss reuses the handle → its caged config-vol →
     // login persists). The roomId hashes (org, pierreHandle) so it's the daemon's OWN value (Pierre 3a), never a wire.
     const pierreHandle = `pierre.${summonerHandle.replace('/', '-')}/claude`
-    const consultId = `consult-${createHash('sha1').update(`${org}\0${pierreHandle}`).digest('hex').slice(0, 12)}`
+    // Human-readable + deterministic + filesystem-safe roomId (owner: the raw hash wasn't legible). Unique per
+    // summoner (its flattened handle) → a re-summon reuses the same consult. safeName strips anything unsafe.
+    const consultId = safeName(`consult-${summonerHandle.replace('/', '-')}-pierre`)
     const reapPartial = () => { try { engine.removeTransientConsult(org, pierreHandle) } catch {} ; reapTransientSessions(org, [pierreHandle.toLowerCase()]); summoningPrivate.delete(issuerId) }
     // ENGINE containment core (Pierre-signed): seat Pierre in the [summoner, pierre] consult room. Host-built pierre obj.
     const r = engine.addTransientConsult(org, { pierre: { handle: pierreHandle, first: 'Pierre', role: 'adversary', backend: 'claude', cage: 'adversary', repo }, withHandle: summonerHandle, roomId: consultId })
@@ -1545,6 +1547,17 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           try { teamMod.killMember(f.org, f.handle); daemonLog(`closemember ${f.org}: @${f.handle} (session stopped, roster kept)`); reply({ ok: true }) }
           catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
           continue
+        }
+        if (f.action === 'dismissconsult' && f.org && f.handle) {
+          // #56 (Pierre-gated): the EXPLICIT-dismiss reap for a transient consult Pierre — the ↩ Dismiss Pierre control
+          // (the 3rd death path, alongside orphan-reap + launch-failure). removeTransientConsult drops the engine omap
+          // entry + the consult room; reapTransientSessions deletes the sessionIndex entry + kills the caged container.
+          // A state-change (kills a container) → capOk-gated. removeTransientConsult REFUSES a real member (only ever
+          // acts on a `transient` participant), so this control can never remove a teammate even if mis-targeted.
+          if (!capOk(f)) { reply({ ok: false, error: 'dismissconsult requires the control-capability secret' }); continue }
+          const r = engine.removeTransientConsult(f.org, f.handle)
+          if (r.ok) { reapTransientSessions(f.org, [r.handle]); daemonLog(`dismissconsult ${f.org}: @${f.handle} (caged consult reaped)`); broadcastEvent({ type: 'roster', org: f.org }) }
+          reply(r); continue
         }
         if (f.action === 'relaunchmember' && f.org && f.handle) {
           if (!capOk(f)) { reply({ ok: false, error: 'relaunchmember requires the control-capability secret' }); continue }   // guard-1: activate/spawn/state-change capability

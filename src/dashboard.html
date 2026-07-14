@@ -212,6 +212,8 @@
   .mem .who .role { font-size:11.5px; color:var(--dim); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; line-height:1.25 }
   .mem .who .role .bk { opacity:.8 }
   .mem.lead .who .nm { color:var(--lead) } .mem .leadstar { color:var(--lead); font-size:11px }
+  .mem.consult { border-style:dashed; border-color:#4a3f2f; background:transparent; margin-top:6px }   /* #56: a caged consult chip reads as attached-but-distinct — dashed, muted, never a solid team-member row */
+  .mem.consult .who .nm { text-transform:none; font-weight:600 } .mem.consult:hover { border-color:#6a5a3f }
   .mem .mstate { flex:0 0 auto; font-size:10.5px; text-align:right; margin-left:0 }
   .mem .membar { position:absolute; left:8px; right:8px; bottom:1px; height:3px; border-radius:2px; background:transparent }   /* #64/#68: per-member context gauge — a bottom-spanning horizontal bar; fill-WIDTH (left→right) = % of context window used; empty until a status arrives */
   .mem .membar.g { color:var(--online) } .mem .membar.y { color:var(--warning) } .mem .membar.r { color:var(--danger) }   /* fill color (currentColor) by threshold: green <60 · amber <77 · red ≥77 */
@@ -779,12 +781,22 @@ const orgRateLimit = () => { const o = (S.teams.orgs||[]).find(x=>x.org===S.org)
 function renderMain() {
   const mid = $('#mid')
   const ib = inbox()
-  const byTeam = {}; for (const m of orgMembers()) (byTeam[m.team] ||= []).push(m)
+  // #56: a TRANSIENT consult participant (caged Pierre) has team:null by design — a consult participant, NOT a
+  // team member — so it must NEVER form its own "null" team card. Split it out; render it as a caged ⛓ chip
+  // attached to its summoner's (consultWith) team card. Routing/containment is unchanged — this is presentation.
+  const consults = []; const byTeam = {}
+  for (const m of orgMembers()) { if (m.transient) consults.push(m); else (byTeam[m.team] ||= []).push(m) }
   const teams = Object.keys(byTeam)
   const memberRow = (m) => { const s=memberState(m); const c=m.status&&typeof m.status.context==='number'?m.status.context:null; const ctxNote=(c!=null&&c>=60)?` — context ${c}%`:''   /* #31: surface the gauge level to SR on row focus (the row aria-label suppresses the inner meter's name) — only when amber/red (c≥60, the gauge's own threshold); the exact % self-conveys high-vs-elevated. Green rows stay clean. */
     return `<div class="mem ${m.lead?'lead':''} ${m.handle===S.selMember?'sel':''}" data-h="${esc(m.handle)}" role="button" tabindex="0" aria-label="Open ${esc(m.first)}, ${esc(m.role)}${m.lead?', lead':''}${ctxNote}" onclick="selMember(this.dataset.h)" onkeydown="kbd(event,this)" title="${m.tier==='worker'?'on-demand — click for activity':'click for terminal'}"><span class="dot ${s.cls}"></span><div class="who"><div class="nm">${esc(m.first)}${m.lead?' <span class="leadstar" title="lead">★</span>':''}</div><div class="role">${esc(m.role)} <span class="bk">· ${esc(m.backend)}</span></div></div><span class="mstate ${s.cls}">${esc(s.label)}</span>${ctxBar(m)}</div>` }
+  // #56: a caged consult chip — attached to the summoner's team card, visually distinct (⛓, dashed). Clicking
+  // opens Pierre's own caged terminal (selMember). It is NOT a team member row: no ★, no add-agent affinity, and
+  // its presence here is purely presentational — routing stays consult-only + @-address-required.
+  const consultChip = (c) => { const s=memberState(c); const w=(orgMembers().find(m=>m.handle===c.consultWith)||{}).first||c.consultWith
+    return `<div class="mem consult ${c.handle===S.selMember?'sel':''}" data-h="${esc(c.handle)}" role="button" tabindex="0" aria-label="Open ${esc(c.first)}, caged adversary consulting ${esc(w)}" onclick="selMember(this.dataset.h)" onkeydown="kbd(event,this)" title="caged red-team consult — click for terminal"><span class="dot ${s.cls}"></span><div class="who"><div class="nm">⛓ ${esc(c.first)} <span class="muted" style="font-weight:400">· consulting @${esc(w)}</span></div><div class="role">caged adversary <span class="bk">· ${esc(c.backend)}</span></div></div><span class="mstate ${s.cls}">${esc(s.label)}</span></div>` }
   const teamCard = (t) => { const ms=byTeam[t]; const running=teamRunning(ms)
-    return `<div class="team"><div class="tn">${esc(t)}${running?'':' <span class="state Paused" style="font-size:10px;padding:1px 6px">not running</span>'}</div>${ms.map(memberRow).join('')}
+    const teamHandles = new Set(ms.map(m=>m.handle)); const chips = consults.filter(c=>teamHandles.has(c.consultWith)).map(consultChip).join('')
+    return `<div class="team"><div class="tn">${esc(t)}${running?'':' <span class="state Paused" style="font-size:10px;padding:1px 6px">not running</span>'}</div>${ms.map(memberRow).join('')}${chips}
       ${S.addingTo===t ? amForm(t) : `<div class="row" style="margin-top:8px;gap:6px"><button class="btn tiny" data-team="${esc(t)}" onclick="startAddMember(this.dataset.team)">＋ add agent</button></div>`}</div>` }
 
   // @you: open QUESTIONS (actionable, badged) first, then notifications (FYI, muted, dismiss-only),
@@ -963,9 +975,15 @@ function renderTerminal(d, m) {
 // for members no longer launched (stop/remove/suspend/cross-org). Keyed by org|handle so org-A's
 // terminal never shows under org-B.
 function termHeaderHTML(m, url) {
+  const openLink = `<a href="${esc(url)}" target="_blank" style="margin-left:8px">open ↗</a>`
+  // #56 (Pierre gate c — load-bearing): a caged consult participant gets ONLY consult-scoped actions. NEVER the
+  // team-member set (Close session / dismiss=removemember) — offering those would IMPLY team reach Pierre doesn't
+  // have (routing fail-safes, but the human is confused). ↩ Dismiss reaps the consult (removeTransientConsult + kill).
+  if (m.transient) return `<b>⛓ @${esc(m.first)} <span class="muted">· caged red-team consult</span></b>
+    <span class="muted">${openLink} <button class="btn tiny" style="margin-left:8px" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="dismissConsult(this.dataset.h,this.dataset.f)" title="End this caged consult — stop Pierre's session and reap it">↩ Dismiss Pierre</button></span>`
   const live = orgMembers().filter(x=>x.tier==='live'); const ready=live.filter(x=>x.online).length; const starting=live.filter(x=>!x.online && x.launched).length
   return `<b>@${esc(m.first)} <span class="muted">· terminal</span></b>
-    <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} <a href="${esc(url)}" target="_blank" style="margin-left:8px">open ↗</a> <button class="btn tiny" style="margin-left:8px" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="closeMemberSession(this.dataset.h,this.dataset.f)" title="Ctrl-C this agent — stop its session, keep it in the team (resume anytime)">⤓ Close session</button> <button class="btn tiny" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="removeMember(this.dataset.h,this.dataset.f)" title="Dismiss — remove this agent from the team entirely">✕ dismiss</button>`
+    <span class="muted">${ready}/${live.length} ready${starting?` · <span class="warn">${starting} starting</span>`:''} ${openLink} <button class="btn tiny" style="margin-left:8px" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="closeMemberSession(this.dataset.h,this.dataset.f)" title="Ctrl-C this agent — stop its session, keep it in the team (resume anytime)">⤓ Close session</button> <button class="btn tiny" data-h="${esc(m.handle)}" data-f="${esc(m.first)}" onclick="removeMember(this.dataset.h,this.dataset.f)" title="Dismiss — remove this agent from the team entirely">✕ dismiss</button>`
 }
 function syncTermHost() {
   const host = $('#termhost'), detail = $('#detail')
@@ -1829,7 +1847,7 @@ window.openProject = (org)=>{ const suspended = !orgRunning(org) && !orgLaunchin
 window.toggleArchived = ()=>{ S.showArchived=!S.showArchived }
 function projTile(org) {
   const running=orgRunning(org), launching=orgLaunching(org), online=orgOnline(org)
-  const mem = (S.teams.members||[]).filter(m=>m.org===org)
+  const mem = (S.teams.members||[]).filter(m=>m.org===org && !m.transient)   // #56: a transient consult (caged Pierre) is not a persistent team agent — never inflate the tile's team/agent count or avatars
   const need = orgNeed(org)
   const st = launching ? {c:'go',t:'launching'} : running ? (online?{c:'work',t:'working'}:{c:'idle',t:'idle'}) : {c:'susp',t:'suspended'}
   const at = (orgLaunchRec(org)||{}).at
@@ -2244,6 +2262,9 @@ window.toggleNotify = async ()=>{
 }
 window.stopTeam = async ()=>{ if(!confirm('Stop the team? This closes all agent terminals.'))return; const r=await actJSON('/api/team-stop',{org:S.org}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
 window.removeMember = async (h, first)=>{ if(!confirm('Dismiss @'+first+' — remove this agent from the team entirely? (updates team.json; its session stops and it leaves the roster)'))return; const r=await actJSON('/api/team-remove-member',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; S.selMember=null; tick() }
+// #56: reap a caged consult Pierre (consult-scoped — NOT a team mutation; the daemon's removeTransientConsult only
+// ever acts on a `transient` participant). Its chip + terminal drop on the next paint.
+window.dismissConsult = async (h, first)=>{ if(!confirm(`Dismiss ${first}? Ends this caged red-team consult — stops Pierre's session and reaps it. (Your team is untouched.)`))return; const r=await actJSON('/api/consult-dismiss',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; S.selMember=null; tick() }
 // §13 Close session (Ctrl-C an agent): stop its live session but KEEP it in the team (≠ dismiss). Resumable via
 // relaunchMember (the existing kill-first→respawn, which the agent --continues). Routes through the cap-gated
 // /api/team-close-session (closemember → killMember; the roster/orgDef is untouched — the ≠-remove distinction
