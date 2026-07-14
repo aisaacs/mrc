@@ -947,6 +947,15 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     const { pierreHandle, consultId, pierreSessionId, pierre, pierreMember, repo } = built
     const def = orgDefs.get(org)
     if (!def || !teamMod) { send(issuerId, { type: 'notice', text: '[Cannot summon — the team is not fully defined yet, or launch helpers are still loading. Try again in a moment.]' }); return ack('summon-error') }
+    // #56 Inc2 liveness-MUTEX (Pierre-specced): if this Pierre's caged container is ALREADY alive — a re-summon, or he
+    // survived a restart via Inc1 — ATTACH (re-seat routing, point the summoner at the live session), NEVER relaunch a
+    // 2nd container on the same sessionId (both would pass R1 with the same host-only secret → the bySession bind
+    // clobbers/races, undisambiguable). Same SPECIFIC mrc.member+mrc.project label as the restore liveness gate.
+    if (cagedContainerState(org, pierreHandle) === 'alive') {
+      reseatConsult(built); saveConsultEntry(org, summonerHandle, pierreHandle, consultId)
+      send(issuerId, { type: 'notice', text: `[Pierre is already live in your consult "${consultId}" — reply with @Pierre to keep volleying. A re-summon ATTACHES to the existing session (same conversation); it does not start a fresh one.]` })
+      return ack('summoning')
+    }
     const reapPartial = () => { try { engine.removeTransientConsult(org, pierreHandle) } catch {} ; reapTransientSessions(org, [pierreHandle]); summoningPrivate.delete(issuerId) }
     const r = engine.addTransientConsult(org, { pierre, withHandle: summonerHandle, roomId: consultId })
     if (!r.ok) { send(issuerId, { type: 'notice', text: `[Cannot summon Pierre: ${r.error}]` }); return ack('summon-error') }
@@ -1449,7 +1458,18 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           const lstate = loadLaunchState()
           const launchOrgs = new Set([...Object.keys(launches), ...Object.keys(lstate)])
           const orgWeb = Object.fromEntries([...orgDefs].map(([o, d]) => [o, !!d.web]))   // #57: per-project egress state → the dashboard toggle reflects it (running + suspended)
-          reply({ ok: true, ...st, telegram, orgWeb, launch: [...launchOrgs].map((org) => {
+          // #56 Inc2: which real members have a RESUMABLE-but-INACTIVE past caged Pierre — a summoner whose derived
+          // Pierre has an adversary host record (his prior consult wrote it) but is NOT currently an active transient.
+          // Drives the dashboard's ▶ Resume affordance (record = authority; resumeconsult re-verifies before relaunch).
+          const activeTransients = new Set(st.members.filter((m) => m.transient).map((m) => `${m.org}\0${String(m.handle).toLowerCase()}`))
+          const resumableConsults = []
+          for (const m of st.members) {
+            if (m.transient || m.tier !== 'live') continue
+            const ph = `pierre.${String(m.handle).replace('/', '-')}/claude`.toLowerCase()
+            if (activeTransients.has(`${m.org}\0${ph}`)) continue   // already live → shown as a ⛓ chip, not "resumable"
+            try { const rec = loadSessionRecord(memberSessionId(m.org, ph)); if (rec && rec.adversary === true) resumableConsults.push({ org: m.org, summonerHandle: m.handle, pierreHandle: ph }) } catch {}
+          }
+          reply({ ok: true, ...st, telegram, orgWeb, resumableConsults, launch: [...launchOrgs].map((org) => {
             const v = launches[org] || {}; const ls = lstate[org] || {}
             const fresh = (Date.now() - (v.at || 0) < BUILD_GRACE_MS) || (Date.now() - (ls.at || 0) < BUILD_GRACE_MS)
             const members = teamMod ? teamMod.memberTtyds(org, { repo: v.repo || ls.repo, onlineHandles: onlineByOrg[org], withinGrace: fresh }) : {}
@@ -1619,6 +1639,36 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           const r = engine.removeTransientConsult(f.org, f.handle)
           if (r.ok) { reapTransientSessions(f.org, [r.handle]); daemonLog(`dismissconsult ${f.org}: @${f.handle} (caged consult reaped)`); broadcastEvent({ type: 'roster', org: f.org }) }
           reply(r); continue
+        }
+        if (f.action === 'resumeconsult' && f.org && f.summonerHandle) {
+          // #56 Inc2 (Pierre-specced): RESUME a specific past caged Pierre — WITHOUT a live session summoning him (the
+          // dashboard ▶ Resume). Re-derives everything via buildCagedConsult (cage hardcoded → `--open-adversary-unsafe`
+          // has NO surface on this path, so a resumed team-Pierre can never come back uncaged). RECORD-AS-AUTHORITY:
+          // only a summoner whose derived Pierre has a real adversary record is resumable (his prior caged launch wrote
+          // it). LIVENESS-MUTEX: alive → ATTACH (re-seat, never a 2nd container on one sessionId); dead → reap any
+          // orphaned plumbing, re-seat, relaunch — mrc.js --continues the deterministic session-id + config vol, so his
+          // PRIOR CONVERSATION carries over (a resume nudge, not a fresh brief). A state-change/spawn → capOk-gated.
+          if (!capOk(f)) { reply({ ok: false, error: 'resumeconsult requires the control-capability secret' }); continue }
+          if (!teamMod) { reply({ ok: false, error: 'launch helpers still loading — retry' }); continue }
+          const built = buildCagedConsult(f.org, f.summonerHandle)
+          if (!built.ok) { reply({ ok: false, error: built.error }); continue }
+          const rec = loadSessionRecord(built.pierreSessionId)
+          if (!(rec && rec.adversary === true)) { reply({ ok: false, error: `no past caged Pierre to resume for @${f.summonerHandle} (no adversary host record)` }); continue }   // record = authority
+          const def = orgDefs.get(f.org)
+          if (!def) { reply({ ok: false, error: 'unknown org' }); continue }
+          if (cagedContainerState(f.org, built.pierreHandle) === 'alive' || teamMod.memberContainerAlive(f.org, built.pierreHandle)) {
+            reseatConsult(built); saveConsultEntry(f.org, f.summonerHandle, built.pierreHandle, built.consultId)
+            daemonLog(`resumeconsult ${f.org}: @${built.pierreHandle} already live — attached`); broadcastEvent({ type: 'roster', org: f.org }); reply({ ok: true, attached: true }); continue
+          }
+          try {
+            teamMod.killMember(f.org, built.pierreHandle)   // reap any orphaned master/plumbing (the container is already dead)
+            reseatConsult(built); saveConsultEntry(f.org, f.summonerHandle, built.pierreHandle, built.consultId)
+            const { rosterPath } = teamMod.materializeRoster(teamMod.rosterFromDef(def), def.repo, predictModelB())
+            const resumePrime = `You are Pierre, RESUMED. Your prior consult with @${built.summonerHandle.split('/')[0]} is reopening — your conversation carries over, so continue where you left off. Re-read /rooms/${built.consultId}/adversary-brief.md if you need to reground, then keep volleying via send_message.`
+            setTimeout(() => { teamMod.launchTransientConsult(f.org, built.repo, rosterPath, built.pierreMember, resumePrime).then((res) => { if (!res || !res.ok) daemonLog(`resumeconsult ${f.org} relaunch: ${res?.error || '?'}`) }).catch((e) => daemonLog(`resumeconsult ${f.org}: ${e?.message || e}`)) }, 800)   // > killMember's 600ms SIGKILL escalation (matches relaunchmember's proven timing) so the respawn never races a still-dying master
+            daemonLog(`resumeconsult ${f.org}: relaunching @${built.pierreHandle} (--continue his prior conversation)`); broadcastEvent({ type: 'roster', org: f.org }); reply({ ok: true, relaunched: true })
+          } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
+          continue
         }
         if (f.action === 'relaunchmember' && f.org && f.handle) {
           if (!capOk(f)) { reply({ ok: false, error: 'relaunchmember requires the control-capability secret' }); continue }   // guard-1: activate/spawn/state-change capability

@@ -214,6 +214,7 @@
   .mem.lead .who .nm { color:var(--lead) } .mem .leadstar { color:var(--lead); font-size:11px }
   .mem.consult { border-style:dashed; border-color:#4a3f2f; background:transparent; margin-top:6px }   /* #56: a caged consult chip reads as attached-but-distinct — dashed, muted, never a solid team-member row */
   .mem.consult .who .nm { text-transform:none; font-weight:600 } .mem.consult:hover { border-color:#6a5a3f }
+  .mem.consult.resumable { opacity:.72 } .mem.consult.resumable:hover { opacity:1 } .mem.consult.resumable .mstate { color:var(--accent); font-weight:600 }   /* #56 Inc2: a dead-but-resumable past Pierre — dimmer, with a ▶ Resume accent */
   .mem .mstate { flex:0 0 auto; font-size:10.5px; text-align:right; margin-left:0 }
   .mem .membar { position:absolute; left:8px; right:8px; bottom:1px; height:3px; border-radius:2px; background:transparent }   /* #64/#68: per-member context gauge — a bottom-spanning horizontal bar; fill-WIDTH (left→right) = % of context window used; empty until a status arrives */
   .mem .membar.g { color:var(--online) } .mem .membar.y { color:var(--warning) } .mem .membar.r { color:var(--danger) }   /* fill color (currentColor) by threshold: green <60 · amber <77 · red ≥77 */
@@ -794,9 +795,15 @@ function renderMain() {
   // its presence here is purely presentational — routing stays consult-only + @-address-required.
   const consultChip = (c) => { const s=memberState(c); const w=(orgMembers().find(m=>m.handle===c.consultWith)||{}).first||c.consultWith
     return `<div class="mem consult ${c.handle===S.selMember?'sel':''}" data-h="${esc(c.handle)}" role="button" tabindex="0" aria-label="Open ${esc(c.first)}, caged adversary consulting ${esc(w)}" onclick="selMember(this.dataset.h)" onkeydown="kbd(event,this)" title="caged red-team consult — click for terminal"><span class="dot ${s.cls}"></span><div class="who"><div class="nm">⛓ ${esc(c.first)} <span class="muted" style="font-weight:400">· consulting @${esc(w)}</span></div><div class="role">caged adversary <span class="bk">· ${esc(c.backend)}</span></div></div><span class="mstate ${s.cls}">${esc(s.label)}</span></div>` }
+  // #56 Inc2: a RESUMABLE past consult — a summoner whose caged Pierre was dismissed/died but whose conversation
+  // persists (adversary record present). ▶ Resume brings him back with his prior conversation (--continue), re-caged.
+  const resumable = (S.teams.resumableConsults||[]).filter(rc=>!S.org || rc.org===S.org)
+  const resumeChip = (rc) => { const w=(orgMembers().find(m=>m.handle===rc.summonerHandle)||{}).first||rc.summonerHandle
+    return `<div class="mem consult resumable" role="button" tabindex="0" aria-label="Resume the past caged Pierre consult for ${esc(w)}" data-s="${esc(rc.summonerHandle)}" onclick="resumeConsult(this.dataset.s)" onkeydown="kbd(event,this)" title="Resume this past caged red-team consult — brings Pierre back with his prior conversation"><span class="dot idle"></span><div class="who"><div class="nm">⛓ Pierre <span class="muted" style="font-weight:400">· past consult with @${esc(w)}</span></div><div class="role">caged adversary · dismissed</div></div><span class="mstate">▶ Resume</span></div>` }
   const teamCard = (t) => { const ms=byTeam[t]; const running=teamRunning(ms)
     const teamHandles = new Set(ms.map(m=>m.handle)); const chips = consults.filter(c=>teamHandles.has(c.consultWith)).map(consultChip).join('')
-    return `<div class="team"><div class="tn">${esc(t)}${running?'':' <span class="state Paused" style="font-size:10px;padding:1px 6px">not running</span>'}</div>${ms.map(memberRow).join('')}${chips}
+    const rchips = resumable.filter(rc=>teamHandles.has(rc.summonerHandle)).map(resumeChip).join('')
+    return `<div class="team"><div class="tn">${esc(t)}${running?'':' <span class="state Paused" style="font-size:10px;padding:1px 6px">not running</span>'}</div>${ms.map(memberRow).join('')}${chips}${rchips}
       ${S.addingTo===t ? amForm(t) : `<div class="row" style="margin-top:8px;gap:6px"><button class="btn tiny" data-team="${esc(t)}" onclick="startAddMember(this.dataset.team)">＋ add agent</button></div>`}</div>` }
 
   // @you: open QUESTIONS (actionable, badged) first, then notifications (FYI, muted, dismiss-only),
@@ -2265,6 +2272,9 @@ window.removeMember = async (h, first)=>{ if(!confirm('Dismiss @'+first+' — re
 // #56: reap a caged consult Pierre (consult-scoped — NOT a team mutation; the daemon's removeTransientConsult only
 // ever acts on a `transient` participant). Its chip + terminal drop on the next paint.
 window.dismissConsult = async (h, first)=>{ if(!confirm(`Dismiss ${first}? Ends this caged red-team consult — stops Pierre's session and reaps it. (Your team is untouched.)`))return; const r=await actJSON('/api/consult-dismiss',{org:S.org,handle:h}); if(!r.ok)return flashFail(r); S.flash=null; S.selMember=null; tick() }
+// #56 Inc2: resume a specific past caged Pierre (record-verified, cage re-derived, --continue his conversation). If
+// he's already live the daemon just attaches; if dead it relaunches with his prior conversation.
+window.resumeConsult = async (summonerHandle)=>{ const r=await actJSON('/api/consult-resume',{org:S.org,summonerHandle}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
 // §13 Close session (Ctrl-C an agent): stop its live session but KEEP it in the team (≠ dismiss). Resumable via
 // relaunchMember (the existing kill-first→respawn, which the agent --continues). Routes through the cap-gated
 // /api/team-close-session (closemember → killMember; the roster/orgDef is untouched — the ≠-remove distinction
