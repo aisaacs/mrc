@@ -1935,10 +1935,13 @@ function castRender() {
   const cards = CAST.map(c=>{
     const here = taken.has(c.name) && !c.generalist
     const tags = [ c.caged?'<span class="ctag caged">caged · isolated</span>':'', c.worker?'<span class="ctag">on-demand</span>':'', c.character?'<span class="ctag">character</span>':'' ].filter(Boolean).join('')
-    // Pierre (caged) from the dashboard is the rebuild-gated caged-member port (§5 4b) — honestly gated, not faked.
+    // #56 Inc3: Pierre (caged) is now summonable FROM the dashboard in a PROJECT — pick which live agent he consults
+    // for. In the BUILDER (pre-launch) there are no live agents yet, so it's honestly gated until launch.
     const gated = !!c.caged
-    const btn = gated
-      ? `<button class="btn tiny" disabled title="Summon Pierre from a session — dashboard caged-add is the rebuild-gated caged-member port">⛓ summon from a session</button>`
+    const btn = (gated && _cast.ctx==='project')
+      ? `<button class="btn tiny primary" onclick="castPierre()" title="Summon Pierre into this project — pick which agent he red-teams (caged, read-only, 1:1)">⛓ Summon Pierre…</button>`
+      : gated
+      ? `<button class="btn tiny" disabled title="Launch the team first, then Summon Pierre for a live agent (the builder is pre-launch)">⛓ summon after launch</button>`
       : `<button class="btn tiny ${here?'':'primary'}" ${here?'disabled':''} data-k="${esc(c.key)}" onclick="castAdd(this.dataset.k)">${here?'✓ already on the team':(c.generalist?'＋ Add a Claude':'＋ Add '+esc(c.name))}</button>`
     return `<div class="cc"><span class="cav">${esc(castInitials(c.name))}</span><div class="cbody">
       <div class="cnm">${esc(c.name)}${c.plain?' <span class="ctag">default</span>':''}</div>
@@ -1980,6 +1983,21 @@ function castDoAdd(c, nm, ctx, ti) {
     })()
   }
 }
+// #56 Inc3: the 🎭 cast-add for Pierre — a MEMBER PICKER (you choose which live agent he consults for). The daemon
+// re-verifies targetHandle against the roster (host-authoritative), re-derives the cage (hardcoded), and either
+// summons a fresh caged Pierre or resumes his prior conversation (record-authority). Caged, read-only, 1:1.
+window.castPierre = () => {
+  const live = orgMembers().filter(m=>m.tier==='live' && !m.transient)
+  if(!live.length){ flashFail({error:'no live agents to consult with yet — launch the team first'}); return }
+  const h = $('#castModal'); if(!h) return
+  h.innerHTML = `<div class="scrim" onclick="if(event.target===this)castClose()"><div class="modalcard" role="dialog" aria-modal="true" aria-label="Summon Pierre" tabindex="-1" style="max-width:460px">
+    <div class="modalhead"><h2 style="margin:0;font-size:14px">⛓ Summon Pierre — consult for which agent?</h2><button class="btn tiny" onclick="castClose()">✕</button></div>
+    <div class="modalbody"><div class="castnote" style="margin-bottom:10px">Pierre opens a private, <b>caged</b> (read-only workspace, no egress) 1:1 consult with the agent you pick — he red-teams their work, and only they can reach him (@Pierre). If they've consulted him before, his prior conversation resumes.</div>
+    ${live.map(m=>`<button class="btn" style="display:flex;width:100%;justify-content:space-between;align-items:center;margin-bottom:6px" data-h="${esc(m.handle)}" onclick="castDoPierre(this.dataset.h)"><span>${esc(m.first)}${m.lead?' <span class="leadstar">★</span>':''} <span class="muted">· ${esc(m.role)}</span></span><span class="muted">⛓ Summon →</span></button>`).join('')}
+    </div></div></div>`
+  const card=h.querySelector('.modalcard'); if(card){try{card.focus()}catch{}; card.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();castClose()}})}
+}
+window.castDoPierre = async (targetHandle) => { castClose(); const r = await actJSON('/api/cast-consult',{org:S.org,targetHandle}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
 // name-by-use modal (a plain Claude): a name by its USE (client/server/worker/…) helps you remember what it's for.
 let _nameCb = null
 function openNameByUse(cb) {
