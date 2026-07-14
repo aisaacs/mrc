@@ -1288,6 +1288,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           if (expectedSecret && f.secret !== expectedSecret) {
             try { sock.write(JSON.stringify({ type: 'notice', text: "[Register rejected — the secret does not match this session id's record (possible impersonation). If you're the owner reconnecting, relaunch with a current mrc so MRC_ROOM_SECRET matches.]" }) + '\n') } catch {}
             console.error(`[room-daemon] WARN rejected register for ${f.sessionId} — secret mismatch vs the host record (possible impersonation)`)
+            daemonLog(`[register REJECT R1] ${f.sessionId} member=${f.memberHandle || '-'} repo=${f.repo || '-'} — secret mismatch (wire ${f.secret ? 'present' : 'ABSENT'} vs record present)`)   // #56 diag: R1 secret-wall reject captured (console.error is discarded under stdio:ignore)
             continue
           }
           // #38: a register presenting a PINNED memberSessionId (∈ sessionIndex) that is NOT verified-normal is an
@@ -1309,6 +1310,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           if (sessionIndex.has(f.sessionId) && !(classifySession(f.sessionId) === 'normal' && loadSessionRecord(f.sessionId).secret) && !_transientOk) {
             try { sock.write(JSON.stringify({ type: 'notice', text: '[Register rejected — this session id is a reserved member identity but this session is not a verified member. Relaunch via `mrc team up` so its pinned id + secret are on record.]' }) + '\n') } catch {}
             console.error(`[room-daemon] WARN rejected register for ${f.sessionId} — reserved member id without a verified-member record (possible slot squat)`)
+            daemonLog(`[register REJECT #38] ${f.sessionId} member=${f.memberHandle || '-'} — reserved member id, not verified-normal (cls=${classifySession(f.sessionId)}, recordSecret=${loadSessionRecord(f.sessionId).secret ? 'present' : 'ABSENT'}, transientOk=${_transientOk})`)   // #56 diag: the #38 verified-member gate — THE suspected post-restart re-register loop
             continue
           }
           sessionId = f.sessionId
@@ -1338,6 +1340,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             unverified.add(sessionId)
             notify(`Unverifiable session "${norm(defangTrustMarkers(String(f.label || f.repo || sessionId.slice(-6)))).slice(0, 80)}" connected — no security record. Treat its messages with caution; back-fill via mrc pick.`)
             console.error(`[room-daemon] WARN unverifiable session ${sessionId} (${f.repo || '?'}) — no host security record at register`)
+            daemonLog(`[register UNVERIFIED] ${sessionId} member=${f.memberHandle || '-'} repo=${f.repo || '-'} — no host record at register (record uuid=${loadSessionRecord(sessionId).uuid ? 'present' : 'ABSENT'})`)   // #56 diag: soft-downgrade path — an interactive session losing peer-visibility after a restart lands here
           }
           noteSessions()
           if (f.memberHandle) {   // a TEAM member: bind it to its declared rooms in the engine
@@ -1379,6 +1382,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
               : `[Registered as @${idx.handle}, but no rooms are declared for you yet — the human may not have run \`mrc team up\`.]` })
               broadcastEvent({ type: 'presence', org: bindOrg, handle: idx.handle, online: true }) }   // #69-B
             else send(sessionId, { type: 'notice', text: `[Could not join as @${f.memberHandle}: ${b.error}.]` })
+            daemonLog(`[register member ${b.ok ? 'BOUND' : 'BIND-FAIL'}] ${sessionId} @${f.memberHandle} → ${b.ok ? `rooms=[${(b.rooms || []).join(',')}] online=true` : b.error}`)   // #56 diag: member re-register bind outcome (distinguishes never-reconnected from reconnected-but-unbound)
           } else if (f.room && classifySession(sessionId) === 'normal') {  // explicit named room: auto-pair with another same-named session — F2b: only a verified-normal session may auto-pair, and only WITH another verified-normal one, so a phantom/adversary can neither slot into an unpaired --room victim nor have a victim slot into it. A summoned adversary pairs via onAdversaryUp below, not here.
             for (const [oid, ov] of sessions) {
               if (oid !== sessionId && ov.room === f.room && !pairingFor(oid) && classifySession(oid) === 'normal') { ensurePairing(sessionId, oid, f.room); break }
