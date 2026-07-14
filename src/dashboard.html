@@ -549,7 +549,12 @@ async function tick() {
   // "never comes up clean without a restart" bug. While ANY org is still coming up, self-schedule a bounded full
   // re-fetch so `serve` lands on its own; it self-terminates once every member is settled (serve/dead/orphaned),
   // and /api/teams is ETag/304-cheap while it runs.
+  // #56 cast-add stale-render: a caged consult Pierre booting/awaiting-login is NOT in the launch record (transients
+  // aren't in S.teams.launch), so without this clause _inFlight goes false the moment he's seated → the poll stops →
+  // his flip to online (post-login) never renders until a MANUAL refresh (the reported bug). Keep polling while ANY
+  // seated transient is offline so his console + online flip land on their own.
   const _inFlight = (S.teams.launch || []).some(l => l.launching || Object.values(l.members || {}).some(m => m && (m.state === 'starting' || m.state === 'building')))
+    || (S.teams.members || []).some(m => m.transient && m.tier === 'live' && !m.online)
   clearTimeout(_reconcileT); if (_inFlight) _reconcileT = setTimeout(tick, 2500)
   paint()
 }
@@ -701,6 +706,7 @@ window.toggleWeb = async (on)=>{ const r=await actJSON('/api/team-web',{org:S.or
 function memberState(m) {
   if (m.tier==='worker') return { cls:'worker', label:'on-demand' }
   if (m.online) return { cls:'ready', label:'ready' }
+  if (m.transient) return { cls:'starting', label:'⛓ open console to sign in' }   // #56: a caged consult Pierre seated+offline is booting/awaiting its FIRST-RUN login (fresh caged vol → "let's get started") — guide to the console, never a bare "offline" that reads as broken
   if (m.launched) return { cls:'starting', label:'starting — open Console' }
   return { cls:'off', label:'offline' }
 }
@@ -981,6 +987,13 @@ function renderTerminal(d, m) {
     // a fresh /api/teams fetch so the terminal appears without a manual refresh.
     body = `<div class="empty">@${esc(m.first)} is up — attaching its terminal…<div style="margin-top:10px"><button class="btn tiny" onclick="tick()">↻ refresh now</button></div></div>`
     try { setTimeout(() => { if (S.selMember === m.handle) tick() }, 700) } catch {}
+  } else if (m.transient) {
+    // #56 cast-add: a caged consult Pierre is SEATED but offline → his container is booting to (or waiting on) his
+    // FIRST-RUN LOGIN. A fresh caged config vol drops into Claude Code's "let's get started" — so his console shows a
+    // login, not a hang. Guide the human to open it + sign in (he goes online once logged in), NEVER "isn't launched"
+    // (there's no team to Build/Launch for a consult). Keep polling so he flips to serve/online on his own post-login.
+    body = `<div class="empty">⛓ <b>@${esc(m.first)} is coming up</b> — his console appears here shortly. If it shows a <b>"let's get started"</b> first-run login, open it and sign in; he comes online once logged in.<div style="margin-top:10px"><button class="btn tiny" onclick="tick()">↻ refresh now</button></div></div>`
+    try { setTimeout(() => { if (S.selMember === m.handle) tick() }, 1500) } catch {}
   } else {   // genuinely dead / no live launch
     body = `<div class="empty">@${esc(m.first)} isn't launched. Build + <b>🚀 Launch</b> the team (or <code>mrc team up</code>).</div>`
   }
