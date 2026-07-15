@@ -696,6 +696,13 @@ window.resumeTeam = async (org) => { const r=await actJSON('/api/team-launch', {
 // #57: per-project --web egress toggle. Launch-time (applies on next launch/relaunch) → cap+CSRF-gated /api/team-web.
 // Optimistically reflect the new state (orgWeb map), then tick() reconciles from the daemon.
 window.toggleWeb = async (on)=>{ const r=await actJSON('/api/team-web',{org:S.org, web:!!on}); if(!r.ok)return flashFail(r); S.flash=null; if(!S.teams.orgWeb)S.teams.orgWeb={}; S.teams.orgWeb[S.org]=!!on; tick() }
+// #68: view the project's team.json inline (a read of a non-secret file). Fetches on expand so it never rides the poll.
+window.viewTeamJson = async ()=>{ const pre=document.getElementById('teamJsonView'); if(!pre)return
+  if(pre.style.display!=='none'){ pre.style.display='none'; return }
+  pre.style.display='block'; pre.textContent='Loading…'
+  const r=await api('/api/team-json?org='+encodeURIComponent(S.org||'')).catch(()=>null)
+  if(r&&r.ok){ pre.textContent=(r.path?('// '+r.path+'\n\n'):'')+(r.content||'') }
+  else { pre.textContent=(r&&r.error)||'Could not read team.json' } }
 // Readiness: workers are on-demand; a live member is 'ready' once its channel registers, 'starting'
 // while its terminal is up but not connected yet (loading / awaiting login).
 function memberState(m) {
@@ -939,6 +946,9 @@ function renderProjectHome(d) {
     <div class="sblk"><div class="srow"><b>Outbound egress (--web)</b> ${sBadge('project','launch')}</div>
       <label style="display:flex;gap:8px;align-items:center;margin:6px 0;font-size:12.5px;cursor:pointer"><input type="checkbox" ${((S.teams.orgWeb||{})[org])?'checked':''} onchange="toggleWeb(this.checked)"> Allow this project's live agents outbound HTTPS to any host</label>
       <div class="shelp">${((S.teams.orgWeb||{})[org]) ? 'On — live agents reach the open web. A caged adversary (e.g. Pierre) stays walled regardless.' : 'Off — agents reach only the sanctioned proxy + whitelisted domains.'} <b>Applies on the next launch.</b>${running ? ' Agents running <b>right now keep their current egress until you relaunch them</b> — flipping this does <b>not</b> cut a live agent’s web immediately. To sever a running agent’s web now, relaunch it (Close session → resume) or Close the project.' : ''}</div></div>
+    <div class="sblk"><div class="srow"><b>team.json</b></div>
+      <div class="shelp">The project's roster + any summoned Pierre's <code>consults:</code> record, as written to disk (the Model-B anchor, or the repo root for a legacy project). <button class="btn tiny" onclick="viewTeamJson()">👁 View / hide</button></div>
+      <pre id="teamJsonView" style="display:none;max-height:340px;overflow:auto;margin:8px 0 0;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--panel2);font-size:12px;white-space:pre-wrap;word-break:break-word"></pre></div>
   </div>`
 }
 // §13 "nothing is ever deleted": the dashboard Delete-project UI is RETIRED — the only lifecycle verb is Close

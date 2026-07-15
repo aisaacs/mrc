@@ -1744,6 +1744,20 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           daemonLog(`setorgweb ${f.org}: ${!!f.web} (applies on next launch/relaunch)`)
           reply({ ok: true, web: !!f.web }); continue
         }
+        if (f.action === 'teamjson' && f.org) {
+          // #68 (owner): surface the project's team.json in the dashboard (project home). A READ of a NON-secret
+          // file (project/members/consults — the TG token lives in a SEPARATE anchor .env, never team.json), so no
+          // capOk gate (like the other reads). Target follows the org's home: Model-B neutral anchor, else the
+          // legacy repo root (the same target writeTeamFile uses, so what's shown is what's on disk).
+          const _tjDef = orgDefs.get(String(f.org))
+          if (!_tjDef) { reply({ ok: false, error: 'unknown project' }); continue }
+          const _tjTarget = _tjDef.anchor ? orgAnchorDir(_tjDef.org) : _tjDef.repo
+          if (!_tjTarget) { reply({ ok: false, error: 'no team.json location for this project' }); continue }
+          const _tjPath = join(_tjTarget, 'team.json')
+          try { reply({ ok: true, path: _tjPath, content: readFileSync(_tjPath, 'utf8') }) }
+          catch (e) { reply({ ok: false, error: `team.json not written yet (${e?.code || e?.message || 'not found'}) — it's created/updated when the team is defined or a Pierre is summoned`, path: _tjPath }) }
+          continue
+        }
         // Delete a project (#13): forget it from the live daemon entirely — stop sessions + the TG
         // bridge, then purge ALL per-org state so it stays gone across a restart. Deletes NOTHING on
         // disk (team.json + transcripts/history untouched) — fully re-addable via `mrc team up`. Idempotent.

@@ -570,6 +570,12 @@ async function handle(req, res) {
       const t = meta?.controlPort ? await ctrl(meta.controlPort, 'team') : { ok: false }
       return sendJSONCached(req, res, t?.ok ? t : { ok: false, members: [], rooms: [], userInbox: [] })   // #69-A: the 277 KB poll read → ETag/304
     }
+    if (req.method === 'GET' && url.pathname === '/api/team-json') {   // #68: show a project's team.json in the project-home pane (read of a non-secret file)
+      const bad = rejectRead(req); if (bad) return sendJSON(res, bad.code, { error: bad.error })
+      const meta = daemonMeta()
+      const t = meta?.controlPort ? await ctrl(meta.controlPort, 'teamjson', { org: url.searchParams.get('org') || '' }) : { ok: false, error: 'daemon unavailable' }
+      return sendJSON(res, 200, t)
+    }
     if (req.method === 'GET' && url.pathname === '/api/room') {
       const id = url.searchParams.get('id')
       if (!knownRoom(id)) return sendJSON(res, 404, { error: 'unknown room' })
