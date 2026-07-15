@@ -1,7 +1,7 @@
 // Host-side unit tests for the team foundation (names, personas, roster). Run: node --test test/
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { pickFirstName, makeHandle, parseMention, extractMentions, stripMentions, backendFamily, FRENCH_NAMES, NAME_STYLES, NAME_STYLE_NAMES } from '../src/teams/names.js'
+import { pickFirstName, makeHandle, parseMention, extractMentions, stripMentions, backendFamily, FRENCH_NAMES, NAME_STYLES, NAME_STYLE_NAMES, GENERALIST_NAMES } from '../src/teams/names.js'
 import { buildPersona, roleDef, ROLES } from '../src/teams/personas.js'
 import { parseRoster, validateRoster, editPersona, assertSafeName, assertSafeProjectName, teamRoomId, leadsRoomId } from '../src/teams/roster.js'
 import { classifyTerminal } from '../src/commands/team.js'
@@ -28,6 +28,25 @@ test('names: pickFirstName avoids taken names and is unique across a draw', () =
   const picks = []
   for (let i = 0; i < 20; i++) { const n = pickFirstName(taken, rng); taken.add(n.toLowerCase()); picks.push(n) }
   assert.equal(new Set(picks.map((p) => p.toLowerCase())).size, 20, 'all picks unique')
+})
+
+test('names: #50 generalist auto-assign is deterministic + ORDERED (Claudine, Pascal, Solange, Guy), seed-independent', () => {
+  assert.deepEqual(GENERALIST_NAMES, ['Claudine', 'Pascal', 'Solange', 'Guy'])
+  // the Nth auto-assigned generalist is always the Nth name, regardless of the rng seed passed
+  for (const seed of [1, 7, 42, 999]) {
+    const taken = new Set(), picks = []
+    for (let i = 0; i < 4; i++) { const n = pickFirstName(taken, seededRng(seed)); taken.add(n.toLowerCase()); picks.push(n) }
+    assert.deepEqual(picks, GENERALIST_NAMES, `seed ${seed}: first four generalists are the deterministic list, in order`)
+  }
+  // every generalist name is a real French pool name (so pool-exhaustion + FRENCH_NAMES invariants hold)
+  for (const n of GENERALIST_NAMES) assert.ok(FRENCH_NAMES.includes(n), `${n} ∈ FRENCH_NAMES`)
+  // a chosen THEME is untouched — it keeps its themed pool, never the generalist list
+  assert.ok(NAME_STYLES.italian.includes(pickFirstName(new Set(), seededRng(1), 'italian')))
+  assert.ok(!GENERALIST_NAMES.includes(pickFirstName(new Set(), seededRng(1), 'spaceballs')))
+  // past the list → falls through to the normal draw (still a valid french name, never throws)
+  const taken = new Set(GENERALIST_NAMES.map((n) => n.toLowerCase()))
+  const fifth = pickFirstName(taken, seededRng(3))
+  assert.ok(FRENCH_NAMES.includes(fifth) && !GENERALIST_NAMES.includes(fifth))
 })
 
 test('names: pickFirstName draws from the requested style; unknown/custom falls back to french (#44)', () => {

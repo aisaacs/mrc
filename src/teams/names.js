@@ -26,7 +26,7 @@ const PLAIN = [
   'Thierry', 'Guy', 'Camille', 'Hervé', 'Margot', 'Gaston', 'Colette', 'Rémy',
   'Yannick', 'Brigitte', 'Maurice', 'Sylvie', 'Étienne', 'Hélène', 'Bernard', 'Josette',
   'Lucien', 'Odette', 'Fabrice', 'Ghislaine', 'Bruno', 'Nadine', 'Pascal', 'Renée', 'Didier',
-  'Mireille', 'Gérard', 'Solange', 'Florent', 'Apolline', 'Côme', 'Margaux', 'Anouk',
+  'Mireille', 'Gérard', 'Solange', 'Florent', 'Apolline', 'Côme', 'Margaux', 'Anouk', 'Claudine',
 ]
 
 export const FRENCH_NAMES = [...Object.keys(SPACEBALLS_EGGS), ...PLAIN]
@@ -59,12 +59,36 @@ export const RESERVED_FIRST_NAMES = new Set(['you', 'user', 'human'])
 // entirely; Colette/Thierry stay valid French names but are never auto-DRAWN.)
 export const RESERVED_CAST_NAMES = new Set(['colette', 'thierry', 'pierre'])
 
+// #50 (owner's #1 daily pain): the deterministic generalist name ORDER. An auto-assigned generalist (a member with no
+// explicit name, french/default style) draws from THIS list IN ORDER — the Nth generalist across ANY project is always
+// the Nth name, NOT an org-seeded random draw. So the same recognizable cast recurs everywhere (Claude is the primary/
+// lead, named explicitly by the cast; these are the ADDITIONAL ones).
+// THIS IS THE AUTH FIX (Pierre-verified, turn 200): a non-caged Claude member's ~/.claude is keyed on the character
+// SLUG, not the project — mrc.js:646 overrides memberConfigVolName with charVolName(charSlug(first)) = `mrc-char-<slug>`
+// (docker.js:149, no repo/org component; nextCharSlot's oracle is global across ALL projects). So a STABLE name → one
+// reused login vol everywhere → the login PERSISTS across projects (no re-auth). The churn was RANDOM names giving an
+// unstable slug (project-A "Sylvie" → mrc-char-sylvie, project-B "Gaspard" → mrc-char-gaspard → different vols →
+// re-login); deterministic names complete the already-name-keyed char vol. No shared-auth-unit vol is needed or wanted
+// here — that's the CAGED-adversary pattern (isolate each consult's conversations); an uncaged recurring character is
+// MEANT to share its whole ~/.claude (login + memory) across projects (§5.2 continuity). Caged isolate, own-char share.
+// All four are ordinary French names already in the draw pool (⊆ FRENCH_NAMES), none reserved.
+export const GENERALIST_NAMES = ['Claudine', 'Pascal', 'Solange', 'Guy']
+
 // Pick a first name not already in `taken` (a Set of lowercased first names) NOR reserved, from the given
 // style's pool (default + fallback `french`; an unknown/`custom` style falls back to french). Falls back
 // to a numbered name if the pool is somehow exhausted, so assignment never throws.
 export function pickFirstName(taken = new Set(), rng = defaultRng, style = 'french') {
   const pool = NAME_STYLES[style] || NAME_STYLES.french
-  const free = pool.filter((n) => !taken.has(n.toLowerCase()) && !RESERVED_FIRST_NAMES.has(n.toLowerCase()) && !RESERVED_CAST_NAMES.has(n.toLowerCase()))
+  const notTaken = (n) => !taken.has(n.toLowerCase()) && !RESERVED_FIRST_NAMES.has(n.toLowerCase()) && !RESERVED_CAST_NAMES.has(n.toLowerCase())
+  // #50: the generalist default (french, incl. the unknown/custom fallback + roster.js's no-style auto-assign) consumes
+  // the deterministic GENERALIST_NAMES list IN ORDER first — the Nth auto-assigned generalist is always the Nth name,
+  // seed-independent, so the same cast recurs across projects. A chosen THEME (spaceballs/italian/…) is untouched: its
+  // members keep the themed random draw. Exhaust the list → fall through to the existing pool draw.
+  if (pool === NAME_STYLES.french) {
+    const g = GENERALIST_NAMES.find(notTaken)
+    if (g) return g
+  }
+  const free = pool.filter(notTaken)
   if (free.length) return free[Math.floor(rng() * free.length)]
   for (let i = 2; ; i++) {
     const base = pool[Math.floor(rng() * pool.length)]
