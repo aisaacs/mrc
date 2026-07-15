@@ -99,9 +99,12 @@ export function syncCredentialVolume(srcVol, dstVol) {
     try { execFileSync('which', ['colima'], { stdio: 'ignore' }); if (!process.env.DOCKER_HOST) process.env.DOCKER_HOST = `unix://${join(homedir(), '.colima/default/docker.sock')}` } catch {}
     const uid = typeof process.getuid === 'function' ? process.getuid() : 0
     const gid = typeof process.getgid === 'function' ? process.getgid() : 0
-    execFileSync('docker', ['run', '--rm', '-u', `${uid}:${gid}`, '--entrypoint', 'sh',
+    // Run as ROOT (-u 0:0): the creds-slot VOLUME's dir is root-owned (docker creates volumes root:root), so the
+    // host-uid can't write into it (the "Permission denied" metal bug). Root can write both dirs; then chown the
+    // COPIED FILE to the host uid/gid (== the caged coder) so Claude can READ it, and 0600 as Claude expects.
+    execFileSync('docker', ['run', '--rm', '-u', '0:0', '--entrypoint', 'sh',
       '-v', `${srcVol}:/s:ro`, '-v', `${dstVol}:/d`, IMAGE_NAME,
-      '-c', 'if [ -f /s/.credentials.json ]; then cp /s/.credentials.json /d/.credentials.json && chmod 600 /d/.credentials.json; fi'],
+      '-c', `if [ -f /s/.credentials.json ]; then cp /s/.credentials.json /d/.credentials.json && chown ${uid}:${gid} /d/.credentials.json && chmod 600 /d/.credentials.json; fi`],
       { timeout: 60_000, encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] })
     return ''   // success (empty string is falsy → callers treat "" as OK, a non-empty error string as FAILED)
   } catch (e) { return String((e && (e.stderr || e.message)) || e).replace(/\s+/g, ' ').slice(0, 240) }
