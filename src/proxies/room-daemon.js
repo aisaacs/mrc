@@ -1781,6 +1781,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         if (f.action === 'removeorg' && f.org) {
           if (!capOk(f)) { reply({ ok: false, error: 'removeorg requires the control-capability secret (destructive: clears the write-once pin)' }); continue }   // guard-1: gate the destructive delete like trusted/activate — a cross-uid frame can't clear a pin to enable a re-root
           const org = f.org
+          // #66 M1 (Pierre t193): reap the org's transient consults BEFORE engine.removeOrg — it's the ONE funnel
+          // bypass (removeOrg does members.delete(org) directly, so neither this handler nor the GC would reach the
+          // transients afterward). The up-front reap runs each caged Pierre's EXIT-SYNC (its ~/.claude vol survives
+          // killTeamSession's --rm) so a deleted project doesn't cost the next reuser of that slot a re-login. Mirror
+          // of the block at stopteam/adminkillproject.
+          try { const omap = engine._members.get(String(org)); if (omap) { const ts = [...omap.values()].filter((m) => m.transient).map((m) => m.handle); for (const h of ts) { try { engine.removeTransientConsult(org, h) } catch {} } if (ts.length) reapTransientSessions(org, ts) } } catch {}
           if (teamMod) { try { teamMod.killTeamSession(org) } catch {} }   // #34: kills every member's ttyd
           removeLaunch(org); try { removeLaunchState(org) } catch {}   // P1a: purge the transient launch state on delete too
           stopTgForOrg(org)                                   // stop the poller BEFORE dropping its state (Roland's ordering)
