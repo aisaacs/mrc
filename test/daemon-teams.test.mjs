@@ -11,7 +11,7 @@ import { startRoomDaemon as _startRoomDaemon } from '../src/proxies/room-daemon.
 import { findFreePort } from '../src/ports.js'
 import { parseRoster, teamRoomId } from '../src/teams/roster.js'
 import { memberSessionId } from '../src/teams/session-id.js'
-import { saveSessionRecord } from '../src/session-record.js'
+import { saveSessionRecord, loadSessionRecord } from '../src/session-record.js'
 
 // TEARDOWN DISCIPLINE (see daemon-classify.test.mjs): a test that throws before its daemon.stop() leaks the
 // relay/control servers + rolling retry timer + (on macOS) the caffeinate child, and node --test wedges at exit.
@@ -429,4 +429,51 @@ test('#38: a register presenting a reserved memberSessionId WITHOUT a verified-m
 
   daemon?.stop?.()
   for (const c of [squatter, legit]) try { c.sock.destroy() } catch {}
+})
+
+// #59 — the org-lifecycle record reap, and its landmine (the invert of #56 bug C): reap ONLY on def-membership
+// REMOVAL (removemember / removeorg), NEVER on liveness (a suspend/stop leaves the member in the def → its auth
+// anchor MUST survive so it re-binds on resume via record.secret). The whole correctness of #59 is this triangle:
+// suspend KEEPS · remove-one REAPS-one (others kept) · remove-org REAPS-all.
+test('#59 record reap: stopteam KEEPS, removemember reaps one, removeorg reaps all (never on liveness)', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-reap-`)
+  const port = await findFreePort(19700)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+
+  const roster = { org: 'reapco', repo: process.env.HOME, teams: [{ name: 'client', territory: 'client', members: [
+    { role: 'architect', backend: 'claude', name: 'roland', lead: true },
+    { role: 'engineer', backend: 'claude', name: 'ludivine' },
+  ] }] }
+  const norm = parseRoster(roster, { rng: seededRng(1) })
+  const rolandId = memberSessionId('reapco', 'roland/claude')
+  const ludiId = memberSessionId('reapco', 'ludivine/claude')
+
+  const def = await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  assert.equal(def.ok, true)
+
+  // Both members carry a tamper-proof host record with a secret, exactly as `mrc team up` writes pre-launch.
+  saveSessionRecord(rolandId, { repoPath: process.env.HOME, member: true, secret: 'sec-roland' })
+  saveSessionRecord(ludiId, { repoPath: process.env.HOME, member: true, secret: 'sec-ludi' })
+  const present = (id) => loadSessionRecord(id).uuid === id
+  assert.ok(present(rolandId) && present(ludiId), 'both records written')
+
+  // (1) SUSPEND — the org + both members stay in the def, containers merely stop → records MUST survive (the
+  //     landmine: reaping here re-opens 9e1512f in reverse — a suspended member could never re-register on resume).
+  const stopped = await controlCall(controlPort, { action: 'stopteam', org: 'reapco', secret: controlSecret() })
+  assert.equal(stopped.ok, true)
+  assert.ok(present(rolandId) && present(ludiId), 'suspend KEEPS every member record (never reap on liveness)')
+
+  // (2) removemember — ludivine LEAVES the def → her record is reaped; roland (still defined) keeps his.
+  const rm = await controlCall(controlPort, { action: 'removemember', org: 'reapco', handle: 'ludivine/claude', secret: controlSecret() })
+  assert.equal(rm.ok, true, 'removemember succeeded (teamMod loaded)')
+  assert.ok(!present(ludiId), 'the removed member’s record is reaped')
+  assert.ok(present(rolandId), 'a still-defined member keeps its record (no collateral reap)')
+
+  // (3) removeorg — the whole org is deleted → every remaining member record reaped.
+  const del = await controlCall(controlPort, { action: 'removeorg', org: 'reapco', secret: controlSecret() })
+  assert.equal(del.ok, true)
+  assert.ok(!present(rolandId), 'removeorg reaps all remaining member records')
+
+  daemon?.stop?.()
 })

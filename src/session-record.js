@@ -209,3 +209,17 @@ export function pruneSessionRecords() {
     if (mt && Date.now() - mt > NEVER_BOOTED_REAP_MS) reapRecord(uuid)
   }
 }
+
+/** #59 — the org-lifecycle reap. Drop a member/consult record when it LEAVES the org def: a single member
+ *  removed from the roster (removemember) or the whole org deleted (removeorg). This is the AUTHORITATIVE
+ *  member-record lifetime the prune carve-out (r.member / r.adversary skips) deferred to — org membership,
+ *  the authoritative source (orgDefs), NOT a transcript probe and NOT never (the record dir would grow forever).
+ *
+ *  THE LANDMINE (Pierre, the invert of #56 bug C): the trigger MUST be def-membership REMOVAL, NEVER liveness.
+ *  A SUSPENDED/closed member — org still exists, member still in the def, its container merely stopped — MUST
+ *  KEEP its record, because it re-binds on resume against record.secret (R1). Reaping on "offline"/"stopped"
+ *  would re-open the 9e1512f register-limbo bug in reverse (reap a live/suspendable member's auth anchor → it
+ *  can never re-register). So this is called ONLY from the two def-removal endpoints (removemember/removeorg),
+ *  never from stopteam/closemember (which leave the def intact). Same crash-safe sentinel-first ordering as the
+ *  prune's reap. Idempotent (rmSync tolerates absence) → safe to call for a handle with no record. */
+export function reapSessionRecord(uuid) { reapRecord(uuid) }

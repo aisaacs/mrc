@@ -20,7 +20,7 @@ import { memberSessionId } from '../teams/session-id.js'
 import { createTelegramBridge, sendMessage as tgSend, sendMessageChunked as tgSendChunked, editMessageText as tgEdit, sendPhoto as tgSendPhoto, mdToTelegramHTML } from '../teams/telegram.js'
 import { freshTgState, classifyInbound, addPending, confirmPending, rejectPending, unpair as tgUnpair, prePin, tgView, isDuplicateUpdate, markUpdateProcessed } from '../teams/telegram-auth.js'
 import { defangTrustMarkers } from '../teams/trust.js'
-import { classifySession, loadSessionRecord } from '../session-record.js'   // #39/3.A: containment from the TAMPER-PROOF host record, not the wire
+import { classifySession, loadSessionRecord, reapSessionRecord } from '../session-record.js'   // #39/3.A: containment from the TAMPER-PROOF host record, not the wire; #59: org-lifecycle record reap
 import { canonicalWriteTarget } from '../mount-guard.js'   // #49: realpath-canonical write containment (no symlinked-.mrc escape)
 import { resolveTerritoryImage } from '../safe-path.js'   // #56: shared dual-containment (repo + territory) image guard
 import { leadsRoomId } from '../teams/roster.js'
@@ -1781,12 +1781,20 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         if (f.action === 'removeorg' && f.org) {
           if (!capOk(f)) { reply({ ok: false, error: 'removeorg requires the control-capability secret (destructive: clears the write-once pin)' }); continue }   // guard-1: gate the destructive delete like trusted/activate — a cross-uid frame can't clear a pin to enable a re-root
           const org = f.org
+          // #59: the org is being DELETED (a def-removal, not a suspend) → reap EVERY member + consult record for it.
+          // Capture the authoritative handle set NOW, before the teardown drops orgDefs/engine members below. Regular
+          // members come from the def; transients from the engine member map (gathered as `ts` just below). memberSessionId
+          // is deterministic so these are the exact record uuids. reapSessionRecord is idempotent (a handle with no record
+          // is a no-op). This is a genuine org-leave — the invert-limbo landmine (reaping a live/suspendable member's
+          // anchor) can't apply, because the whole org is gone, not merely stopped.
+          const _reapHandles = new Set((orgDefs.get(org)?.members || []).map((m) => String(m.handle)))
           // #66 M1 (Pierre t193): reap the org's transient consults BEFORE engine.removeOrg — it's the ONE funnel
           // bypass (removeOrg does members.delete(org) directly, so neither this handler nor the GC would reach the
           // transients afterward). The up-front reap runs each caged Pierre's EXIT-SYNC (its ~/.claude vol survives
           // killTeamSession's --rm) so a deleted project doesn't cost the next reuser of that slot a re-login. Mirror
           // of the block at stopteam/adminkillproject.
-          try { const omap = engine._members.get(String(org)); if (omap) { const ts = [...omap.values()].filter((m) => m.transient).map((m) => m.handle); for (const h of ts) { try { engine.removeTransientConsult(org, h) } catch {} } if (ts.length) reapTransientSessions(org, ts) } } catch {}
+          try { const omap = engine._members.get(String(org)); if (omap) { const ts = [...omap.values()].filter((m) => m.transient).map((m) => m.handle); for (const h of ts) { _reapHandles.add(String(h)); try { engine.removeTransientConsult(org, h) } catch {} } if (ts.length) reapTransientSessions(org, ts) } } catch {}
+          for (const h of _reapHandles) { try { reapSessionRecord(memberSessionId(org, h)) } catch {} }   // #59: drop the host records — the org that owned them is gone
           if (teamMod) { try { teamMod.killTeamSession(org) } catch {} }   // #34: kills every member's ttyd
           removeLaunch(org); try { removeLaunchState(org) } catch {}   // P1a: purge the transient launch state on delete too
           stopTgForOrg(org)                                   // stop the poller BEFORE dropping its state (Roland's ordering)
@@ -1812,6 +1820,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             orgRoster.set(norm.org, updated)
             defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms })   // prunes the member + syncs team.json
             if (m && m.tier === 'live') teamMod.killMember(f.org, m.handle)   // #34: kill the member's ttyd
+            // #59: the member LEFT the def (a real removal, not a suspend/close) → reap its host record. Belt against the
+            // invert-limbo landmine: reap ONLY if the handle is genuinely absent from the NEW roster (removeMemberFromRoster
+            // dropped it), never on a no-op/mismatch — a still-present handle keeps its auth anchor. resolveMemberHandle
+            // isn't needed: memberByHandle already normalized; norm.members carries the post-removal set.
+            if (!norm.members.some((mm) => String(mm.handle).toLowerCase() === String(f.handle).toLowerCase())) {
+              try { reapSessionRecord(memberSessionId(f.org, f.handle)) } catch {}
+            }
             daemonLog(`removemember ${f.org}: @${f.handle}`)
             reply({ ok: true })
           } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
