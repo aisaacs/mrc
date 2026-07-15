@@ -436,7 +436,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       // per-consult ~/.claude vol back into the login SLOT it start-synced FROM, so the next Pierre on that slot
       // reuses the login (no re-login). Vol names were recorded at launch (mrc.js) → no reconstruction; --rm keeps
       // the vols, so this runs cleanly post-kill. Best-effort; a miss → one re-login, self-healing.
-      try { const r = loadSessionRecord(memberSessionId(org, h)); if (r && r.credsVol && r.claudeVol) syncCredentialVolume(r.claudeVol, r.credsVol) } catch {}
+      try { const r = loadSessionRecord(memberSessionId(org, h)); if (r && r.credsVol && r.claudeVol) { const ok = syncCredentialVolume(r.claudeVol, r.credsVol); daemonLog(`[creds exit-sync] @${h}: ${r.claudeVol} → ${r.credsVol} = ${ok ? 'OK' : 'FAILED'}`) } else { daemonLog(`[creds exit-sync] @${h}: SKIP (record has ${r && r.credsVol ? '' : 'no credsVol'}${r && r.claudeVol ? '' : ' no claudeVol'} — pre-d3fafa8 launch or non-caged)`) } } catch (e) { daemonLog(`[creds exit-sync] @${h}: THREW ${e?.message || e}`) }   // #66 diag
     }
   }
   // Which defined orgs contain a bare handle — the fallback when a session id isn't in the index
