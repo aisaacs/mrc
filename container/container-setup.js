@@ -384,10 +384,14 @@ if (agent === 'claude') {
       // #69: RESUME_SESSION was set as a ROUTING MECHANISM for a caged member (avoid the deterministic-id "already in
       // use" boot collision), NOT because a resume was requested. A missing transcript here means a genuinely-fresh
       // cast/summon — there was never a prior conversation, so DON'T warn about a "lost" one and DON'T write the scary
-      // "tell your human the conversation is gone" note. Just self-correct to a clean create under the same id, silently.
+      // "tell your human the conversation is gone" note. Just self-correct to a clean create under the same id.
       // (A re-cast whose transcript DID survive in the login vol takes the resume branch above — this fires only when
       // there is truly nothing on disk. The orphan-recoverable case still routes to the honest branch below.)
+      // Pierre (turn 200): emit a NEUTRAL line, not pure silence — accurate for a fresh mint, non-alarming, and a soft
+      // signal if the ONE rare way to reach here with real prior data (a genuine resume whose login-vol transcript
+      // vanished) ever happens. Preserves observability at zero UX cost.
       resumeFlag = ''
+      console.error(`[starting a fresh consult — no prior conversation on record]`)
     } else {
       resumeFlag = ''
       // BUG2 (Pierre): tell the TRUTH about recoverability — "unrecoverable" ONLY when nothing is on disk. If the
