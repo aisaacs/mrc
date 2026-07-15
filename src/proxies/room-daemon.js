@@ -925,8 +925,23 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // Persist ONLY the minimal identity {org, summonerHandle} (+ derived handle/consultId as belt-assert values).
   // Declared `function` (HOISTED): restoreConsults() runs at boot BEFORE these lines execute — a const arrow would be
   // in the temporal dead zone there (ReferenceError). Same reason for removeConsultEntry (reapTransientSessions calls it).
-  function saveConsultEntry(org, summonerHandle, pierreHandle, consultId) { try { const same = (c) => c.org === String(org) && String(c.pierreHandle).toLowerCase() === String(pierreHandle).toLowerCase(); const list = loadConsults().filter((c) => !same(c)); list.push({ org: String(org), summonerHandle: String(summonerHandle).toLowerCase(), pierreHandle: String(pierreHandle).toLowerCase(), consultId }); saveConsults(list) } catch {} }
-  function removeConsultEntry(org, pierreHandle) { try { saveConsults(loadConsults().filter((c) => !(c.org === String(org) && String(c.pierreHandle).toLowerCase() === String(pierreHandle).toLowerCase()))) } catch {} }
+  function saveConsultEntry(org, summonerHandle, pierreHandle, consultId) { try { const same = (c) => c.org === String(org) && String(c.pierreHandle).toLowerCase() === String(pierreHandle).toLowerCase(); const list = loadConsults().filter((c) => !same(c)); list.push({ org: String(org), summonerHandle: String(summonerHandle).toLowerCase(), pierreHandle: String(pierreHandle).toLowerCase(), consultId }); saveConsults(list); syncTeamConsultsFile(String(org)) } catch {} }
+  function removeConsultEntry(org, pierreHandle) { try { saveConsults(loadConsults().filter((c) => !(c.org === String(org) && String(c.pierreHandle).toLowerCase() === String(pierreHandle).toLowerCase()))); syncTeamConsultsFile(String(org)) } catch {} }
+  // #67 (owner): keep team.json's `consults:` section in sync with the runtime consult store, so a summoned/cast
+  // Pierre is recorded as part of the team — in his OWN section, NEVER `members` (deriveRooms would seat a `members`
+  // entry in the team room = cage breach). teamMod-null at boot (restoreConsults calls these before the launch
+  // helpers load) → skip, exactly like the defineOrg writeTeamFile guard, so we never rewrite team.json on the boot
+  // restore. Target follows the org's home: the Model-B neutral anchor (host-only, no git dirt) or the legacy repo
+  // root (portable — travels with the repo, a git-visible change, which IS the "record him in the team file" ask).
+  function syncTeamConsultsFile(org) {
+    try {
+      if (!teamMod) return
+      const def = orgDefs.get(String(org)); if (!def) return
+      const target = def.anchor ? orgAnchorDir(def.org) : def.repo; if (!target) return
+      const cons = loadConsults().filter((c) => c.org === String(org)).map((c) => ({ summoner: c.summonerHandle, adversary: 'pierre' }))
+      teamMod.writeTeamFile(target, teamMod.rosterFromDef(def), cons)
+    } catch {}
+  }
   // Direct docker liveness (teamMod is lazy-loaded → null at boot). SPECIFIC label pair; 'alive'|'dead'|'unknown'
   // (docker unreachable). Caller SKIPS a KNOWN-'dead' (never DELETEs — a host-reboot-mid-restart reads dead), and
   // re-seats on 'unknown'/'alive' (a probe blip must not orphan a live Pierre).

@@ -803,7 +803,7 @@ export function removeMemberFromRoster(roster, handle) {
 // would silently ERASE the personas the editor wrote here (the data-loss that made @user's persona vanish).
 // Prefer the roster's own personas; else keep whatever is already on disk. Atomic, like the other two
 // team.json writers (temp→fsync→rename) so a kill mid-sync can't tear the authoritative file.
-export function writeTeamFile(repo, roster) {
+export function writeTeamFile(repo, roster, consults) {
   // #49: a SOLO org is DERIVED + ephemeral (soloRoster — it reads no roster file and has no team.json home),
   // so it must NEVER be persisted here. The daemon syncs EVERY defined org (defineOrg → writeTeamFile,
   // room-daemon.js), so without this guard a plain `mrc <repo> --solo` clobbers the repo's real, hand-authored
@@ -812,11 +812,17 @@ export function writeTeamFile(repo, roster) {
   if (RESERVED_SOLO_ORG_RE.test(String(roster?.org || roster?.project || ''))) return false
   try {
     const file = join(repo, 'team.json')
+    let cur = null; try { cur = JSON.parse(readFileSync(file, 'utf8')) } catch {}
     let personas = roster.personas
-    if (personas == null) {
-      try { const cur = JSON.parse(readFileSync(file, 'utf8')); if (cur && cur.personas && typeof cur.personas === 'object' && !Array.isArray(cur.personas)) personas = cur.personas } catch {}
-    }
-    const out = { project: roster.org, ...(personas && Object.keys(personas).length ? { personas } : {}), teams: roster.teams }
+    if (personas == null && cur && cur.personas && typeof cur.personas === 'object' && !Array.isArray(cur.personas)) personas = cur.personas
+    // #67 (owner): record a summoned/cast Pierre in team.json — but in his OWN `consults:` section, NEVER in
+    // `members`. A caged adversary in `members` would be seated in the team room by deriveRooms = a cage breach;
+    // this is a RECORD only (never fed to deriveRooms, never auto-launched — a caged Pierre has no roster
+    // standing). Shape: [{ summoner: "<handle>", adversary: "pierre" }]. Preserved from the existing file when
+    // the caller passes nothing (like personas), so a plain roster-write never drops it.
+    let cons = Array.isArray(consults) ? consults : (cur && Array.isArray(cur.consults) ? cur.consults : null)
+    if (cons && !cons.length) cons = null   // don't persist an empty array — an org with no consults omits the key
+    const out = { project: roster.org, ...(personas && Object.keys(personas).length ? { personas } : {}), teams: roster.teams, ...(cons ? { consults: cons } : {}) }
     atomicWriteFileSync(file, JSON.stringify(out, null, 2) + '\n')
     return true
   } catch { return false }
