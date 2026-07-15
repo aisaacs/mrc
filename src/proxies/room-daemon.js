@@ -1512,7 +1512,33 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         }
         // --- team controls (N-party engine rooms) ---------------------------
         if (f.action === 'defineOrg' && f.def) {
-          try { const rooms = defineOrg(f.def, { trusted: f.trusted === true && capOk(f), activate: f.activate === true && capOk(f) }); if (f.roster) orgRoster.set(f.def.org, f.roster); reply({ ok: true, rooms }) } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }   // guard-1: trusted/activate are CAPABILITIES — DERIVED from the host-only secret (capOk), never a bare wire flag. A cross-uid frame asserting trusted:true without the secret → downgraded → resolveOrgRootForOrg throws → no pin lands. And orgRoster.set runs ONLY after defineOrg succeeds (Pierre) — a rejected untrusted define must not leave its /victim roster in the cache for a later first-pin fallback to read.
+          // #59b/#70: an AUTHORITATIVE redefine (the builder's complete edited roster via /api/team-define) is the ONE
+          // place a member DROPPED from the roster is provably an intentional removal — distinct from a relaunch/boot
+          // rebuild (which never sets authoritative). Capture the OLD member handles NOW, before defineOrg replaces the
+          // def, so the post-define reap-diff can drop the records of members the human deliberately removed (closes the
+          // builder-drop + rename-orphan that #59's removemember/removeorg endpoints don't see). capOk-gated exactly like
+          // trusted/activate — a cross-uid frame can't forge authoritative:true. THE LANDMINE (still): fire ONLY on this
+          // flagged authoritative redefine, NEVER on a relaunch/boot (a lossy rebuild there would false-reap = #56 bug C
+          // inverted); relaunch/addmember/boot don't pass the flag, so they're structurally excluded.
+          const _authoritativeReap = f.authoritative === true && capOk(f)
+          const _oldHandles = _authoritativeReap ? new Set((orgDefs.get(f.def.org)?.members || []).map((m) => String(m.handle).toLowerCase())) : null
+          try {
+            const rooms = defineOrg(f.def, { trusted: f.trusted === true && capOk(f), activate: f.activate === true && capOk(f) }); if (f.roster) orgRoster.set(f.def.org, f.roster)
+            if (_authoritativeReap) {
+              const newHandles = new Set((f.def.members || []).map((m) => String(m.handle).toLowerCase()))
+              for (const h of _oldHandles) if (!newHandles.has(h)) {
+                try { reapSessionRecord(memberSessionId(f.def.org, h)) } catch {}   // #59b: a member the human removed from the complete roster → drop its record
+                // ...AND its orphaned caged-Pierre consult record (Pierre t209): the removed member was that Pierre's ONLY
+                // summoner, so the consult can never be ▶-Resumed → pure dead weight, exactly the accumulation #70 bounds.
+                // Same buildCagedConsult handle derivation; idempotent no-op if H never summoned one. Credential-safe:
+                // defineOrg's redefine-prune already orphan-reaped the Pierre (→ reapTransientSessions → the #66 exit-sync
+                // captured its credential to its slot) BEFORE this post-define loop, so the slot is safe when the dead
+                // record is dropped.
+                try { reapSessionRecord(memberSessionId(f.def.org, `pierre.${h.replace('/', '-')}/claude`)) } catch {}
+              }
+            }
+            reply({ ok: true, rooms })
+          } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }   // guard-1: trusted/activate are CAPABILITIES — DERIVED from the host-only secret (capOk), never a bare wire flag. A cross-uid frame asserting trusted:true without the secret → downgraded → resolveOrgRootForOrg throws → no pin lands. And orgRoster.set runs ONLY after defineOrg succeeds (Pierre) — a rejected untrusted define must not leave its /victim roster in the cache for a later first-pin fallback to read.
           continue
         }
         if (f.action === 'sessions') { reply({ ok: true, sessions: listMrcContainers() }); continue }

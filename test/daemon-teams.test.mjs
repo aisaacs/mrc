@@ -477,3 +477,47 @@ test('#59 record reap: stopteam KEEPS, removemember reaps one, removeorg reaps a
 
   daemon?.stop?.()
 })
+
+// #59b/#70 — the authoritative-redefine reap-diff. A builder team-define carries the human's COMPLETE edited roster,
+// so a member dropped there is an intentional removal → reap. A relaunch/boot rebuild does NOT set authoritative, so a
+// member transiently absent from it must be KEPT (the invert-limbo landmine again). Triangle: authoritative-drop REAPS ·
+// non-authoritative-drop KEEPS · still-present members kept.
+test('#59b/#70 authoritative redefine reaps a dropped member; a non-authoritative (relaunch) redefine KEEPS', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-reapdiff-`)
+  const HOME = process.env.HOME
+  const port = await findFreePort(19800)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+
+  const parse = (names) => parseRoster({ org: 'redefco', repo: HOME, teams: [{ name: 'client', territory: 'client',
+    members: names.map((n, i) => ({ role: i === 0 ? 'architect' : 'engineer', backend: 'claude', name: n, ...(i === 0 ? { lead: true } : {}) })) }] }, { rng: seededRng(1) })
+  const idOf = (n) => memberSessionId('redefco', `${n}/claude`)
+  const present = (id) => loadSessionRecord(id).uuid === id
+  const define = (norm, extra) => controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: false, secret: controlSecret(), ...extra, def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+
+  // A dropped member's ORPHANED caged-Pierre consult record is reaped too (Pierre t209) — same buildCagedConsult handle.
+  const pierreIdOf = (n) => memberSessionId('redefco', `pierre.${n}-claude/claude`)   // pierre.<handle-with-/→->/claude
+
+  // Define the full 3-member org (authoritative), then give each a tamper-proof host record + a caged-Pierre consult record.
+  await define(parse(['roland', 'ludivine', 'gaston']), { activate: true, authoritative: true })
+  for (const n of ['roland', 'ludivine', 'gaston']) {
+    saveSessionRecord(idOf(n), { repoPath: HOME, member: true, secret: 'sec-' + n })
+    saveSessionRecord(pierreIdOf(n), { repoPath: HOME, adversary: true, summonedBy: idOf(n), secret: 'psec-' + n })   // each summoned a Pierre
+  }
+  assert.ok(['roland', 'ludivine', 'gaston'].every((n) => present(idOf(n)) && present(pierreIdOf(n))), 'all member + Pierre records written')
+
+  // (A) AUTHORITATIVE redefine dropping ludivine → HER record AND her orphaned Pierre's record reaped; the others kept.
+  const a = await define(parse(['roland', 'gaston']), { authoritative: true })
+  assert.equal(a.ok, true)
+  assert.ok(!present(idOf('ludivine')), 'an authoritative drop reaps the removed member’s record')
+  assert.ok(!present(pierreIdOf('ludivine')), 'and its orphaned caged-Pierre consult record (the sweep completes)')
+  assert.ok(present(idOf('roland')) && present(idOf('gaston')), 'still-present members keep their records')
+  assert.ok(present(pierreIdOf('gaston')), 'a still-present member keeps its Pierre record')
+
+  // (B) NON-authoritative redefine dropping gaston (models a relaunch/boot rebuild — the flag ABSENT) → BOTH kept.
+  const b = await define(parse(['roland']))
+  assert.equal(b.ok, true)
+  assert.ok(present(idOf('gaston')) && present(pierreIdOf('gaston')), 'a non-authoritative redefine NEVER reaps (invert-limbo landmine) — gaston + its Pierre kept')
+
+  daemon?.stop?.()
+})

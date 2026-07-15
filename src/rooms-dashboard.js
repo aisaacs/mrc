@@ -279,7 +279,11 @@ async function handle(req, res) {
         // guard-1: the human's Build→Define (CSRF+Origin+Host-gated already) → trusted:true (first-pins the PICKED
         // repo), activate:false (INERT — activation is the separate LAUNCH gesture). Carry the host-only secret so
         // the daemon's capOk honors the capability (the dashboard runs in the daemon's uid → it can read the 0600 file).
-        return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, 'defineOrg', { def, roster: j.roster, trusted: true, activate: false, secret: controlSecret() }))
+        // #59b/#70: authoritative:true — this is the human's COMPLETE edited roster (the builder's whole team), NOT a
+        // relaunch/boot rebuild. It authorizes the daemon's reap-diff (a member DROPPED from the roster here is an
+        // intentional removal → reap its record), distinguishing a real removal from a possibly-lossy relaunch (which
+        // never sets this flag). capOk-gated in the daemon so a cross-uid frame can't forge it.
+        return sendJSON(res, 200, await ctrl(daemonMeta()?.controlPort, 'defineOrg', { def, roster: j.roster, trusted: true, activate: false, authoritative: true, secret: controlSecret() }))
       })
       return
     }
