@@ -591,7 +591,13 @@ const cagedAdversary = !!(config.summonedBy || config.cageAdversary || memberCag
 // instead: container-setup writes `--resume <id>` WHEN the transcript exists, and SELF-CORRECTS to `--session-id`
 // create when it doesn't (a genuinely fresh summon). So this is safe for BOTH — fresh mints still create, relaunches
 // resume the prior conversation. Host-side (no rebuild); it just needs RESUME_SESSION set before the env is built.
-if (memberCageIsAdversary && memberCtx?.sessionId && !config.newSession) config.resumeSession = memberCtx.sessionId
+// #69: this RESUME_SESSION is a ROUTING MECHANISM (avoid the deterministic-id "already in use" boot collision), NOT a
+// user resume REQUEST. Tag it so the container tells the truth on a missing transcript: a genuinely-fresh cast/summon
+// has no prior conversation, so "starting fresh" is normal — not the alarming "prior conversation was LOST" the
+// explicit-resume path warns with. The container still self-corrects resume-vs-create off the real transcript; only
+// the MESSAGING branches on this flag. (A re-cast whose transcript survives in the login vol still resumes silently.)
+let memberResumeRouted = false
+if (memberCageIsAdversary && memberCtx?.sessionId && !config.newSession) { config.resumeSession = memberCtx.sessionId; memberResumeRouted = true }
 // #11 (coverage-critic): the CONFIG-VOLUME selection keys on adversary IDENTITY, not cage STATE. A recorded adversary
 // reopened with --open-adversary-unsafe is uncaged (cagedAdversary=false: rw /workspace + full egress, deliberately)
 // but is STILL an adversary — it must reattach its dedicated -pierre-N volume, NEVER the user's real login/config
@@ -987,6 +993,7 @@ if (cagedAdversary) {
 // container-setup's ADVERSARY branch, which keeps the transcript in the login vol (never /workspace/.mrc under :ro).
 if (adversaryIdentity) envFlags.push('-e', 'MRC_ADVERSARY=1')
 if (config.resumeSession) envFlags.push('-e', `RESUME_SESSION=${config.resumeSession}`)
+if (memberResumeRouted) envFlags.push('-e', 'RESUME_SESSION_ROUTED=1')   // #69: RESUME_SESSION here is a routing mechanism, not a resume request → the container stays silent (not "conversation lost") when a fresh cast/summon has no transcript
 if (config.resumeIsAuto) envFlags.push('-e', 'MRC_RESUME_IS_AUTO=1')   // #5: the host force-resolved an AUTO-continue → on a per-uuid flock-fail TOCTOU, the entrypoint routes to graceful re-run, not the explicit-resume FATAL
 if (config.newSession) envFlags.push('-e', 'NEW_SESSION=1')
 envFlags.push('-e', `CLAUDE_CODE_MAX_OUTPUT_TOKENS=${process.env.CLAUDE_CODE_MAX_OUTPUT_TOKENS || '128000'}`)
