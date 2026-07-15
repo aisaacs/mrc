@@ -94,14 +94,17 @@ export function pierreCredsVolName(slug, slot) { return `mrc-pierre-creds-${slug
 // self-healing. Uses IMAGE_NAME (always present) with --entrypoint sh so no image pull.
 export function syncCredentialVolume(srcVol, dstVol) {
   try {
+    // #66: the DAEMON may not carry DOCKER_HOST in its env when this runs → the docker call can't reach colima and
+    // fails. Resolve the colima socket here (mirror room-daemon.js ensureDockerHost) so the exit-sync works daemon-side.
+    try { execFileSync('which', ['colima'], { stdio: 'ignore' }); if (!process.env.DOCKER_HOST) process.env.DOCKER_HOST = `unix://${join(homedir(), '.colima/default/docker.sock')}` } catch {}
     const uid = typeof process.getuid === 'function' ? process.getuid() : 0
     const gid = typeof process.getgid === 'function' ? process.getgid() : 0
     execFileSync('docker', ['run', '--rm', '-u', `${uid}:${gid}`, '--entrypoint', 'sh',
       '-v', `${srcVol}:/s:ro`, '-v', `${dstVol}:/d`, IMAGE_NAME,
       '-c', 'if [ -f /s/.credentials.json ]; then cp /s/.credentials.json /d/.credentials.json && chmod 600 /d/.credentials.json; fi'],
-      { stdio: 'ignore', timeout: 60_000 })
-    return true
-  } catch { return false }
+      { timeout: 60_000, encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] })
+    return ''   // success (empty string is falsy → callers treat "" as OK, a non-empty error string as FAILED)
+  } catch (e) { return String((e && (e.stderr || e.message)) || e).replace(/\s+/g, ' ').slice(0, 240) }
 }
 export function nextPierreCredsSlot(slug, { listSlots } = {}) {
   const used = new Set()
