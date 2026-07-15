@@ -1035,6 +1035,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     // clobbers/races, undisambiguable). Same SPECIFIC mrc.member+mrc.project label as the restore liveness gate.
     if (cagedContainerState(org, pierreHandle) === 'alive') {
       reseatConsult(built); saveConsultEntry(org, summonerHandle, pierreHandle, consultId)
+      broadcastEvent({ type: 'roster', org })   // #56: tell the dashboard the consult re-seated (else stale render until a manual refresh — this path lacked the broadcast castconsult/resumeconsult have)
       send(issuerId, { type: 'notice', text: `[Pierre is already live in your consult "${consultId}" — reply with @Pierre to keep volleying. A re-summon ATTACHES to the existing session (same conversation); it does not start a fresh one.]` })
       return ack('summoning')
     }
@@ -1046,7 +1047,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     resumingConsults.add(pierreHandle)
     const clearLaunchLock = () => resumingConsults.delete(pierreHandle)
     setTimeout(clearLaunchLock, 90_000).unref?.()
-    const reapPartial = () => { try { engine.removeTransientConsult(org, pierreHandle) } catch {} ; reapTransientSessions(org, [pierreHandle]); summoningPrivate.delete(issuerId); clearLaunchLock() }
+    const reapPartial = () => { try { engine.removeTransientConsult(org, pierreHandle) } catch {} ; reapTransientSessions(org, [pierreHandle]); summoningPrivate.delete(issuerId); clearLaunchLock(); try { broadcastEvent({ type: 'roster', org }) } catch {} }   // #56: a failed summon reap must also tell the dashboard so a shown chip disappears
     const r = engine.addTransientConsult(org, { pierre, withHandle: summonerHandle, roomId: consultId })
     if (!r.ok) { send(issuerId, { type: 'notice', text: `[Cannot summon Pierre: ${r.error}]` }); return ack('summon-error') }
     sessionIndex.set(pierreSessionId, { org, handle: pierreHandle, transient: true })
@@ -1065,6 +1066,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     const prime = `You are Pierre, ${sName}'s faultfinding older step-brother, summoned to red-team a design. Read /rooms/${consultId}/adversary-brief.md FIRST, in full — it holds your character and the design under review. Then OPEN THE VOLLEY: use send_message to send your sharpest grounded objections (no @mention needed — this is a private 1:1 consult room), and keep replying to keep it going. Stay in character, stay adversarial, ground every jab in this repo's real code (your /workspace is read-only).`
     summoningPrivate.add(issuerId)
     setTimeout(() => summoningPrivate.delete(issuerId), 90_000).unref?.()
+    broadcastEvent({ type: 'roster', org })   // #56: a new caged Pierre is seated + launching → tell the dashboard NOW (the chip renders on the SSE 'roster' → tick, no manual refresh); reapPartial re-broadcasts if the launch then fails
     teamMod.launchTransientConsult(org, repo, rosterPath, pierreMember, prime).then((res) => {
       if (!res || !res.ok) { reapPartial(); send(issuerId, { type: 'notice', text: `[Pierre failed to launch: ${res?.error || 'unknown'}. Nothing left running.]` }) }
     }).catch((e) => { reapPartial(); daemonLog(`onSummonIntoTeam ${org} spawn: ${e?.message || e}`) }).finally(clearLaunchLock)   // #56 Inc3: release the shared per-pierreHandle launch-lock on completion (reapPartial also clears it on failure — idempotent)
