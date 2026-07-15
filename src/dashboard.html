@@ -549,12 +549,7 @@ async function tick() {
   // "never comes up clean without a restart" bug. While ANY org is still coming up, self-schedule a bounded full
   // re-fetch so `serve` lands on its own; it self-terminates once every member is settled (serve/dead/orphaned),
   // and /api/teams is ETag/304-cheap while it runs.
-  // #56 cast-add stale-render: a caged consult Pierre booting/awaiting-login is NOT in the launch record (transients
-  // aren't in S.teams.launch), so without this clause _inFlight goes false the moment he's seated → the poll stops →
-  // his flip to online (post-login) never renders until a MANUAL refresh (the reported bug). Keep polling while ANY
-  // seated transient is offline so his console + online flip land on their own.
   const _inFlight = (S.teams.launch || []).some(l => l.launching || Object.values(l.members || {}).some(m => m && (m.state === 'starting' || m.state === 'building')))
-    || (S.teams.members || []).some(m => m.transient && m.tier === 'live' && !m.online)
   clearTimeout(_reconcileT); if (_inFlight) _reconcileT = setTimeout(tick, 2500)
   paint()
 }
@@ -2060,7 +2055,7 @@ window.castPierre = () => {
     </div></div></div>`
   const card=h.querySelector('.modalcard'); if(card){try{card.focus()}catch{}; card.addEventListener('keydown',e=>{if(e.key==='Escape'){e.preventDefault();castClose()}})}
 }
-window.castDoPierre = async (targetHandle) => { castClose(); const r = await actJSON('/api/cast-consult',{org:S.org,targetHandle}); if(!r.ok)return flashFail(r); S.flash=null; tick() }
+window.castDoPierre = async (targetHandle) => { castClose(); if(S.addingTo){S.addingTo=null;S.addingToOrg=null;S.addCustomRoles=[]} const r = await actJSON('/api/cast-consult',{org:S.org,targetHandle}); if(!r.ok)return flashFail(r); S.flash=null; tick() }   // #56: casting a member is a completed add → close any open in-pane add-agent form (S.addingTo) so renderMain UNFREEZES (line ~748) and Pierre's chip renders without a manual refresh — the reported stale-render was the freeze, not the fetch
 // name-by-use modal (a plain Claude): a name by its USE (client/server/worker/…) helps you remember what it's for.
 let _nameCb = null
 function openNameByUse(cb) {
