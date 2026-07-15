@@ -12,7 +12,7 @@ import { BANNER } from './src/constants.js'
 import { setVerbose, dbg } from './src/output.js'
 import { readMrcrc, loadEnv, parseArgs, sanitizeRepoConfig } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
-import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, charSlug, charVolName, nextCharSlot, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer, heldUuids, repoLiveContainers } from './src/docker.js'
+import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, charSlug, charVolName, nextCharSlot, nextPierreCredsSlot, pierreCredsVolName, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer, heldUuids, repoLiveContainers } from './src/docker.js'
 import { resolveStoreMode, storeCtx, mrcStoreDir, migrateAndNormalize, noticePopulatedSliceOnLegacy, graftSession, writeActiveSessionPointer, readActiveSessionPointer } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable. #43: symmetric-session graft + pointer
 import { rosterMemberSessionIds, memberConfigVolName } from './src/commands/team.js'   // #5 PICKABLE⟺MIGRATED: the roster's memberSessionId exclude, shared by the picker + the migration; #49 multi-repo: the ONE config-vol keying helper (org-scoped when cross-repo), shared with execWorker so they can't drift
 import { runMigrate, repoSliceDir } from './src/commands/migrate.js'   // #12: the explicit, guarded `mrc migrate` runner (replaces the silent auto-migrate)
@@ -619,6 +619,8 @@ let volName
 let adversarySlot = 0
 let charVolSlug = ''
 let charVolSlot = 0
+let credsSlug = ''   // #66 (M1): the caged-Pierre shared-credential slot (login pool), separate from ~/.claude (conversations)
+let credsSlot = 0
 if (memberCtx) {
   // #49 multi-repo (Mouth B): org-scoped ONLY when the member lives in a SHARED foreign repo (crossRepo, stamped
   // authoritatively in the --member-def blob) — else `${repoPath}#${handle}`, byte-identical to today (repoPath IS
@@ -945,6 +947,26 @@ if (config.allowWeb) envFlags.push('-e', 'ALLOW_WEB=1')
 // resume, NOT --open-adversary-unsafe. MRC_ADVERSARY (IDENTITY → daemon classification, forwarded by the
 // channel register) is set whenever THIS launch is an adversary, INCLUDING --open-adversary-unsafe.
 if (cagedAdversary) envFlags.push('-e', 'MRC_ADVERSARY_FW=1')   // #49: caged member folded into cagedAdversary
+// #66 (M1, Pierre-signed): SHARED LOGIN for caged Pierres via a credential-slot pool. Claim a GLOBAL per-character
+// credential-slot (mrc-pierre-creds-<slug>-N, O_EXCL) holding ONLY .credentials.json; point Claude at it via
+// CLAUDE_CODE_HOST_CREDS_FILE. ~/.claude stays PER-CONSULT (the memberConfigVolName / -pierre-N mount above) so
+// projects/+sessions/+history+claude.json all stay isolated per consult — only the credential crosses, and via
+// SEPARATE O_EXCL slots (concurrent Pierres → different slots → no shared file, no refresh race / logout-all: the
+// owner's "not a re-used single credential" model). Log into a slot once → every future Pierre on it is free
+// (high-water-mark). Always lowest-free (any free slot is a valid login; the CONVERSATION resumes via the
+// deterministic ~/.claude vol, orthogonal). Fail-closed: a lost slot oracle → skip the shared creds → the
+// per-consult ~/.claude login (a re-login, never a leak). [Metal-test Q3 gates whether an exit-sync is needed.]
+if (cagedAdversary) {
+  credsSlug = charSlug((memberCtx && memberCtx.member && memberCtx.member.first) || 'pierre') || 'pierre'
+  credsSlot = nextPierreCredsSlot(credsSlug)
+  if (credsSlot) {
+    volumes.push('-v', `${pierreCredsVolName(credsSlug, credsSlot)}:/pierre-creds`)
+    envFlags.push('-e', 'CLAUDE_CODE_HOST_CREDS_FILE=/pierre-creds/.credentials.json')
+    console.log(`  ⓘ Caged Pierre on shared login slot ${credsSlot} (${credsSlug}) — log in once per slot, reused across consults; conversations stay isolated per consult.`)
+  } else {
+    dbg('#66: could not claim a Pierre credential slot (docker oracle lost) — falling back to the per-consult login (one re-login).')
+  }
+}
 // #49: MRC_ADVERSARY on adversaryIdentity (covers summon/resume AND a caged member) — LOAD-BEARING: it fires
 // container-setup's ADVERSARY branch, which keeps the transcript in the login vol (never /workspace/.mrc under :ro).
 if (adversaryIdentity) envFlags.push('-e', 'MRC_ADVERSARY=1')
@@ -1207,6 +1229,7 @@ const roomLabels = roomInfo
      ...(memberCtx ? ['--label', `mrc.member=${memberCtx.member.handle}`, '--label', `mrc.team=${memberCtx.member.team}`, '--label', `mrc.project=${memberCtx.org}`] : []),   // #49-SEC: authoritative org (blob/solo), not the member-writable roster's norm.org
      ...(cagedAdversary ? ['--label', 'mrc.adversary=1'] : []),                                  // #49 (4b): IDENTITY label — a caged member is a legit adversary, gets this
      ...(adversarySlot > 0 ? ['--label', `mrc.adversary.slot=${adversarySlot}`] : []),           // POOL label ONLY for a real pierre-pool slot — a caged member (adversarySlot=0) is NOT in the pool, so it never stamps a pool label
+     ...(credsSlot > 0 ? ['--label', `mrc.pierrecreds.slug=${credsSlug}`, '--label', `mrc.pierrecreds.slot=${credsSlot}`] : []),   // #66 (M1): the shared-login credential-slot labels — the GLOBAL per-character oracle (nextPierreCredsSlot) filters mrc.pierrecreds.slug=<slug> across ALL repos, so a running Pierre holds its slot + the next claimant falls to a free one
      ...(charVolSlug ? ['--label', `mrc.charvol=${charVolSlug}`, '--label', `mrc.charvol.slot=${charVolSlot}`] : [])]   // #43/P4: the char-pool labels — the CHARACTER-scoped oracle (nextCharSlot) filters mrc.charvol=<slug> GLOBALLY (across repos) so a cross-project same-character mount is seen + the next claimant falls to a free slot
   : []
 const exitCode = await runContainer({

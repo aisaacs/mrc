@@ -75,6 +75,29 @@ export function nextAdversarySlot(repoPath, preferredSlot = 0, { exact = false }
   return r ? r.slot : null
 }
 
+// #66 (M1, Pierre-signed) — GLOBAL per-character CREDENTIAL-slot pool for caged adversaries. A login-persistent DIR
+// volume (`mrc-pierre-creds-<slug>-N`) holding ONLY .credentials.json, shared across ALL caged Pierres (every repo)
+// so the LOGIN persists — log into a slot once, every future Pierre on it is free (high-water-mark) — while each
+// consult's ~/.claude (conversations: projects/+sessions/+history+claude.json) stays PER-CONSULT, isolated. O_EXCL
+// claim → concurrent Pierres get DIFFERENT slots (no concurrent single-file share, no refresh race / logout-all —
+// the owner's objection to a single shared file, dissolved by construction). ALWAYS lowest-free (fresh AND resume):
+// every slot is an INDEPENDENT valid Pierre login, so any free slot works — no exact-reattach (that's only for the
+// CONVERSATION, which the deterministic ~/.claude vol owns, orthogonal to the login). Oracle = running caged
+// containers' `mrc.pierrecreds.slot` label, GLOBAL (the login is repo-independent). Fail-closed null on a lost
+// oracle → the caller skips the shared creds (per-consult login = a re-login, never a leak). `listSlots` injectable.
+export function pierreCredsVolName(slug, slot) { return `mrc-pierre-creds-${slug}-${slot}` }
+export function nextPierreCredsSlot(slug, { listSlots } = {}) {
+  const used = new Set()
+  try {
+    const rows = listSlots
+      ? listSlots(slug)
+      : execFileSync('docker', ['ps', '--filter', `label=mrc.pierrecreds.slug=${slug}`, '--format', '{{.Label "mrc.pierrecreds.slot"}}'], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS }).trim().split('\n')
+    for (const s of (rows || [])) { const n = parseInt(s, 10); if (n > 0) used.add(n) }
+  } catch { return null }   // lost liveness oracle → fail closed (skip the shared creds, keep the per-consult login)
+  const r = claimLowestFree(slotsDir('pierre-creds-slots', slug), used, 0)
+  return r ? r.slot : null
+}
+
 // #43/P4 RECURRING CHARACTERS — a non-caged Claude member keys its ~/.claude config volume on the CHARACTER (its
 // name), NOT the project (org#handle), so "Claude" across every project shares ONE durable login volume (the
 // re-auth fix, spec §5.2). Reuses the generic `claimLowestFree` O_EXCL primitive, but with a CHARACTER-scoped
