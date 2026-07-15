@@ -958,6 +958,14 @@ if (cagedAdversary) envFlags.push('-e', 'MRC_ADVERSARY_FW=1')   // #49: caged me
 // per-consult ~/.claude login (a re-login, never a leak). [Metal-test Q3 gates whether an exit-sync is needed.]
 if (cagedAdversary) {
   credsSlug = charSlug((memberCtx && memberCtx.member && memberCtx.member.first) || 'pierre') || 'pierre'
+  // #66 COUPLING (Pierre t187, mirror-map discipline): the O_EXCL claim file (claimLowestFree, docker.js) stamps
+  // THIS launcher's pid as the slot-liveness signal, and holds the slot through the not-yet-docker-visible window.
+  // Its correctness DEPENDS on the invariant "a caged adversary can't run detached" (mrc.js:~996 — the caged
+  // container's ONLY egress is the in-process SNI proxy, so runContainer stays `-it`/attached and this process
+  // outlives container-visibility → the claim pid never dies mid-start → no ESRCH-reap → no double-claim → no
+  // concurrent single-credential share). If a DETACHED caged mode is ever built (a `-d` caged worker), that
+  // invariant breaks and this slot-claim race reopens SILENTLY — the claim MUST then move to the durable daemon
+  // (daemon pid + an in-flight Set unioned into `used`, released at reapTransientSessions). Don't detach without it.
   credsSlot = nextPierreCredsSlot(credsSlug)
   if (credsSlot) {
     volumes.push('-v', `${pierreCredsVolName(credsSlug, credsSlot)}:/pierre-creds`)
