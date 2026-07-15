@@ -86,6 +86,23 @@ export function nextAdversarySlot(repoPath, preferredSlot = 0, { exact = false }
 // containers' `mrc.pierrecreds.slot` label, GLOBAL (the login is repo-independent). Fail-closed null on a lost
 // oracle → the caller skips the shared creds (per-consult login = a re-login, never a leak). `listSlots` injectable.
 export function pierreCredsVolName(slug, slot) { return `mrc-pierre-creds-${slug}-${slot}` }
+// #66 (M1): copy ONLY .credentials.json between two docker volumes, host-side, as the HOST uid/gid (via -u) so the
+// copy is owned correctly for the caged Claude (coder == host uid) to READ it. Metal proved Claude reads+writes
+// ~/.claude/.credentials.json (CLAUDE_CODE_HOST_CREDS_FILE is read-only), so the login is BRIDGED through the slot:
+// START-SYNC slot→~/.claude before launch (Claude reads a valid login, no "let's get started"), EXIT-SYNC
+// ~/.claude→slot at teardown (persist for the next Pierre on that slot). Best-effort → bool; a miss = one re-login,
+// self-healing. Uses IMAGE_NAME (always present) with --entrypoint sh so no image pull.
+export function syncCredentialVolume(srcVol, dstVol) {
+  try {
+    const uid = typeof process.getuid === 'function' ? process.getuid() : 0
+    const gid = typeof process.getgid === 'function' ? process.getgid() : 0
+    execFileSync('docker', ['run', '--rm', '-u', `${uid}:${gid}`, '--entrypoint', 'sh',
+      '-v', `${srcVol}:/s:ro`, '-v', `${dstVol}:/d`, IMAGE_NAME,
+      '-c', 'if [ -f /s/.credentials.json ]; then cp /s/.credentials.json /d/.credentials.json && chmod 600 /d/.credentials.json; fi'],
+      { stdio: 'ignore', timeout: 60_000 })
+    return true
+  } catch { return false }
+}
 export function nextPierreCredsSlot(slug, { listSlots } = {}) {
   const used = new Set()
   try {

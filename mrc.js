@@ -12,7 +12,7 @@ import { BANNER } from './src/constants.js'
 import { setVerbose, dbg } from './src/output.js'
 import { readMrcrc, loadEnv, parseArgs, sanitizeRepoConfig } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
-import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, charSlug, charVolName, nextCharSlot, nextPierreCredsSlot, pierreCredsVolName, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer, heldUuids, repoLiveContainers } from './src/docker.js'
+import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, charSlug, charVolName, nextCharSlot, nextPierreCredsSlot, pierreCredsVolName, syncCredentialVolume, runContainer, startDaemon, showStatus, imageIdAndLabels, sliceLiveContainer, heldUuids, repoLiveContainers } from './src/docker.js'
 import { resolveStoreMode, storeCtx, mrcStoreDir, migrateAndNormalize, noticePopulatedSliceOnLegacy, graftSession, writeActiveSessionPointer, readActiveSessionPointer } from './src/mrc-store.js'   // #5 store-mode (memory out of repo → /mrc); inert unless the image is store-capable. #43: symmetric-session graft + pointer
 import { rosterMemberSessionIds, memberConfigVolName } from './src/commands/team.js'   // #5 PICKABLE⟺MIGRATED: the roster's memberSessionId exclude, shared by the picker + the migration; #49 multi-repo: the ONE config-vol keying helper (org-scoped when cross-repo), shared with execWorker so they can't drift
 import { runMigrate, repoSliceDir } from './src/commands/migrate.js'   // #12: the explicit, guarded `mrc migrate` runner (replaces the silent auto-migrate)
@@ -969,7 +969,15 @@ if (cagedAdversary) {
   credsSlot = nextPierreCredsSlot(credsSlug)
   if (credsSlot) {
     volumes.push('-v', `${pierreCredsVolName(credsSlug, credsSlot)}:/pierre-creds`)
-    envFlags.push('-e', 'CLAUDE_CODE_HOST_CREDS_FILE=/pierre-creds/.credentials.json')
+    envFlags.push('-e', 'CLAUDE_CODE_HOST_CREDS_FILE=/pierre-creds/.credentials.json')   // belt: metal proved this is READ-ONLY (login writes to ~/.claude), so the sync below is load-bearing, not this env
+    // #66 M1 START-SYNC (Pierre t191): CLAUDE_CODE_HOST_CREDS_FILE proved READ-ONLY on metal — the login lands in
+    // ~/.claude, the slot stays empty. So BRIDGE the login through the metal-PROVEN path (Claude reliably reads AND
+    // writes ~/.claude/.credentials.json): copy the slot's credential → THIS launch's ~/.claude vol BEFORE the
+    // container starts, so Claude reads a valid login (no "let's get started"). Host-side, pre-`docker run`, no race.
+    // The daemon's reapTransientSessions does the EXIT-SYNC (~/.claude → this SAME slot) at teardown — hence credsSlot
+    // is recorded below. Concurrent Pierres → different slots → independent credential lineages → no rotation
+    // cross-invalidation (the whole reason for the pool). A missed exit-sync (killed launcher) → one re-login, self-heals.
+    try { syncCredentialVolume(pierreCredsVolName(credsSlug, credsSlot), volName) } catch {}
     console.log(`  ⓘ Caged Pierre on shared login slot ${credsSlot} (${credsSlug}) — log in once per slot, reused across consults; conversations stay isolated per consult.`)
   } else {
     dbg('#66: could not claim a Pierre credential slot (docker oracle lost) — falling back to the per-consult login (one re-login).')
@@ -1155,6 +1163,10 @@ if (roomsActive) {
       // never a wire signal → unforgeable, exactly like adversary:true. classifySession ignores `member` (keys on
       // adversary||summonedBy), so a member stays 'normal' and R1/#38 are unchanged — this only stops the reap.
       ...(isMemberLaunch ? { member: true } : {}),
+      // #66 M1: record the claimed credential-slot + the two vol names so the daemon's reapTransientSessions can
+      // EXIT-SYNC (~/.claude → this SAME slot) at teardown. Names, not a reconstruction, so the daemon needs no
+      // repo/modelB re-derivation. `claudeVol` = this launch's per-consult ~/.claude vol; `credsVol` = the login slot.
+      ...(credsSlot ? { credsSlot, credsSlug, credsVol: pierreCredsVolName(credsSlug, credsSlot), claudeVol: volName } : {}),
     })
     envFlags.push('-e', `MRC_ROOM_SECRET=${roomSecret}`)
   } catch (e) {

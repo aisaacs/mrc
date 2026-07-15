@@ -27,7 +27,7 @@ import { leadsRoomId } from '../teams/roster.js'
 import { repoEnvKeyStrict } from '../config.js'
 import { resolveOrgRootForOrg, recordActivatedRoot, isActivatedRoot, clearOrgRoot, clearActivatedRoots, addAuthorizedRepo, orgAnchorDir, resolveMemberRepo } from '../teams/repo-auth.js'   // guard-1: write-once org root + pin/activate separation; addAuthorizedRepo = the human-only cross-repo/Model-B authorize (SOLE set writer besides the CLI); orgAnchorDir = Model B's neutral host-only identity anchor
 import { decideModelB, projectSessionSlices, graftSession, writeActiveSessionPointer } from '../mrc-store.js'   // Model B PREDICT (cap=2 label) + #44 symmetric-resume: the host-verified session-slice whitelist + the cross-slice graft/pointer primitives (same as c7f55b8's create-form path)
-import { imageIdAndLabels } from '../docker.js'
+import { imageIdAndLabels, syncCredentialVolume } from '../docker.js'   // #66 M1: exit-sync the caged Pierre's refreshed credential back to its login slot at teardown
 
 const MRC_JS = fileURLToPath(new URL('../../mrc.js', import.meta.url))
 
@@ -432,6 +432,11 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       try { sessionIndex.delete(memberSessionId(org, h)) } catch {}
       try { removeConsultEntry(org, h) } catch {}   // #56 Inc1: EXPLICIT-death store-remove — this is the ONE place all 3 death paths (dismiss + orphan-reap + reapPartial) funnel through, so a reaped/dismissed Pierre never resurrects on the next boot
       try { if (teamMod) teamMod.killMember(org, h) } catch {}   // reap master(sock) + caged container(label) + unlink
+      // #66 M1 EXIT-SYNC (Pierre t191): after the caged Pierre is stopped, copy its refreshed credential from its
+      // per-consult ~/.claude vol back into the login SLOT it start-synced FROM, so the next Pierre on that slot
+      // reuses the login (no re-login). Vol names were recorded at launch (mrc.js) → no reconstruction; --rm keeps
+      // the vols, so this runs cleanly post-kill. Best-effort; a miss → one re-login, self-healing.
+      try { const r = loadSessionRecord(memberSessionId(org, h)); if (r && r.credsVol && r.claudeVol) syncCredentialVolume(r.claudeVol, r.credsVol) } catch {}
     }
   }
   // Which defined orgs contain a bare handle — the fallback when a session id isn't in the index
