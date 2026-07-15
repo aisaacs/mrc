@@ -104,7 +104,7 @@ export function syncCredentialVolume(srcVol, dstVol) {
     // COPIED FILE to the host uid/gid (== the caged coder) so Claude can READ it, and 0600 as Claude expects.
     execFileSync('docker', ['run', '--rm', '-u', '0:0', '--entrypoint', 'sh',
       '-v', `${srcVol}:/s:ro`, '-v', `${dstVol}:/d`, IMAGE_NAME,
-      '-c', `if [ -f /s/.credentials.json ]; then cp /s/.credentials.json /d/.credentials.json && chown ${uid}:${gid} /d/.credentials.json && chmod 600 /d/.credentials.json; fi`],
+      '-c', `if [ -f /s/.credentials.json ]; then cp /s/.credentials.json /d/.credentials.json && chown ${uid}:${gid} /d /d/.credentials.json && chmod 600 /d/.credentials.json; fi`],
       { timeout: 60_000, encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] })
     return ''   // success (empty string is falsy → callers treat "" as OK, a non-empty error string as FAILED)
   } catch (e) { return String((e && (e.stderr || e.message)) || e).replace(/\s+/g, ' ').slice(0, 240) }
