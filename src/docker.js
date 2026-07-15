@@ -99,12 +99,24 @@ export function syncCredentialVolume(srcVol, dstVol) {
     try { execFileSync('which', ['colima'], { stdio: 'ignore' }); if (!process.env.DOCKER_HOST) process.env.DOCKER_HOST = `unix://${join(homedir(), '.colima/default/docker.sock')}` } catch {}
     const uid = typeof process.getuid === 'function' ? process.getuid() : 0
     const gid = typeof process.getgid === 'function' ? process.getgid() : 0
-    // Run as ROOT (-u 0:0): the creds-slot VOLUME's dir is root-owned (docker creates volumes root:root), so the
-    // host-uid can't write into it (the "Permission denied" metal bug). Root can write both dirs; then chown the
-    // COPIED FILE to the host uid/gid (== the caged coder) so Claude can READ it, and 0600 as Claude expects.
-    execFileSync('docker', ['run', '--rm', '-u', '0:0', '--entrypoint', 'sh',
-      '-v', `${srcVol}:/s:ro`, '-v', `${dstVol}:/d`, IMAGE_NAME,
-      '-c', `if [ -f /s/.credentials.json ]; then cp /s/.credentials.json /d/.credentials.json && chown ${uid}:${gid} /d /d/.credentials.json && chmod 600 /d/.credentials.json; fi`],
+    // #66 (Pierre t197): sync the AUTH PROFILE, not just the token. Claude reads "logged in" from BOTH files:
+    // .credentials.json (the token) AND claude.json's IDENTITY block — oauthAccount + userID + machineID +
+    // hasCompletedOnboarding + claudeCodeFirstTokenDate. A token WITHOUT its bound account-identity + onboarding
+    // flag reads as "not logged in" → the login prompt (the fresh-cast symptom). So: whole-file copy
+    // .credentials.json + KEY-LEVEL MERGE only those identity keys into the target's claude.json — NEVER `projects`
+    // (repo paths/state), because the creds-slot is GLOBAL per-character so a whole-file share would leak project-A's
+    // paths to project-B's Pierre; merge keeps the target's own projects/caches/settings per-consult. Run as ROOT
+    // (-u 0:0) so it can write the root-owned slot/fresh-vol dir, then chown the dir + both files to the host uid
+    // (== the caged coder) so Claude can read/use them, 0600. node is in IMAGE_NAME (--entrypoint node).
+    const script =
+      `const fs=require('fs');const S='/s',D='/d',U=${uid},G=${gid};` +
+      `try{if(fs.existsSync(S+'/.credentials.json'))fs.copyFileSync(S+'/.credentials.json',D+'/.credentials.json')}catch(e){}` +
+      `try{const s=JSON.parse(fs.readFileSync(S+'/claude.json','utf8'));let d={};try{d=JSON.parse(fs.readFileSync(D+'/claude.json','utf8'))}catch(e){}` +
+      `for(const k of ${JSON.stringify(['oauthAccount', 'userID', 'machineID', 'hasCompletedOnboarding', 'claudeCodeFirstTokenDate'])})if(k in s)d[k]=s[k];` +
+      `fs.writeFileSync(D+'/claude.json',JSON.stringify(d,null,2))}catch(e){}` +
+      `try{fs.chownSync(D,U,G)}catch(e){}for(const f of ['.credentials.json','claude.json']){try{fs.chownSync(D+'/'+f,U,G);fs.chmodSync(D+'/'+f,0o600)}catch(e){}}`
+    execFileSync('docker', ['run', '--rm', '-u', '0:0', '--entrypoint', 'node',
+      '-v', `${srcVol}:/s:ro`, '-v', `${dstVol}:/d`, IMAGE_NAME, '-e', script],
       { timeout: 60_000, encoding: 'utf8', stdio: ['ignore', 'ignore', 'pipe'] })
     return ''   // success (empty string is falsy → callers treat "" as OK, a non-empty error string as FAILED)
   } catch (e) { return String((e && (e.stderr || e.message)) || e).replace(/\s+/g, ' ').slice(0, 240) }
