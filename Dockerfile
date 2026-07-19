@@ -102,31 +102,41 @@ RUN mkdir -p /workspace && \
 # the firewall as root then drops to the unprivileged `coder` via gosu, and coder has NO sudo (nor a password:
 # `useradd` leaves the account locked). So a sandboxed session cannot re-run or weaken the firewall.
 COPY init-firewall.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/init-firewall.sh
+RUN chmod 0755 /usr/local/bin/init-firewall.sh
 
 # Clipboard shim (stays bash — mimics xclip interface)
 COPY clipboard-shim.sh /usr/local/bin/xclip
-RUN chmod +x /usr/local/bin/xclip
+RUN chmod 0755 /usr/local/bin/xclip
 
 # Container-side Node scripts
 COPY container/mrc-notify-hook.js /usr/local/bin/
 COPY container/mrc-statusline.js /usr/local/bin/
 COPY container/container-setup.js /usr/local/bin/
+# Imported by container-setup.js as sibling modules (all land in /usr/local/bin) — not executable themselves.
+COPY container/codex-config.js /usr/local/bin/
+COPY container/codex-sessions.js /usr/local/bin/
 # mrc-rename installs WITHOUT the .js so the /rename slash command can invoke it as a clean `mrc-rename`
 # (node shebang, lands on PATH like the xclip shim). The other three KEEP .js — they're referenced by full
 # path in hooks/settings/entrypoint, never typed as a command.
 COPY container/mrc-rename.js /usr/local/bin/mrc-rename
-RUN chmod +x /usr/local/bin/mrc-notify-hook.js \
+# ABSOLUTE modes, never `chmod +x`. COPY carries the build-context file's mode into the image, so a host
+# file that ends up 0600 (a `sed -i` rewrite drops the mode, as does a restrictive umask) becomes a
+# root-owned 0600 file here — and `+x` would only make it 0700, still unreadable by `coder`, which fails
+# at RUNTIME with an EACCES on the script itself rather than at build. Setting 0755/0644 outright makes
+# the image independent of whatever modes the checkout happens to carry.
+RUN chmod 0755 /usr/local/bin/mrc-notify-hook.js \
     /usr/local/bin/mrc-statusline.js \
     /usr/local/bin/container-setup.js \
-    /usr/local/bin/mrc-rename
+    /usr/local/bin/mrc-rename \
+ && chmod 0644 /usr/local/bin/codex-config.js \
+    /usr/local/bin/codex-sessions.js
 
 # Video analysis script + slash command (staged for runtime seeding)
 COPY container/video-analysis.sh /usr/local/bin/video-analysis
-RUN chmod +x /usr/local/bin/video-analysis
+RUN chmod 0755 /usr/local/bin/video-analysis
 
 COPY container/mrc-browse.js /usr/local/bin/mrc-browse
-RUN chmod +x /usr/local/bin/mrc-browse
+RUN chmod 0755 /usr/local/bin/mrc-browse
 COPY container/video-analysis-command.md /opt/mrc-video-analysis/command.md
 COPY container/video-analysis-defaults.json /opt/mrc-video-analysis/defaults.json
 
@@ -139,8 +149,14 @@ COPY container/codex-command.md /opt/mrc-codex/command.md
 # summon_adversary channel verb), never a one-shot command, to avoid the session reaching for the wrong tool.
 COPY container/rename-command.md /opt/mrc-rename/command.md
 
+# Same reasoning as the chmod block above, applied to everything mrc stages under /opt: these are read
+# (not executed) by `coder` at runtime, so a 0600 file in the build context would land root-only and fail
+# late — the channel server would simply not load. `a+rX` adds read for all and traverse for directories
+# only, so it never marks a data file executable.
+RUN chmod -R a+rX /opt/mrc-channel /opt/mrc-marketplace /opt/mrc-video-analysis /opt/mrc-codex /opt/mrc-rename
+
 COPY entrypoint.sh /usr/local/bin/
-RUN chmod +x /usr/local/bin/entrypoint.sh
+RUN chmod 0755 /usr/local/bin/entrypoint.sh
 
 # Disable auto-update — the version is pinned at build time
 # and the firewall may block npm CDN hosts needed for updates.

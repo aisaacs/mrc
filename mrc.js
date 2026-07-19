@@ -12,7 +12,7 @@ import { BANNER } from './src/constants.js'
 import { setVerbose, dbg } from './src/output.js'
 import { readMrcrc, loadEnv, parseArgs, sanitizeRepoConfig } from './src/config.js'
 import { ensureDocker } from './src/colima.js'
-import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, runContainer, startDaemon, showStatus } from './src/docker.js'
+import { buildImage, checkImageAge, getExistingCount, volumeName, nextAdversarySlot, nextInstanceSlot, countAgentPeers, runContainer, startDaemon, showStatus } from './src/docker.js'
 import { processSandboxignores } from './src/sandboxignore.js'
 import { findFreePort } from './src/ports.js'
 import { startClipboardProxy } from './src/proxies/clipboard-proxy.js'
@@ -21,6 +21,7 @@ import { startSniProxy } from './src/proxies/sni-proxy.js'   // A/#40: host SNI-
 import { listSessions, nameSession, resolve as resolveSession, loadNames, resolveSessionId, getSessions } from './src/sessions/manager.js'
 import { summarize, generateName } from './src/sessions/api.js'
 import { pick, ensureNamesMigrated } from './src/sessions/picker.js'
+import { listCodexSessions, resolveCodexSession } from './src/sessions/codex.js'
 import { makeNamer } from './src/sessions/name-watcher.js'
 import { detectToolMisses } from './src/sessions/transcript.js'
 import { resolveContextDir } from './src/context.js'
@@ -84,16 +85,18 @@ Commands:
   mrc rooms [...]                         Watch/steer negotiation rooms (mrc rooms --help)
   mrc team [...]                          Assemble/launch a team of agents (mrc team help)
 
-Session management:
+Session management:            (add --agent codex to any of these to browse Codex sessions)
   mrc sessions ls [path]                  List saved sessions
-  mrc sessions name <name> [#] [path]     Name a session (default: most recent)
+  mrc sessions name <name> [#] [path]     Name a session (default: most recent) [claude]
   mrc sessions resume <name-or-#> [path]  Resume a specific session
   mrc sessions pick [path]                Interactive session picker (alias for mrc pick)
 
 Examples:
   mrc ~/projects/myapp
   mrc ~/projects/myapp -- --model claude-sonnet-4-5-20250929
-  mrc --agent codex .                     # Use Codex instead of Claude
+  mrc --agent codex .                     # Use Codex instead of Claude (auto-resumes its last session)
+  mrc pick --agent codex                  # Pick which Codex session to resume
+  mrc --agent codex -n .                  # Start a FRESH Codex session
   mrc .                -- -p "fix the failing tests"
   mrc -v ~/projects/myapp
 
@@ -182,7 +185,10 @@ dbg(`OpenAI key: ${openaiKey ? `set (${openaiKey.length} chars)` : 'NOT SET'}`)
 // --- Subcommand: mrc pick ---
 if (remaining[0] === 'pick') {
   const repoPath = resolve(remaining[1] || '.')
-  const result = await pick(resolve(repoPath, '.mrc'))
+  // `--agent codex` browses the Codex rollout store instead of the Claude transcripts. Both hand back a
+  // uuid that RESUME_SESSION carries into the container, where container-setup.js turns it into the
+  // right per-agent resume flag (`--resume <id>` for Claude, `resume <id>` for Codex).
+  const result = await pick(resolve(repoPath, '.mrc'), { agent: config.agent })
   if (!result) process.exit(0)
   config.allowWeb = true
   if (result === 'NEW') {
@@ -219,6 +225,7 @@ if (remaining[0] === 'sessions') {
   switch (subcmd) {
     case 'ls': {
       const repoPath = resolve(sessionsArgs[0] || '.')
+      if (config.agent === 'codex') { listCodexSessions(resolve(repoPath, '.mrc')); process.exit(0) }
       await ensureNamesMigrated(resolve(repoPath, '.mrc'))
       listSessions(resolve(repoPath, '.mrc'))
       process.exit(0)
@@ -235,6 +242,15 @@ if (remaining[0] === 'sessions') {
       const query = sessionsArgs[0]
       const repoPath = resolve(sessionsArgs[1] || '.')
       if (!query) { console.error('Usage: mrc sessions resume <name-or-#> [path]'); process.exit(1) }
+      // Codex resolves against its own rollout store (and has no adversary path to confirm) — it shares
+      // only the RESUME_SESSION hand-off below.
+      if (config.agent === 'codex') {
+        const cid = resolveCodexSession(resolve(repoPath, '.mrc'), query)
+        if (!cid) { console.error(`Codex session not found: ${query}`); process.exit(1) }
+        config.resumeSession = cid
+        remaining.length = 0
+        break
+      }
       const uuid = resolveSession(resolve(repoPath, '.mrc'), query)
       if (!uuid) { console.error(`Session not found: ${query}`); process.exit(1) }
       if (!(await confirmIfAdversary(resolve(repoPath, '.mrc'), uuid))) {   // D10: adversary resume is deliberate on every path, not just the picker
@@ -251,7 +267,7 @@ if (remaining[0] === 'sessions') {
     }
     case 'pick': {
       const repoPath = resolve(sessionsArgs[0] || '.')
-      const result = await pick(resolve(repoPath, '.mrc'))
+      const result = await pick(resolve(repoPath, '.mrc'), { agent: config.agent })
       if (!result) process.exit(0)
       config.allowWeb = true
       if (result === 'NEW') config.newSession = true
@@ -487,7 +503,16 @@ if (memberCtx) {
     console.log('    They\'ll share the workspace but get separate config volumes.')
     console.log('    Watch out for edit conflicts — two Claudes, one codebase, no good.')
     console.log('')
-    if (!config.newSession && !config.resumeSession) config.newSession = true
+    // Force a fresh conversation ONLY against a same-agent peer. Two sessions of one agent would both
+    // auto-resume its newest conversation and trample each other; a Claude peer and a Codex session share
+    // no conversation store, so counting every peer made a running Claude silently defeat Codex's
+    // auto-resume. Say it out loud too — a silently-fresh session reads as broken auto-resume.
+    if (!config.newSession && !config.resumeSession && countAgentPeers(repoPath, config.agent) > 0) {
+      config.newSession = true
+      console.log(`    Another ${config.agent} session is live here, so this one starts FRESH rather than`)
+      console.log(`    resuming the same conversation. Use \`mrc pick --agent ${config.agent}\` to pick one deliberately.`)
+      console.log('')
+    }
   }
   volName = volumeName(repoPath, claim.slot)
 }
@@ -717,12 +742,16 @@ if (config.agent === 'claude' && !config.newSessionName && !config.noSummary && 
   })()
 }
 
-// Run container
-const roomLabels = roomInfo
+// Run container. The agent label lets a later launch tell WHICH agent a running peer is, so the
+// auto-new-session force below only fires against a genuine conflict (see countAgentPeers).
+const roomLabels = [
+  '--label', `mrc.agent=${config.agent}`,
+  ...(roomInfo
   ? ['--label', 'mrc.room=1', '--label', `mrc.room.session=${roomInfo.sessionId}`,
      ...(memberCtx ? ['--label', `mrc.member=${memberCtx.member.handle}`, '--label', `mrc.team=${memberCtx.member.team}`, '--label', `mrc.project=${memberCtx.norm.org}`] : []),
      ...(cagedAdversary ? ['--label', 'mrc.adversary=1', '--label', `mrc.adversary.slot=${adversarySlot}`] : [])]   // the Pierre-slot pool's liveness oracle reads these labels
-  : []
+  : []),
+]
 const exitCode = await runContainer({
   repoPath,
   envFlags,

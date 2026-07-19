@@ -1,5 +1,6 @@
 import { createInterface } from 'node:readline'
 import { getSessions, getResumableSessions, loadNames, getSummaryPreview } from './manager.js'
+import { getCodexSessions } from './codex.js'
 import { generateName } from './api.js'
 
 const ESC = '\x1b'
@@ -55,10 +56,8 @@ export async function ensureNamesMigrated(mrcDir) {
   writeFileSync(flagFile, new Date().toISOString() + '\n')
 }
 
-/**
- * Interactive session picker. Returns selected UUID, 'NEW', or null (quit).
- */
-export async function pick(mrcDir) {
+/** Claude rows: .mrc transcripts + summoned adversaries, labelled with mrc's AI-generated names. */
+async function claudeRows(mrcDir) {
   await ensureNamesMigrated(mrcDir)
 
   const sessions = getResumableSessions(mrcDir)   // D2: normal .mrc sessions + repoPath-filtered summoned adversaries (SAME order `resolve` uses → `sessions resume <#>` can't diverge)
@@ -85,6 +84,45 @@ export async function pick(mrcDir) {
       preview: getSummaryPreview(mrcDir, uuid) || preview,
     })
   }
+  return rows
+}
+
+/**
+ * Codex rows: rollouts from the symlinked ~/.codex/sessions store. No ensureNamesMigrated and no
+ * adversary handling — Haiku naming and summoned adversaries are both Claude-only paths, and Codex
+ * titles its own sessions, so there is nothing for mrc to generate here.
+ */
+async function codexRows(mrcDir) {
+  const sessions = getCodexSessions(mrcDir)
+  const rows = [{ action: 'NEW', num: '', ts: '', name: 'New session', preview: '' }]
+  for (let i = 0; i < sessions.length; i++) {
+    const { uuid, lastUpdated, title, preview } = sessions[i]
+    rows.push({
+      action: uuid,
+      num: String(i + 1),
+      ts: lastUpdated ? formatTs(lastUpdated) : '',
+      name: title || '(untitled)',
+      adversary: false,
+      selfName: title || '(untitled)',
+      issuer: '',
+      preview,
+    })
+  }
+  return rows
+}
+
+/**
+ * Interactive session picker. Returns selected UUID, 'NEW', or null (quit).
+ *
+ * `agent` selects which session store to browse. Claude reads the .mrc transcripts (plus summoned
+ * adversaries) and labels rows with mrc's own AI-generated names; Codex reads its rollouts and labels
+ * rows with the title CODEX generates — so neither store needs the other's naming machinery. The TUI
+ * below is shared: only the rows differ.
+ */
+export async function pick(mrcDir, { agent = 'claude' } = {}) {
+  const rows = agent === 'codex'
+    ? await codexRows(mrcDir)
+    : await claudeRows(mrcDir)
 
   // We need to write to /dev/tty for the TUI (stdout may be captured by $())
   const { openSync, createWriteStream } = await import('node:fs')

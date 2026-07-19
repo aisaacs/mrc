@@ -189,6 +189,36 @@ export function volumeName(repoPath, instanceId) {
   return instanceId > 1 ? `mrc-config-${hash}-${instanceId}` : `mrc-config-${hash}`
 }
 
+/**
+ * How many OTHER live sessions in this repo run the SAME agent.
+ *
+ * Distinct from nextInstanceSlot's `others`, which counts every mrc container for the repo because the
+ * ~/.claude volume slot must be unique per container whatever the agent. This one exists for the
+ * auto-new-session force: two sessions of the same agent auto-resuming would both land on that agent's
+ * newest conversation and fight over it, but a Claude session and a Codex session share no conversation
+ * store at all — so a running Claude must not silently force Codex to start fresh.
+ *
+ * A container with NO mrc.agent label predates the label and is treated as 'claude' (the historical
+ * default), so an already-running session still counts correctly for Claude rather than going unseen.
+ * Workers are one-shot execs, not sessions, and are excluded.
+ */
+export function countAgentPeers(repoPath, agent) {
+  try {
+    const out = execFileSync('docker', [
+      'ps', '--filter', 'label=mrc=1', '--filter', `label=mrc.repo=${repoPath}`,
+      '--format', '{{.Label "mrc.agent"}}\t{{.Label "mrc.worker"}}',
+    ], { encoding: 'utf8', timeout: ADV_DOCKER_TIMEOUT_MS })
+    if (!out) return 0
+    // Split BEFORE trimming: a container carrying neither label emits a line of just "\t", and trimming
+    // the whole output first would erase exactly the pre-label container this needs to see.
+    return out.split('\n').filter(line => line.length > 0).filter((line) => {
+      const [rawAgent, worker] = line.split('\t')
+      if (worker === '1') return false
+      return (rawAgent || '').trim() ? rawAgent.trim() === agent : agent === 'claude'
+    }).length
+  } catch { return 0 }   // docker unavailable → don't force anything on a guess
+}
+
 /** Run the Docker container. Returns a promise that resolves to the exit code.
  *  Uses spawn (not execFileSync) so the event loop stays free for the
  *  clipboard and notification proxy servers running in the same process. */

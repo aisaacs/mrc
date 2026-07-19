@@ -29,6 +29,17 @@ if [ "$(id -u)" = "0" ]; then
     MRC_SNI_PROXY_PORT="${MRC_SNI_PROXY_PORT:-}" \
     /usr/local/bin/init-firewall.sh
 
+  # Repair legacy root-owned files in the Codex volume, while we still have root. The Dockerfile chowns
+  # /home/coder/.codex at BUILD time, but a persisted mrc-codex-<hash> volume shadows that — so rollouts
+  # written back when the container ran as root stay root-owned forever. Everything under ~/.codex is
+  # meant to be coder's, so any other owner is a legacy artifact. This matters because container-setup.js
+  # migrates that tree into the repo, and an unreadable file there is not a soft failure: Node's cpSync
+  # ABORTS THE PROCESS (an uncatchable std::filesystem throw) on an unreadable directory. `find ... ! -user`
+  # touches only mismatched entries, so it's a no-op on a healthy volume.
+  if [ -d /home/coder/.codex ]; then
+    find /home/coder/.codex ! -user coder -exec chown coder:coder {} + 2>/dev/null || true
+  fi
+
   export HOME=/home/coder USER=coder LOGNAME=coder
   exec gosu coder "$0" "$@"
 fi
@@ -142,8 +153,20 @@ $MRC_NOTE"
     fi
     ;;
   codex)
-    echo "Launching Codex..."
-    codex --dangerously-bypass-approvals-and-sandbox "$@"
+    # $RESUME_FLAG is a SUBCOMMAND here (`resume --last` / `resume <id>`), not an option like Claude's
+    # `--resume <id>` — it must therefore come BEFORE the options, hence the unquoted expansion first.
+    # container-setup.js only emits it after confirming a matching rollout exists, so this can't invoke
+    # `codex resume` on an empty store (a hard startup failure).
+    # Name the target rather than just "resuming": if auto-resume ever misbehaves again, this line alone
+    # says which session container-setup picked. It does NOT claim why a fresh session started — the
+    # reason (asked for --new, vs nothing found) is container-setup's to report, and it logs the store
+    # state above; saying "none found" here was wrong whenever the human passed --new.
+    if [ -n "$RESUME_FLAG" ]; then
+      echo "Launching Codex (resuming ${RESUME_FLAG#resume })..."
+    else
+      echo "Launching Codex (new session)..."
+    fi
+    codex $RESUME_FLAG --dangerously-bypass-approvals-and-sandbox "$@"
     ;;
   *)
     echo "Unknown agent: $AGENT"

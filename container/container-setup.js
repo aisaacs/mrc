@@ -4,9 +4,11 @@
 // Called by entrypoint.sh after the firewall is up.
 // Handles: plugin seeding, config restore, symlinks, hooks, statusline.
 //
-import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, readdirSync, cpSync, rmSync, unlinkSync, renameSync, lstatSync, statSync, appendFileSync } from 'node:fs'
+import { existsSync, readFileSync, writeFileSync, mkdirSync, symlinkSync, readdirSync, cpSync, rmSync, unlinkSync, renameSync, lstatSync, statSync, appendFileSync, readlinkSync } from 'node:fs'
 import { join, dirname } from 'node:path'
 import { execFileSync } from 'node:child_process'
+import { applyMrcCodexDefaults } from './codex-config.js'
+import { rankedRollouts, resolveAutoResumeId } from './codex-sessions.js'
 
 const HOME = process.env.HOME || '/home/coder'
 const CLAUDE_DIR = join(HOME, '.claude')
@@ -15,6 +17,9 @@ const SETTINGS_FILE = join(CLAUDE_DIR, 'settings.json')
 const CONFIG_FILE = join(CLAUDE_DIR, 'claude.json')
 const MRC_LOCAL = '/workspace/.mrc'
 const PROJECT_STORE = join(CLAUDE_DIR, 'projects', '-workspace')
+const CODEX_DIR = join(HOME, '.codex')
+const CODEX_SESSIONS = join(CODEX_DIR, 'sessions')            // where Codex writes rollouts (in the volume)
+const CODEX_SESSIONS_LOCAL = join(MRC_LOCAL, 'codex-sessions') // repo-local target, readable from the host
 
 function readJSON(path) {
   try { return JSON.parse(readFileSync(path, 'utf8')) } catch { return null }
@@ -218,6 +223,99 @@ if (ADVERSARY) {
   console.error('Warning: project store symlink failed:', e.message)
 }
 
+// 4b. Codex session store — same project-local-memory move as the Claude project store above.
+// Codex writes its rollouts to ~/.codex/sessions, which lives in the mrc-codex-<hash> VOLUME and is
+// therefore invisible to the host. Symlinking it to /workspace/.mrc/codex-sessions buys three things:
+// the host can read it (that's what makes `mrc pick --agent codex` possible at all), it survives a
+// config-volume reset, and it's SHARED across the per-instance mrc-codex-<hash>-N volumes instead of
+// being siloed in whichever slot happened to write it — matching how Claude sessions already behave.
+// Skipped for an adversary (Claude-only, and its /workspace is :ro).
+// Best-effort recursive copy that CANNOT take the process down. Deliberately NOT cpSync: on an
+// unreadable source directory cpSync raises an uncatchable std::filesystem abort (core dump) that would
+// kill container-setup and with it the entrypoint, and on an unreadable source FILE it reports EACCES
+// against the DESTINATION path — which is what made the original failure so confusing. Here every entry
+// is handled individually, so one unreadable legacy rollout costs exactly that one file.
+// Returns { copied, skipped }; skipped > 0 means the source must NOT be deleted.
+function copyTreeBestEffort(src, dst) {
+  let copied = 0, skipped = 0
+  let entries
+  try { entries = readdirSync(src, { withFileTypes: true }) } catch { return { copied, skipped: skipped + 1 } }
+  try { mkdirSync(dst, { recursive: true }) } catch { return { copied, skipped: skipped + entries.length } }
+  for (const e of entries) {
+    const s = join(src, e.name), d = join(dst, e.name)
+    if (e.isDirectory()) {
+      const r = copyTreeBestEffort(s, d)
+      copied += r.copied; skipped += r.skipped
+    } else if (e.isFile()) {
+      // Don't re-copy something migration already placed here — this runs on every boot until it succeeds.
+      try {
+        if (existsSync(d) && statSync(d).size === statSync(s).size) { copied++; continue }
+        cpSync(s, d)
+        copied++
+      } catch { skipped++ }
+    }
+  }
+  return { copied, skipped }
+}
+
+if (!ADVERSARY) try {
+  // Unconditionally: an ALREADY-linked store whose target vanished (.mrc wiped, fresh clone) is a
+  // dangling symlink, and Codex would fail to write through it. Re-planting the target is idempotent.
+  mkdirSync(CODEX_SESSIONS_LOCAL, { recursive: true })
+
+  // Prove the repo-local target is WRITABLE before pointing Codex at it. Planting a symlink into a
+  // directory we can't write is the worst outcome available: Codex would silently fail to record any
+  // session at all — the same silent-transcript-loss class the adversary project store guards against.
+  // If this throws we fall to the catch and leave Codex on its volume, where recording still works.
+  const probe = join(CODEX_SESSIONS_LOCAL, '.mrc-write-probe')
+  writeFileSync(probe, ''); rmSync(probe, { force: true })
+
+  let alreadyLinked = false
+  try { alreadyLinked = lstatSync(CODEX_SESSIONS).isSymbolicLink() } catch {}
+
+  if (!alreadyLinked) {
+    mkdirSync(dirname(CODEX_SESSIONS), { recursive: true })
+    if (existsSync(CODEX_SESSIONS)) {
+      // Migrate rollouts already in the volume so pre-existing Codex history shows up in the picker.
+      const { copied, skipped } = copyTreeBestEffort(CODEX_SESSIONS, CODEX_SESSIONS_LOCAL)
+      if (skipped === 0) {
+        rmSync(CODEX_SESSIONS, { recursive: true, force: true })
+      } else {
+        // NEVER delete history we failed to copy. Move it aside instead: the symlink still gets planted
+        // (so the feature works from here on) and the un-migrated rollouts stay recoverable in the volume.
+        const aside = `${CODEX_SESSIONS}.pre-mrc`
+        try { rmSync(aside, { recursive: true, force: true }) } catch {}
+        renameSync(CODEX_SESSIONS, aside)
+        console.error(`⚠ Migrated ${copied} Codex session file(s); ${skipped} could not be read and were left at ${aside} (they will not appear in \`mrc pick --agent codex\`).`)
+      }
+    }
+    symlinkSync(CODEX_SESSIONS_LOCAL, CODEX_SESSIONS)
+  }
+} catch (e) {
+  // Degrade loudly but keep booting: Codex records to its volume, so auto-resume still works — only the
+  // host-side picker goes dark. Say exactly that, rather than a bare "symlink failed".
+  console.error(`Warning: could not link the Codex session store into the repo (${e.code || e.message}). Codex will record to its volume instead — auto-resume still works, but \`mrc pick --agent codex\` won't see these sessions.`)
+}
+
+// 4c. Codex status line + turn-complete notifier, written into ~/.codex/config.toml.
+// Codex renders its status line from BUILT-IN items (not a script like Claude's statusLine hook), and
+// fires desktop notifications from the top-level `notify` array — so mrc configures Codex here rather
+// than injecting a renderer. Additive and non-clobbering: a key the user already set is left alone, the
+// same way a `/statusline` customization always beats mrc's Claude default.
+try {
+  mkdirSync(CODEX_DIR, { recursive: true })
+  const cfgPath = join(CODEX_DIR, 'config.toml')
+  let before = ''
+  try { before = readFileSync(cfgPath, 'utf8') } catch {}
+  // No notifier when the proxy isn't up (--no-notify, or a daemon/worker launch): pointing `notify` at
+  // the hook then would spawn a process per turn only for it to no-op on the missing port.
+  const notifyPath = process.env.MRC_NOTIFY_PORT ? '/usr/local/bin/mrc-notify-hook.js' : ''
+  const after = applyMrcCodexDefaults(before, { notifyPath })
+  if (after !== before) writeFileSync(cfgPath, after)
+} catch (e) {
+  console.error('Warning: could not configure the Codex status line / notifier:', e.message)
+}
+
 // 5. Seed .gitignore entry for .mrc/
 if (!CAGED && existsSync('/workspace/.git')) {
   const gitignore = '/workspace/.gitignore'
@@ -275,7 +373,8 @@ if (!CAGED && existsSync('/workspace/.git')) {
 }
 
 // 7. Compute resume flag and write it for entrypoint.sh to read.
-// Only Claude supports session resume — other agents get an empty flag.
+// Claude and Codex each get their own flag SYNTAX: Claude takes options (`--resume <id>` / `--continue`),
+// Codex takes a SUBCOMMAND (`resume <id>` / `resume --last`). Any other agent gets an empty flag.
 const agent = process.env.MRC_AGENT || 'claude'
 let resumeFlag = ''
 
@@ -351,6 +450,36 @@ if (agent === 'claude') {
       const jsonls = readdirSync(MRC_LOCAL).filter(f => f.endsWith('.jsonl'))
       if (jsonls.length > 0) resumeFlag = '--continue'
     } catch {}
+  }
+} else if (agent === 'codex') {
+  // Mirror Claude's auto-resume: reopening a repo continues where you left off, `--new` starts clean.
+  const resumeSession = process.env.RESUME_SESSION || ''
+  const newSession = process.env.NEW_SESSION === '1'
+
+  // Both stores: the repo-local one the picker reads, and Codex's own in the volume. Normally the second
+  // is a symlink to the first; scanning both keeps auto-resume correct even if that link isn't intact.
+  const STORES = [CODEX_SESSIONS_LOCAL, CODEX_SESSIONS]
+
+  if (resumeSession) {
+    // `codex resume <id>` on an unknown id is a hard startup failure, which would take the entrypoint
+    // down with it. Same doctrine as the Claude branch: verify first, and DOWNGRADE to a fresh session
+    // with a loud warning rather than crash the container out from under the user.
+    const found = rankedRollouts(STORES).some(({ f }) => f.includes(resumeSession))
+    if (found) {
+      resumeFlag = `resume ${resumeSession}`
+    } else {
+      resumeFlag = ''
+      console.error(`⚠ No Codex rollout found for session ${resumeSession} — starting a FRESH Codex session instead.`)
+    }
+  } else if (!newSession) {
+    // Resolve the id ourselves rather than trusting `codex resume --last` — see codex-sessions.js.
+    const id = resolveAutoResumeId(STORES)
+    if (id) resumeFlag = `resume ${id}`
+    // One line of ground truth about the store, so a future "it didn't resume" needs no guesswork about
+    // which directory was read, how many rollouts were seen, or whether the symlink is intact.
+    let link = 'missing'
+    try { link = lstatSync(CODEX_SESSIONS).isSymbolicLink() ? `→ ${readlinkSync(CODEX_SESSIONS)}` : 'real dir (NOT linked)' } catch {}
+    console.log(`Codex sessions: ${rankedRollouts(STORES).length} rollout(s); ~/.codex/sessions ${link}; resuming ${id || '(none — fresh session)'}`)
   }
 }
 
