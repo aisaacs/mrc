@@ -112,6 +112,27 @@ test('sorts newest-first and dedups a repeated uuid', () => {
   assert.deepEqual(getCodexSessions(mrcDir).map(r => r.uuid), [UUID_B, UUID_A])
 })
 
+test('dedup retains the newest copy of a repeated uuid regardless of traversal order', () => {
+  const mrcDir = setup()
+  writeRollout(mrcDir, {
+    uuid: UUID_B,
+    day: '2026/07/01',
+    mtime: new Date('2026-07-01T00:00:00Z'),
+    lines: [{ type: 'session_meta', payload: { id: UUID_B, originator: 'codex_cli', title: 'Stale title' } }],
+  })
+  writeRollout(mrcDir, {
+    uuid: UUID_B,
+    day: '2026/07/19',
+    mtime: new Date('2026-07-19T00:00:00Z'),
+    lines: [{ type: 'session_meta', payload: { id: UUID_B, originator: 'codex_cli', title: 'Current title' } }],
+  })
+
+  const rows = getCodexSessions(mrcDir)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].title, 'Current title')
+  assert.equal(rows[0].lastUpdated, '2026-07-19T00:00:00.000Z')
+})
+
 test('empty / missing store is empty, never a throw', () => {
   const mrcDir = setup()
   assert.deepEqual(getCodexSessions(mrcDir), [])

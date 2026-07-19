@@ -114,13 +114,16 @@ function parseRollout(file, { interactiveOnly = true } = {}) {
  */
 export function getCodexSessions(mrcDir, opts = {}) {
   const root = join(mrcDir, CODEX_SESSIONS_DIR)
-  const rows = []
-  const seen = new Set()
+  const byUuid = new Map()
   for (const f of collectRollouts(root)) {
     const row = parseRollout(f, opts)
     // Dedup on uuid: a forked/copied rollout can repeat one, and resuming is keyed on uuid alone.
-    if (row && !seen.has(row.uuid)) { seen.add(row.uuid); rows.push(row) }
+    // Directory traversal order is not a recency guarantee, so retain the freshest copy explicitly;
+    // otherwise an older fork encountered first can supply stale title/preview data and picker order.
+    const previous = row && byUuid.get(row.uuid)
+    if (row && (!previous || row.recencyMs > previous.recencyMs)) byUuid.set(row.uuid, row)
   }
+  const rows = [...byUuid.values()]
   rows.sort((a, b) => b.recencyMs - a.recencyMs)
   return rows
 }

@@ -89,7 +89,10 @@ fi
 # that org has no credits). Hence: only ever act when there is NO existing login.
 if ! codex login status >/dev/null 2>&1; then
   if [ -n "${OPENAI_API_KEY:-}" ]; then
-    printenv OPENAI_API_KEY | codex login --with-api-key 2>/dev/null || true
+    if ! printenv OPENAI_API_KEY | codex login --with-api-key 2>/dev/null; then
+      echo "FATAL: Codex API-key login failed — refusing to launch unauthenticated." >&2
+      exit 1
+    fi
   elif [ "${MRC_AGENT:-claude}" = "codex" ]; then
     # No key and Codex is the agent being launched: drive the subscription flow now, before the TUI
     # takes over stdin (its prompt box sends `codex login` to the MODEL, not to a shell). --device-auth
@@ -101,7 +104,10 @@ if ! codex login status >/dev/null 2>&1; then
     echo "  Linking a ChatGPT subscription (Plus/Pro/Team). Open the URL below on your host."
     echo "  Prefer platform API billing instead? Ctrl-C, then put OPENAI_API_KEY in your .env."
     echo ""
-    codex login --device-auth || true
+    if ! codex login --device-auth; then
+      echo "FATAL: Codex device authentication was cancelled or failed — not launching Codex." >&2
+      exit 1
+    fi
   fi
 fi
 
