@@ -90,7 +90,23 @@ ipset create allowed-domains hash:net
 if [ "${MRC_ADVERSARY_FW:-}" = "1" ]; then
     ALLOWED_DOMAINS=()
 else
-    ALLOWED_DOMAINS=("registry.npmjs.org" "api.anthropic.com" "platform.claude.com" "api.openai.com" "sentry.io" "statsig.com")
+    # auth.openai.com + chatgpt.com serve Codex's ChatGPT-subscription auth: `codex login --device-auth`
+    # polls auth.openai.com for the token, refreshes against it later, and a subscription-authed Codex
+    # calls chatgpt.com/backend-api instead of api.openai.com.
+    #
+    # Naming them adds no reachability that was not already there, and it is worth understanding why.
+    # All three are Cloudflare-fronted, and Cloudflare's edge is ANYCAST: any edge IP terminates TLS for
+    # ANY tenant hostname, chosen by SNI. So the api.openai.com IPs we pin already carried traffic to
+    # auth.openai.com and chatgpt.com (measured: both answered, while their A records are DISJOINT from
+    # api.openai.com's — proof it was the anycast edge answering, not a shared address). That is the same
+    # SNI-ride the adversary-branch warning above describes: this ipset is L3/L4 and cannot see SNI, so
+    # for any Cloudflare-fronted host it was never a name-level seal.
+    #
+    # These entries therefore buy RELIABILITY, not permission: they guarantee at least one edge IP that
+    # is definitely live for these names. Without them the failure mode is nasty — device-auth succeeds,
+    # then the token REFRESH fails days later when DNS hands back an edge IP outside the ipset.
+    # A real name-level seal for these would have to be the SNI proxy (sni-proxy.js), never this list.
+    ALLOWED_DOMAINS=("registry.npmjs.org" "api.anthropic.com" "platform.claude.com" "api.openai.com" "auth.openai.com" "chatgpt.com" "sentry.io" "statsig.com")
 fi
 for domain in ${ALLOWED_DOMAINS[@]+"${ALLOWED_DOMAINS[@]}"}; do
     echo "Resolving $domain..."

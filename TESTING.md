@@ -1,6 +1,6 @@
 # Test Checklist
 
-Features awaiting @user verification. Activation: 🔄 reload dashboard · ♻️ `mrc rooms restart` · 🐳 Docker rebuild (`docker rmi mister-claude` + relaunch).
+Features awaiting @user verification. Activation: 🔄 reload dashboard · ♻️ `mrc rooms restart` · 🐳 Docker rebuild (just relaunch `mrc` — container files are late COPY layers, so the cache rebuilds only from there down).
 
 ## Awaiting test (since the Settings redesign)
 - [ ] **Settings → gear-icon modal** (#46) 🔄 — top-right ⚙ opens a modal; closing returns to your exact place

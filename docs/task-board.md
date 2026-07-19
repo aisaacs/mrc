@@ -96,4 +96,5 @@ nod (security/isolation) · **[superseded]** don't build.
   to `/workspace`. The owner can't read sandbox files — paste anything they must read into chat.
 - **Deploy map:** `mrc.js`/`src/` = host-side, live on next launch (no rebuild); `src/proxies/
   room-daemon.js` = `mrc rooms restart`; `container/` + Dockerfile + `entrypoint.sh` + `init-firewall.sh`
-  = `docker rmi mister-claude` + relaunch.
+  = plain relaunch (late COPY layers rebuild from the cache; `--rebuild` only to bust it for a new
+  Claude Code / Codex version).

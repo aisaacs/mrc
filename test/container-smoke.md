@@ -30,9 +30,10 @@ mrc rooms dashboard          # boots a fresh daemon on current code + opens the 
 
 ---
 
-### 1. Build + launch  ⏱️ ~2–5 min (first build)
+### 1. Build + launch  ⏱️ ~2–5 min (first build), seconds thereafter
 ```bash
-docker rmi mister-claude                 # force a clean image rebuild (entrypoint/firewall/channel-server changed)
+                                          # no rmi: entrypoint/firewall/channel-server are late COPY
+                                          # layers, so the line below rebuilds them from the cache
 mrc team up <repo>                        # writes a team.json if none, builds the image, launches the live members in tmux
 ```
 🖐️ **Accept the Channels prompt in each member's terminal** — `mrc team up` opens a tmux session per
@@ -96,7 +97,7 @@ Set up per the docs (`docs/agent-teams.md` §7):
 
 ### 6. Worker-exec (non-Claude member) — the INTEGRATED room path  ⏱️ ~1 min  *(conditional — needs a `codex` worker)*
 If the roster has **no** `codex` member, mark this **SKIPPED** (don't pass it). The `web`/`backend`
-presets include one; otherwise add a `{ "role": "...", "backend": "codex" }` member. **Use `codex` specifically:** only `api.openai.com` is firewall-whitelisted, so a `gemini` media worker fails *at the firewall* unless you launch with `--web` — testing with `codex` keeps a failure attributable to the worker path, not egress.
+presets include one; otherwise add a `{ "role": "...", "backend": "codex" }` member. **Use `codex` specifically:** the OpenAI endpoints are firewall-whitelisted and Google's are not, so a `gemini` media worker fails *at the firewall* unless you launch with `--web` — testing with `codex` keeps a failure attributable to the worker path, not egress.
 
 **Primary proof — use an @mention, NOT `mrc team exec`.** From another member's console (or a steer), @mention the worker:
 ```

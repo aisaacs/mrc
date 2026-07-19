@@ -249,19 +249,17 @@ mrc ~/projects/my-app
 Edit the domain list in `init-firewall.sh`:
 
 ```bash
-for domain in \
-    "registry.npmjs.org" \
-    "api.anthropic.com" \
-    "sentry.io" \
-    "statsig.anthropic.com" \
-    "statsig.com" \
-    "your-private-registry.com"; do   # ← add your own here
+ALLOWED_DOMAINS=("registry.npmjs.org" "api.anthropic.com" "platform.claude.com" \
+                 "api.openai.com" "auth.openai.com" "chatgpt.com" \
+                 "sentry.io" "statsig.com" \
+                 "your-private-registry.com")   # ← add your own here
 ```
 
-Then force a rebuild:
+Then just relaunch — `init-firewall.sh` is COPY'd near the end of the Dockerfile, so Docker's layer
+cache rebuilds only from that COPY down. No `--rebuild` needed:
 
 ```bash
-docker rmi mister-claude
+mrc ~/projects/my-app
 ```
 
 The next `mrc` run will rebuild the image with the new firewall rules.
@@ -339,7 +337,7 @@ Just copy an image to your clipboard on the host and press **Ctrl+V** inside Cla
    cat /tmp/mrc-xclip-shim.log
    ```
 
-**"No route to host" in shim logs** — The firewall may be blocking traffic to `host.docker.internal`. Rebuild the image (`docker rmi mister-claude`) to pick up the latest firewall rules.
+**"No route to host" in shim logs** — The firewall may be blocking traffic to `host.docker.internal`. Relaunch `mrc` to pick up the latest firewall rules (`init-firewall.sh` is a late COPY layer, so a plain launch rebuilds it).
 
 ## Notifications
 
@@ -395,13 +393,12 @@ If nothing appears, check the settings above. If you see an error, make sure it'
 
 **`ERROR: Firewall verification failed`** — The iptables rules didn't take effect. Make sure the container has `--cap-add=NET_ADMIN --cap-add=NET_RAW` (this is handled by `mrc` automatically).
 
-**Permission errors on mounted files** — The Docker image builds with your UID/GID. If you see permission issues, rebuild: `docker rmi mister-claude` and run `mrc` again.
+**Permission errors on mounted files** — The Docker image builds with your UID/GID. If you see permission issues, run `mrc --rebuild` — UID/GID are `--build-arg`s consumed by an early `RUN`, so busting the cache is what re-applies them.
 
-**`✗ Auto-update failed`** — Claude Code's version is baked into the Docker image at build time and auto-update is disabled inside the container. Rebuild it:
+**`✗ Auto-update failed`** — Claude Code's version is baked into the Docker image at build time and auto-update is disabled inside the container. This is the case that genuinely needs `--rebuild`: the Dockerfile text is unchanged, so a cached build would reuse the stale binary layer.
 
 ```bash
-docker rmi mister-claude
-mrc ~/projects/my-app
+mrc --rebuild ~/projects/my-app
 ```
 
 **Slow file access** — Make sure Colima is running with `--mount-type virtiofs`. `mrc` does this automatically when it starts Colima; if you started Colima manually without that flag, stop and let `mrc` restart it.

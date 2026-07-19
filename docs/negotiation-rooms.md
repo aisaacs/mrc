@@ -384,10 +384,10 @@ Most changes are host-side and take effect on the next `mrc` invocation. The spl
 - **Host launcher (`mrc.js`, `pair.js`, `rooms.js`, `manager.js`, `docker.js`)** → live on the
   next `mrc` run.
 - **Container (`Dockerfile`, `entrypoint.sh`, `container-setup.js`, `mrc-channel-server.js`,
-  `init-firewall.sh`)** → `docker rmi mister-claude` then relaunch.
+  `init-firewall.sh`)** → just relaunch. These are all late COPY layers, so the cached build
+  rebuilds from the changed COPY down in seconds; `--rebuild` would re-download Chromium for nothing.
 
 ```bash
-docker rmi mister-claude     # only when container files changed
 mrc pick                     # client repo — rooms ON by default; accept the one-time Channels prompt
 mrc pick                     # server repo — accept it there too
 #   in one session:  ask the <peer>: <question>     → list_peers → pick → relay (auto)

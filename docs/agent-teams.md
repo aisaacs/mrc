@@ -211,7 +211,8 @@ Layered, and it **fails loud**:
 - **Telegram inbound** is allowlisted to the confirmed `from.id`+`chat.id`, private chats only.
 - **Restart honesty** — `mrc rooms restart` **verifies the new daemon's version stamp** (and
   SIGKILL-escalates a wedged old process) so it never silently keeps serving stale code. Host-side
-  `src/` changes ride the daemon reload; container-side changes still need `docker rmi mister-claude`.
+  `src/` changes ride the daemon reload; container-side changes still need a relaunch to rebuild the
+  image (a plain one — they are late COPY layers, so `--rebuild` is wasted minutes).
 
 ---
 
@@ -284,8 +285,9 @@ and the worker container exec (`codex exec` reach to its API, sentinel output ca
 memory volume).
 
 ```bash
-docker rmi mister-claude                 # container files changed (entrypoint, channel server)
 cat > team.json <<'EOF'  …  EOF          # see §1
+                                         # (container files changed? no rebuild step needed —
+                                         #  `mrc team up` rebuilds the changed COPY layers itself)
 mrc team up                              # launches each live member in its own ttyd terminal; accept the Channels prompt in each
 mrc rooms dashboard                      # opens the teams-first dashboard (http://localhost:8787)
 #  in a member:  @critic please review client/src/auth.js

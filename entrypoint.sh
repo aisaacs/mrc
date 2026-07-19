@@ -69,9 +69,29 @@ if [ "${MRC_DAEMON:-}" = "1" ]; then
   exec tail -f /dev/null
 fi
 
-# Auto-login Codex if OPENAI_API_KEY is present (persists in ~/.codex/ volume)
-if [ -n "${OPENAI_API_KEY:-}" ]; then
-  printenv OPENAI_API_KEY | codex login --with-api-key 2>/dev/null || true
+# --- Codex auth (persists in the mrc-codex-<hash> volume) ---------------------------------------
+# Two mutually exclusive paths write the SAME ~/.codex/auth.json:
+#   OPENAI_API_KEY      → pay-as-you-go platform org billing (a company account)
+#   --device-auth       → a personal ChatGPT Plus/Pro/Team subscription's own limits
+# An API key can NEVER draw on a subscription, so re-running --with-api-key on every boot would
+# silently downgrade a subscription login back to platform billing (and to its "Quota exceeded" if
+# that org has no credits). Hence: only ever act when there is NO existing login.
+if ! codex login status >/dev/null 2>&1; then
+  if [ -n "${OPENAI_API_KEY:-}" ]; then
+    printenv OPENAI_API_KEY | codex login --with-api-key 2>/dev/null || true
+  elif [ "${MRC_AGENT:-claude}" = "codex" ]; then
+    # No key and Codex is the agent being launched: drive the subscription flow now, before the TUI
+    # takes over stdin (its prompt box sends `codex login` to the MODEL, not to a shell). --device-auth
+    # prints a code to enter in a HOST browser — the plain flow's localhost:1455 callback is
+    # unreachable from inside the container.
+    echo ""
+    echo "  ⚠ No OpenAI credentials found — may the Schwartz be with you."
+    echo ""
+    echo "  Linking a ChatGPT subscription (Plus/Pro/Team). Open the URL below on your host."
+    echo "  Prefer platform API billing instead? Ctrl-C, then put OPENAI_API_KEY in your .env."
+    echo ""
+    codex login --device-auth || true
+  fi
 fi
 
 AGENT="${MRC_AGENT:-claude}"

@@ -12,7 +12,7 @@ import { join } from 'node:path'
 
 const require = createRequire('/usr/local/lib/node_modules/.mrc-browse.js')
 let chromium
-try { ({ chromium } = require('playwright')) } catch { console.error('playwright is not installed in this image — rebuild it (docker rmi mister-claude).'); process.exit(2) }
+try { ({ chromium } = require('playwright')) } catch { console.error('playwright is not installed in this image — rebuild it (mrc --rebuild <repo>).'); process.exit(2) }
 
 const url = process.argv[2]
 if (!url) { console.error('usage: mrc-browse <url>   (e.g. mrc-browse http://localhost:3000)'); process.exit(2) }

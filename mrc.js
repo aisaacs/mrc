@@ -115,7 +115,9 @@ Environment:
   MRC_SESSION_NAMING_ANTHROPIC_API_KEY — host-only key for Haiku session
                        naming/summaries (.env next to this script). NOT used by the
                        sandboxed session (it runs on Max/OAuth).
-  OPENAI_API_KEY     — loaded from .env (required for --agent codex)
+  OPENAI_API_KEY     — loaded from .env. OPTIONAL for --agent codex: it bills a
+                       pay-as-you-go platform org. Omit it and Codex links a personal
+                       ChatGPT subscription instead (device-auth, prompted on first run).
   MRC_PORT_BASE      — starting port for proxy allocation (default: 7722)`)
   process.exit(0)
 }
@@ -264,23 +266,12 @@ if (remaining[0] === 'sessions') {
 }
 
 // --- Validate API key for selected agent ---
-if (config.agent === 'codex' && !openaiKey) {
-  console.log(`
-  ⚠ The Schwartz needs an OpenAI key for Codex!
-
-  "I can't fire this thing without the combination!"
-     — Colonel Sandurz, probably
-
-  Add OPENAI_API_KEY to your .env file:
-    ${SCRIPT_DIR}/.env
-
-    OPENAI_API_KEY="sk-..."
-
-  Or with 1Password:
-    OPENAI_API_KEY="op://Vault/OpenAI API key/credential"
-`)
-  process.exit(1)
-}
+// Codex has TWO auth paths and OPENAI_API_KEY covers only one of them, so its absence is NOT an
+// error: a ChatGPT subscription (Plus/Pro/Team) auths via `codex login --device-auth`, which writes
+// the same ~/.codex/auth.json and bills the subscription instead of the pay-as-you-go platform org.
+// That auth persists in the mrc-codex-<hash> volume and is invisible from the host, so the host
+// cannot tell "unauthed" from "subscription-authed" — entrypoint.sh makes that call, where
+// `codex login status` has ground truth, and drives the device-auth flow when neither exists.
 
 if (config.agent === 'claude' && !apiKey && !config.summonedBy) {   // a summoned Pierre is named deterministically → no host naming key needed, don't exit
   console.log(`
