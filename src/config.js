@@ -92,42 +92,59 @@ export function loadEnv(scriptDir, { skipOp = false } = {}) {
 function loadOpEnv(envFile) {
   const keys = ['MRC_SESSION_NAMING_ANTHROPIC_API_KEY', 'ANTHROPIC_API_KEY', 'OPENAI_API_KEY']
 
-  // Resolve ALL op:// references in ONE `op run` per account (not once per key — that multiplied
-  // the biometric prompts), capturing the keys we care about. Stderr is dropped so a "vault not in
-  // this account" miss stays quiet instead of spamming [ERROR] lines.
-  const runFor = (account) => {
-    const args = ['run', '--env-file', envFile, '--no-masking']
-    if (account) args.push('--account', account)
-    args.push('--', 'sh', '-c', keys.map(k => `printf '%s\\n' "$${k}"`).join('; '))
-    try {
-      const out = execFileSync('op', args, { timeout: 15000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-      const lines = out.split('\n')
-      const got = {}
-      keys.forEach((k, i) => { const v = (lines[i] || '').trim(); if (v) got[k] = v })
-      return got
-    } catch { return {} }
+  // Parse the op:// references straight from the .env so each is resolved INDIVIDUALLY with `op read`.
+  // WHY NOT one `op run` over the whole file: `op run` resolves the entire env-file ATOMICALLY against
+  // a SINGLE account (the one matching --account / OP_ACCOUNT). So a file whose references live in
+  // DIFFERENT accounts (e.g. a work-vault Anthropic key + a personal-vault OpenAI key) can never
+  // resolve in one invocation — op fails the whole run on the first foreign vault ("X isn't a vault
+  // in this account"). `op read` is per-reference, so we resolve each key against whichever account
+  // holds its vault. Ref: https://www.1password.community/discussions/developers/multiple-account-support-in-op-run/169004
+  const refs = {}
+  for (const line of readFileSync(envFile, 'utf8').split('\n')) {
+    // NB: an op:// reference may contain SPACES (item/field names like "MRC Claude API key"), so
+    // capture the whole value and strip surrounding quotes rather than stopping at whitespace.
+    const m = line.match(/^\s*(\w+)\s*=\s*(.+?)\s*$/)
+    if (!m) continue
+    const val = m[2].replace(/^"(.*)"$/, '$1').replace(/^'(.*)'$/, '$1')
+    if (val.startsWith('op://') && keys.includes(m[1])) refs[m[1]] = val
   }
+  if (!Object.keys(refs).length) return process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || null
 
-  // Scope to one account when possible (OP_ACCOUNT, from the shell or the .env) — this avoids
-  // biometric-prompting (and erroring on) accounts that don't hold the referenced vault. Otherwise
-  // try each configured account in turn and stop at the first that resolves a secret.
+  // Candidate accounts to try per reference: an explicit OP_ACCOUNT wins; otherwise probe every
+  // signed-in account (a reference simply won't resolve against an account that lacks its vault).
   const opAccount = process.env.OP_ACCOUNT || ''
-  let candidates = [opAccount]
+  let accounts = [opAccount]
   if (!opAccount) {
     try {
       const json = execFileSync('op', ['account', 'list', '--format=json'], { timeout: 5000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
       const accts = JSON.parse(json).map(a => a.url).filter(Boolean)
-      candidates = accts.length ? accts : ['']
-    } catch { candidates = [''] }
+      accounts = accts.length ? accts : ['']
+    } catch { accounts = [''] }
   }
 
-  for (const acct of candidates) {
-    const got = runFor(acct)
-    if (Object.keys(got).length) {
-      for (const [k, v] of Object.entries(got)) process.env[k] = v
-      dbg(`got op secrets from account: ${acct || '(default)'}`)
-      break
+  // Resolve ONE reference, trying each candidate account until one holds its vault. A miss on a given
+  // account is EXPECTED (that account may not hold the vault), so it is swallowed — but LOGGED under
+  // --verbose, so a genuine failure is distinguishable from "key not set" (the bug this replaces:
+  // the old swallow dropped op's stderr entirely, so an unresolvable ref looked like a missing key).
+  const readRef = (key, ref) => {
+    for (const acct of accounts) {
+      const args = ['read', ref]
+      if (acct) args.push('--account', acct)
+      try {
+        const v = execFileSync('op', args, { timeout: 15000, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] }).trim()
+        if (v) { dbg(`resolved ${key} from account: ${acct || '(default)'}`); return v }
+      } catch (err) {
+        dbg(`op read ${ref} @ ${acct || '(default)'} failed: ${(err.stderr || err.message || '').toString().trim()}`)
+      }
     }
+    return ''
+  }
+
+  for (const key of keys) {
+    if (!refs[key]) continue
+    const v = readRef(key, refs[key])
+    if (v) process.env[key] = v
+    else dbg(`could not resolve ${key} (${refs[key]}) in any signed-in account`)
   }
 
   return process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || null

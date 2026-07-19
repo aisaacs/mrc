@@ -63,7 +63,7 @@ if (help) {
 
 Options:
   -r, --rebuild        Force a full image rebuild (no cache)
-  -v, --verbose        Show Colima and Docker output (useful for debugging)
+  -v, --verbose        Show Colima/Docker output + [mrc:debug] traces on stderr
   --daemon             Start container in background and print container ID
   -j, --json           Stream JSON output instead of interactive TTY (for embedding)
   -n, --new [name]     Start a new conversation (optionally named)
