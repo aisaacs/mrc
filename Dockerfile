@@ -108,6 +108,15 @@ RUN chmod 0755 /usr/local/bin/init-firewall.sh
 COPY clipboard-shim.sh /usr/local/bin/xclip
 RUN chmod 0755 /usr/local/bin/xclip
 
+# Codex image-paste shim. Codex never calls xclip — it links arboard and speaks X11 itself — so the
+# only clipboard path of its that crosses a COMMAND boundary is the WSL fallback, which shells out to
+# `powershell.exe` and maps the `C:\...` path it prints back into /mnt/c. Hence the name, and the
+# pre-made /mnt/c owned by coder (who cannot mkdir in /). See codex-paste-shim.sh for the full why.
+COPY codex-paste-shim.sh /usr/local/bin/powershell.exe
+RUN chmod 0755 /usr/local/bin/powershell.exe \
+    && mkdir -p /mnt/c/mrc-clipboard \
+    && chown -R ${USER_UID}:${USER_GID} /mnt/c
+
 # Container-side Node scripts
 COPY container/mrc-notify-hook.js /usr/local/bin/
 COPY container/mrc-statusline.js /usr/local/bin/

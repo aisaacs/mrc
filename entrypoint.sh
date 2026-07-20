@@ -172,6 +172,15 @@ $MRC_NOTE"
     else
       echo "Launching Codex (new session)..."
     fi
+    # Image paste. Codex reads the clipboard through arboard (X11 in-process), so the xclip shim that
+    # feeds Claude Code the host clipboard is invisible to it and Ctrl+V fails with an X11 error. Its
+    # one shimmable path is the WSL fallback, and WSL_DISTRO_NAME alone is what flips
+    # is_probably_wsl() — which makes it run `powershell.exe`, i.e. codex-paste-shim.sh. Exported
+    # HERE, not in the Dockerfile, so only Codex believes it is on WSL. Skipped when there is no
+    # clipboard proxy (adversary cage): the shim would only fail one spawn later.
+    if [ -n "${MRC_CLIPBOARD_PORT:-}" ]; then
+      export WSL_DISTRO_NAME="${WSL_DISTRO_NAME:-mrc}"
+    fi
     codex $RESUME_FLAG --dangerously-bypass-approvals-and-sandbox "$@"
     ;;
   *)
