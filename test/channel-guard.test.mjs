@@ -222,3 +222,24 @@ test('#EMPTY-GUARD: ask_user empty body is caught on the RAW field, pre-prefix',
   assert.equal(r.ok, false)
   assert.match(r.error, /"text"/)
 })
+
+// ── The regression this file was almost undone by (Pierre: green units are necessary, NOT sufficient) ──────────────
+// The tool table was extracted into mrc-channel-tools.js and the server rewired to import from it. `node --check` is
+// single-file; the unit tests import the TOOLS module directly and never load the SERVER (it imports the MCP SDK,
+// absent on the host). So a broken cross-module import in the server — importing a name the tools module doesn't
+// export — was invisible to every host check, yet it's an ESM LINK-TIME error that crashes the channel server at
+// startup (plugin:room:room → "failed") for EVERY session. That actually shipped (NON_BODY_FIELDS, removed by the
+// opt-in flip but still imported). This test statically parses the server's import and asserts every name resolves,
+// closing that class without needing the SDK or a container.
+test('#EMPTY-GUARD: every name the channel server imports from mrc-channel-tools.js is actually exported', async () => {
+  const { readFileSync } = await import('node:fs')
+  const server = readFileSync(new URL('../container/mrc-channel-server.js', import.meta.url), 'utf8')
+  const tools = readFileSync(new URL('../container/mrc-channel-tools.js', import.meta.url), 'utf8')
+  // [^{}] so the capture can't span from an earlier `import {…}` into this one (each import has its own braces).
+  const m = server.match(/import\s*\{([^{}]*?)\}\s*from\s*['"]\.\/mrc-channel-tools\.js['"]/)
+  assert.ok(m, 'the server must import from ./mrc-channel-tools.js')
+  const imported = m[1].split(',').map((s) => s.trim().split(/\s+as\s+/)[0].trim()).filter(Boolean)
+  const exported = new Set([...tools.matchAll(/^export\s+(?:const|function|let|class)\s+([A-Za-z0-9_$]+)/gm)].map((x) => x[1]))
+  const missing = imported.filter((n) => !exported.has(n))
+  assert.deepEqual(missing, [], `the server imports name(s) not exported by mrc-channel-tools.js: ${missing.join(', ')} — ESM link error, crashes the channel server at startup`)
+})

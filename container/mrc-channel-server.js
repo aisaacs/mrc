@@ -90,8 +90,13 @@ const mcp = new Server(
 )
 
 let chatSeq = 0
-import { isEscalate, consultTools, teamTools, SAFE_OPTIONAL, ALIAS_KEYS, NON_BODY_FIELDS,
-         SUPPORTED_TYPES, effectivelyRequired, nonEmpty, validateAndCoerce, guardArgs } from './mrc-channel-tools.js'
+// Import ONLY what the server itself references — the guard internals (SAFE_OPTIONAL/ALIAS_KEYS/effectivelyRequired/
+// validateAndCoerce/etc.) are consumed inside guardArgs in the tools module, not here. Importing an unused name is
+// dead weight AND a live hazard: a name the tools module doesn't export is an ESM LINK-TIME error that crashes the
+// whole channel server on startup (plugin:room:room → failed). That is exactly the regression the NON_BODY_FIELDS
+// import caused after the opt-in flip removed that export — invisible to `node --check` (single-file) and to the unit
+// tests (which import the tools module directly, never this one). The channel-imports test now guards this class.
+import { isEscalate, consultTools, teamTools, guardArgs } from './mrc-channel-tools.js'
 
 const tools = TEAM_MODE ? teamTools : consultTools
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
