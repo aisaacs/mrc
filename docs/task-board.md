@@ -1,114 +1,145 @@
 # Task Board — Mister Claude (team-first)
 
-_Snapshot at the `integration → main` merge (2026-07-03). Start a fresh session from this file: the
-substance + all merge-blockers + all three wire-gates are **green**; everything below the line is
-deferred/post-merge by decision. Context map: `docs/team-first-overview.md`. Next build:
-`docs/dashboard-solo-workflow.md`._
+_Fresh snapshot **2026-07-21**. This is the durable, in-repo tracking doc — the source of truth for "where
+we are," because the ephemeral task list keeps disappearing. Supersedes the stale 2026-07-03 merge-snapshot.
+Numbering below is the CURRENT scheme (the pre-07-15 board used a conflicting, now-retired numbering)._
 
-Legend: **[post-merge]** the forward epic · **[deferred]** real but parked · **[gated]** needs owner
-nod (security/isolation) · **[superseded]** don't build.
+Deploy map (which change lands how):
+- `mrc.js` / `src/` (except `room-daemon.js`) → **host-side, live on the next launch** (no rebuild).
+- `src/proxies/room-daemon.js` → **`mrc rooms restart`** (the daemon holds its imported modules from boot).
+- `container/` + `Dockerfile` + `entrypoint.sh` + `init-firewall.sh` → **`docker rmi mister-claude` + relaunch.**
 
 ---
 
-## ✅ Landed this cycle (verified)
+## 🔴 Awaiting metal verification (owner runs; nothing to build)
 
-- **Merge-blocker #64** — `pruneSessionRecords` no longer deletes a fresh session's security record
-  (the launch-race that classified new sessions `unknown` → no peers, can't summon). Fixed via a
-  prune-owned `<uuid>.seen` sentinel (prune never RMWs the record carrying the cage/trust bit → uncage
-  closed by construction) + fresh-read + volume-reset guard + 1h age backstop. Pierre-verified 5
-  rounds. **Wire-verified: `.seen` 0→57 on fresh launches, zero records eaten.**
-- **#58** name propagation — daemon adopts a session's live auto-name as its display label. Committed +
-  wire-verified (descriptive names, no hash-as-name).
-- **D2 (#53)** caged-adversary resume — transcript persists (no more EROFS vaporization), exact-slot
-  re-cage, in-session downgrade banner. Committed `c4598e1` + wire-verified (resume returns history +
-  re-caged).
-- **SNI cage seal** — re-verified on the wire (firewall rc7, foreign-SNI smuggle dropped, model
-  reachable). ECH residual logged precisely: *starved by no-DNS + client-not-DoH, neither
-  cage-enforced.*
-- Earlier: the full pierre-hardening→teams-substrate re-port (host-record classification, register
-  secrets, stable relay port, dead-room GC, naming fixes, cage) — all committed on `integration`.
+- **#t12 launch-lock fix — the CONCURRENT 2-project run (the decisive test).** `mrc rooms restart`, both
+  projects up, a Pierre summoned in EACH, work **both simultaneously**. Pass = both stay usable, no forced
+  dismiss/resume, no "already in flight." A single-Pierre run proves nothing (the empty-body half is already
+  proven by this session's own Pierre consult). Sharp failure signal: a Pierre needs a reseat while its
+  messages DO carry → concurrency-specific past the lock → grab the daemon `[register …]` logs + the
+  socket-liveness root. (Pierre-converged; committed `185a9fd`.)
+- **#50 cross-project login** — launch the same generalist (e.g. Claudine) in project A (log in), then B →
+  should reuse `mrc-char-claudine`, no re-auth. Fix committed `331ff45`; char vols confirmed to exist.
+- **#69 fresh-cast** — a genuinely-fresh cast/summon of Pierre shows the neutral `[starting a fresh consult
+  — no prior conversation on record]`, not the old "conversation lost" alarm. Committed; needs a live look.
 
-## ▶ The merge itself
+---
 
-- **#52 — declare merge-ready + `integration → main`.** All gates green; this is the pull-the-trigger
-  step. After it, `main` is the team-first trunk.
+## ✅ Recently shipped (verified where noted; commits on `main`)
 
-## ▶▶ Next build — the forward epic
+**Rooms empty-message bug — the big one this session (metal-verified BOTH directions).** Peers arrived blank
+for ~5 days: the model keyed `reply`'s body `message`, the server read only `a.text` → shipped `text:''`;
+low-level MCP `Server` never validates inputSchema + the ack lied "Delivered." 7-round live-Pierre red-team.
+- `753a345` guard/recover/refuse (schema-derived, `.trim()`-aware, opt-in `body:true` recovery, H2
+  conditional predicate, `ask_peer` through the ack path, daemon relay belt) + enforcement tests.
+- `eb233bc` fixed a self-inflicted import regression (`plugin:room:room · ✘ failed`) — caught only on the
+  metal; the load gate now catches that class.
+- `512ab36` a real **load gate** (stubs the SDK, actually `import()`s the server; proven to red-catch the
+  regression) + dropped the every-message body logging.
+- `1a38596` **pinned** `@modelcontextprotocol/sdk@1.29.0` (`--save-exact`) + enforcement test — an unpinned
+  link-dep drifted on every rebuild. Full saga + lessons: `[[empty-body-channel-bug]]` (memory).
 
-- **#49 [post-merge] — dashboard-first solo workflow.** Work in a plain solo session inside the
-  dashboard; pull in Pierre (caged) + cross-repo peers on demand. The engine already solves multi-room,
-  so this **retires the legacy pairings path** rather than fixing it. Three pieces: (a) solo onramp =
-  team-of-one with no roster ceremony; (b) Pierre-as-caged-member = summon moves onto the member-launch
-  path (the load-bearing cage-port risk); (c) retire the pairings path. Full design +
-  Pierre's pre-registered 4-point containment audit: `docs/dashboard-solo-workflow.md`.
-- **#47 [superseded]** — Gap-D two-live-rooms reply misroute on the pairings path. **Do not build** —
-  it dies with the pairings path under #49. Constraint banked in the design doc if it ever must live on.
+**#t12 caged-Pierre launch-lock cross-project false-block** (`185a9fd`) — `resumingConsults` keyed on the bare
+`pierreHandle`; two projects whose summoners share the default `claude/claude` handle collide. Keyed on the
+org-scoped `pierreSessionId` at all 3 sites; static regression guard; `[lock-block]` tripwire. Metal test above.
 
-## Deferred queue (real, parked)
+**Overnight run 07-15 (all Pierre-signed):**
+- `f6dadae`/`1dc60f7` **#69** fresh caged consult no longer claims "conversation lost" (neutral line).
+- `331ff45` **#50** deterministic generalist names (Claudine/Pascal/Solange/Guy) → stable char-slug → the
+  char vol (`mrc-char-<slug>`, name-keyed, cross-project) persists the login. Was the owner's #1 daily pain.
+- `f9aad94` **#59** reap a member/consult record when it LEAVES the org def (removemember/removeorg).
+- `29a0537` **#70** authoritative-redefine reap-diff (builder team-define drops M → reap M + its orphaned
+  caged-Pierre record; `authoritative:true`+capOk-gated; invert-limbo closed by construction).
+- **#30** guard-2 = closed BY CONSTRUCTION (persona rides the untamperable `--member-def` blob). **#31**
+  recurring characters = closed by #50 + the cast wiring.
 
-**Security / cage:**
-- **#67 [deferred] — caged cross-repo Increment-3: `ensureSeal` + detached (`-d`) launch.** Inc-1 shipped
-  the caged cross-repo member on the attached `docker run --rm -it` path (container lifetime === dtach-master
-  lifetime; PTY-close → HUP → `--rm`, with an inline SNI fail-safe so no orphan). Inc-3 hardens the
-  **detached** launch: a pre-flight `ensureSeal` that proves egress is pinned + workspace `:ro` + no
-  bridges BEFORE the agent process starts (not just as a launch-arg contract), and the seal-kill-matrix
-  for the `-d` codepath (an orphaned detached container must fail closed, not run uncaged). Likely
-  container-side (`entrypoint.sh` seal-check) → **needs a rebuild**. Charter-pinned; the Inc-1 fail-closed
-  gates stand as its guard until then.
-- **#13 [deferred, real hazard]** — worker cage: gate `ALLOW_WEB` task-workers through SNI/`HTTPS_PROXY`.
-  The non-Claude worker path runs web-open with untrusted prompt text and no proxy — a live exfil
-  surface. Must be caged before any hands-off worker use.
-- **#6 [deferred]** — authenticate the daemon control socket (`127.0.0.1:controlPort` has zero app-layer
-  auth; F6, tracked).
-- **#55 [gated]** — a caged adversary can read all of `/workspace/.mrc` (the owner's dev transcripts);
-  isolation change, needs owner nod.
-- **#29 [deferred]** — allocation TOCTOU on proxy/ttyd ports + session-names write.
+**Caged-Pierre epic #56 + #66** (metal-verified) — summon-into-a-team / cast-add / resume / bug-C register-limbo
+(`9e1512f`) / bug-D suspend→reopen (`503c9fc`) / #67 team.json consults (`540ef89`) / #68 viewer card
+(`107345e`); **#66** shared caged-login (credential-slot pool + per-consult `~/.claude` + auth-profile sync;
+`90c90dd`). Saga: `[[pierre-in-dashboard-blocker]]`.
 
-**D2 / adversary residuals (Pierre-found, narrow):**
-- **#62** — route the D2 "started fresh, transcript lost" downgrade warning through the `@user` inbox
-  (multi-surface), not just a model-context note.
-- **#61** — D2 resume size-0-success + name-divergence edges.
-- **#56** — caged transcript-store probe guards boot, not mid-session ENOSPC.
-- **#54** — room re-pairing on adversary resume: summoner occasionally sees a "different Pierre"
-  (ids/history mismatch). Owner-reported, needs a clean repro.
-- **#48** — summon-vs-consult confusion: a live consult peer treated as the summoned Pierre. Likely
-  falls out of the #49 substrate work.
-- **#57** — can't summon Pierre while already in a consult room (one-room-per-session limit). Also
-  resolved by #49's engine-native summon.
+**Also landed (recent):** ADMIN "Running sessions" task-manager (`41e97c4`/`71e88a6`); **#57** `--web`
+end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the spec-driven dashboard rebuild
+(9 commits, Playwright-verified); SECURITY `4d548d6` (capOk-gate trusted-injection); MODEL B identity-off-repo
+(#33); ESCALATION §14 + (d) triage; symmetric sessions (`c7f55b8`); guard-1 + guard-4 ttyd-unix-socket.
 
-**Perf / infra:**
-- **#63** — memoize `classifySession`/`loadSessionRecord` in the daemon (kills the per-message
-  `readFileSync` in `deliver()`). Design: invalidate on register + close; keep the summon gate uncached.
-- **#31** — port-change resilience: sessions follow a relay-port move without relaunch.
-- **#32** — coverage-critic audit re-run (prove the ceiling, not just the floor).
+---
 
-**UX / objectives:**
-- **#24** — spurious biometric prompts (twice on `mrc --rebuild`, once on `mrc rooms status`).
-- **#34** — dashboard admin panel (daemon status/controls); low priority.
-- **#9 / #10** — caffeine objectives: daemon-mode host caffeine; host-observed container CPU as the
-  leading-edge solo-grind signal.
-- **#66 [backlog] — resolve the Telegram bot token's `op://` reference so 1Password refs work.** The daemon
-  reads `MRC_TELEGRAM_BOT_TOKEN` via `repoEnvKeyStrict`, which SKIPS any `op://` value — a detached daemon has
-  no TTY for the `op` CLI Touch-ID prompt — so a 1Password-referenced token reads as "not configured" and the
-  bridge never starts (today: put the LITERAL token in `<repo>/.env`). Fix: resolve the `op://` ref at solo/team
-  **launch** (TTY + `op` session present) and thread the resolved value to the daemon per-org — `tgTokenFor`
-  already falls back to a `tgToken[org]` map, so wire that. Keeps `op://` in the file; daemon still gets a usable
-  token. Low-risk secret-plumbing (Pierre-glance for the per-org isolation, not a new inbound surface).
+## ▶ Open / ticketed (build-when-picked)
+
+### From the empty-body / rooms-reliability work (this session)
+- **MERGED ROOT — socket-liveness ≠ delivery/binding (the real remaining rooms hole).** `send()`
+  (room-daemon.js:237) is `if (!s.sock.destroyed) sock.write()` with **no else** — a frame to a flapping Pierre
+  hits a destroyed socket (dropped) or a half-open one (`!destroyed` true → written into a dead pipe →
+  vanishes), no redelivery on rebind. The container buffers OUTBOUND (`outQ` :221, flush-on-reconnect :288);
+  the daemon has **no symmetric inbound buffer**. Same mistake as `lastPong fresh` in the heartbeat: socket
+  state used as proof of facts it doesn't prove. **Fix (one root):** a per-session daemon inbound buffer with
+  redelivery-on-rebind (mirror of `outQ`) and/or a delivery-ack, so a frame across a flap survives the ~16s
+  reconnect. This subsumes the "~16s message-loss window" residual AND the pong≠binding trap. Latent-but-real
+  (not the owner's current symptom — the bind succeeds 30/0), ticket-don't-fire. Grounded, Pierre-reviewed.
+- **#t12b — the launch-lock 90s TTL** auto-clears mid-launch if a launch (cold `docker pull`) exceeds it → the
+  zombie the lock guards against. Tie release to completion (`clearLaunchLock`/`.finally`), timeout as backstop
+  only; **measure a cold-pull launch** before trusting the number. Orthogonal to #t12; separate change.
+- **Automated post-rebuild plugin-load gate** — the load CLASS's real gate. Can't weld here (repo has no
+  CI/build system), so it's **author-discipline: after any container-side change, rebuild + confirm the plugin
+  loads.** The host load gate (`test/channel-load.test.mjs`) is the early-warning under it, never a substitute.
+- **`update_notes` SHRINK** — `writeConsensus` full-overwrites, so a terse note replaces a detailed
+  `consensus.md`; the empty-guard stops the erase, not the shrink. Fix: append-with-history / revision retention.
+- **`escalate:"false"` means-true quirk** — `!!"false"` is true; deliberately NOT coerced (would flip the
+  branch); fix as its own change with its own test.
+- **General MCP-arg validation beyond string/number/bool** — enums/nesting are red-gated by the type-subset
+  test (can't silently regress); implement if a tool ever needs a richer schema.
+- **Stubbed-load SDK-rename caveat** — the load gate's SDK stub is a hand-maintained mirror; a real SDK export
+  rename is caught only if the stub is updated (the pin makes that a deliberate, coupled moment).
+
+### SoT / lifecycle (owner-deferred to AFTER the spec work)
+- **#65 SoT census + make-it-structurally-impossible** — the owner suspects >2 sources of truth; sweep every
+  session-meta reader/writer against the mirror-map (session-record.js header).
+- **#63 session-state SoT** — Pierre's 3-axis: containment(done) / lifecycle-intent{active,suspended,dismissed}
+  (new durable SoT) / liveness(DERIVED, never stored). Rule: never durably store what the socket owns.
+- **#71 orphan-record GC** — the authoritative-by-construction sweep-all for CLI-drop/rename record lingerers.
+  TWO required gates: (1) run only against a FULLY-LOADED orgDefs (never mid-boot → mass-reap); (2)
+  TRANSIENT-EXEMPTION — a normal record reaps if its handle is in no orgDefs.members, but a TRANSIENT/adversary
+  record reaps only if its ORG is gone (a suspended Pierre in a live org keeps its ▶Resume anchor). Both, or
+  it's bug C a third time.
+- **#60 / #61 mark-adversary couplings** — PARKED: no consumer (the mark-adversary feature doesn't exist). The
+  doc-halves landed in the mirror-map; they wait for a real consumer.
+
+### Older backlog (still real, carried over — verify before building)
+- **Worker cage** — gate `ALLOW_WEB` task-workers through SNI/`HTTPS_PROXY` (a web-open worker on untrusted
+  prompt text is a live exfil surface). Security-gated.
+- **Daemon control-socket auth (F6)** — `127.0.0.1:controlPort` has capOk on state-changers but no transport
+  auth; the one open remainder from the cage/summon audit.
+- **Caged cross-repo Inc-3** — `ensureSeal` pre-flight + detached (`-d`) launch seal-kill-matrix. Rebuild-gated.
+- **#54 manual-rooms** (live-Pierre §14 routing) · **#55 name-theme → Settings** (identity-coupled) ·
+  **CONVERSATION-VIEW #49** (chat panel replaces the terminal — the big post-spec build) · **Telegram one-bot**
+  (§6, `op://` token resolution) · guard-3 + 0700-dir assert (#24) · sha1/sockSlug collision (#26).
+
+### Hygiene
+- **Revert diagnostic aids** once the rooms work is fully settled: `[creds exit-sync]` daemonLog, consult-launch
+  stderr capture, the `claude-scripts/*-diag.mjs` probes (gitignored). The `[relay-in]` every-message log is
+  already dropped; `[tool-in]` (key-shape only) + `[lock-block]` + `[arg-drift]` are KEPT as permanent telemetry.
 
 ---
 
 ## Standing working rules
 
-- **The owner always commits.** Stage precise paths + write a ready commit message (with the
-  `Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>` trailer), then stop.
-- **Always summon Pierre via `mcp__plugin_room_room__summon_adversary`, never the `/red-team` skill.**
-  Never re-port `/red-team`. Keep `/rename`.
+- **Commit autonomy in THIS repo** ([[commit-autonomy-mrc]]) — I run `git commit` directly as
+  `Alexander Chang <awchang56@gmail.com>`, **no `Co-Authored-By` trailer**, no per-commit ping; free to
+  build/commit/advance on convergence with Pierre. Pushing is still the owner's. (Elsewhere the default is
+  stage-and-stop.)
+- **Always work with Pierre** on correctness/containment-critical changes — `summon_adversary` (never the
+  `/red-team` skill), red-team BEFORE staging; a green suite ships real bugs. Keep `/rename`.
+- **Green host tests are necessary, not sufficient** — "a fix isn't done because it's green; it's done because
+  it LOADED." Container-side changes need the rebuild + a live look; the metal is the only gate that has ever
+  caught a load failure here.
 - **Security/containment/mounts/firewall/isolation changes are human-gated** — discuss + get a nod.
-- **Rank fixes by DURABLE + CORRECT**, never bias to the cheaper option to dodge a rebuild (rebuild is
-  deploy-timing only).
-- **Host diagnostics:** write a script to `claude-scripts/`, output timestamped to
-  `claude-scripts/output/` (gitignored), read it back, delete when done. Give the owner a path relative
-  to `/workspace`. The owner can't read sandbox files — paste anything they must read into chat.
-- **Deploy map:** `mrc.js`/`src/` = host-side, live on next launch (no rebuild); `src/proxies/
-  room-daemon.js` = `mrc rooms restart`; `container/` + Dockerfile + `entrypoint.sh` + `init-firewall.sh`
-  = `docker rmi mister-claude` + relaunch.
+- **Rank fixes by DURABLE + CORRECT**, never bias to the cheaper option to dodge a rebuild (rebuild = deploy
+  timing only).
+- **Measure, don't guess** — instrument + probe (host-diagnostic-script workflow); one probe answers the
+  decisive fork; build the measurement to be able to come back "no."
+- **Host diagnostic scripts:** write to `claude-scripts/` (gitignored), output timestamped to
+  `claude-scripts/output/`, arm a background watcher. **Tell the owner the RELATIVE path, no leading slash:**
+  `node claude-scripts/<name>.mjs` — never `/workspace/...` (the sandbox mount, unusable on their side). The
+  owner can't read sandbox files — paste anything they must read into chat.
