@@ -81,11 +81,20 @@ ENV NODE_PATH=/usr/local/lib/node_modules
 
 # Negotiation-room channel server + its MCP SDK. Kept in its own dir with a LOCAL install so
 # the channel server's ESM `import` resolves — ESM does not consult NODE_PATH like require() does.
+# PINNED (Pierre, empty-body saga): the channel server LINKS against this SDK, so it is a correctness dependency, not
+# a floating convenience. Unpinned, it drifted on ANY `docker rmi` + rebuild — a silent version move with zero code
+# change — which is (a) the class of thing that produced the original bug and (b) inconsistent with this repo's own
+# grain (auto-update disabled, the firewall blocks the npm CDN precisely so versions don't drift under the sandbox).
+# It also silently invalidated the host load-gate's hand-maintained SDK stub (test/fixtures/mcp-sdk-stub.mjs): pinned,
+# the SDK can only change on a DELIBERATE bump — the visible, coupled moment to update the stub + re-run the metal.
+# Bump procedure: change this version, update the stub if the imported names changed, rebuild, confirm the plugin
+# loads in a live session (the metal is still the only oracle for the real SDK). test/dockerfile-pins asserts it stays
+# pinned so it can't silently float again.
 RUN mkdir -p /opt/mrc-channel \
     && cd /opt/mrc-channel \
     && npm init -y >/dev/null 2>&1 \
     && npm pkg set type=module \
-    && npm install --loglevel=error @modelcontextprotocol/sdk
+    && npm install --loglevel=error --save-exact @modelcontextprotocol/sdk@1.29.0
 COPY container/mrc-channel-server.js /opt/mrc-channel/mrc-channel-server.js
 # The tool table + argument guard live in their own dependency-free module so the host test suite can import them
 # (the MCP SDK only exists inside this image). Both files must ship, or the channel server fails to resolve the import.
