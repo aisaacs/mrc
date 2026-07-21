@@ -1301,6 +1301,27 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue
         let f; try { f = JSON.parse(line) } catch { try { sock.destroy() } catch {}; return }   // guard-3 belt: a non-JSON line is a protocol violation → DROP the connection, never skip-and-keep-reading (so a cross-protocol HTTP preamble can't be walked to a smuggled JSON body). The relay's state-changers already sit behind the register-secret gate; this belts a future unauth action.
+        // #ROOMS-DIAG (empty-message fork — REVERT after diagnosis): record the RAW wire-arrival body length for
+        // text-carrying frames. A blanked peer message showing bodylen=0 here ⟹ the text arrived EMPTY on the wire
+        // (sender/container-side: channel server / MCP SDK / Claude tool-args); bodylen>0 ⟹ the loss is downstream
+        // (daemon relay or the receiver's channel render). Host-side, no rebuild; splits the decisive fork.
+        if (f && (f.type === 'msg' || f.type === 'ask' || f.type === 'say' || f.type === 'note' || f.type === 'handoff')) {
+          const _b = String(f.text ?? f.question ?? '')
+          daemonLog(`[relay-in] type=${f.type} from=${String(sessionId || '?').slice(0, 8)} bodylen=${_b.length} preview=${JSON.stringify(_b.slice(0, 48))}`)
+          // #EMPTY-GUARD daemon BELT (Pierre U1/H5): the container-side guard is the primary (only it can attribute the
+          // failure back to a model turn), but the relay must never be a blind empty-body pipe — any other producer (a
+          // future client, a worker post-back, a replayed frame) would otherwise reproduce the silent-empty bug here.
+          // REFUSE-WITH-ACK, not log-and-drop: a silent drop leaves sendAwaitAck to hit its 4s fallback, whose text
+          // still LEADS with "Sent, but the room daemon didn't acknowledge…" — a soft-lie. Echoing an error ack under
+          // the SAME f.id the container is waiting on resolves that pending truthfully as "NOT delivered: …".
+          // .trim() matches the engine's own norm() (room-engine.js:27), so whitespace-only can't slip past here either.
+          if (_b.trim().length === 0) {
+            daemonLog(`[relay-refused] type=${f.type} from=${String(sessionId || '?').slice(0, 8)} — empty body refused (never relay a blank)`)
+            if (f.id != null && sessionId) { try { send(sessionId, { type: 'ack', id: f.id, status: 'error', error: `empty ${f.type} body — nothing was relayed. Put the content in the tool's required text field and resend.` }) } catch {} }
+            continue
+          }
+        }
+        if (f && f.type === 'argdrift') { daemonLog(`[arg-drift] session=${String(sessionId || '?').slice(0, 8)} tool=${f.tool} recovered ${f.from} → ${f.to} (model used a non-declared key — watch for the NEXT one)`); continue }
         if (f.type === 'ping') { try { sock.write(JSON.stringify({ type: 'pong', version }) + '\n') } catch {} }   // #51: liveness echo — proves to the channel that THIS listener is the daemon (not a reused clip/notify port)
         else if (f.type === 'register' && f.sessionId) {
           // R1/#44: authenticate the socket. If this sessionId has a recorded secret, the wire secret MUST match

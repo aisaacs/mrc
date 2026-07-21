@@ -87,6 +87,9 @@ RUN mkdir -p /opt/mrc-channel \
     && npm pkg set type=module \
     && npm install --loglevel=error @modelcontextprotocol/sdk
 COPY container/mrc-channel-server.js /opt/mrc-channel/mrc-channel-server.js
+# The tool table + argument guard live in their own dependency-free module so the host test suite can import them
+# (the MCP SDK only exists inside this image). Both files must ship, or the channel server fails to resolve the import.
+COPY container/mrc-channel-tools.js /opt/mrc-channel/mrc-channel-tools.js
 
 # Local marketplace for the room channel plugin: loaded via `--channels plugin:room@mrc` with NO
 # experimental-channel prompt (vs `--dangerously-load-development-channels`, which prompts). The
