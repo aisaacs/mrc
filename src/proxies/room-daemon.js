@@ -1301,13 +1301,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i); buf = buf.slice(i + 1); if (!line.trim()) continue
         let f; try { f = JSON.parse(line) } catch { try { sock.destroy() } catch {}; return }   // guard-3 belt: a non-JSON line is a protocol violation → DROP the connection, never skip-and-keep-reading (so a cross-protocol HTTP preamble can't be walked to a smuggled JSON body). The relay's state-changers already sit behind the register-secret gate; this belts a future unauth action.
-        // #ROOMS-DIAG (empty-message fork — REVERT after diagnosis): record the RAW wire-arrival body length for
-        // text-carrying frames. A blanked peer message showing bodylen=0 here ⟹ the text arrived EMPTY on the wire
-        // (sender/container-side: channel server / MCP SDK / Claude tool-args); bodylen>0 ⟹ the loss is downstream
-        // (daemon relay or the receiver's channel render). Host-side, no rebuild; splits the decisive fork.
         if (f && (f.type === 'msg' || f.type === 'ask' || f.type === 'say' || f.type === 'note' || f.type === 'handoff')) {
           const _b = String(f.text ?? f.question ?? '')
-          daemonLog(`[relay-in] type=${f.type} from=${String(sessionId || '?').slice(0, 8)} bodylen=${_b.length} preview=${JSON.stringify(_b.slice(0, 48))}`)
+          // (The every-message `[relay-in] bodylen/preview` diagnostic that split the empty-body fork lived here and is
+          // removed now that the fork is closed — it logged 48 chars of message CONTENT to disk on every relay, a probe
+          // habit, not permanent telemetry. Only the EXCEPTIONS below (a refused empty, an arg-drift recovery) are kept,
+          // and neither logs a body.)
           // #EMPTY-GUARD daemon BELT (Pierre U1/H5): the container-side guard is the primary (only it can attribute the
           // failure back to a model turn), but the relay must never be a blind empty-body pipe — any other producer (a
           // future client, a worker post-back, a replayed frame) would otherwise reproduce the silent-empty bug here.
