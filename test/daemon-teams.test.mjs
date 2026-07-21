@@ -521,3 +521,25 @@ test('#59b/#70 authoritative redefine reaps a dropped member; a non-authoritativ
 
   daemon?.stop?.()
 })
+
+// #t12 — the cross-project Pierre-lock collision. The caged-Pierre launch-lock (resumingConsults) coalesces
+// concurrent summon/resume/cast so two launches don't race one deterministic sessionId. It was keyed on the bare
+// pierreHandle — but the handle is `pierre.<summoner>/claude`, and two DIFFERENT projects whose summoners share the
+// default `claude/claude` handle mint the IDENTICAL handle, so project A's in-flight launch FALSE-BLOCKED project B's
+// Pierre ("already in flight"). A human staring at that dead-looking Pierre dismiss/resumes — which reaps the
+// container — so the coarse key manufactured the drop loop. Fix: key on the org-scoped pierreSessionId at all sites.
+test('#t12: two projects sharing a summoner handle → identical Pierre handle but DISTINCT org-scoped sessionIds', () => {
+  const shared = 'pierre.claude-claude/claude'   // both default projects: summoner claude/claude → this handle
+  assert.equal(memberSessionId('projA', shared), memberSessionId('projA', shared), 'sessionId is deterministic')
+  assert.notEqual(memberSessionId('projA', shared), memberSessionId('projB', shared),
+    'the fix premise: the sessionId is org-unique, so a lock keyed on it cannot false-block across projects — the bare handle (identical here) did')
+})
+
+test('#t12: the resumingConsults launch-lock keys on *SessionId at every site, never a bare handle (regression guard)', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../src/proxies/room-daemon.js', import.meta.url), 'utf8')
+  const ops = [...src.matchAll(/resumingConsults\.(?:add|has|delete)\(([^)]*)\)/g)].map((m) => m[1].trim())
+  assert.ok(ops.length >= 3, `expected the lock at ≥3 launch sites, found ${ops.length}`)
+  for (const arg of ops) assert.match(arg, /pierreSessionId$/,
+    `resumingConsults keyed on "${arg}" — must be the org-scoped *pierreSessionId, never a bare handle, or the cross-project false-block returns`)
+})

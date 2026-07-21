@@ -184,8 +184,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   const adversaries = new Set()
   const unverified = new Set()
   const summoningPrivate = new Set()  // issuer ids with a private summon in flight — block a 2nd until it registers or times out
-  const resumingConsults = new Set()  // #56 Inc2 (Pierre #2): pierreHandles with a resume relaunch in flight — coalesce a concurrent /api/consult-resume (double-click / two tabs) so two launches don't race one deterministic sessionId → orphaned zombie container
-  const _transientDeadMisses = new Map()  // #56 GC: pierreHandle -> consecutive dead-container reads (grace before reaping a stale transient consult)
+  const resumingConsults = new Set()  // #56 Inc2 (Pierre #2): caged-Pierre pierreSessionIds (memberSessionId(org,handle), ORG-SCOPED — t12 fix, was the bare handle) with a launch in flight — coalesce a concurrent summon/resume/cast so two launches don't race one deterministic sessionId → orphaned zombie container
+  const _transientDeadMisses = new Map()  // #56 GC: `${org}\0${handle}` (ORG-SCOPED, see :1013 — the key is NOT a bare handle despite older comments) -> consecutive dead-container reads (grace before reaping a stale transient consult)
   // R1/#44: register-secret authentication. A register whose sessionId HAS a recorded secret MUST present the
   // matching wire secret or it is REJECTED (impersonation) — enforced UNCONDITIONALLY. (The former `secretsArmed`
   // soft-arm gate was removed: it was redundant with "the record has a secret" and, if its best-effort arm-bit
@@ -1044,13 +1044,20 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       send(issuerId, { type: 'notice', text: `[Pierre is already live in your consult "${consultId}" — reply with @Pierre to keep volleying. A re-summon ATTACHES to the existing session (same conversation); it does not start a fresh one.]` })
       return ack('summoning')
     }
-    // #56 Inc3 (Pierre t139): compose the launch-lock across ALL THREE entry points (summon/resume/cast) on
-    // pierreHandle — the key that identifies the CONTAINER — so a concurrent dashboard cast/resume of the SAME target's
-    // Pierre coalesces with this in-session summon (else two containers on one sessionId → zombie). summoningPrivate
-    // [issuerId] stays for the global-8 cap + "still booting" UX; this adds the per-container lock all three paths share.
-    if (resumingConsults.has(pierreHandle)) { send(issuerId, { type: 'notice', text: '[A summon/resume for your Pierre is already in flight — give it a moment, then reply with @Pierre.]' }); return ack('summon-busy') }
-    resumingConsults.add(pierreHandle)
-    const clearLaunchLock = () => resumingConsults.delete(pierreHandle)
+    // #56 Inc3 (Pierre t139): compose the launch-lock across ALL THREE entry points (summon/resume/cast) so a
+    // concurrent dashboard cast/resume of the SAME target's Pierre coalesces with this in-session summon (else two
+    // containers on one sessionId → zombie). CROSS-PROJECT FIX (Pierre, t12): key on `pierreSessionId`, NOT the bare
+    // `pierreHandle`. The lock exists to stop two launches racing one deterministic sessionId (memberSessionId(org,
+    // pierreHandle), already org-scoped) — but the handle is `pierre.<summoner>/claude`, and two DIFFERENT projects
+    // whose summoners share the default `claude/claude` handle produce the IDENTICAL handle → a bare-handle lock
+    // false-blocked project B's Pierre because project A's was in flight ("already in flight"), and a human staring at
+    // a dead-looking Pierre then dismiss/resumes — which REAPS the container. So the coarse key manufactured the very
+    // drop loop the owner reported. pierreSessionId IS the identity the lock guards (one expression, can't drift from
+    // a re-derived `${org}#${handle}`); all THREE sites flip together or the collision just relocates to the un-fixed
+    // one. summoningPrivate[issuerId] stays for the global-8 cap + "still booting" UX.
+    if (resumingConsults.has(pierreSessionId)) { daemonLog(`[lock-block] summon org=${org} @${pierreHandle} sid=${String(pierreSessionId).slice(0, 8)} — a launch is already in flight for this exact caged session (t12 forward-tripwire, NOT retroactive proof of the old collision): post-fix this should ONLY be a genuine same-session double-launch; two DISTINCT contexts blocking here would mean the key isn't separating what we think)`); send(issuerId, { type: 'notice', text: '[A summon/resume for your Pierre is already in flight — give it a moment, then reply with @Pierre.]' }); return ack('summon-busy') }
+    resumingConsults.add(pierreSessionId)
+    const clearLaunchLock = () => resumingConsults.delete(pierreSessionId)
     setTimeout(clearLaunchLock, 90_000).unref?.()
     const reapPartial = () => { try { engine.removeTransientConsult(org, pierreHandle) } catch {} ; reapTransientSessions(org, [pierreHandle]); summoningPrivate.delete(issuerId); clearLaunchLock(); try { broadcastEvent({ type: 'roster', org }) } catch {} }   // #56: a failed summon reap must also tell the dashboard so a shown chip disappears
     const r = engine.addTransientConsult(org, { pierre, withHandle: summonerHandle, roomId: consultId })
@@ -1921,9 +1928,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             reseatConsult(built); saveConsultEntry(f.org, f.summonerHandle, built.pierreHandle, built.consultId)
             daemonLog(`resumeconsult ${f.org}: @${built.pierreHandle} already live — attached`); broadcastEvent({ type: 'roster', org: f.org }); reply({ ok: true, attached: true }); continue
           }
-          if (resumingConsults.has(built.pierreHandle)) { reply({ ok: false, error: 'a resume for this Pierre is already in flight — give it a moment' }); continue }   // #56 Inc2 #2: coalesce concurrent resumes of the SAME Pierre (no double-launch on one sessionId)
-          resumingConsults.add(built.pierreHandle)
-          const clearResume = () => resumingConsults.delete(built.pierreHandle)
+          if (resumingConsults.has(built.pierreSessionId)) { daemonLog(`[lock-block] resume org=${f.org} @${built.pierreHandle} sid=${String(built.pierreSessionId).slice(0, 8)} — launch already in flight (t12 forward-tripwire: post-fix expected only for a same-session double-launch)`); reply({ ok: false, error: 'a resume for this Pierre is already in flight — give it a moment' }); continue }   // #56 Inc2 #2: coalesce concurrent resumes of the SAME Pierre (no double-launch on one sessionId). t12: keyed on the org-scoped pierreSessionId, NOT the bare handle (two projects sharing a summoner handle would else false-block each other).
+          resumingConsults.add(built.pierreSessionId)
+          const clearResume = () => resumingConsults.delete(built.pierreSessionId)
           setTimeout(clearResume, 90_000).unref?.()   // backstop: never leak the guard if the launch hangs
           try {
             teamMod.killMember(f.org, built.pierreHandle)   // reap any orphaned master/plumbing (the container is already dead)
@@ -1955,9 +1962,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             reseatConsult(built); saveConsultEntry(f.org, target.handle, built.pierreHandle, built.consultId)
             daemonLog(`castconsult ${f.org}: @${built.pierreHandle} already live — attached`); broadcastEvent({ type: 'roster', org: f.org }); reply({ ok: true, attached: true }); continue
           }
-          if (resumingConsults.has(built.pierreHandle)) { reply({ ok: false, error: 'a summon/resume for this Pierre is already in flight — give it a moment' }); continue }
-          resumingConsults.add(built.pierreHandle)
-          const clearCast = () => resumingConsults.delete(built.pierreHandle)
+          if (resumingConsults.has(built.pierreSessionId)) { daemonLog(`[lock-block] cast org=${f.org} @${built.pierreHandle} sid=${String(built.pierreSessionId).slice(0, 8)} — launch already in flight (t12 forward-tripwire: post-fix expected only for a same-session double-launch)`); reply({ ok: false, error: 'a summon/resume for this Pierre is already in flight — give it a moment' }); continue }   // t12: org-scoped pierreSessionId, not the bare handle (cross-project false-block fix — all three lock sites flip together)
+          resumingConsults.add(built.pierreSessionId)
+          const clearCast = () => resumingConsults.delete(built.pierreSessionId)
           setTimeout(clearCast, 90_000).unref?.()
           try {
             teamMod.killMember(f.org, built.pierreHandle)   // reap any orphaned plumbing (fresh: no-op; stale: reaped)
