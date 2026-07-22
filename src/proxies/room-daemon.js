@@ -12,8 +12,9 @@ import { openSync, mkdirSync, appendFileSync, readFileSync, writeFileSync, renam
 import { homedir } from 'node:os'
 import { join, basename, dirname } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { createHash } from 'node:crypto'
-import { ensureRoom, appendThread, appendTranscript, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadConsults, saveConsults, loadLaunches, removeLaunch, loadLaunchState, saveLaunchState, removeLaunchState, loadTgStates, saveTgStates, loadInbox, saveInbox, loadUserPrefs, saveUserPrefs, roomsRoot, removeRoomDir, controlSecret } from '../rooms.js'
+import { createHash, randomBytes } from 'node:crypto'
+import { ensureRoom, appendThread, appendTranscript, writeConsensus, readCatchups, appendCatchup, updateCatchup, loadPairings, savePairings, loadOrgs, saveOrgs, loadConsults, saveConsults, loadLaunches, removeLaunch, loadLaunchState, saveLaunchState, removeLaunchState, loadTgStates, saveTgStates, loadInbox, saveInbox, loadUserPrefs, saveUserPrefs, loadOutboxMarkers, saveOutboxMarkers, roomsRoot, removeRoomDir, controlSecret } from '../rooms.js'
+import { createRelayOutbox } from '../relay-outbox.js'
 import { createRoomEngine } from '../teams/room-engine.js'
 import { createWorkerRunner, workerLogPath, parseWorkerLog } from '../teams/worker-runner.js'
 import { memberSessionId } from '../teams/session-id.js'
@@ -186,6 +187,30 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   const summoningPrivate = new Set()  // issuer ids with a private summon in flight — block a 2nd until it registers or times out
   const resumingConsults = new Set()  // #56 Inc2 (Pierre #2): caged-Pierre pierreSessionIds (memberSessionId(org,handle), ORG-SCOPED — t12 fix, was the bare handle) with a launch in flight — coalesce a concurrent summon/resume/cast so two launches don't race one deterministic sessionId → orphaned zombie container
   const _transientDeadMisses = new Map()  // #56 GC: `${org}\0${handle}` (ORG-SCOPED, see :1013 — the key is NOT a bare handle despite older comments) -> consecutive dead-container reads (grace before reaping a stale transient consult)
+  // t27 reliable delivery: a per-BOOT nonce (NOT `version` — a crash-restart / unchanged `mrc rooms restart`
+  // repeats the code version, and the container would then dedup fresh post-restart frames against stale state
+  // → silent loss). Stamped on every reliable frame; the container resets its dedup state on a new epoch.
+  const bootEpoch = randomBytes(8).toString('hex')
+  const outbox = createRelayOutbox({ cap: Number(process.env.MRC_ROOM_OUTBOX_CAP) || 64, epoch: bootEpoch })
+  const OUTBOX_TTL_MS = Number(process.env.MRC_ROOM_OUTBOX_TTL_MS) || 1_800_000   // 30min — far past any flap/restart-reconnect window, so a mid-flap box is never aged out; only a never-returning session's box is
+  // Body-free persisted markers ({sessionId:{count,epoch}}) so a daemon restart's in-flight loss is LOUD not
+  // silent. On boot, a marker from a PRIOR epoch → this session had frames pending under the old daemon.
+  const outboxMarkers = loadOutboxMarkers()
+  const restartLoss = new Map()   // sessionId -> count of frames pending at the last restart (replayed as a loud warning on next flush)
+  for (const [sid, m] of Object.entries(outboxMarkers)) { if (m && m.epoch !== bootEpoch && m.count > 0) restartLoss.set(sid, m.count) }
+  let outboxMarkersDirty = false
+  // SET edge (Pierre trap B): a session going 0→pending MUST be on disk before send() treats the frame as
+  // buffered — a stale "pending" is a safe false-loud, a missed one is silent loss. So markSet writes SYNC.
+  const markSet = (sid) => {
+    const count = outbox.markerCount(sid)
+    if (!count) return
+    const cur = outboxMarkers[sid]
+    if (cur && cur.epoch === bootEpoch && cur.count === count) return
+    outboxMarkers[sid] = { count, epoch: bootEpoch }
+    saveOutboxMarkers(outboxMarkers)   // durable on the pending edge
+  }
+  // CLEAR edge: may lag (safe direction) — flushed lazily in the stall tick to avoid per-message disk I/O.
+  const markClear = (sid) => { if (outboxMarkers[sid] != null) { delete outboxMarkers[sid]; outboxMarkersDirty = true } }
   // R1/#44: register-secret authentication. A register whose sessionId HAS a recorded secret MUST present the
   // matching wire secret or it is REJECTED (impersonation) — enforced UNCONDITIONALLY. (The former `secretsArmed`
   // soft-arm gate was removed: it was redundant with "the record has a secret" and, if its best-effort arm-bit
@@ -232,9 +257,40 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     if (!port) return
     try { const c = net.connect(port, '127.0.0.1', () => { c.write(`mrc-room\n${msg}`); c.end() }); c.on('error', () => {}) } catch {}
   }
+  // t27: reliable-by-DEFAULT. Any push frame NOT in this opt-out set is stamped (epoch,seq), buffered in the
+  // per-session outbox, and redelivered on rebind + cumulative-acked by the container. Opt-out = request/reply
+  // (own timeouts) + advisory. Derive seq-presence from THIS one set on both ends (Pierre): a reliable frame
+  // missing a seq or an ephemeral one carrying one would desync the rcpt accounting.
+  const EPHEMERAL_FRAME_TYPES = new Set(['pong', 'ack', 'peerlist', 'teaminfo', 'notice', 'status', 'presence'])
+  const isReliableFrame = (frame) => !!(frame && frame.type && !EPHEMERAL_FRAME_TYPES.has(frame.type))
+  // THE SOLE EMISSION POINT for a reliable frame (enforced by a static test — a reliable-typed sock.write
+  // outside this function is a RED build). Both the engine (injected send?.), the bind-flush, and the legacy
+  // 1:1 pairing deliver all funnel here, so stamping reliability once covers every push path.
   function send(sessionId, frame) {
     const s = sessions.get(sessionId)
-    if (s && s.sock && !s.sock.destroyed) s.sock.write(JSON.stringify(frame) + '\n')
+    let out = frame
+    if (isReliableFrame(frame)) {
+      const { stamped, dropped } = outbox.enqueue(sessionId, frame, Date.now())
+      out = stamped
+      if (dropped) daemonLog(`[relay-drop] session=${String(sessionId).slice(0, 8)} dropped ${dropped} unacked reliable frame(s) — outbox over cap; a loud loss-signal will ride the next flush`)
+      markSet(sessionId)   // durable on the pending edge, BEFORE the write (trap B)
+    }
+    if (s && s.sock && !s.sock.destroyed) { try { s.sock.write(JSON.stringify(out) + '\n') } catch {} }
+  }
+  // Re-send every unacked reliable frame on (re)bind — the whole point of the outbox. Called from the register
+  // handler once the session is bound and its socket is live (NOT from close: the box must SURVIVE close). A
+  // restart-loss / overflow loss-signal is emitted FIRST as its own reliable (sticky) `warning` frame, so it
+  // can't itself be the frame that's dropped. Frames for a room the session has since LEFT are skipped.
+  function flushOutbox(sessionId) {
+    const s = sessions.get(sessionId)
+    if (!s || !s.sock || s.sock.destroyed) return
+    const rc = restartLoss.get(sessionId)
+    if (rc) { restartLoss.delete(sessionId); outbox.enqueue(sessionId, { type: 'warning', text: `[${rc} room message(s) may have been lost across a daemon restart — ask your peer(s) to resend anything you didn't see a reply to.]` }, Date.now()) }
+    const lc = outbox.takeLoss(sessionId)
+    if (lc) outbox.enqueue(sessionId, { type: 'warning', text: `[${lc} room message(s) may have been lost during a long outage — ask your peer(s) to resend.]` }, Date.now())
+    const roomStillLive = (roomId) => engine.roomsForSession(sessionId).includes(roomId)
+    for (const fr of outbox.list(sessionId, Date.now(), roomStillLive)) { try { s.sock.write(JSON.stringify(fr) + '\n') } catch {} }
+    markSet(sessionId)
   }
   const online = (id) => { const s = sessions.get(id); return !!(s && s.sock && !s.sock.destroyed) }
   const repoOf = (id) => sessions.get(id)?.repo || '?'                       // basename — for clean room ids
@@ -429,7 +485,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // path) so a dead Pierre never leaves a lingering index entry or an orphaned caged container.
   function reapTransientSessions(org, handles) {
     for (const h of (handles || [])) {
-      try { sessionIndex.delete(memberSessionId(org, h)) } catch {}
+      const sid = memberSessionId(org, h)
+      try { outbox.forget(sid); markClear(sid); restartLoss.delete(sid) } catch {}   // t27 trap A: reap the redelivery box with the SESSION (a dismissed/reaped Pierre is genuinely gone) — never on socket close, where the box must survive the flap
+      try { sessionIndex.delete(sid) } catch {}
       try { removeConsultEntry(org, h) } catch {}   // #56 Inc1: EXPLICIT-death store-remove — this is the ONE place all 3 death paths (dismiss + orphan-reap + reapPartial) funnel through, so a reaped/dismissed Pierre never resurrects on the next boot
       try { if (teamMod) teamMod.killMember(org, h) } catch {}   // reap master(sock) + caged container(label) + unlink
       // #66 M1 EXIT-SYNC (Pierre t191): after the caged Pierre is stopped, copy its refreshed credential from its
@@ -1177,7 +1235,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     // true multi-room lands (M3-relax), a note must carry its OWN roomId (frame-tagging → container rebuild).
     const p = activePairingFor(fromId)
     if (!p) { ack('no-pairing'); return }
-    writeConsensus(p.roomId, defangTrustMarkers(String(text ?? '')))   // V3: consensus.md is read on resume/catch-up — defang forged trust markers in untrusted note text
+    writeConsensus(p.roomId, defangTrustMarkers(String(text ?? '')), { by: nameOf(fromId), sessionId: fromId, at: Date.now() })   // V3: consensus.md is read on resume/catch-up — defang forged trust markers in untrusted note text. t27: attribute the displaced prior body in the history sidecar to whoever overwrote it (diagnose a destructive shrink).
     appendThread(p.roomId, `${ts()} [${nameOf(fromId)} updated the shared summary]`)
     ack('noted')
   }
@@ -1328,7 +1386,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           }
         }
         if (f && f.type === 'argdrift') { daemonLog(`[arg-drift] session=${String(sessionId || '?').slice(0, 8)} tool=${f.tool} recovered ${f.from} → ${f.to} (model used a non-declared key — watch for the NEXT one)`); continue }
-        if (f.type === 'ping') { try { sock.write(JSON.stringify({ type: 'pong', version }) + '\n') } catch {} }   // #51: liveness echo — proves to the channel that THIS listener is the daemon (not a reused clip/notify port)
+        if (f.type === 'ping') { try { sock.write(JSON.stringify({ type: 'pong', version, epoch: bootEpoch }) + '\n') } catch {} }   // #51: liveness echo — proves to the channel that THIS listener is the daemon (not a reused clip/notify port). t27: carry the boot epoch so the container can reset its dedup state after a restart.
+        else if (f.type === 'rcpt' && sessionId) { if (outbox.ack(sessionId, f.epoch, Number(f.seq) || 0)) markClear(sessionId); else markSet(sessionId) }   // t27: cumulative receipt-ack — trim the outbox through seq (this epoch only; a stale-epoch rcpt is ignored). Clear the marker when the box empties, else refresh the pending count.
         else if (f.type === 'register' && f.sessionId) {
           // R1/#44: authenticate the socket. If this sessionId has a recorded secret, the wire secret MUST match
           // or the register is REJECTED before `sessionId` is ever set — closes the forged-id / register-first
@@ -1443,6 +1502,9 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           // a forged f.summonedBy would force-pair (and inject "[Pierre entered]" into) any online victim.
           const recSummonedBy = loadSessionRecord(sessionId).summonedBy
           if (recSummonedBy && sessions.has(recSummonedBy) && !pairingFor(sessionId)) onAdversaryUp(recSummonedBy, sessionId, f.room)
+          // t27: this register may be a RECONNECT after a flap/restart — re-send any unacked reliable frames now
+          // that the socket + engine binding are live again. A first-time register has an empty outbox (no-op).
+          flushOutbox(sessionId)
         } else if (f.type === 'list' && sessionId) {
           send(sessionId, { type: 'peerlist', peers: peerList(sessionId) })
         } else if (f.type === 'ask' && sessionId) { bumpActivity(sessionId); onAsk(sessionId, String(f.question ?? ''), f.peer) }   // #caffeine PRIMARY: a channel action IS an autonomous turn arriving directly — per-turn, reconnect-proof, no proxy latency
@@ -2253,6 +2315,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     try { engine.checkTriageTimers() } catch {}   // (d): escalate any triage past its deadline (tickMs granularity; the boot call covers restart gaps)
     reapFailedSummonDirs(Date.now())   // #30: reap an orphaned summon dir that never connected (no pairing/socket ever formed, so the other reapers never see it)
     pruneDeadRooms(Date.now())   // #35: reap dead pairings (both sides gone, or a spent adversary room) so they don't linger in `mrc rooms status`/the dashboard
+    // t27: age out a redelivery box whose session has no live socket AND has been idle past the TTL (far longer
+    // than any flap/restart-reconnect), so a never-returning session can't leak a box or a stale loss-marker.
+    // TTL >> flap window, so a mid-flap box (socket briefly gone) is never reaped. Then flush any lazily-cleared
+    // markers (the safe-lagging CLEAR edge from trap B) in one write.
+    { const now = Date.now(); for (const sid of outbox.sessions()) { if (!sessions.has(sid) && outbox.idleMs(sid, now) > OUTBOX_TTL_MS) { outbox.forget(sid); markClear(sid) } } }
+    if (outboxMarkersDirty) { outboxMarkersDirty = false; saveOutboxMarkers(outboxMarkers) }
     for (const p of pairings.values()) {
       if (p.state === 'Running' && sessions.has(p.a) && sessions.has(p.b) && Date.now() - p.lastActivityAt > stallMs) {
         // Soft, self-healing pause: flag a quiet room for the human, but the next real message

@@ -96,7 +96,7 @@ let chatSeq = 0
 // whole channel server on startup (plugin:room:room → failed). That is exactly the regression the NON_BODY_FIELDS
 // import caused after the opt-in flip removed that export — invisible to `node --check` (single-file) and to the unit
 // tests (which import the tools module directly, never this one). The channel-imports test now guards this class.
-import { isEscalate, consultTools, teamTools, guardArgs } from './mrc-channel-tools.js'
+import { isEscalate, consultTools, teamTools, guardArgs, createInboundDedup } from './mrc-channel-tools.js'
 
 const tools = TEAM_MODE ? teamTools : consultTools
 mcp.setRequestHandler(ListToolsRequestSchema, async () => ({ tools }))
@@ -277,8 +277,25 @@ function sendAwaitAck(frame) {
     send({ ...frame, id })
   })
 }
+// t27 reliable delivery (receiver half) — the dedup/epoch/ack logic lives in the dependency-free tools module
+// (createInboundDedup) so it's unit-tested exactly as shipped; here we own only the socket I/O.
+const inbound = createInboundDedup()
+function sendRcpt(ackSeq) {
+  // A control frame like ping — write on the raw socket even before `connected` (the pong-verified gate), so a
+  // frame redelivered in the pre-pong window right after a reconnect still gets acked (else the daemon can't trim).
+  if (sock && inbound.epoch()) { try { sock.write(JSON.stringify({ type: 'rcpt', epoch: inbound.epoch(), seq: ackSeq }) + '\n') } catch {} }
+}
+function renderFrame(f) {
+  // Pierre #6: a redelivered DIRECTIVE is a stale COMMAND — if the human steered, the session flapped, and it
+  // replays seconds later, it must read as delayed, never as a fresh steer they just issued. Stale DATA is fine.
+  if (f.type === 'directive' && f.redelivered && f.delayedMs > 3000) {
+    return `[⏱ delayed ~${Math.round(f.delayedMs / 1000)}s — issued before a reconnect; may be stale if your human has since moved on]\n${f.text}`
+  }
+  return f.text
+}
 function onFrame(f) {
   if (f.type === 'pong') {                              // #51: proves this listener IS the daemon; go connected ONLY after a pong
+    inbound.observe(f)                                   // t27: reset dedup high-water on a daemon restart (new boot nonce), even if a frame hasn't arrived yet
     lastPong = Date.now(); disconnectedSince = null   // #6b: clear ONLY on a pong — the proof of a real daemon. A squatter that ACCEPTS the TCP connect but never pongs must NOT clear it (else it masks a dead channel).
     if (outageNotified) { outageNotified = false; pushIn('[Rooms reconnected — the room daemon is reachable again.]') }   // #6: close the loop in-session after a sustained outage (only fired if we'd actually announced one)
     if (!connected) {
@@ -298,8 +315,15 @@ function onFrame(f) {
     return
   }
   if (f.type === 'ack' && f.id != null) { const r = pendingAcks.get(String(f.id)); if (r) r(f); return }   // delivery confirmation (full frame -> counts/error)
-  // peer message (untrusted), human directive (trusted), or notice — push into the session.
-  if ((f.type === 'deliver' || f.type === 'directive' || f.type === 'notice' || f.type === 'peers' || f.type === 'catchup_request') && f.text) pushIn(f.text)
+  // t27: a RELIABLE frame carries {epoch, seq, floor}. inbound.observe resets dedup on a new epoch (trap C:
+  // frame OR pong, first wins), resyncs past an overflow hole, and returns the newly-CONTIGUOUS frames to push
+  // (empty if this frame is buffered at a gap; multiple if it fills one). We re-ack always; a `discard` frame
+  // (a room the session LEFT during the outage) advances the sequence but is not surfaced (Pierre's edge, moved
+  // container-side so it can't gap the contiguous stream).
+  const d = inbound.observe(f)
+  if (d.reliable) { if (d.forcedSkip) log(`RELIABILITY: forced past ${d.forcedSkip} un-fillable seq gap(s) — held buffer hit its cap (a daemon-side seq gap with no floor; should not happen)`); sendRcpt(d.ackSeq); for (const fr of d.surface) { if (!fr.discard && fr.text) pushIn(renderFrame(fr)) } return }
+  // non-reliable pushable frames (notice, peers) + a defensive fallback for any unstamped push.
+  if ((f.type === 'deliver' || f.type === 'directive' || f.type === 'notice' || f.type === 'peers' || f.type === 'catchup_request' || f.type === 'warning') && f.text) pushIn(renderFrame(f))
 }
 // #64: forward this session's statusline ints (context %, 5h/7d rate-limit %, session name) to the daemon —
 // transport B' (statusline tees to STATUS_FILE → here we forward over the session-bound socket). Runs for ALL

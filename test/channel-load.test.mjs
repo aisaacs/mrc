@@ -40,8 +40,8 @@ test('#LOAD-GATE red-catches the 753a345 regression (imported-but-not-exported c
   const dir = mkdtempSync(join(tmpdir(), 'mrc-load-'))
   cpSync(toolsPath, join(dir, 'mrc-channel-tools.js'))   // real tools module beside the broken server copy
   const broken = readFileSync(serverPath, 'utf8').replace(
-    "import { isEscalate, consultTools, teamTools, guardArgs } from './mrc-channel-tools.js'",
-    "import { isEscalate, consultTools, teamTools, guardArgs, NON_BODY_FIELDS } from './mrc-channel-tools.js'")
+    "import { isEscalate, consultTools, teamTools, guardArgs, createInboundDedup } from './mrc-channel-tools.js'",
+    "import { isEscalate, consultTools, teamTools, guardArgs, createInboundDedup, NON_BODY_FIELDS } from './mrc-channel-tools.js'")
   assert.ok(broken.includes('NON_BODY_FIELDS'), 'fixture must actually reintroduce the broken import')
   const brokenServer = join(dir, 'mrc-channel-server.js')
   writeFileSync(brokenServer, broken)

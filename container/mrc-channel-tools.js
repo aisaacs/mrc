@@ -270,3 +270,52 @@ export function guardArgs(tool, a) {
   const got = Object.keys(a || {})
   return { ok: false, error: `NOT delivered — required field "${target}" is empty${got.length ? ` (received: ${got.join(', ')})` : ' (no arguments received)'}. Resend with the content in "${target}".` }
 }
+
+// t27 receiver-side reliable-delivery dedup (PURE; the server wires it to the socket so this exact logic is
+// unit-tested, mirroring the guard-in-a-testable-module discipline). The daemon stamps RELIABLE push frames
+// with {epoch, seq, floor}; we surface the highest CONTIGUOUS run and cumulative-ack it — CONTIGUOUS, not
+// highest-received, because the daemon has two rebind write paths in indeterminate order (bindSession's
+// pendingDeliveries flush writes NEWER seqs live, then flushOutbox re-sends the OLDER buffered ones), so a
+// jump-to-any-higher high-water would swallow the older buffered frames as false duplicates — the exact
+// silent-loss class this fix exists to kill (Pierre, integration-seam). We buffer an out-of-order frame and
+// only advance+surface when the gap fills, so any write order converges losslessly.
+// `floor` = the highest seq the daemon EVICTED on overflow (those seqs can NEVER arrive); jumping the
+// high-water to floor keeps an overflow hole from stalling contiguity forever. `epoch` = the daemon's per-boot
+// nonce; a new epoch (restart) makes our high-water refer to a dead stream, reset — triggered by whichever
+// new-epoch signal arrives first, a FRAME or the pong (they race on a freshly-reconnected socket).
+// "Reliable" is keyed purely on seq-presence — one signal mirroring the daemon's opt-out set, never a hand-list.
+export function createInboundDedup({ heldCap = 256 } = {}) {
+  let epoch = null, highest = 0
+  const held = new Map()   // seq -> frame, buffered out-of-order until the contiguous gap fills
+  const drain = (surface) => { while (held.has(highest + 1)) { highest += 1; surface.push(held.get(highest)); held.delete(highest) } }
+  return {
+    epoch: () => epoch,
+    highest: () => highest,
+    // Call for EVERY inbound frame (incl. pong, to observe its epoch). Returns:
+    //   { reliable:false }                    → not seq-stamped; server handles it normally, no rcpt.
+    //   { reliable:true, surface:[...frames], ackSeq, forcedSkip } → the newly-contiguous frames to push (EMPTY
+    //        when this frame is buffered at a gap, MULTIPLE when it fills one); always send an rcpt for ackSeq.
+    //        forcedSkip>0 only on the defensive backstop below (a daemon-bug gap) — the server logs it loud.
+    observe(frame) {
+      if (frame && frame.epoch && frame.epoch !== epoch) { epoch = frame.epoch; highest = 0; held.clear() }   // first new-epoch signal (frame or pong) resets
+      if (frame == null || frame.seq == null || !frame.epoch) return { reliable: false }
+      const surface = []
+      // Overflow resync: floor = the highest seq the daemon EVICTED (can never ARRIVE). Walk highest→floor, but
+      // DELIVER any seq we already HOLD (it arrived out-of-order, waiting behind the gap) and skip only the TRUE
+      // holes. A wholesale `delete held ≤ floor` would drop a frame we physically have — the very thing we're
+      // killing (Pierre). So surface it instead; only a genuinely-missing seq is skipped past.
+      if (frame.floor && frame.floor > highest) {
+        for (let s = highest + 1; s <= frame.floor; s++) { if (held.has(s)) { surface.push(held.get(s)); held.delete(s) } highest = s }
+      }
+      if (frame.seq <= highest) return { reliable: true, surface, ackSeq: highest, forcedSkip: 0 }   // already surfaced/evicted → re-ack (plus any just-surfaced held), don't re-push this one
+      held.set(frame.seq, frame)
+      drain(surface)
+      // Defensive bound (should be UNREACHABLE — the daemon outbox is capped, so a legit held ≤ that; a seq gap
+      // with no floor and no discard would be a daemon bug). Never grow unbounded: force past the lowest stuck
+      // gap, treat the missing seqs as lost, and report the count so the server logs it LOUD (fail-loud posture).
+      let forcedSkip = 0
+      if (held.size > heldCap) { const lo = Math.min(...held.keys()); forcedSkip = Math.max(0, lo - 1 - highest); highest = lo - 1; drain(surface) }
+      return { reliable: true, surface, ackSeq: highest, forcedSkip }
+    },
+  }
+}

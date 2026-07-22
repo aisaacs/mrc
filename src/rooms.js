@@ -164,11 +164,56 @@ export function readTranscript(roomId) {
 }
 
 // Replace the body below the "---" divider, preserving the header/instructions.
-export function writeConsensus(roomId, text) {
+// SHRINK-SAFETY: consensus.md is a full-overwrite living summary, so a terse update_notes can WIPE a detailed
+// prior body (the empty-guard stops an EMPTY erase, not a shrink). We never lose the displaced body: before
+// overwriting, the OLD body is appended to a bounded, attributed history sidecar (consensus.history.jsonl) so
+// the live doc stays clean/current AND a destructive shrink is recoverable + diagnosable (who overwrote it,
+// when). Cap keeps the file small; a burst of trivial updates can evict real history — acceptable for v1.
+const CONSENSUS_HISTORY_CAP = 10
+export function writeConsensus(roomId, text, meta = {}) {
   const dir = roomDir(roomId)
-  const cur = existsSync(join(dir, 'consensus.md')) ? readFileSync(join(dir, 'consensus.md'), 'utf8') : '# Shared summary\n\n---\n'
+  const path = join(dir, 'consensus.md')
+  const cur = existsSync(path) ? readFileSync(path, 'utf8') : '# Shared summary\n\n---\n'
   const head = cur.split('\n---\n')[0]
-  writeFileSync(join(dir, 'consensus.md'), `${head}\n---\n\n${text}\n`)
+  const oldBody = cur.split('\n---\n').slice(1).join('\n---\n').trim()
+  const newBody = String(text).trim()
+  // Retain the displaced body (attributed to WHOEVER is overwriting it now — the actor of a destructive
+  // shrink) unless it's empty, the fresh-room placeholder, or an identical rewrite (no information lost).
+  if (oldBody && oldBody !== newBody && oldBody !== '(no summary yet)') {
+    try {
+      const hf = join(dir, 'consensus.history.jsonl')
+      const prior = existsSync(hf) ? readFileSync(hf, 'utf8').split('\n').filter((l) => l.trim()) : []
+      prior.push(JSON.stringify({ at: meta.at || Date.now(), by: meta.by || null, sessionId: meta.sessionId || null, prevBody: oldBody }))
+      const kept = prior.slice(-CONSENSUS_HISTORY_CAP)
+      atomicWriteFileSync(hf, kept.join('\n') + '\n')
+    } catch {}
+  }
+  writeFileSync(path, `${head}\n---\n\n${text}\n`)
+}
+export function readConsensusHistory(roomId) {
+  const hf = join(roomDir(roomId), 'consensus.history.jsonl')
+  if (!existsSync(hf)) return []
+  try { return readFileSync(hf, 'utf8').split('\n').filter((l) => l.trim()).map((l) => JSON.parse(l)) } catch { return [] }
+}
+
+// --- reliable-delivery loss markers (t27) ---------------------------------
+// The daemon's redelivery outbox is IN-MEMORY (dies on `mrc rooms restart`), so a restart would drop in-flight
+// frames SILENTLY — the sender already trimmed on the route-ack, the recipient never knew the frames existed.
+// We persist a tiny BODY-FREE marker per session ({count, epoch}) so a restart can be made LOUD: on boot, any
+// marker whose epoch != the fresh boot epoch means "this session had N frames pending under the old daemon" →
+// the daemon emits a "[N messages may have been lost across a daemon restart — resend]" on that session's next
+// flush. No bodies on disk → no rotation/corruption lifecycle (content-recovery is a ticketed follow-up).
+// DURABILITY ASYMMETRY (Pierre trap B): the SET edge (0→pending) must hit disk before the frame counts as
+// buffered — a stale "pending" is a false-LOUD (safe); a missed "pending" is silent loss (the bug). The CLEAR
+// edge may lag (the daemon flushes it lazily in the stall tick).
+const outboxMarkersFile = () => join(homedir(), '.local', 'share', 'mrc', 'room-outbox-markers.json')
+export function saveOutboxMarkers(markers) {
+  try { atomicWriteFileSync(outboxMarkersFile(), JSON.stringify(markers || {})) } catch {}
+}
+export function loadOutboxMarkers() {
+  if (!existsSync(outboxMarkersFile())) return {}
+  const j = loadJsonFile(outboxMarkersFile(), {})
+  return j && typeof j === 'object' ? j : {}
 }
 
 // --- catch-up panes -------------------------------------------------------
