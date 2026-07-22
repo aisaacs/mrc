@@ -13,20 +13,6 @@ Deploy map (which change lands how):
 
 ## 🔴 Awaiting metal verification (owner runs; nothing to build)
 
-- **t27 RELIABLE DELIVERY — the socket-liveness≠delivery fix (`4c9ef15`), Pierre-signed, needs a DEGRADED-PATH
-  wiretest.** Rebuild (`docker rmi mister-claude`) + `mrc rooms restart`. Then INDUCE the paths the fix exists
-  for — a happy-path message proves nothing (the old code carried those too). Three tests:
-  1. **FLAP survival:** get a peer/Pierre message in flight, force the half-open window (macOS-nap / sever the
-     socket), confirm the SPECIFIC in-flight frame surfaces on reconnect — not just "the session reconnects."
-  2. **RESTART survival:** send a reliable frame, `mrc rooms restart` before it's rcpt'd, confirm EITHER the
-     frame redelivers OR the loud `[N message(s) may have been lost across a daemon restart]` fires. Silent
-     nothing = the persisted-marker path is broken (the path the in-memory ring can't cover — most likely to be
-     wrong on the metal).
-  3. **SEAM on real sockets:** a lead in two rooms (or the 2-project state), drop it mid-traffic so
-     pendingDeliveries is non-empty at rebind, confirm the older buffered frames surface (the unit seam-test,
-     but over a real socket where the two write paths race in wall-clock).
-  Pierre will read `daemon.log` + the container rcpt/surface trace with me on the results.
-
 - **#t12 launch-lock fix — the CONCURRENT 2-project run (the decisive test).** `mrc rooms restart`, both
   projects up, a Pierre summoned in EACH, work **both simultaneously**. Pass = both stay usable, no forced
   dismiss/resume, no "already in flight." A single-Pierre run proves nothing (the empty-body half is already
@@ -42,8 +28,22 @@ Deploy map (which change lands how):
 
 ## ✅ Recently shipped (verified where noted; commits on `main`)
 
-**t27 reliability outbox + two quick wins (2026-07-22, Pierre-signed 7-round red-team; HOST-GREEN, awaiting the
-degraded-path metal above).**
+**t27 reliability outbox + two quick wins (2026-07-22, Pierre-signed 7-round red-team). PUSH-READY (owner pushes).**
+METAL COVERAGE — the EXACT truth (owner chose push-now on 2 metal legs + the deterministic/unit-covered seam;
+`claude-scripts/t27-wiretest.mjs` drives the running daemon over the real relay, self-restarts for leg 2):
+- ✅ **FLAP survival — METAL-PROVEN** (2026-07-22 wiretest), but via the LEGACY 2-party path (raw send() :1115),
+  so it proves LEGACY reliability, not the engine outbox.
+- ✅ **RESTART survival — METAL-PROVEN** (marker persisted on the durable set-edge; daemon self-restarted; the
+  loud `[1 …lost across a daemon restart…]` fired). Non-vacuous — the old code had no marker.
+- ⚠️ **The engine outbox ENTRY + the `pendingDeliveries`×outbox SEAM — UNIT-PROVEN + DETERMINISTIC, NOT
+  metal-exercised.** This is the interaction the diff's bug lived in; the legacy flap test CANNOT cover it (no
+  pendingDeliveries on that path). Pierre confirmed the register handler is fully synchronous → the two-buffer
+  flush order is deterministic (not a race) and faithfully unit-modeled, and code-traced the wiring
+  (bindSession flush → send?.→enqueue :290, flushOutbox re-lists after). Strong, but "reasoned + unit-covered,"
+  NOT "watched on metal." → ticket below.
+- ❌ **Container `observe→pushIn`/`renderFrame` last mile — UNIT/re-impl only, UNPROVEN.** The wiretest's
+  B-client is a re-implementation of the dedup, so the shipping container's receive/render path
+  (mrc-channel-server.js:324) is exercised by neither the unit test nor the wiretest. → ticket below.
 - `4c9ef15` **reliable cross-session delivery** — per-session redelivery outbox: the daemon stamps reliable push
   frames (reliable-by-DEFAULT, opt-out ephemeral set) with a per-BOOT epoch + seq, buffers them, re-sends
   unacked on rebind; the container cumulative-acks the highest CONTIGUOUS seq + dedups. send() is the enforced
@@ -101,8 +101,25 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
 ## ▶ Open / ticketed (build-when-picked)
 
 ### From the empty-body / rooms-reliability work (this session)
-- ✅ **MERGED ROOT — socket-liveness ≠ delivery/binding — SHIPPED (`4c9ef15`, host-green, awaiting the
-  degraded-path metal above).** Built as the per-session redelivery outbox + cumulative receipt-ack (NOT the
+- **TICKET (t27 metal gap 1) — ENGINE-PATH SEAM VARIANT.** The `pendingDeliveries`×outbox interaction (the exact
+  path the diff's bug lived in) is UNIT-proven + deterministic but NOT metal-exercised (the legacy flap wiretest
+  structurally can't reach it — no pendingDeliveries on the legacy path). Build a hands-off synthetic wiretest:
+  a 2-member org (control-socket `defineOrg` + normalized def + member secret records + the verifiedNormal bind
+  gate) + a BLACKHOLE-PROXY (accept the flapped member's socket, stop forwarding, keep the daemon-side socket
+  open → the daemon writes into a `!destroyed` dead pipe while the member stays BOUND → the frame rides
+  deliverTo→enqueue = the t27 OUTBOX, not pendingDeliveries; a CLEAN drop would test the wrong buffer). Sequence:
+  bound-half-open send (→outbox, older seqs) → close daemon-side (→unbind) → unbound send (→pendingDeliveries,
+  newer seqs) → member reconnects → assert the OLDER buffered frames surface AHEAD of the newer live ones, none
+  swallowed. Pierre specced + will red-team when green. (Scoped: proves the engine daemon path over the wire, NOT
+  the container receive last-mile — ticket 2.)
+- **TICKET (t27 metal gap 2) — CONTAINER RECEIVE LAST-MILE.** The shipping container's `observe→pushIn`/
+  `renderFrame` path (mrc-channel-server.js:324) is exercised by NEITHER the unit test (observe() in isolation)
+  NOR the wiretest (whose B-client re-implements the dedup). A re-impl can't prove the real container
+  reassembles + renders a redelivered frame. Needs a real `mrc` session in the loop (some clicking — not
+  hands-off), so it's separate. Until done, "wiretest green" ≠ "the container receive path is proven."
+- ✅ **MERGED ROOT — socket-liveness ≠ delivery/binding — SHIPPED (`4c9ef15`, PUSH-READY; flap+restart
+  metal-proven, seam unit-proven+deterministic — see the coverage verdict up in Recently-shipped).** Built as
+  the per-session redelivery outbox + cumulative receipt-ack (NOT the
   originally-sketched in-memory inbound buffer — the design converged with Pierre through transcript-replay
   (rejected: the transcript has no per-recipient addressing) to a contiguous seq/ack protocol at the send()
   chokepoint, which covers the engine, the bind-flush, AND the legacy 1:1 pairing uniformly). Restart-durability
