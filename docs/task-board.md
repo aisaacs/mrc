@@ -13,6 +13,20 @@ Deploy map (which change lands how):
 
 ## 🔴 Awaiting metal verification (owner runs; nothing to build)
 
+- **t27 RELIABLE DELIVERY — the socket-liveness≠delivery fix (`4c9ef15`), Pierre-signed, needs a DEGRADED-PATH
+  wiretest.** Rebuild (`docker rmi mister-claude`) + `mrc rooms restart`. Then INDUCE the paths the fix exists
+  for — a happy-path message proves nothing (the old code carried those too). Three tests:
+  1. **FLAP survival:** get a peer/Pierre message in flight, force the half-open window (macOS-nap / sever the
+     socket), confirm the SPECIFIC in-flight frame surfaces on reconnect — not just "the session reconnects."
+  2. **RESTART survival:** send a reliable frame, `mrc rooms restart` before it's rcpt'd, confirm EITHER the
+     frame redelivers OR the loud `[N message(s) may have been lost across a daemon restart]` fires. Silent
+     nothing = the persisted-marker path is broken (the path the in-memory ring can't cover — most likely to be
+     wrong on the metal).
+  3. **SEAM on real sockets:** a lead in two rooms (or the 2-project state), drop it mid-traffic so
+     pendingDeliveries is non-empty at rebind, confirm the older buffered frames surface (the unit seam-test,
+     but over a real socket where the two write paths race in wall-clock).
+  Pierre will read `daemon.log` + the container rcpt/surface trace with me on the results.
+
 - **#t12 launch-lock fix — the CONCURRENT 2-project run (the decisive test).** `mrc rooms restart`, both
   projects up, a Pierre summoned in EACH, work **both simultaneously**. Pass = both stay usable, no forced
   dismiss/resume, no "already in flight." A single-Pierre run proves nothing (the empty-body half is already
@@ -27,6 +41,24 @@ Deploy map (which change lands how):
 ---
 
 ## ✅ Recently shipped (verified where noted; commits on `main`)
+
+**t27 reliability outbox + two quick wins (2026-07-22, Pierre-signed 7-round red-team; HOST-GREEN, awaiting the
+degraded-path metal above).**
+- `4c9ef15` **reliable cross-session delivery** — per-session redelivery outbox: the daemon stamps reliable push
+  frames (reliable-by-DEFAULT, opt-out ephemeral set) with a per-BOOT epoch + seq, buffers them, re-sends
+  unacked on rebind; the container cumulative-acks the highest CONTIGUOUS seq + dedups. send() is the enforced
+  sole emission point (static test, red-on-planted). Pierre caught TWO silent-loss bugs INSIDE the fix — the
+  integration seam (bindSession's pendingDeliveries flush writes newer seqs live before flushOutbox re-sends
+  older ones → jump-to-any-higher dedup swallowed them; fixed by contiguity) and the floor over-delete (resync
+  dropped a frame the container was holding; fixed to deliver-what-you-hold, skip-only-true-holes). Loud
+  loss-signals (overflow + a body-free persisted marker for restart-loss). Pure logic in `src/relay-outbox.js` +
+  `createInboundDedup` → unit-tested as shipped (seam / overflow / floor-over-delete / restart-epoch / left-room).
+  Same commit folds **update_notes shrink-safety** (writeConsensus retains the displaced body in an attributed
+  `consensus.history.jsonl`). **Durable lesson, again: my read + Pierre's caught what 707 green tests couldn't,
+  TWICE — reading necessary not sufficient; the wiretest must exercise the DEGRADED paths or it's a false green.**
+- `b9ab9f1` **escalate:"false" no longer means true** — shared `parseEscalate` consumed by BOTH the container's
+  answer-required predicate AND the daemon resolve branch (was `!!f.escalate`); closes the H2 path a stringly-
+  false escalate used to slip. Separate commit per the decouple discipline, same rebuild.
 
 **Rooms empty-message bug — the big one this session (metal-verified BOTH directions).** Peers arrived blank
 for ~5 days: the model keyed `reply`'s body `message`, the server read only `a.text` → shipped `text:''`;
@@ -69,25 +101,27 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
 ## ▶ Open / ticketed (build-when-picked)
 
 ### From the empty-body / rooms-reliability work (this session)
-- **MERGED ROOT — socket-liveness ≠ delivery/binding (the real remaining rooms hole).** `send()`
-  (room-daemon.js:237) is `if (!s.sock.destroyed) sock.write()` with **no else** — a frame to a flapping Pierre
-  hits a destroyed socket (dropped) or a half-open one (`!destroyed` true → written into a dead pipe →
-  vanishes), no redelivery on rebind. The container buffers OUTBOUND (`outQ` :221, flush-on-reconnect :288);
-  the daemon has **no symmetric inbound buffer**. Same mistake as `lastPong fresh` in the heartbeat: socket
-  state used as proof of facts it doesn't prove. **Fix (one root):** a per-session daemon inbound buffer with
-  redelivery-on-rebind (mirror of `outQ`) and/or a delivery-ack, so a frame across a flap survives the ~16s
-  reconnect. This subsumes the "~16s message-loss window" residual AND the pong≠binding trap. Latent-but-real
-  (not the owner's current symptom — the bind succeeds 30/0), ticket-don't-fire. Grounded, Pierre-reviewed.
+- ✅ **MERGED ROOT — socket-liveness ≠ delivery/binding — SHIPPED (`4c9ef15`, host-green, awaiting the
+  degraded-path metal above).** Built as the per-session redelivery outbox + cumulative receipt-ack (NOT the
+  originally-sketched in-memory inbound buffer — the design converged with Pierre through transcript-replay
+  (rejected: the transcript has no per-recipient addressing) to a contiguous seq/ack protocol at the send()
+  chokepoint, which covers the engine, the bind-flush, AND the legacy 1:1 pairing uniformly). Restart-durability
+  is the loud persisted loss-marker (content-recovery = the ticketed follow-up below).
+- **PERSIST THE RING (content recovery) — the t27 follow-up.** v1 makes restart-loss LOUD (a body-free marker);
+  it does NOT redeliver the CONTENT across a daemon restart (the in-memory ring dies with the process). Persist
+  the bounded ring per-org (reload on boot) to recover the frames, not just warn. Bounded + framed already, so
+  it's cheap; deferred out of the reliability rebuild to keep the untrusted-body disk lifecycle out of it.
 - **#t12b — the launch-lock 90s TTL** auto-clears mid-launch if a launch (cold `docker pull`) exceeds it → the
   zombie the lock guards against. Tie release to completion (`clearLaunchLock`/`.finally`), timeout as backstop
   only; **measure a cold-pull launch** before trusting the number. Orthogonal to #t12; separate change.
 - **Automated post-rebuild plugin-load gate** — the load CLASS's real gate. Can't weld here (repo has no
   CI/build system), so it's **author-discipline: after any container-side change, rebuild + confirm the plugin
   loads.** The host load gate (`test/channel-load.test.mjs`) is the early-warning under it, never a substitute.
-- **`update_notes` SHRINK** — `writeConsensus` full-overwrites, so a terse note replaces a detailed
-  `consensus.md`; the empty-guard stops the erase, not the shrink. Fix: append-with-history / revision retention.
-- **`escalate:"false"` means-true quirk** — `!!"false"` is true; deliberately NOT coerced (would flip the
-  branch); fix as its own change with its own test.
+- ✅ **`update_notes` SHRINK — SHIPPED** (`4c9ef15`, folded into the reliability commit): displaced body retained
+  in an attributed, bounded `consensus.history.jsonl`. (Open sub-nit, ticketed: a burst of trivial notes can
+  evict real history at cap 10.)
+- ✅ **`escalate:"false"` means-true quirk — SHIPPED** (`b9ab9f1`): shared `parseEscalate`. Bonus: it also closes
+  the H2 answer-required bypass the quirk created.
 - **General MCP-arg validation beyond string/number/bool** — enums/nesting are red-gated by the type-subset
   test (can't silently regress); implement if a tool ever needs a richer schema.
 - **Stubbed-load SDK-rename caveat** — the load gate's SDK stub is a hand-maintained mirror; a real SDK export
