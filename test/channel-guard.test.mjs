@@ -182,13 +182,22 @@ test('#EMPTY-GUARD: numeric strings COERCE (matches the handler’s own Number()
 
 // DEFECT 2: booleans are deliberately NOT coerced. `!!"false"` is true, so `{escalate:"false"}` escalates TODAY;
 // coercing it to false would flip the branch, make `answer` conditionally required, and could refuse the call —
-// a behavior change on the human's backstop smuggled into a reliability fix. Status quo stands; isEscalate is the
-// single definition. (The "false"-means-true quirk is real and ticketed separately.)
-test('#EMPTY-GUARD DEFECT 2: escalate is NOT coerced — the branch stays exactly as the handler reads it', () => {
-  const r = guardArgs(byName('resolve_escalation'), { id: 7, escalate: 'false' })
+// a behavior change smuggled into a reliability fix. That reasoning STILL holds at the coercion layer: the raw
+// value is preserved by validateAndCoerce. The quirk itself is now fixed one layer up — isEscalate/parseEscalate
+// (the single shared definition) interprets the STRING "false" as false, so predicate and daemon branch agree.
+test('#EMPTY-GUARD DEFECT 2: the escalate TYPE is not coerced (raw value preserved), but parseEscalate reads it right', () => {
+  // escalate:"false" now means NON-escalate, so `answer` is correctly required — supply one to pass the guard.
+  const r = guardArgs(byName('resolve_escalation'), { id: 7, escalate: 'false', answer: 'I handled it myself' })
   assert.equal(r.ok, true)
-  assert.equal(r.args.escalate, 'false', 'raw value preserved — no silent branch flip')
-  assert.equal(isEscalate(r.args), true, 'still escalates, exactly as before this fix')
+  assert.equal(r.args.escalate, 'false', 'raw value preserved at the coercion layer — no silent type flip')
+  assert.equal(isEscalate(r.args), false, 'the "false"-means-true quirk is FIXED: isEscalate reads the string correctly')
+})
+test('#EMPTY-GUARD DEFECT 2: escalate:"false" with NO answer is now REFUSED (the H2 backstop the quirk used to bypass)', () => {
+  // Pre-fix, escalate:"false" read as TRUE → answer not required → an answerless "false" slipped through and
+  // escalated to the human. Now it means non-escalate → an empty answer is the H2 failure, so the guard refuses.
+  const r = guardArgs(byName('resolve_escalation'), { id: 7, escalate: 'false' })
+  assert.equal(r.ok, false)
+  assert.match(r.error, /answer/i)
 })
 
 test('#EMPTY-GUARD: an unusable type is refused with a named field', () => {

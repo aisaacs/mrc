@@ -22,6 +22,7 @@ import { createTelegramBridge, sendMessage as tgSend, sendMessageChunked as tgSe
 import { freshTgState, classifyInbound, addPending, confirmPending, rejectPending, unpair as tgUnpair, prePin, tgView, isDuplicateUpdate, markUpdateProcessed } from '../teams/telegram-auth.js'
 import { defangTrustMarkers } from '../teams/trust.js'
 import { classifySession, loadSessionRecord, reapSessionRecord } from '../session-record.js'   // #39/3.A: containment from the TAMPER-PROOF host record, not the wire; #59: org-lifecycle record reap
+import { parseEscalate } from '../../container/mrc-channel-tools.js'   // dependency-free; the SINGLE escalate definition shared with the container's answer-required predicate (R1) so "escalate:'false'" can't mean opposite things on the two sides
 import { canonicalWriteTarget } from '../mount-guard.js'   // #49: realpath-canonical write containment (no symlinked-.mrc escape)
 import { resolveTerritoryImage } from '../safe-path.js'   // #56: shared dual-containment (repo + territory) image guard
 import { leadsRoomId } from '../teams/roster.js'
@@ -788,7 +789,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   function onResolveEscalation(fromId, f) {
     const ackId = f.id
     const ack = (status, extra = {}) => { if (ackId != null) send(fromId, { type: 'ack', id: ackId, status, ...extra }) }
-    const r = engine.resolveEscalation(Number(f.escId), { answer: String(f.answer ?? ''), escalate: !!f.escalate }, { sessionId: fromId })
+    const r = engine.resolveEscalation(Number(f.escId), { answer: String(f.answer ?? ''), escalate: parseEscalate(f.escalate) }, { sessionId: fromId })   // parseEscalate (shared with the container predicate) so escalate:"false" (string) is FALSE — was `!!f.escalate` = TRUE, a spurious escalation
     if (!r.ok) { send(fromId, { type: 'notice', text: `[Escalation not resolved: ${r.error}]` }); return ack('error', { error: r.error }) }
     ack('resolved-escalation', { escalated: !!r.escalated })
   }

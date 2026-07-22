@@ -7,7 +7,20 @@
 // write `a.escalate !== true` in one place and `!!a.escalate` in the other and have them disagree on `escalate:"true"`
 // (predicate would demand an answer the handler considers irrelevant → refusing a call the handler would process).
 // The CI test asserts a predicate EXISTS; only a shared function makes predicate and handler agree BY CONSTRUCTION.
-export const isEscalate = (a) => !!(a && a.escalate)
+// Interpret a possibly-stringified boolean `escalate` flag. A model may send escalate:"false" (a STRING), and
+// `!!"false"` is TRUE → it would wrongly take the escalate branch (send to the human) when the lead meant to
+// answer it. Real booleans pass through; common false spellings map to false; any other non-empty value is
+// truthy. THE SINGLE definition (R1): both the container's answer-required predicate AND the daemon's branch
+// (room-daemon.js resolve handler) consume this, so they can never disagree on what "false" means.
+export const FALSEY_ESCALATE = new Set(['', 'false', '0', 'no', 'off', 'null', 'undefined', 'nan'])
+export const parseEscalate = (v) => {
+  if (typeof v === 'boolean') return v
+  if (v == null) return false
+  if (typeof v === 'number') return v !== 0 && !Number.isNaN(v)
+  if (typeof v === 'string') return !FALSEY_ESCALATE.has(v.trim().toLowerCase())
+  return !!v
+}
+export const isEscalate = (a) => parseEscalate(a && a.escalate)
 
 export const consultTools = [
   {
