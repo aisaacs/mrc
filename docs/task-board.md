@@ -303,9 +303,20 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
   warns on writer contention and hard-errors on an rw territory escaping the repo, and the builder renders those —
   safety feedback rides existing machinery. Two drift guards pinned (a UI field rots in exactly two places): bRoster
   must EMIT it, and the #55 discard-guard SIGNATURE must cover it or a misclick silently discards the change.
+  **FOLLOW-UP `8e23e5c` (Pierre): the first copy promised containment the default config doesn't provide.** Role
+  defaults supply MOUNT but NOT territory (chain = member→team→`.`, `def.territory` absent), and the builder emits
+  exactly that shape ⇒ every GUI-built agent resolves to `.` ⇒ `rw` mounts the repo ROOT writable. And nothing else
+  warns: validateRoster's rw-territory check EXEMPTS `.`, and contention needs TWO writers — so a single rw member
+  at `.` passes validation in silence and **the copy is the only warning that exists**. Now: the option reads
+  "read-write (whole repo)" while no territory is set, the tooltip says so and points at the territory field, and
+  the preview spells out "✎ writes the WHOLE repo" rather than a bare `.`. Tests pin the resolution fact AND
+  validateRoster's silence, so a future narrowing turns the stale copy red.
 - **TICKET (parity gap, spun off): the add-agent-to-a-LIVE-team panel has no mount field** — `submitAddMember` →
   `/api/team-add-member` sends role/backend/territory/name/lead/repo, so an agent added to a RUNNING project always
   gets its role default with no way to choose. Different surface + its own endpoint validation, hence separate.
+  **This gap FAILS SAFE — the role default is the MORE RESTRICTIVE value, so it is a consistency wart, not a
+  security hole. Stated explicitly (Pierre) so nobody later "fixes the inconsistency" in a hurry by making the
+  live-add path the permissive one.** Any fix must carry the same whole-repo warning the builder now does.
 
 ### Hygiene
 - **Revert diagnostic aids** once the rooms work is fully settled: `[creds exit-sync]` daemonLog, consult-launch
