@@ -12,13 +12,15 @@ import { findFreePort } from '../src/ports.js'
 import { parseRoster, teamRoomId } from '../src/teams/roster.js'
 import { memberSessionId } from '../src/teams/session-id.js'
 import { saveSessionRecord, loadSessionRecord } from '../src/session-record.js'
+import { createInboundDedup } from '../container/mrc-channel-tools.js'
 
 // TEARDOWN DISCIPLINE (see daemon-classify.test.mjs): a test that throws before its daemon.stop() leaks the
 // relay/control servers + rolling retry timer + (on macOS) the caffeinate child, and node --test wedges at exit.
 // Shadow the factory to register every in-process daemon and stop them all after each test, pass or throw.
 const _liveDaemons = new Set()
+const _testSocks = new Set()   // track every relay socket a test opens so an assertion FAILURE (which skips the test's own cleanup) can't leak a handle and wedge node --test at exit (the macOS-test-hang class)
 function startRoomDaemon(opts) { const d = _startRoomDaemon(opts); if (d) _liveDaemons.add(d); return d }
-afterEach(() => { for (const d of _liveDaemons) { try { d.stop?.() } catch {} } _liveDaemons.clear() })
+afterEach(() => { for (const s of _testSocks) { try { s.destroy() } catch {} } _testSocks.clear(); for (const d of _liveDaemons) { try { d.stop?.() } catch {} } _liveDaemons.clear() })
 
 // A real member launched by `mrc team up` always has a TAMPER-PROOF host record with a secret (mrc.js
 // writes it pre-launch, keyed by memberSessionId). R2/F3b bind requires classifySession 'normal' AND a
@@ -542,4 +544,145 @@ test('#t12: the resumingConsults launch-lock keys on *SessionId at every site, n
   assert.ok(ops.length >= 3, `expected the lock at ≥3 launch sites, found ${ops.length}`)
   for (const arg of ops) assert.match(arg, /pierreSessionId$/,
     `resumingConsults keyed on "${arg}" — must be the org-scoped *pierreSessionId, never a bare handle, or the cross-project false-block returns`)
+})
+
+// ─── t27 CONTAINER-RESTART RESUME — the register-seam regression (reproduce-first) ────────────────────────────
+// The ordering hole (bindSession's pendingDeliveries live-write BEFORE flushOutbox) does NOT exist in the pure
+// outbox/dedup modules — it only appears at the real daemon register handler. So these MUST be integration tests
+// on the live daemon, or they'd pass with-or-without the fix (Pierre: unit necessary, not sufficient).
+
+// A relay client that MIRRORS the shipping container receive path: runs createInboundDedup, cumulative-rcpts,
+// collects surfaced text, and reports (epoch, highest) so a re-register carries the t27 resume token. Passing a
+// FRESH createInboundDedup models a container PROCESS restart (dedup state gone); reusing one models a flap.
+function dedupClient(port, dedup) {
+  const surfaced = []
+  const raw = []
+  const sock = net.connect(port, '127.0.0.1')
+  _testSocks.add(sock); try { sock.unref() } catch {}
+  let buf = ''
+  sock.on('data', (d) => {
+    buf += d; let i
+    while ((i = buf.indexOf('\n')) >= 0) {
+      const l = buf.slice(0, i); buf = buf.slice(i + 1); if (!l.trim()) continue
+      let f; try { f = JSON.parse(l) } catch { continue }
+      raw.push(f)
+      const r = dedup.observe(f)
+      if (r.reliable) { try { sock.write(JSON.stringify({ type: 'rcpt', epoch: dedup.epoch(), seq: r.ackSeq }) + '\n') } catch {} ; for (const fr of r.surface) if (!fr.discard && fr.text) surfaced.push(fr.text) }
+    }
+  })
+  const send = (o) => sock.write(JSON.stringify(o) + '\n')
+  const registerAs = (id, handle) => {
+    const secret = 'sec-' + String(id).slice(-12)
+    saveSessionRecord(id, { repoPath: process.env.HOME, adversary: false, secret })
+    send({ type: 'register', sessionId: id, memberHandle: handle, repo: 'shop', label: handle, secret, ackEpoch: dedup.epoch() || undefined, ackSeq: dedup.highest() })
+  }
+  return { sock, surfaced, raw, dedup, send, registerAs, ready: new Promise((res) => sock.on('connect', res)) }
+}
+
+async function bootShopWithRoland(base) {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-t27-`)
+  const port = await findFreePort(base)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 1000, workerInvoke: async () => ({ text: '' }) })
+  const roster = { org: 'shop', repo: process.env.HOME, teams: [{ name: 'client', members: [
+    { role: 'architect', backend: 'claude', name: 'roland', lead: true },
+    { role: 'critic', backend: 'claude', name: 'pierre' },
+  ] }] }
+  const norm = parseRoster(roster, { rng: seededRng(1) })
+  const def = await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms } })
+  assert.equal(def.ok, true)
+  const roland = client(port); await roland.ready
+  _testSocks.add(roland.sock); try { roland.sock.unref() } catch {}
+  registerMember(roland, { sessionId: memberSessionId('shop', 'roland/claude'), memberHandle: 'roland/claude', repo: 'shop', label: 'roland' })
+  await roland.waitFor((f) => f.type === 'notice' && /Joined as @roland/.test(f.text))
+  return { port, controlPort, daemon, roland, pierreId: memberSessionId('shop', 'pierre/claude') }
+}
+
+test('t27 (hole 3): a FRESH process (dedup high-water 0) resuming vs a mid-stream daemon (seq»0) surfaces the pending content', async () => {
+  const { port, daemon, roland, pierreId } = await bootShopWithRoland(19600)
+
+  // M1 = the first pierre connection (fresh D1). seq STARTS at 1 here so M1 works; it acks the burst → the
+  // daemon's per-session seq climbs well past 0.
+  const m1 = dedupClient(port, createInboundDedup()); await m1.ready
+  m1.registerAs(pierreId, 'pierre/claude'); m1.send({ type: 'ping' }); await sleep(90)
+  for (let k = 1; k <= 12; k++) { roland.send({ type: 'say', id: 100 + k, text: `@pierre msg-${k}` }); await sleep(18) }
+  await sleep(150)
+  assert.ok(m1.surfaced.length >= 10, `M1 received the burst (got ${m1.surfaced.length}) — daemon seq is now ~12`)
+
+  // M1's PROCESS dies (socket + dedup object gone) → daemon unbinds pierre.
+  m1.sock.destroy(); await sleep(150)
+  // Two more while offline → pendingDeliveries → they'll be assigned HIGH seqs (13,14) on rebind.
+  roland.send({ type: 'say', id: 200, text: '@pierre FINAL-ALPHA' })
+  roland.send({ type: 'say', id: 201, text: '@pierre FINAL-BETA' })
+  await sleep(120)
+
+  // M2 = a FRESH dedup (D2) — the container PROCESS restart. Its register carries ackEpoch=null.
+  const m2 = dedupClient(port, createInboundDedup()); await m2.ready
+  m2.registerAs(pierreId, 'pierre/claude'); await sleep(200)
+
+  // RED without the fix: D2 (highest 0) holds seq 13,14 at the unfillable gap [1..12] → nothing surfaces.
+  // GREEN with resume/enqueue-only: the pending set is resequenced to 1..K → surfaced from the first frame.
+  assert.ok(m2.surfaced.some((t) => /FINAL-ALPHA/.test(t)), `fresh process must surface FINAL-ALPHA — got ${JSON.stringify(m2.surfaced)}`)
+  assert.ok(m2.surfaced.some((t) => /FINAL-BETA/.test(t)), `fresh process must surface FINAL-BETA — got ${JSON.stringify(m2.surfaced)}`)
+
+  roland.sock.destroy(); m2.sock.destroy(); daemon.stop()
+})
+
+test('t27 (hole 3, floor>0): a fresh resume with an OVERFLOWED outbox surfaces the kept content — guards the enqueue-only (a stale-floor live-write must not jump the fresh receiver past the resequenced set)', async () => {
+  process.env.MRC_ROOM_OUTBOX_CAP = '4'   // small cap so the pendingDeliveries flush OVERFLOWS → floor>0
+  let ctx
+  try { ctx = await bootShopWithRoland(19700) } finally { delete process.env.MRC_ROOM_OUTBOX_CAP }
+  const { port, daemon, roland, pierreId } = ctx
+
+  const m1 = dedupClient(port, createInboundDedup()); await m1.ready
+  m1.registerAs(pierreId, 'pierre/claude'); m1.send({ type: 'ping' }); await sleep(90)
+  for (let k = 1; k <= 3; k++) { roland.send({ type: 'say', id: 500 + k, text: `@pierre warm-${k}` }); await sleep(18) }
+  await sleep(120)
+  m1.sock.destroy(); await sleep(150)
+
+  // 6 while offline → pendingDeliveries. On M2 rebind they flush into the (cap-4) outbox at once → OVERFLOW →
+  // the oldest 2 are evicted (floor>0), the newest 4 kept. WITHOUT enqueue-only, bindSession live-writes all 6
+  // at their high seqs carrying the STALE floor → the fresh receiver's high-water jumps past the resequenced
+  // 1..K → the kept content is dropped. WITH enqueue-only, flushOutbox drains the resequenced set alone.
+  for (let k = 1; k <= 6; k++) roland.send({ type: 'say', id: 600 + k, text: `@pierre OVER-${k}` })
+  await sleep(150)
+
+  const m2 = dedupClient(port, createInboundDedup()); await m2.ready
+  m2.registerAs(pierreId, 'pierre/claude'); await sleep(220)
+
+  assert.ok(m2.surfaced.some((t) => /OVER-6/.test(t)), `newest kept message must surface after an overflow resume — got ${JSON.stringify(m2.surfaced)}`)
+  assert.ok(m2.surfaced.some((t) => /OVER-5/.test(t)), `OVER-5 (kept) must surface — got ${JSON.stringify(m2.surfaced)}`)
+  assert.ok(m2.surfaced.some((t) => /lost/.test(t)), 'and a loud loss-warning for the evicted ones')
+
+  roland.sock.destroy(); m2.sock.destroy(); daemon.stop()
+})
+
+test('t27 (hole 1): a throw inside the resume block clears resumeFresh (the finally) — a later LIVE send still WRITES, not enqueue-only-forever', async () => {
+  const { port, daemon, roland, pierreId } = await bootShopWithRoland(19650)
+
+  // Give pierre an outbox + go offline (so a fresh resume-register actually enters the resume path).
+  const m1 = dedupClient(port, createInboundDedup()); await m1.ready
+  m1.registerAs(pierreId, 'pierre/claude'); m1.send({ type: 'ping' }); await sleep(90)
+  for (let k = 1; k <= 6; k++) { roland.send({ type: 'say', id: 300 + k, text: `@pierre warm-${k}` }); await sleep(18) }
+  await sleep(120)
+  m1.sock.destroy(); await sleep(150)
+  roland.send({ type: 'say', id: 400, text: '@pierre PENDING-WHILE-OFFLINE' }); await sleep(80)
+
+  // FORCE a throw inside the resume block on M2's fresh register (fault-injection seam).
+  process.env.MRC_TEST_THROW_IN_RESUME = '1'
+  const m2 = dedupClient(port, createInboundDedup()); await m2.ready
+  m2.registerAs(pierreId, 'pierre/claude'); await sleep(200)
+  delete process.env.MRC_TEST_THROW_IN_RESUME   // the throw only affects M2's register; clear it now
+
+  // The daemon must have SURVIVED the throw (not crashed) and CLEARED the flag in the finally. Prove it by the
+  // WRITE, not the surface: a subsequent LIVE @pierre must reach M2's SOCKET (m2.raw). If resumeFresh leaked
+  // (clear NOT in the finally), the send is enqueue-only forever and never hits the wire → not in raw. (Whether
+  // the fresh dedup SURFACES it is bug-1's concern — the resume was skipped by the throw — so we assert the wire
+  // write, which is exactly what the flag governs.)
+  roland.send({ type: 'say', id: 401, text: '@pierre LIVE-AFTER-THROW' })
+  const t0 = Date.now(); let got = false
+  while (Date.now() - t0 < 2500) { if (m2.raw.some((f) => /LIVE-AFTER-THROW/.test(f.text || ''))) { got = true; break } await sleep(40) }
+  assert.ok(got, `after a throw in the resume block, a live send must still WRITE to the socket (flag cleared, not enqueue-only) — got raw ${JSON.stringify(m2.raw.map((f) => f.type))}`)
+
+  roland.sock.destroy(); m1.sock.destroy(); m2.sock.destroy(); daemon.stop()
 })

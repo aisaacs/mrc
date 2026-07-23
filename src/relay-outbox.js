@@ -102,6 +102,30 @@ export function createRelayOutbox({ cap = 64, epoch } = {}) {
       })
     },
 
+    // Highest seq EVER assigned for this session (the monotonic counter, not max(current frames)). The clamp
+    // ceiling for a wire-supplied ackSeq: a real ack can never exceed a seq the daemon assigned, and a
+    // forged-huge one is capped here so it can't trim past what was actually sent (Pierre hole 2).
+    maxSeq(sid) { const b = boxes.get(sid); return b ? b.seq : 0 },
+
+    // RESUME (t27 container-restart fix): a FRESH container (process restart → its dedup high-water reset to 0)
+    // re-registers, but this session's seq has climbed. Delivering the pending frames at their high seqs would
+    // strand them at an unfillable gap [1..seq-1] on the fresh receiver → silent non-delivery (the regression).
+    // So renumber the pending set to a fresh CONTIGUOUS 1..K (floor reset — new numbering) that a highest-0
+    // receiver accepts from the first frame. PRESERVE each entry's `at` (renumber only `seq`, else a redelivered
+    // directive loses its delayedMs stamp) and lossPending/lossCount (a fresh-connect after an overflow must
+    // still fire the loud loss-warning). Caller MUST have enqueued any bindSession pendingDeliveries frames
+    // FIRST (enqueue-only, no live-write) so this renumbers the UNIFIED set and flushOutbox is the sole ordered
+    // drain — else a stale-floor live-write jumps the fresh receiver's high-water past the renumbered set.
+    resume(sid) {
+      const b = boxes.get(sid)
+      if (!b) return
+      let n = 0
+      for (const e of b.frames) e.seq = ++n   // renumber seq 1..K in order; `at` untouched
+      b.seq = n
+      b.floor = 0
+      // lossPending / lossCount deliberately preserved
+    },
+
     pending(sid) { const b = boxes.get(sid); return b ? b.frames.length : 0 },
     hasLoss(sid) { const b = boxes.get(sid); return !!(b && b.lossPending) },
     // count reported in the persisted marker / loss-signal text (frames still held + any already dropped)

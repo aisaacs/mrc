@@ -75,6 +75,43 @@ test('outbox: forget() reaps the box + age tracking for the daemon sweep', () =>
   assert.equal(ob.idleMs('s', 3000), Infinity)
 })
 
+// t27 container-restart fix — resume()/maxSeq() (pure). The ORDERING hole (bindSession live-write before
+// flushOutbox) is NOT reproducible here — that lives at the daemon register seam (see daemon-teams.test.mjs).
+test('outbox: resume() resequences the pending set to contiguous 1..K, preserving order + at, floor=0', () => {
+  const ob = createRelayOutbox({ epoch: 'e1', cap: 64 })
+  ob.enqueue('s', { type: 'deliver', text: 'a' }, 1000)        // seq 1
+  ob.enqueue('s', { type: 'directive', text: 'steer' }, 2000)  // seq 2 (carries `at` for delayedMs)
+  ob.ack('s', 'e1', 1)                                          // trim seq1 → pending [seq2]
+  ob.enqueue('s', { type: 'deliver', text: 'b' }, 3000)        // seq 3 → pending seqs [2,3] (high + gapped for a fresh receiver)
+  ob.resume('s')
+  const list = ob.list('s', 5000)
+  assert.deepEqual(list.map((f) => f.seq), [1, 2], 'renumbered to contiguous 1..K')
+  assert.deepEqual(list.map((f) => f.text), ['steer', 'b'], 'order preserved')
+  assert.equal(list[0].floor, 0, 'floor reset for the new numbering')
+  assert.equal(list.find((f) => f.type === 'directive').delayedMs, 3000, '`at` preserved → 5000-2000 delayedMs (renumber seq only)')
+  assert.equal(ob.maxSeq('s'), 2, 'ob.seq updated to K')
+})
+
+test('outbox: resume() does NOT clear lossPending (a fresh-connect after an overflow still fires the loud warning)', () => {
+  const ob = createRelayOutbox({ epoch: 'e1', cap: 2 })
+  for (let i = 0; i < 4; i++) ob.enqueue('s', { type: 'deliver', text: `m${i}` }, i)   // overflow → lossPending
+  assert.equal(ob.hasLoss('s'), true)
+  ob.resume('s')
+  assert.equal(ob.hasLoss('s'), true, 'loss state survives the resequence')
+  assert.equal(ob.takeLoss('s'), 2, 'the dropped-count survives too')
+})
+
+test('outbox: maxSeq is the monotonic assign counter (ob.seq), not max of current frames — the clamp ceiling', () => {
+  const ob = createRelayOutbox({ epoch: 'e1' })
+  ob.enqueue('s', { type: 'deliver', text: '1' }, 1)
+  ob.enqueue('s', { type: 'deliver', text: '2' }, 2)
+  ob.enqueue('s', { type: 'deliver', text: '3' }, 3)   // ob.seq = 3
+  ob.ack('s', 'e1', 2)                                 // trim seq1,2 → pending [seq3]
+  assert.equal(ob.maxSeq('s'), 3, 'the assign counter, survives a trim')
+  // a forged-huge ackSeq clamps here: min(9999, maxSeq) = 3 → can never trim past what was assigned
+  assert.equal(Math.min(9999, ob.maxSeq('s')), 3)
+})
+
 test('inbound: non-reliable frame (no seq) is passed through untouched, no rcpt', () => {
   const d = createInboundDedup()
   d.observe({ type: 'pong', epoch: 'e1' })            // learns epoch

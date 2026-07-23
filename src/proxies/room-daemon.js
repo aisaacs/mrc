@@ -198,6 +198,11 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // silent. On boot, a marker from a PRIOR epoch → this session had frames pending under the old daemon.
   const outboxMarkers = loadOutboxMarkers()
   const restartLoss = new Map()   // sessionId -> count of frames pending at the last restart (replayed as a loud warning on next flush)
+  // t27 container-restart resume: sessionIds mid fresh-resume register, during which the pendingDeliveries flush
+  // must be ENQUEUE-ONLY (no live-write) so flushOutbox is the sole ordered drain of the resequenced set. SET only
+  // for the synchronous span of a fresh register, CLEARED in a finally — a leaked entry makes that session
+  // enqueue-only forever (permanent silent-loss, worse than the bug it fixes).
+  const outboxResumeFresh = new Set()
   for (const [sid, m] of Object.entries(outboxMarkers)) { if (m && m.epoch !== bootEpoch && m.count > 0) restartLoss.set(sid, m.count) }
   let outboxMarkersDirty = false
   // SET edge (Pierre trap B): a session going 0→pending MUST be on disk before send() treats the frame as
@@ -275,6 +280,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       out = stamped
       if (dropped) daemonLog(`[relay-drop] session=${String(sessionId).slice(0, 8)} dropped ${dropped} unacked reliable frame(s) — outbox over cap; a loud loss-signal will ride the next flush`)
       markSet(sessionId)   // durable on the pending edge, BEFORE the write (trap B)
+      if (outboxResumeFresh.has(sessionId)) return   // fresh-resume window: ENQUEUE-ONLY (the pendingDeliveries flush must not live-write; flushOutbox drains the resequenced set as the sole ordered write). Ephemeral frames (notices/pong) fall through and still write.
     }
     if (s && s.sock && !s.sock.destroyed) { try { s.sock.write(JSON.stringify(out) + '\n') } catch {} }
   }
@@ -289,7 +295,12 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     if (rc) { restartLoss.delete(sessionId); outbox.enqueue(sessionId, { type: 'warning', text: `[${rc} room message(s) may have been lost across a daemon restart — ask your peer(s) to resend anything you didn't see a reply to.]` }, Date.now()) }
     const lc = outbox.takeLoss(sessionId)
     if (lc) outbox.enqueue(sessionId, { type: 'warning', text: `[${lc} room message(s) may have been lost during a long outage — ask your peer(s) to resend.]` }, Date.now())
-    const roomStillLive = (roomId) => engine.roomsForSession(sessionId).includes(roomId)
+    // roomsForSession returns room OBJECTS, not ids — compare by roomId (the original `.includes(roomId)` matched
+    // an object against a string → ALWAYS false → EVERY engine frame, which carries a `room`, was wrongly marked
+    // discard on redelivery and silently skipped. The legacy 2-party path has no `room` field so it was spared,
+    // which is why the legacy flap wiretest never caught this. (Caught by the register-seam integration test.)
+    const memberRooms = new Set(engine.roomsForSession(sessionId).map((r) => r.roomId))
+    const roomStillLive = (roomId) => memberRooms.has(roomId)
     for (const fr of outbox.list(sessionId, Date.now(), roomStillLive)) { try { s.sock.write(JSON.stringify(fr) + '\n') } catch {} }
     markSet(sessionId)
   }
@@ -1452,6 +1463,19 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             daemonLog(`[register UNVERIFIED] ${sessionId} member=${f.memberHandle || '-'} repo=${f.repo || '-'} — no host record at register (record uuid=${loadSessionRecord(sessionId).uuid ? 'present' : 'ABSENT'})`)   // #56 diag: soft-downgrade path — an interactive session losing peer-visibility after a restart lands here
           }
           noteSessions()
+          // t27 CONTAINER-RESTART RESUME: reconcile the outbox against the (epoch, highest) the container reports
+          // in its register. FLAP (f.ackEpoch === our boot epoch): the container kept its dedup state across a
+          // socket reconnect → trim what it already surfaced (clamped to maxSeq so a forged ackSeq can't trim past
+          // what was actually sent — Pierre hole 2). FRESH (null / mismatched: a PROCESS restart or a cross-daemon
+          // reconnect): the container reset its high-water to 0, but our per-session seq climbed → delivering the
+          // pending frames at their high seqs would strand them at an unfillable gap on the fresh receiver (the
+          // regression). So RESEQUENCE the pending set to a contiguous 1..K it accepts, and enqueue-only the
+          // pendingDeliveries flush so flushOutbox is the SOLE ordered drain. The flag is cleared in a finally —
+          // a leak = permanent enqueue-only = silent-loss worse than the bug, so the clear must survive any throw.
+          const resumeFresh = f.ackEpoch !== bootEpoch
+          if (!resumeFresh) { const acked = Math.min(Number(f.ackSeq) || 0, outbox.maxSeq(sessionId)); if (acked > 0) { if (outbox.ack(sessionId, bootEpoch, acked)) markClear(sessionId); else markSet(sessionId) } }
+          else outboxResumeFresh.add(sessionId)
+          try {
           if (f.memberHandle) {   // a TEAM member: bind it to its declared rooms in the engine
             // #3/AUDIT (R2 — cross-org member impersonation): bind ONLY from the PINNED identity (sessionIndex),
             // NEVER a wire-supplied handle. A member's session id IS memberSessionId(org,handle) — team.js pins its
@@ -1503,9 +1527,17 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           // a forged f.summonedBy would force-pair (and inject "[Pierre entered]" into) any online victim.
           const recSummonedBy = loadSessionRecord(sessionId).summonedBy
           if (recSummonedBy && sessions.has(recSummonedBy) && !pairingFor(sessionId)) onAdversaryUp(recSummonedBy, sessionId, f.room)
+          if (resumeFresh && process.env.MRC_TEST_THROW_IN_RESUME === '1') throw new Error('t27 test: injected fault in the resume block')   // fault-injection seam (test-only env): proves the finally clears resumeFresh even when the block throws
+          if (resumeFresh) outbox.resume(sessionId)   // renumber the UNIFIED pending set (pre-restart buffered + the just-enqueued-only pendingDeliveries) to a contiguous 1..K, floor=0, so a highest-0 receiver accepts from the first frame
           // t27: this register may be a RECONNECT after a flap/restart — re-send any unacked reliable frames now
-          // that the socket + engine binding are live again. A first-time register has an empty outbox (no-op).
+          // that the socket + engine binding are live again (the SOLE ordered drain for a fresh resume). A
+          // first-time register has an empty outbox (no-op).
           flushOutbox(sessionId)
+          } catch (e) {
+            daemonLog(`[register-resume] ${String(sessionId).slice(0, 8)} error: ${e?.message || e}`)   // a throw in the register block must not crash the daemon nor leak the flag
+          } finally {
+            if (resumeFresh) outboxResumeFresh.delete(sessionId)   // UNCONDITIONAL — survives a throw / early exit; a leaked flag would strand the session enqueue-only forever
+          }
         } else if (f.type === 'list' && sessionId) {
           send(sessionId, { type: 'peerlist', peers: peerList(sessionId) })
         } else if (f.type === 'ask' && sessionId) { bumpActivity(sessionId); onAsk(sessionId, String(f.question ?? ''), f.peer) }   // #caffeine PRIMARY: a channel action IS an autonomous turn arriving directly — per-turn, reconnect-proof, no proxy latency
