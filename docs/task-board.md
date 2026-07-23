@@ -13,6 +13,15 @@ Deploy map (which change lands how):
 
 ## 🔴 Awaiting metal verification (owner runs; nothing to build)
 
+- **⛔ t27 REDELIVERY FIX (`9a66100`) — THE DECISIVE GATE: a caged-consult RESUME re-run.** Rebuild
+  (`docker rmi mister-claude` — the container register-token change) + `mrc rooms restart` (daemon). Then re-run
+  the EXACT broken scenario: a caged Pierre RESUMED mid-consult (a real container PROCESS restart — session
+  resume, NOT just a socket flap) and confirm his replies SURFACE on the summoner over the real relay with a real
+  container. That's the metal that caught it; only a real container in the loop clears it (the integration tests
+  prove the daemon side but MIRROR the dedup — the shipping receive path stays unproven, ticket below). If the
+  reply surfaces → this regression is closed. Bring `daemon.log` + whether the summoner actually displays it.
+  Do NOT push t27 until this is green (it shipped two real silent-loss regressions).
+
 - **#t12 launch-lock fix — the CONCURRENT 2-project run (the decisive test).** `mrc rooms restart`, both
   projects up, a Pierre summoned in EACH, work **both simultaneously**. Pass = both stay usable, no forced
   dismiss/resume, no "already in flight." A single-Pierre run proves nothing (the empty-body half is already
@@ -28,9 +37,28 @@ Deploy map (which change lands how):
 
 ## ✅ Recently shipped (verified where noted; commits on `main`)
 
-**t27 reliability outbox + two quick wins (2026-07-22, Pierre-signed 7-round red-team). PUSH-READY (owner pushes).**
-METAL COVERAGE — the EXACT truth (owner chose push-now on 2 metal legs + the deterministic/unit-covered seam;
-`claude-scripts/t27-wiretest.mjs` drives the running daemon over the real relay, self-restarts for leg 2):
+**t27 reliability outbox + two quick wins (2026-07-22, Pierre-signed). ⛔ NOT push-ready — a live caged-consult
+delivery FAILURE (2026-07-23) surfaced TWO real regressions in the shipped outbox, now fixed (`9a66100`); the gate
+is the caged-consult RESUME metal re-run below.** THE REGRESSIONS (both hit engine/consult redelivery on a
+reconnect, both missed by the pure tests AND the legacy flap wiretest — the exact "container receive last-mile"
+we labeled unproven; caught by a new register-seam integration test):
+- **`roomStillLive` object→id (the PRIMARY cause of the owner's symptom).** flushOutbox's discard check was
+  `roomsForSession(sid).includes(roomId)`, but that returns room OBJECTS → object-vs-string is ALWAYS false →
+  EVERY engine frame (carries a `room`) was `discard`ed on redelivery + silently skipped. Legacy 2-party has no
+  `room` field → spared → why the legacy flap wiretest went green while caged-consult redelivery was broken.
+  Shipped in `4c9ef15`; fixed in `9a66100`.
+- **Fresh-container gap.** A container PROCESS restart (session resume / crash) resets its dedup high-water to 0
+  while the daemon's seq climbs → the fresh receiver holds every frame at an unfillable gap → surfaces nothing
+  (regression vs pre-t27 which displayed any frame). Fix: a RESUME-TOKEN handshake — the container reports
+  (epoch, highest) in register; the daemon FLAP (epoch===boot nonce → trim clamped ackSeq) vs FRESH (→ resequence
+  pending to 1..K a highest-0 receiver accepts, enqueue-only pendingDeliveries flush, finally-cleared flag). All
+  four mechanisms proven RED-without-fix at the register seam. Suite 713. **DURABLE: the register seam is where
+  BOTH regressions lived, and both were invisible to unit + the mirrored wiretest — only a real engine member on
+  the live register handler surfaced them. Daemon side now integration-covered; the SHIPPING container receive
+  path (real createInboundDedup over a real socket) STAYS unproven (ticket).**
+
+METAL COVERAGE — the EXACT truth (prior-run flap+restart legs via `claude-scripts/t27-wiretest.mjs`; the
+caged-consult resume is the NEW decisive gate):
 - ✅ **FLAP survival — METAL-PROVEN** (2026-07-22 wiretest), but via the LEGACY 2-party path (raw send() :1115),
   so it proves LEGACY reliability, not the engine outbox.
 - ✅ **RESTART survival — METAL-PROVEN** (marker persisted on the durable set-edge; daemon self-restarted; the
@@ -101,22 +129,17 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
 ## ▶ Open / ticketed (build-when-picked)
 
 ### From the empty-body / rooms-reliability work (this session)
-- **TICKET (t27 metal gap 1) — ENGINE-PATH SEAM VARIANT.** The `pendingDeliveries`×outbox interaction (the exact
-  path the diff's bug lived in) is UNIT-proven + deterministic but NOT metal-exercised (the legacy flap wiretest
-  structurally can't reach it — no pendingDeliveries on the legacy path). Build a hands-off synthetic wiretest:
-  a 2-member org (control-socket `defineOrg` + normalized def + member secret records + the verifiedNormal bind
-  gate) + a BLACKHOLE-PROXY (accept the flapped member's socket, stop forwarding, keep the daemon-side socket
-  open → the daemon writes into a `!destroyed` dead pipe while the member stays BOUND → the frame rides
-  deliverTo→enqueue = the t27 OUTBOX, not pendingDeliveries; a CLEAN drop would test the wrong buffer). Sequence:
-  bound-half-open send (→outbox, older seqs) → close daemon-side (→unbind) → unbound send (→pendingDeliveries,
-  newer seqs) → member reconnects → assert the OLDER buffered frames surface AHEAD of the newer live ones, none
-  swallowed. Pierre specced + will red-team when green. (Scoped: proves the engine daemon path over the wire, NOT
-  the container receive last-mile — ticket 2.)
-- **TICKET (t27 metal gap 2) — CONTAINER RECEIVE LAST-MILE.** The shipping container's `observe→pushIn`/
-  `renderFrame` path (mrc-channel-server.js:324) is exercised by NEITHER the unit test (observe() in isolation)
-  NOR the wiretest (whose B-client re-implements the dedup). A re-impl can't prove the real container
-  reassembles + renders a redelivered frame. Needs a real `mrc` session in the loop (some clicking — not
-  hands-off), so it's separate. Until done, "wiretest green" ≠ "the container receive path is proven."
+- ✅ **(was TICKET t27 gap 1) — ENGINE-PATH register seam — NOW INTEGRATION-COVERED (`9a66100`).** The
+  `pendingDeliveries`×outbox interaction + the register/resume/resequence/roomStillLive paths are now driven on
+  the LIVE daemon by `test/daemon-teams.test.mjs` (a real engine member; the receiver mirrors createInboundDedup).
+  This is what caught BOTH `9a66100` regressions — the blackhole-proxy synthetic variant is no longer needed for
+  the daemon side. (The container receive last-mile is still gap 2.)
+- **TICKET (t27 gap 2, STILL OPEN) — CONTAINER RECEIVE LAST-MILE.** The shipping container's `observe→pushIn`/
+  `renderFrame` path (mrc-channel-server.js:324) with the REAL createInboundDedup over a real socket is exercised
+  by NEITHER the unit test (observe() in isolation) NOR the integration tests (their receiver re-implements the
+  dedup). This is the exact inch BOTH `9a66100` regressions lived in — invisible until a real `mrc` session is in
+  a test. Needs a real container in the loop (some clicking — not hands-off). Until done, "713 green + integration
+  green" ≠ "the real container receive path is proven"; the next inch will be exactly as invisible as these two.
 - ✅ **MERGED ROOT — socket-liveness ≠ delivery/binding — SHIPPED (`4c9ef15`, PUSH-READY; flap+restart
   metal-proven, seam unit-proven+deterministic — see the coverage verdict up in Recently-shipped).** Built as
   the per-session redelivery outbox + cumulative receipt-ack (NOT the
