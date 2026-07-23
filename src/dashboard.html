@@ -1645,7 +1645,12 @@ function bRenderTeams() {
           ? `<span class="bklock" aria-label="backend ${esc(mediaBackend(m.role))} — set by the media role, not editable" title="media role — backend is set by the role (not editable)">${esc(mediaBackend(m.role))}</span>`
           : `<select onchange="bSet(${ti},${mi},'backend',this.value)">${BACKENDS.map(o=>`<option ${o===m.backend?'selected':''}>${o}</option>`).join('')}</select>`}
         <label class="lead" title="★ — this agent can reach you directly (it joins the escalation room with @user). Non-★ agents escalate up to a ★ instead. Several ★ per team are fine; a team with none gets one automatically."><input type="checkbox" ${m.lead?'checked':''} onchange="bSet(${ti},${mi},'lead',this.checked)"> ★ reaches you</label>
-        <input value="${esc(m.territory)}" placeholder="territory" oninput="bSet(${ti},${mi},'territory',this.value)"></div>`:''}</div>`}).join('')}
+        <input value="${esc(m.territory)}" placeholder="territory" oninput="bSet(${ti},${mi},'territory',this.value)">
+        <select onchange="bSet(${ti},${mi},'mount',this.value)" aria-label="file access for this agent" title="What this agent may CHANGE on disk — a real boundary at the mount, not a guideline.&#10;&#10;read-only: reads the whole repo, cannot edit anything.&#10;read-write: can edit files inside its own territory, and nowhere else.&#10;&#10;Leave on role default unless you have a reason: an architect or critic defaults to read-only, an engineer to read-write. (A caged agent is always read-only regardless of this.)">
+          <option value=""${!m.mount?' selected':''}>— role default —</option>
+          <option value="ro"${m.mount==='ro'?' selected':''}>read-only</option>
+          <option value="rw"${m.mount==='rw'?' selected':''}>read-write</option>
+        </select></div>`:''}</div>`}).join('')}
     <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><button class="btn tiny" onclick="bAddMem(${ti})">＋ agent</button><button class="btn tiny" data-ti="${ti}" onclick="openCastModal('builder',this.dataset.ti)">🎭 Add from cast</button></div></div>`).join('')
 }
 // §14: ★ ("reaches you") is a per-agent toggle and MULTIPLE are allowed per team (was: a radio that forced
@@ -1673,7 +1678,7 @@ window.bSetName=(ti,mi,v)=>{ const m=S.builder.teams[ti].members[mi]; m.name=v; 
   bPreview() }
 window.bRerollName=(ti,mi)=>{ const m=S.builder.teams[ti].members[mi]; const taken=allBuilderNames(); if(m.name)taken.delete(String(m.name).toLowerCase()); m.name=suggestName(S.builder.nameStyle||'french',taken); m._nameAuto=true; bRenderTeams(); bPreview() }
 window.bSetStyle=(v)=>{ S.builder.nameStyle=v; autofillNames(true); bRenderTeams(); bPreview() }   // re-roll AUTO names only; hand-typed stay
-function bRoster(){const B=S.builder;const r={org:B.org||'org',repo:B.repo||undefined,teams:B.teams.map(t=>({name:t.name,territory:t.territory||'.',members:t.members.map(m=>{const o={role:m.role,backend:m.backend};if(m.lead)o.lead=true;if(m.territory)o.territory=m.territory;if(m.name&&String(m.name).trim())o.name=String(m.name).trim();if(m.repo)o.repo=m.repo;if(m.session&&m.session!=='fresh'){o.session=m.session;o.sessionRef=m.sessionRef||'you'}return o})}))};if(B.personas&&Object.keys(B.personas).length)r.personas=B.personas;return r}   // P1 (Model B): each member carries its OWN repo (o.repo); under Model B parseRoster requires it + ignores the top-level repo (identity is the neutral anchor). Top-level repo kept for legacy (cap=1) compat.
+function bRoster(){const B=S.builder;const r={org:B.org||'org',repo:B.repo||undefined,teams:B.teams.map(t=>({name:t.name,territory:t.territory||'.',members:t.members.map(m=>{const o={role:m.role,backend:m.backend};if(m.lead)o.lead=true;if(m.territory)o.territory=m.territory;if(m.name&&String(m.name).trim())o.name=String(m.name).trim();if(m.repo)o.repo=m.repo;if(m.mount)o.mount=m.mount;if(m.session&&m.session!=='fresh'){o.session=m.session;o.sessionRef=m.sessionRef||'you'}return o})}))};if(B.personas&&Object.keys(B.personas).length)r.personas=B.personas;return r}   // P1 (Model B): each member carries its OWN repo (o.repo); under Model B parseRoster requires it + ignores the top-level repo (identity is the neutral anchor). Top-level repo kept for legacy (cap=1) compat.
 // P1 (Model B): each agent picks its OWN repo, and the human's PICK is the authorization — /api/authorize-repo
 // (CSRF + capOk, human-only) lands it in the org's authorized-set BEFORE launch, since the Model B floor THROWS on
 // an un-authorized member.repo (a session can request a repo, never authorize one). Best-effort with inline result;
@@ -1726,7 +1731,7 @@ function bPreview(){clearTimeout(bTimer);bTimer=setTimeout(async()=>{
   const el=$('#bPrev'); if(!el)return
   if(!r.ok){el.innerHTML=`<div class="bad">⚠ ${esc(r.error)}</div>`;return}
   const v=r.validation||{warnings:[],errors:[]}
-  el.innerHTML = r.members.map(m=>`<div class="pane" style="padding:7px 10px;margin-bottom:6px"><span class="h">@${esc(m.handle)}</span> <span class="muted">${esc(m.roleLabel)}${m.lead?' ★':''} · ${esc(m.team)} · ${m.tier==='worker'?'worker':'live'}</span></div>`).join('')
+  el.innerHTML = r.members.map(m=>`<div class="pane" style="padding:7px 10px;margin-bottom:6px"><span class="h">@${esc(m.handle)}</span> <span class="muted">${esc(m.roleLabel)}${m.lead?' ★':''} · ${esc(m.team)} · ${m.tier==='worker'?'worker':'live'} · ${m.mount==='rw'?'✎ writes '+esc(m.territory||'.'):'read-only'}</span></div>`).join('')
     +`<h2>Rooms</h2>`+r.rooms.map(rm=>`<span class="roomtag">${esc(rm.team||rm.kind)}</span>`).join('')
     +(v.warnings.length?`<h2>Warnings</h2>`+v.warnings.map(w=>`<div class="warn" style="font-size:12px">⚠ ${esc(w)}</div>`).join(''):'')
 },250)}
@@ -1744,7 +1749,7 @@ window.bDefine=async()=>{const msg=$('#bMsg'); const auth=await bAuthorizeAllRep
 function builderSig(){ const B=S.builder||{}; return JSON.stringify({
   org:B.org||'', repo:B.repo||'', nameStyle:B.nameStyle||'french', personas:B.personas||{},
   teams:(B.teams||[]).map(t=>({ name:t.name||'', territory:t.territory||'', members:(t.members||[]).map(m=>({
-    role:m.role||'', backend:m.backend||'', lead:!!m.lead, territory:m.territory||'',
+    role:m.role||'', backend:m.backend||'', lead:!!m.lead, territory:m.territory||'', mount:m.mount||'',
     name:(m._nameAuto===false)?(m.name||''):'' })) })) }) }
 function builderDirty(){ const B=S.builder; if(!B) return false; return (B._sig!=null) ? (builderSig()!==B._sig) : true }
 const markBuilderClean = ()=>{ if(S.builder) S.builder._sig = builderSig() }

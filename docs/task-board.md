@@ -291,12 +291,21 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
   `OPENAI_API_KEY`; codex/qwen members are task-workers resolved once via the `mrc team` dispatch; media-maker keys
   go through `repoEnvKey`, which ignores `op://` entirely. Tests pin the two mrc.js conditions in LOCKSTEP (nothing
   in production couples them). Host-side → takes effect on the next launch, no rebuild, no daemon restart.
-- **Dashboard builder — restore per-agent RW/RO permission in Advanced mode (owner, 2026-07-23).** The
-  Phase-1 declutter moved per-member territory/mount controls behind Advanced; bring back an explicit
-  per-agent **read-only vs read-write** toggle there when creating a project. The underlying field exists
-  (`member.mount` = `'ro'`/`'rw'`, roster/persona/launch already consume it; territorial write-isolation is
-  the containment model) — this is the builder UI surfacing it per member, not new plumbing. Advanced-only so
-  the common path stays light. UX-side (host, `mrc rooms restart`); no rebuild.
+- ✅ **Dashboard builder — per-agent READ-ONLY / READ-WRITE in Advanced mode — SHIPPED (owner-requested 2026-07-23).**
+  `mount` was always settable per member in team.json (roster.js:240 `m.mount || def.mount`) but `bRoster()` never
+  emitted it, so the GUI could only ever produce ROLE DEFAULTS — this is GUI/file PARITY, not a new capability.
+  Built: a 3-state select (`— role default —` / read-only / read-write) whose default emits NOTHING, so inheritance
+  is preserved and **no existing project's effective mounts change**; copy states the consequence in plain language;
+  the preview shows the EFFECTIVE mount **server-computed** (deliberately NOT duplicating the role→mount table
+  client-side — that's the drift class). Safety verified before exposing rw: a CAGED member can't be given rw —
+  `memberWorkspaceVolumes` checks `if (member.cage)` FIRST and emits `/workspace:ro` with no territory overlay, so
+  member.mount is structurally unreachable for a caged member (already pinned by a test). validateRoster ALREADY
+  warns on writer contention and hard-errors on an rw territory escaping the repo, and the builder renders those —
+  safety feedback rides existing machinery. Two drift guards pinned (a UI field rots in exactly two places): bRoster
+  must EMIT it, and the #55 discard-guard SIGNATURE must cover it or a misclick silently discards the change.
+- **TICKET (parity gap, spun off): the add-agent-to-a-LIVE-team panel has no mount field** — `submitAddMember` →
+  `/api/team-add-member` sends role/backend/territory/name/lead/repo, so an agent added to a RUNNING project always
+  gets its role default with no way to choose. Different surface + its own endpoint validation, hence separate.
 
 ### Hygiene
 - **Revert diagnostic aids** once the rooms work is fully settled: `[creds exit-sync]` daemonLog, consult-launch

@@ -618,3 +618,41 @@ test('#45 addMemberToRoster carries the added agent\'s repo (Model B requires pe
   const out2 = addMemberToRoster(base, 't', { role: 'engineer', backend: 'claude' })
   assert.equal(out2.teams[0].members.find((m) => m.role === 'engineer').repo, undefined)
 })
+
+// ── Per-agent read-only / read-write, surfaced in the dashboard builder (Advanced) ────────────────
+// `mount` is a real capability boundary at the bind mount, not etiquette (personas.js:6). It has always
+// been settable per member in team.json — roster.js:240 `const mount = m.mount || def.mount` — but the
+// builder never emitted it, so the GUI could only ever produce role defaults. These pin the behavior the
+// new control depends on, and the two places a UI field silently rots.
+const roleRoster = (members) => ({ project: 'x', teams: [{ name: 'team', territory: '.', members }] })
+
+test('roster: a member-level mount OVERRIDES the role default (both directions)', () => {
+  const norm = parseRoster(roleRoster([
+    { role: 'architect', backend: 'claude', name: 'arch', lead: true, mount: 'rw' },   // role default is ro
+    { role: 'engineer', backend: 'claude', name: 'eng', mount: 'ro' },                 // role default is rw
+  ]), { repo: '/tmp/repo' })
+  assert.equal(norm.members.find((m) => m.role === 'architect').mount, 'rw', 'explicit rw beats the ro role default')
+  assert.equal(norm.members.find((m) => m.role === 'engineer').mount, 'ro', 'explicit ro beats the rw role default')
+})
+
+test('roster: NO member-level mount → inherits the role default (the builder\'s "— role default —" option)', () => {
+  const norm = parseRoster(roleRoster([
+    { role: 'architect', backend: 'claude', name: 'arch', lead: true },
+    { role: 'engineer', backend: 'claude', name: 'eng' },
+  ]), { repo: '/tmp/repo' })
+  assert.equal(norm.members.find((m) => m.role === 'architect').mount, 'ro', 'architect defaults read-only')
+  assert.equal(norm.members.find((m) => m.role === 'engineer').mount, 'rw', 'engineer defaults read-write')
+})
+
+test('dashboard builder: bRoster EMITS a per-agent mount, and the dirty-guard signature COVERS it', () => {
+  const html = fs.readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8')
+  // (1) the value must reach the roster at all — without this the control is decorative.
+  const bRoster = html.split('\n').find((l) => l.includes('function bRoster('))
+  assert.ok(bRoster, 'found bRoster')
+  assert.match(bRoster, /if\(m\.mount\)o\.mount=m\.mount/, 'bRoster must emit the per-agent mount (falsy = inherit the role default, correctly omitted)')
+  // (2) a mount change is REAL work: if the discard-guard signature ignores it, switching an agent to
+  // read-write and hitting ✕ Cancel is silently discarded with no "unsaved changes" prompt (#55 class).
+  const sig = html.split('\n').find((l) => l.includes("role:m.role||'', backend:m.backend||''"))
+  assert.ok(sig, 'found the builder signature')
+  assert.match(sig, /mount:m\.mount\|\|''/, 'the dirty-guard signature must include mount, or a misclick discards it silently')
+})
