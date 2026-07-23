@@ -29,7 +29,10 @@ function hermeticLoadEnv({ dotenv = null, skipOp = false, opStub = null, opAccou
       process.env.PATH = `${bin}:${process.env.PATH}`
     }
     const result = loadEnv(scriptDir, { skipOp })
-    return { result, opInvoked: existsSync(flag) }
+    // Snapshot the keys BEFORE the finally restores process.env — the container-injection decision in mrc.js reads
+    // exactly these, so what landed here is what a member's `-e` flags would carry.
+    const env = { MRC_SESSION_NAMING_ANTHROPIC_API_KEY: process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY, ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY, OPENAI_API_KEY: process.env.OPENAI_API_KEY }
+    return { result, opInvoked: existsSync(flag), env }
   } finally {
     for (const k of Object.keys(process.env)) delete process.env[k]
     Object.assign(process.env, saved)
@@ -115,4 +118,29 @@ test('mrc.js: the no-key exit guard EXEMPTS exactly what skipOp skips (lockstep 
   assert.match(line, /!config\.summonedBy/, 'summoned adversary exempt from the exit')
   assert.match(line, /config\.member/, 'a member must ALSO be exempt — it never asked for the key, so it must not die for lacking it')
   assert.match(line, /!config\.solo/, 'and solo is NOT exempt, matching skipOp — it resolves, so it may legitimately demand the key')
+})
+
+// skipOp must leave NOTHING behind, not a vault REFERENCE. Pierre raised this against the member-launch fix:
+// mrc.js pushes `-e OPENAI_API_KEY` whenever the value is truthy, so if skipOp left the literal
+// "op://Vault/…" string in process.env, a member container would be handed an unresolvable key AND the vault
+// item PATH — a privilege-shaped regression hiding inside a strictly-less-privilege change. It does NOT happen:
+// loadEnv's plain-value loop (config.js:81) already refuses op:// values at INGEST — the same guard repoEnvKey
+// uses for media keys, applied one layer up, which is the better place than at each consumer. That property is
+// load-bearing for the member fix's safety argument and nothing else pinned it, so pin it here.
+test('loadEnv + skipOp: an op:// value is NEVER left in process.env — no vault reference can reach a container', () => {
+  const { env, opInvoked } = hermeticLoadEnv({
+    dotenv: 'MRC_SESSION_NAMING_ANTHROPIC_API_KEY="op://Engineering/MRC Claude API key/credential"\n'
+          + 'OPENAI_API_KEY="op://Vault/OpenAI API key/credential"\n',
+    skipOp: true, opStub: OP_RESOLVING,
+  })
+  assert.equal(opInvoked, false, 'no biometric')
+  for (const [k, v] of Object.entries(env)) {
+    assert.ok(!(v && String(v).includes('op://')), `${k} must not hold a raw op:// reference (got ${JSON.stringify(v)}) — mrc.js would inject it into the container as a bogus key + the vault item path`)
+  }
+  assert.equal(env.OPENAI_API_KEY, undefined, 'unset, so `if (openaiKey)` is falsy and no -e flag is pushed at all')
+})
+
+test('loadEnv (no skipOp): an UNQUOTED op:// value is also refused at ingest, not just the quoted form', () => {
+  const { env } = hermeticLoadEnv({ dotenv: 'OPENAI_API_KEY=op://Vault/OpenAI API key/credential\n', skipOp: true, opStub: OP_RESOLVING })
+  assert.equal(env.OPENAI_API_KEY, undefined, 'the ingest guard is value-based, so quoting cannot smuggle a reference through')
 })

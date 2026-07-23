@@ -276,6 +276,15 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     // same-org re-seat (existing.org===orgId) still updates in place below.
     const conflict = roomClaimConflict(roomId, orgId)
     if (conflict) return { ok: false, error: `consult roomId "${roomId}" is already owned by project "${conflict}" — cross-project collision refused` }
+    // TIER INVARIANT — READ BEFORE CHANGING `backend` HERE (Pierre). Elsewhere "tier:'live' ⟹ backend:'claude'" is
+    // DERIVATION-enforced: roster.js:230 computes `tier = LIVE_BACKENDS.has(backend) ? 'live' : 'worker'` and
+    // deliberately ignores any def-supplied tier. HERE it is only CALLER-enforced: tier is hardcoded 'live' while
+    // backend comes from the caller, so this is the one seat that would happily hold a NON-claude member at
+    // tier:'live'. It is safe today solely because buildCagedConsult hardcodes `backend: 'claude'`. That invariant
+    // is load-bearing off-file — e.g. mrc.js skips op:// resolution for member launches on the premise that a LIVE
+    // member is always Claude (hence never the `--agent codex` path that needs OPENAI_API_KEY). If you ever seat a
+    // non-claude consult participant, derive the tier from the backend here instead of hardcoding it, and re-check
+    // that premise — the person loosening it won't otherwise know they're weakening a guarantee two files away.
     omap.set(ph, {
       handle: pierre.handle, first: pierre.first || pierre.handle, role: pierre.role || 'adversary', team: null,
       lead: false, backend: pierre.backend || 'claude', tier: 'live', territory: null, mount: 'ro', org: orgId,
