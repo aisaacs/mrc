@@ -742,28 +742,64 @@ test('t27 fail-open (EMPTY memberRooms): a buffered room-tagged frame surfaces o
 // is silent-fail wearing a log line). Two DISTINCT projects whose names differ only by spaces/dots/case slug to the
 // SAME leads/team roomId. The engine belt refuses to let the second hijack the first's room; the daemon must surface
 // that refusal in the defineOrg REPLY (what `mrc team up` / Build→Launch shows), so the human renames one project.
-test('#t12 daemon: a slug-colliding second project gets a USER-VISIBLE refusal in the defineOrg reply, not just a log', async () => {
-  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-t12-`)
-  const port = await findFreePort(19780)
-  const controlPort = await findFreePort(port + 1)
-  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
-  const mkRoster = (org) => parseRoster({ org, repo: process.env.HOME, teams: [{ name: 'client', territory: 'client', members: [{ role: 'architect', backend: 'claude', name: 'roland', lead: true }] }] }, { rng: seededRng(1) })
-  const A = mkRoster('release notes 1.55.1')
-  const B = mkRoster('release-notes-1.55.1')   // distinct project name; slug() collides on the leads/team roomIds
+// NOTE (supersession, not lost coverage): an earlier test here asserted that a slug-colliding second define
+// SUCCEEDS with a `warning` + `refusedRooms` in the reply. That flow is no longer reachable — the defineOrg
+// wrapper's PREVENTION check now refuses the colliding NAME before the engine belt is ever consulted, which is
+// strictly better (the second project never half-forms). The define path is covered by the `#t12 prevention`
+// tests above; the engine belt itself by room-engine.test.mjs; and the belt's live surfacing by the boot-restore
+// test below (boot bypasses prevention by design, so it is the one path where the belt can still fire).
+// The wrapper's refusedRooms/warning plumbing is KEPT as a backstop — if a future define path ever skips
+// prevention, it already has a mouth rather than failing silently.
+test('#t12 layering: the define path REFUSES a colliding name outright — it does not merely warn-and-half-form', async () => {
+  const { mk, send } = await t12Boot(19780)
+  const A = mk('release notes 1.55.1'), B = mk('release-notes-1.55.1')
   assert.equal(teamRoomId(A.org, 'client'), teamRoomId(B.org, 'client'), 'precondition: the two project names slug-collide')
+  assert.equal((await send(A)).ok, true)
+  const rB = await send(B)
+  assert.equal(rB.ok, false, 'REFUSED, not ok-with-a-warning — prevention fires before the belt')
+  assert.ok(!rB.refusedRooms, 'and it never reaches the belt, so no half-formed room is reported')
+})
 
-  const defA = await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: A.org, repo: A.repo, members: A.members, rooms: A.rooms } })
-  assert.equal(defA.ok, true)
-  assert.ok(!defA.refusedRooms, 'the first project forms cleanly — no collision reported')
-
-  const defB = await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: B.org, repo: B.repo, members: B.members, rooms: B.rooms } })
-  assert.equal(defB.ok, true, 'the second define still succeeds (org defined; the colliding room just did not form)')
-  assert.ok(defB.refusedRooms && defB.refusedRooms.length, 'the colliding second project reports refusedRooms IN THE REPLY (user-visible)')
-  assert.ok(defB.refusedRooms.some((r) => r.ownedBy === A.org), 'the refusal names the OWNING project (org A) so the human knows which to rename')
-  assert.match(defB.warning || '', /rename one project/i, 'a plain-language, actionable warning rides the reply — the human would SEE it')
-  for (const r of defB.refusedRooms) assert.ok(!defB.rooms.includes(r.roomId), 'a refused room is NOT listed among the formed rooms')
-
-  daemon.stop()
+// #t12 PREVENTION — refuse a slug-colliding project NAME at define time, so a second project's team room can never
+// silently fail to form. The engine belt is the runtime backstop (containment); this is the cheap fix at the ONE place
+// a human can act. Same chokepoint reasoning as assertSafeProjectName's reserved `-solo-<hash>` refusal.
+const t12Boot = async (base) => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-t12p-`)
+  const port = await findFreePort(base); const controlPort = await findFreePort(port + 1)
+  startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+  const mk = (org) => parseRoster({ org, repo: process.env.HOME, teams: [{ name: 'client', territory: 'client', members: [{ role: 'architect', backend: 'claude', name: 'roland', lead: true }] }] }, { rng: seededRng(1) })
+  const send = (n) => controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: n.org, repo: n.repo, members: n.members, rooms: n.rooms } })
+  return { controlPort, mk, send }
+}
+test('#t12 prevention: a slug-colliding NEW project name is REFUSED with actionable guidance, and nothing is mutated', async () => {
+  const { controlPort, mk, send } = await t12Boot(19840)
+  const A = mk('release notes 1.55.1'), B = mk('release-notes-1.55.1')   // distinct names, SAME derived room ids
+  assert.equal((await send(A)).ok, true, 'the first project defines cleanly')
+  const rB = await send(B)
+  assert.equal(rB.ok, false, 'the slug-colliding SECOND name is REFUSED up front — never silently half-formed')
+  // The message must be usable by someone with NO knowledge of the internals (owner's production bar).
+  assert.match(rB.error, /release notes 1\.55\.1/, 'names the EXISTING project it collides with, so they can tell them apart')
+  assert.match(rB.error, /"project"/, 'gives the concrete team.json fix')
+  assert.match(rB.error, /dashboard/i, 'gives the dashboard fix too (not everyone edits team.json)')
+  assert.match(rB.error, /punctuation, spacing, or capitalization/i, 'says HOW the name must differ — the non-obvious part')
+  assert.match(rB.error, /not affected/i, 'reassures that the existing project is untouched')
+  // REFUSAL PRECEDES EVERY MUTATION: the refused project must not be registered at all.
+  const st = await controlCall(controlPort, { action: 'team' })
+  assert.ok(!(st.orgs || []).map((o) => o.org).includes(B.org), 'the refused project was NOT registered (no pin, no engine write, no orgDefs entry)')
+  assert.ok((st.orgs || []).map((o) => o.org).includes(A.org), 'the existing project is untouched')
+})
+test('#t12 prevention: a SAME-project redefine is NEVER refused (the normal `mrc team up` re-run / relaunch / addmember)', async () => {
+  const { mk, send } = await t12Boot(19850)
+  const A = mk('release notes 1.55.1')
+  assert.equal((await send(A)).ok, true, 'first define')
+  assert.equal((await send(A)).ok, true, 'redefining the SAME project must not collide with itself')
+  assert.equal((await send(A)).ok, true, 'and again — idempotent')
+})
+test('#t12 prevention: genuinely distinct project names are accepted (the check is narrow, not a naming tax)', async () => {
+  const { mk, send } = await t12Boot(19860)
+  for (const name of ['release notes 1.55.1', 'release notes 1.55.2', 'api', 'api2', 'meal optimizer rebuild']) {
+    assert.equal((await send(mk(name))).ok, true, `"${name}" must be accepted — it collides with nothing`)
+  }
 })
 
 // #t12 — the BOOT RESTORE path (Pierre's catch): the restore loop calls engine.defineOrg DIRECTLY, not the wrapper,
@@ -786,8 +822,14 @@ test('#t12 boot restore: a slug-colliding persisted org surfaces via DESKTOP not
     const port = await findFreePort(notifyPort + 1)
     const controlPort = await findFreePort(port + 1)
     startRoomDaemon({ port, controlPort, notifyPort, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })   // boot restore runs synchronously here; the notify is async → wait for it
-    const t0 = Date.now(); while (Date.now() - t0 < 1500 && !notes.some((m) => /rename one project/i.test(m))) await sleep(20)
-    assert.ok(notes.some((m) => /Room id collision/i.test(m) && /rename one project/i.test(m)),
-      `a boot-time collision must NOT be silent — the desktop notify should fire on the deploy restart; got ${JSON.stringify(notes)}`)
+    const t0 = Date.now(); while (Date.now() - t0 < 1500 && !notes.some((m) => /rename/i.test(m))) await sleep(20)
+    const note = notes.find((m) => /Room id collision/i.test(m))
+    assert.ok(note, `a boot-time collision must NOT be silent — the desktop notify should fire on the deploy restart; got ${JSON.stringify(notes)}`)
+    // A pre-existing colliding pair is refused at the NAME on any future define, so THIS notify is the only
+    // message they ever get — it must carry the fix, not just the fact (same production bar as the refusal).
+    assert.match(note, /rename/i, 'says what to do')
+    assert.match(note, /"project"/, 'gives the concrete team.json fix')
+    assert.match(note, /dashboard/i, 'gives the dashboard fix too')
+    assert.match(note, /punctuation, spacing, or capitalization/i, 'says HOW the name must differ')
   } finally { try { notifySrv.close() } catch {} }
 })

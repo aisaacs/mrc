@@ -273,6 +273,17 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
 - **#54 manual-rooms** (live-Pierre §14 routing) · **#55 name-theme → Settings** (identity-coupled) ·
   **CONVERSATION-VIEW #49** (chat panel replaces the terminal — the big post-spec build) · **Telegram one-bot**
   (§6, `op://` token resolution) · guard-3 + 0700-dir assert (#24) · sha1/sockSlug collision (#26).
+- **1Password biometric prompt on EVERY agent launch (owner, 2026-07-23 — screenshot: "Allow dtach to get CLI
+  access", Touch ID, per project).** Launching a member spawns a fresh `dtach` → `mrc` → which resolves `op://`
+  refs from the repo `.env` via the `op` CLI (config.js 1Password support). 1Password's CLI-app integration
+  authorizes the *calling binary*, so each new `dtach`-spawned process re-prompts — once per member, per launch.
+  Directions to evaluate (not yet chosen): (a) resolve `op://` ONCE host-side in `mrc team up` before spawning the
+  per-member dtach masters and pass the RESOLVED value down the env, so `op` is invoked once per launch instead of
+  once per member — likely the cheapest and biggest win; (b) `OP_SERVICE_ACCOUNT_TOKEN` (no biometric, but a
+  long-lived token — **security-gated**, needs the owner's nod per the standing rule since it changes how a secret
+  is held); (c) an `op signin` session token reused for the launch window. Verify which actually stops the prompt
+  before building — the trigger is the calling binary, so (a) only helps if the resolution genuinely moves out of
+  the per-member process. Owner asked to board, not build.
 - **Dashboard builder — restore per-agent RW/RO permission in Advanced mode (owner, 2026-07-23).** The
   Phase-1 declutter moved per-member territory/mount controls behind Advanced; bring back an explicit
   per-agent **read-only vs read-write** toggle there when creating a project. The underlying field exists

@@ -553,6 +553,37 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   const predictModelB = modelBPredict
 
   function defineOrg(def, { trusted = false, activate = false, modelB = predictModelB() } = {}) {
+    // #t12 PREVENTION — refuse a project NAME whose derived room ids would collide with an EXISTING project's.
+    // Room ids are `slug(project)--leads` / `slug(project)--<team>--team`, and slug() is LOSSY (punctuation, spacing
+    // and case all fold away), so two DIFFERENT project names can reduce to the SAME id — after which one project's
+    // rooms, history and on-disk /rooms/<id>/ dir silently belong to the other. The engine belt refuses that at the
+    // room level (containment), but the second project's team room then never forms — so we prevent it at the NAME,
+    // the only place a human can fix it cheaply. Same answer, same chokepoint reasoning as assertSafeProjectName's
+    // reserved `-solo-<hash>` refusal (a colliding name there "could silently steal that session's members").
+    //
+    // FIRST, before ANY mutation (no pin, no engine write, no orgDefs.set) so a refusal changes nothing.
+    // Compared via leadsRoomId() — the SAME derivation the rooms use, so this check can never drift from the ids it
+    // guards. Only OTHER projects count: re-defining an existing project (the normal `mrc team up` re-run, a relaunch,
+    // an addmember) must never refuse itself. The boot restore calls engine.defineOrg DIRECTLY, bypassing this, which
+    // is correct — it LOADS already-accepted projects rather than minting a name, and refusing there would strand a
+    // project the human already has (a pre-existing colliding pair is surfaced by the boot collision notify instead).
+    {
+      const incoming = String(def.org)
+      const mine = leadsRoomId(incoming)
+      for (const [otherOrg, otherDef] of orgDefs) {
+        if (String(otherOrg) === incoming) continue          // same project → a redefine, never a collision
+        if (leadsRoomId(String(otherOrg)) !== mine) continue  // distinct ids → fine
+        const where = otherDef && otherDef.repo ? ` (${otherDef.repo})` : ''
+        throw new Error(
+          `Project name "${incoming}" can't be used — it collides with your existing project "${otherOrg}"${where}.\n` +
+          `Mister Claude builds each project's room ids from its name, and these two names reduce to the same id ` +
+          `("${mine}"), so their rooms and conversation history would overwrite each other.\n` +
+          `Fix: give this project a name that differs by more than punctuation, spacing, or capitalization —\n` +
+          `  • team.json: set  "project": "<a distinct name>"\n` +
+          `  • dashboard: change the project name in the Build form\n` +
+          `then launch again. Your existing project "${otherOrg}" is not affected.`)
+      }
+    }
     // #57: carry the per-project --web egress setting across a redefine/relaunch. A launch rebuilds `def` from the
     // roster, which doesn't carry `web` (it's a project setting, not a roster field) — without this the toggle would
     // silently reset to off on every relaunch. setorgweb writes it; this preserves it when the incoming def omits it.
@@ -618,9 +649,14 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   // boot loop above (:521 — lexically BEFORE this line) can call it without hitting the temporal dead zone (which,
   // inside that loop's `try{}catch{}`, would silently swallow into a broken restore).
   function roomCollisionWarning(refused) {
-    return (refused && refused.length)
-      ? `Room id collision: ${refused.map((r) => `"${r.roomId}" is already owned by project "${r.ownedBy}"`).join('; ')}. This project's team/leads room did NOT form — rename one project so their room ids are distinct.`
-      : undefined
+    if (!refused || !refused.length) return undefined
+    // Carries the FIX, not just the fact (Pierre): new projects are refused at the name (defineOrg's prevention
+    // check), so the only projects that ever reach this message are a PRE-EXISTING colliding pair — for whom this
+    // is the ONLY notice they will ever get. It has to say what to do, in plain language, every time.
+    return `Room id collision: ${refused.map((r) => `"${r.roomId}" is already owned by project "${r.ownedBy}"`).join('; ')}. `
+      + `This project's team/leads room did NOT form, so its agents can't coordinate. `
+      + `Fix: rename ONE of the two projects to something that differs by more than punctuation, spacing, or capitalization `
+      + `(team.json: "project": "<a distinct name>", or the project name in the dashboard's Build form), then launch it again.`
   }
 
   // --- Telegram transport (#12): per-org bot bridge + pairing/trust + persistence ----------------
