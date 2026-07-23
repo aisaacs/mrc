@@ -53,16 +53,14 @@ test('outbox: list re-sends in order; a redelivered DIRECTIVE is stamped redeliv
   assert.equal(dat.redelivered, undefined)         // stale DATA is fine, not marked
 })
 
-test('outbox: list MARKS a left-room frame discard (keeps its seq for contiguity); legacy no-room frames are never marked', () => {
+test('outbox: list FAIL-OPENS — never marks discard; every buffered frame is redelivered regardless of room', () => {
   const ob = createRelayOutbox({ epoch: 'e1' })
-  ob.enqueue('s', { type: 'deliver', text: 'left-room', room: 'gone' }, 1)
-  ob.enqueue('s', { type: 'deliver', text: 'live-room', room: 'here' }, 1)
-  ob.enqueue('s', { type: 'deliver', text: 'legacy-1to1' }, 1)   // no room → never discarded
-  const list = ob.list('s', 2, (roomId) => roomId === 'here')
-  assert.deepEqual(list.map((f) => f.text), ['left-room', 'live-room', 'legacy-1to1'])   // ALL frames flow (no gap)
-  assert.equal(list.find((f) => f.text === 'left-room').discard, true)                    // but the left-room one is flagged
-  assert.equal(list.find((f) => f.text === 'live-room').discard, undefined)
-  assert.equal(list.find((f) => f.text === 'legacy-1to1').discard, undefined)
+  ob.enqueue('s', { type: 'deliver', text: 'room-a', room: 'a' }, 1)
+  ob.enqueue('s', { type: 'deliver', text: 'room-b', room: 'b' }, 1)
+  ob.enqueue('s', { type: 'deliver', text: 'legacy-1to1' }, 1)   // no room
+  const list = ob.list('s', 2)   // no roomStillLive arg — the discard edge is GONE (a resume-time room snapshot the collision can empty/poison is not worth dropping data over)
+  assert.deepEqual(list.map((f) => f.text), ['room-a', 'room-b', 'legacy-1to1'])   // ALL frames flow
+  for (const f of list) assert.equal(f.discard, undefined, `${f.text} must never be discarded (fail-open-always)`)
 })
 
 test('outbox: forget() reaps the box + age tracking for the daemon sweep', () => {
@@ -227,18 +225,18 @@ test('round-trip SEAM: newer seqs arrive live BEFORE older buffered ones — non
   assert.equal(ob.pending('s'), 0)                                     // all acked
 })
 
-test('round-trip: a left-room frame is DISCARDED container-side (advances the seq, never surfaced) — no gap', () => {
+test('round-trip: FAIL-OPEN — a frame for ANY room (even one the session no longer lists) is redelivered, not dropped', () => {
   const ob = createRelayOutbox({ epoch: 'boot-A' })
   const d = createInboundDedup()
   const surfaced = []
   const wire = (frame) => { const r = d.observe(frame); if (r.reliable) { for (const fr of r.surface) if (!fr.discard) surfaced.push(fr.text); ob.ack('s', d.epoch(), r.ackSeq) } }
   d.observe({ type: 'pong', epoch: 'boot-A' })
-  ob.enqueue('s', { type: 'deliver', text: 'stay', room: 'here' }, 1)
-  ob.enqueue('s', { type: 'deliver', text: 'gone', room: 'left' }, 2)   // room the session leaves during outage
-  ob.enqueue('s', { type: 'deliver', text: 'stay2', room: 'here' }, 3)
-  for (const fr of ob.list('s', 10, (r) => r === 'here')) wire(fr)      // 'left' is no longer live
-  assert.deepEqual(surfaced, ['stay', 'stay2'])                         // the left-room frame is not surfaced...
-  assert.equal(ob.pending('s'), 0)                                      // ...but its seq WAS acked → no gap, box drains
+  ob.enqueue('s', { type: 'deliver', text: 'r1', room: 'here' }, 1)
+  ob.enqueue('s', { type: 'deliver', text: 'r2', room: 'other' }, 2)   // a room the session's resume snapshot won't list
+  ob.enqueue('s', { type: 'deliver', text: 'r3', room: 'here' }, 3)
+  for (const fr of ob.list('s', 10)) wire(fr)                          // no room filter — the outbox IS the authority (deliverTo gated at send)
+  assert.deepEqual(surfaced, ['r1', 'r2', 'r3'])                       // ALL surface — no silent drop
+  assert.equal(ob.pending('s'), 0)
 })
 
 test('round-trip: a daemon RESTART (new epoch) does not dedup the fresh stream against the old high-water', () => {

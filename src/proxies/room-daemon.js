@@ -295,13 +295,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     if (rc) { restartLoss.delete(sessionId); outbox.enqueue(sessionId, { type: 'warning', text: `[${rc} room message(s) may have been lost across a daemon restart — ask your peer(s) to resend anything you didn't see a reply to.]` }, Date.now()) }
     const lc = outbox.takeLoss(sessionId)
     if (lc) outbox.enqueue(sessionId, { type: 'warning', text: `[${lc} room message(s) may have been lost during a long outage — ask your peer(s) to resend.]` }, Date.now())
-    // roomsForSession returns room OBJECTS, not ids — compare by roomId (the original `.includes(roomId)` matched
-    // an object against a string → ALWAYS false → EVERY engine frame, which carries a `room`, was wrongly marked
-    // discard on redelivery and silently skipped. The legacy 2-party path has no `room` field so it was spared,
-    // which is why the legacy flap wiretest never caught this. (Caught by the register-seam integration test.)
-    const memberRooms = new Set(engine.roomsForSession(sessionId).map((r) => r.roomId))
-    const roomStillLive = (roomId) => memberRooms.has(roomId)
-    for (const fr of outbox.list(sessionId, Date.now(), roomStillLive)) { try { s.sock.write(JSON.stringify(fr) + '\n') } catch {} }
+    // FAIL-OPEN-ALWAYS (Pierre): redeliver every buffered frame; do NOT consult room membership. A frame is here
+    // because deliverTo routed it to this session (which already gated on room.members.has at send time), so the
+    // outbox IS the authority it belongs here. A resume-time roomsForSession snapshot can be EMPTY *or*
+    // wrong-populated under the #t12 org-collision, and any discard on it silently drops legit frames — it bit
+    // twice (roomStillLive object→id always-false, then the collision). The discard edge is removed; the
+    // org-resolution mismatch is now a correctness-only bug (wrong routing/display), ticketed separately.
+    for (const fr of outbox.list(sessionId, Date.now())) { try { s.sock.write(JSON.stringify(fr) + '\n') } catch {} }
     markSet(sessionId)
   }
   const online = (id) => { const s = sessions.get(id); return !!(s && s.sock && !s.sock.destroyed) }

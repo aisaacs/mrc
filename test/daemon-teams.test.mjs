@@ -686,3 +686,39 @@ test('t27 (hole 1): a throw inside the resume block clears resumeFresh (the fina
 
   roland.sock.destroy(); m1.sock.destroy(); m2.sock.destroy(); daemon.stop()
 })
+
+// t27 FAIL-OPEN: the discard edge is REMOVED (never consult memberRooms on redelivery). deliverTo already gated
+// on room membership AT SEND (room-engine.js:365), so a frame in the outbox is authoritatively destined here; a
+// resume-time roomsForSession snapshot is a corruptible redundant copy (the #t12 org-collision can make it EMPTY
+// *or* WRONG-populated). Both shapes must redeliver, not discard — RED on the pre-fix (memberRooms) code.
+async function bufferedFrameSurfacesAfterRedefine(base, mutateRooms) {
+  const { port, controlPort, daemon, roland, pierreId } = await bootShopWithRoland(base)
+  const norm = parseRoster({ org: 'shop', repo: process.env.HOME, teams: [{ name: 'client', members: [
+    { role: 'architect', backend: 'claude', name: 'roland', lead: true },
+    { role: 'critic', backend: 'claude', name: 'pierre' },
+  ] }] }, { rng: seededRng(1) })
+  // Buffer a room-tagged frame for the (offline, never-connected) pierre → pendingDeliveries, room = the client team room.
+  roland.send({ type: 'say', id: 700, text: '@pierre BUFFERED-FOR-CLIENT' })
+  await sleep(160)
+  // Redefine so pierre's rooms no longer contain the frame's room (empty OR wrong-populated). pierre stays a member → its buffer survives.
+  const rd = await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: norm.org, repo: norm.repo, members: norm.members, rooms: mutateRooms(norm.rooms) } })
+  assert.equal(rd.ok, true)
+  // pierre connects FRESH → binds (rooms don't include the frame's room), pendingDeliveries flush → resume → flushOutbox.
+  const m = dedupClient(port, createInboundDedup()); await m.ready
+  m.registerAs(pierreId, 'pierre/claude'); await sleep(300)
+  const got = m.surfaced.some((t) => /BUFFERED-FOR-CLIENT/.test(String(t)))
+  m.sock.destroy(); roland.sock.destroy(); daemon.stop()
+  return { got, surfaced: m.surfaced }
+}
+
+test('t27 fail-open (WRONG-populated memberRooms): a buffered room-tagged frame surfaces on resume even when the session now lists a DIFFERENT room', async () => {
+  // redefine keeps pierre in a room, but with a changed roomId → roomsForSession(pierre) = {other-id}, size 1, has(frameRoom)=false (the exact case `size>0` missed).
+  const r = await bufferedFrameSurfacesAfterRedefine(19760, (rooms) => rooms.map((rm) => ({ ...rm, roomId: rm.roomId + '-WRONG' })))
+  assert.ok(r.got, `wrong-populated memberRooms must NOT discard the buffered frame — got ${JSON.stringify(r.surfaced)}`)
+})
+
+test('t27 fail-open (EMPTY memberRooms): a buffered room-tagged frame surfaces on resume even when the session lists NO rooms', async () => {
+  // redefine drops pierre from the room's member list (still an org member) → roomsForSession(pierre) = [].
+  const r = await bufferedFrameSurfacesAfterRedefine(19770, (rooms) => rooms.map((rm) => ({ ...rm, members: (rm.members || []).filter((h) => String(h).toLowerCase() !== 'pierre/claude') })))
+  assert.ok(r.got, `empty memberRooms must NOT discard the buffered frame — got ${JSON.stringify(r.surfaced)}`)
+})

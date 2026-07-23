@@ -84,11 +84,15 @@ export function createRelayOutbox({ cap = 64, epoch } = {}) {
 
     // Frames to RE-SEND on rebind, in seq order, each carrying the CURRENT floor. A redelivered `directive` is
     // stamped redelivered:true + delayedMs (Pierre #6): a stale ORDER must read as delayed, never a fresh steer;
-    // stale DATA is harmless-late. A frame whose room the session has since LEFT is marked `discard:true` (NOT
-    // dropped — dropping would gap the contiguous stream forever): it keeps its seq so the container advances
-    // the sequence and acks it, but the container does not surface it. So the room-skip lives container-side
-    // (after counting the seq), compatible with contiguity — the daemon just supplies the authoritative flag.
-    list(sid, now, roomStillLive) {
+    // stale DATA is harmless-late.
+    // FAIL-OPEN-ALWAYS (was a room-skip edge — REMOVED): a frame is in this session's outbox because deliverTo
+    // ROUTED it here (send(sid)→enqueue), and deliverTo already gated on room.members.has(toHandle) at SEND time,
+    // so it was legitimately destined here. A resume-time room snapshot is NOT a second opinion worth dropping
+    // data over — the #t12 org-collision can make roomsForSession EMPTY *or* wrong-populated, so any memberRooms
+    // check discards legit frames (silent loss; it bit twice — roomStillLive always-false, then the collision).
+    // So redeliver everything; never consult room membership. A stale-room line is mildly confusing; a dropped
+    // one is a week of silent loss. (Pierre: the discard edge was never load-bearing — killed.)
+    list(sid, now) {
       const b = boxes.get(sid)
       if (!b) return []
       b.touch = now || b.touch
@@ -97,7 +101,6 @@ export function createRelayOutbox({ cap = 64, epoch } = {}) {
           ? { ...frame, redelivered: true, delayedMs: Math.max(0, (now || at) - at) }
           : { ...frame }
         out.epoch = epoch; out.seq = seq; out.floor = b.floor
-        if (frame.room && roomStillLive && !roomStillLive(frame.room)) out.discard = true
         return out
       })
     },
