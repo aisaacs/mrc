@@ -172,7 +172,18 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
   **desktop notify**; all skip `ensureRoom` for a refused room so they never touch the other project's `/rooms`
   dir; plus skip-AND-reap the stale old-id consult entries on restore (belt-assert :1070). Real
   daemon.log evidence: `cast-diag-2026-07-14T22-12-11`. Reproduced RED (engine + daemon + boot-restore), now GREEN
-  (722 suite). Pierre-reviewed (turns 79/81/83) + concurred — he caught the boot-restore silent path. **NEXT (prioritized follow-up, PREVENTION half): leads/team ROBUST-KEY**
+  (722 suite). Pierre-reviewed (turns 79/81/83) + concurred — he caught the boot-restore silent path.
+  **✅ METAL-VERIFIED 2026-07-23 (rebuild + `mrc rooms restart`; `t12-deploy-…`/`t12-image-…` logs).** The deploy
+  produced PRODUCTION confirmation of the bug: **FOUR live projects all had the IDENTICAL stored consultId
+  `consult-claude-claude-pierre`** (release notes 1.55.1 → `-f211e8dd`, meal optimizer rebuild → `-cb4c85f8`,
+  resume test 4 → `-c3efd459`, test → `-098f6bcd`) — four projects sharing one room id + one on-disk thread.log,
+  not a theoretical edge. Boot migration behaved exactly as designed: 4 × `SKIP+REAP` → 3 recovered by the
+  label-scan under the new ids and re-persisted (the 4th's container was dead → correctly skipped). **The symptom
+  is GONE: 0 stranded `rooms=[]` binds, and session `8ee9c0cd…` — the EXACT id that bound `rooms=[]` in the
+  07-14 evidence — now binds `rooms=[consult-claude-claude-pierre-cb4c85f8]`.** 0 `room-collision REFUSED` (no
+  slug-collision among current projects → belt correctly dormant). Container strip confirmed IN THE IMAGE
+  (line 325 = `if (fr.text)`, `FAIL-OPEN` comment present ⇒ new file, not a cached layer). The new-code-is-live
+  proof was the `SKIP+REAP` lines themselves (they exist only in c0f2851) — stronger than a pid timestamp. **NEXT (prioritized follow-up, PREVENTION half): leads/team ROBUST-KEY**
   — the belt makes a slug-collision LOUD but BREAKS project B's team (its team room refuses to form); give
   leads/team the same `md5(rawOrg)`-suffix uniqueness the consult got so BOTH projects' teams form. Bigger than the
   consult change (team roomId is the `/rooms` dir + mount for REAL members, so it's a team-room migration — all
@@ -180,9 +191,9 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
 - **DISK-ORPHAN note (#t12 cleanup, non-blocking):** after the consultId rename, the old
   `/rooms/consult-claude-claude-pierre/thread.log` (the cross-project-MIXED dir the bug created — two projects'
   history frozen together) orphans on disk. A future disk sweep should not trust that dir as ONE project's.
-- ✅ **(was TICKET, tiny) — stripped the inert `!fr.discard` check** at mrc-channel-server.js:324 (`if (fr.text)`).
-  Dead code after `fde4895` (no daemon stamps `discard`); behaviorally identical. Container-side → lands on the
-  next rebuild.
+- ✅ **(was TICKET, tiny) — stripped the inert `!fr.discard` check** at mrc-channel-server.js (`if (fr.text)`).
+  Dead code after `fde4895` (no daemon stamps `discard`); behaviorally identical. Container-side — **SHIPPED +
+  verified in the rebuilt image 2026-07-23** (line 325 reads `if (fr.text)`; `FAIL-OPEN` comment present).
 - ✅ **MERGED ROOT — socket-liveness ≠ delivery/binding — SHIPPED (`4c9ef15`, PUSH-READY; flap+restart
   metal-proven, seam unit-proven+deterministic — see the coverage verdict up in Recently-shipped).** Built as
   the per-session redelivery outbox + cumulative receipt-ack (NOT the
