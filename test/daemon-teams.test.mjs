@@ -750,6 +750,24 @@ test('t27 fail-open (EMPTY memberRooms): a buffered room-tagged frame surfaces o
 // test below (boot bypasses prevention by design, so it is the one path where the belt can still fire).
 // The wrapper's refusedRooms/warning plumbing is KEPT as a backstop — if a future define path ever skips
 // prevention, it already has a mouth rather than failing silently.
+// #t12 BACKSTOP ROT-GUARD (Pierre's precision). Prevention makes the wrapper's belt-surfacing unreachable, so no
+// production path exercises the two reply spreads — and unreachable code rots: a refactor could drop them silently
+// and we'd find out at the exact moment a future prevention-bypass needed them. The other three mouths (daemonLog,
+// broadcastEvent, boot notify) ARE exercised, but for a CLI user the REPLY is their ONLY mouth — the dashboard
+// broadcast reaches clients they may not have open and the log is buried — so for that user a rotted spread is
+// 0-of-1, not 3-of-4. A static source-guard pins both sites for ~nothing (same shape as the consultId guard above);
+// a full extraction to unit-test a conditional spread would be ceremony disproportionate to the risk.
+test('#t12: both define replies still carry the collision warning (backstop rot-guard — no production path reaches them)', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../src/proxies/room-daemon.js', import.meta.url), 'utf8')
+  for (const [label, anchor] of [['defineOrg action', 'reply({ ok: true, rooms,'], ['launchteam', 'reply({ ok: true, launching: true']]) {
+    const i = src.indexOf(anchor)
+    assert.ok(i >= 0, `${label}: reply site not found — it moved; re-point this guard rather than deleting it`)
+    const line = src.slice(i, src.indexOf('\n', i))
+    assert.match(line, /warning/, `${label}: the reply must still spread the collision warning — it is a CLI user's ONLY mouth if prevention is ever bypassed`)
+    assert.match(line, /refusedRooms/, `${label}: the reply must still carry refusedRooms`)
+  }
+})
 test('#t12 layering: the define path REFUSES a colliding name outright — it does not merely warn-and-half-form', async () => {
   const { mk, send } = await t12Boot(19780)
   const A = mk('release notes 1.55.1'), B = mk('release-notes-1.55.1')
