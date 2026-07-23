@@ -682,4 +682,31 @@ test('dashboard builder: the read-write copy states the whole-repo consequence (
   assert.ok(sel, 'found the mount control')
   assert.match(sel, /WHOLE REPO/, 'the tooltip must say that an unset territory means the whole repo — validateRoster will not')
   assert.match(sel, /territory/i, 'and must point at the territory field as the way to narrow it')
+  assert.match(sel, /NEITHER this agent NOR its team/i, 'and must state the condition at BOTH levels — the chain is member → team → "."')
+})
+
+// The "(whole repo)" LABEL must mirror the SAME two-level chain, or it contradicts the preview three inches below
+// it: set a TEAM territory, leave the member's blank, and a member-only check renders "(whole repo)" while the
+// server-computed preview correctly says "writes client". Over-warning is fail-safe, but a warning the adjacent
+// screen visibly contradicts teaches the user it is noise — the cried-wolf shape. Duplicating THIS chain
+// client-side is legitimate where duplicating role→mount was not: it has NO server-owned term (member → team →
+// '.', def.territory is absent from it), and both inputs are local builder state.
+test('dashboard builder: the "(whole repo)" label checks BOTH member and team territory, not member alone', () => {
+  const html = fs.readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8')
+  const opt = html.split('\n').find((l) => l.includes('(whole repo)'))
+  assert.ok(opt, 'found the read-write option label')
+  assert.match(opt, /m\.territory/, 'reads the member territory')
+  assert.match(opt, /t\.territory/, 'AND the team territory — a member-only check mislabels a team-narrowed agent')
+})
+
+// The client-side mirror must agree with the server on EVERY shape, including the one that is easy to get wrong:
+// resolveTerritory short-circuits on an explicit '.', so a member '.' beats a narrowing TEAM territory.
+test('roster: territory chain — a member value wins even when it is ".", so member "." + team "client" is whole-repo', () => {
+  const eff = (mt, tt) => parseRoster({ project: 'p', teams: [{ name: 'team', territory: tt, members: [
+    { role: 'engineer', backend: 'claude', name: 'e', lead: true, mount: 'rw', ...(mt !== undefined ? { territory: mt } : {}) }] }] }, { repo: '/tmp/r' }).members[0].territory
+  // the client label predicate, mirrored verbatim from dashboard.html
+  const label = (mt, tt) => ['.', '/'].includes((mt || '').trim() || (tt || '').trim() || '.')
+  for (const [mt, tt] of [[undefined, '.'], [undefined, 'client'], [undefined, undefined], ['src', 'client'], ['.', 'client'], ['src', '.'], ['', 'client']]) {
+    assert.equal(label(mt, tt), eff(mt, tt) === '.', `label must match server resolution for member=${JSON.stringify(mt)} team=${JSON.stringify(tt)}`)
+  }
 })
