@@ -317,11 +317,12 @@ function onFrame(f) {
   if (f.type === 'ack' && f.id != null) { const r = pendingAcks.get(String(f.id)); if (r) r(f); return }   // delivery confirmation (full frame -> counts/error)
   // t27: a RELIABLE frame carries {epoch, seq, floor}. inbound.observe resets dedup on a new epoch (trap C:
   // frame OR pong, first wins), resyncs past an overflow hole, and returns the newly-CONTIGUOUS frames to push
-  // (empty if this frame is buffered at a gap; multiple if it fills one). We re-ack always; a `discard` frame
-  // (a room the session LEFT during the outage) advances the sequence but is not surfaced (Pierre's edge, moved
-  // container-side so it can't gap the contiguous stream).
+  // (empty if this frame is buffered at a gap; multiple if it fills one). We re-ack always. FAIL-OPEN: the daemon
+  // no longer stamps a `discard` room-skip edge (removed in the outbox — a resume-time room snapshot is
+  // corruptible by the #t12 org-collision, so it can't be trusted to drop legit buffered data); every surfaced
+  // frame with text is pushed. A stale-room line is mildly confusing; a dropped one is silent loss.
   const d = inbound.observe(f)
-  if (d.reliable) { if (d.forcedSkip) log(`RELIABILITY: forced past ${d.forcedSkip} un-fillable seq gap(s) — held buffer hit its cap (a daemon-side seq gap with no floor; should not happen)`); sendRcpt(d.ackSeq); for (const fr of d.surface) { if (!fr.discard && fr.text) pushIn(renderFrame(fr)) } return }
+  if (d.reliable) { if (d.forcedSkip) log(`RELIABILITY: forced past ${d.forcedSkip} un-fillable seq gap(s) — held buffer hit its cap (a daemon-side seq gap with no floor; should not happen)`); sendRcpt(d.ackSeq); for (const fr of d.surface) { if (fr.text) pushIn(renderFrame(fr)) } return }
   // non-reliable pushable frames (notice, peers) + a defensive fallback for any unstamped push.
   if ((f.type === 'deliver' || f.type === 'directive' || f.type === 'notice' || f.type === 'peers' || f.type === 'catchup_request' || f.type === 'warning') && f.text) pushIn(renderFrame(f))
 }

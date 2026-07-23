@@ -546,6 +546,21 @@ test('#t12: the resumingConsults launch-lock keys on *SessionId at every site, n
     `resumingConsults keyed on "${arg}" — must be the org-scoped *pierreSessionId, never a bare handle, or the cross-project false-block returns`)
 })
 
+// #t12: the consultId PREVENTION (buildCagedConsult is a daemon-internal closure coupled to orgDefs/records, so a
+// source-grep guard — like the launch-lock one above — locks the org-scoping without a docker summon). A bare
+// `consult-<summoner>-pierre` collides across two projects whose summoners share the default claude/claude handle →
+// the engine roomId-keyed rooms Map + the /rooms/<id>/ dir + the caged mount all hijack. The md5(org) suffix makes
+// the id — and therefore the room, its dir, and the mount — unique per (org, summoner). The engine belt is the
+// backstop; this keeps the two consults ABLE to coexist (availability), not just fail loud.
+test('#t12: buildCagedConsult org-scopes the consultId so two projects hold coexisting consults (prevention)', async () => {
+  const { readFileSync } = await import('node:fs')
+  const src = readFileSync(new URL('../src/proxies/room-daemon.js', import.meta.url), 'utf8')
+  const m = src.match(/const consultId = safeName\(`consult-[^`]*`\)/)
+  assert.ok(m, 'found the consultId derivation')
+  assert.match(m[0], /createHash\('md5'\)\.update\(String\(org\)\)/,
+    'consultId must be ORG-scoped (an md5(org) suffix) — a bare consult-<summoner>-pierre collides across two default projects, hijacking the room/dir/mount')
+})
+
 // ─── t27 CONTAINER-RESTART RESUME — the register-seam regression (reproduce-first) ────────────────────────────
 // The ordering hole (bindSession's pendingDeliveries live-write BEFORE flushOutbox) does NOT exist in the pure
 // outbox/dedup modules — it only appears at the real daemon register handler. So these MUST be integration tests
@@ -721,4 +736,58 @@ test('t27 fail-open (EMPTY memberRooms): a buffered room-tagged frame surfaces o
   // redefine drops pierre from the room's member list (still an org member) → roomsForSession(pierre) = [].
   const r = await bufferedFrameSurfacesAfterRedefine(19770, (rooms) => rooms.map((rm) => ({ ...rm, members: (rm.members || []).filter((h) => String(h).toLowerCase() !== 'pierre/claude') })))
   assert.ok(r.got, `empty memberRooms must NOT discard the buffered frame — got ${JSON.stringify(r.surfaced)}`)
+})
+
+// #t12 cross-org roomId collision — the USER-VISIBLE half (Pierre's refinement #2: a refusal buried in a daemonLog
+// is silent-fail wearing a log line). Two DISTINCT projects whose names differ only by spaces/dots/case slug to the
+// SAME leads/team roomId. The engine belt refuses to let the second hijack the first's room; the daemon must surface
+// that refusal in the defineOrg REPLY (what `mrc team up` / Build→Launch shows), so the human renames one project.
+test('#t12 daemon: a slug-colliding second project gets a USER-VISIBLE refusal in the defineOrg reply, not just a log', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-t12-`)
+  const port = await findFreePort(19780)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+  const mkRoster = (org) => parseRoster({ org, repo: process.env.HOME, teams: [{ name: 'client', territory: 'client', members: [{ role: 'architect', backend: 'claude', name: 'roland', lead: true }] }] }, { rng: seededRng(1) })
+  const A = mkRoster('release notes 1.55.1')
+  const B = mkRoster('release-notes-1.55.1')   // distinct project name; slug() collides on the leads/team roomIds
+  assert.equal(teamRoomId(A.org, 'client'), teamRoomId(B.org, 'client'), 'precondition: the two project names slug-collide')
+
+  const defA = await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: A.org, repo: A.repo, members: A.members, rooms: A.rooms } })
+  assert.equal(defA.ok, true)
+  assert.ok(!defA.refusedRooms, 'the first project forms cleanly — no collision reported')
+
+  const defB = await controlCall(controlPort, { action: 'defineOrg', trusted: true, activate: true, secret: controlSecret(), def: { org: B.org, repo: B.repo, members: B.members, rooms: B.rooms } })
+  assert.equal(defB.ok, true, 'the second define still succeeds (org defined; the colliding room just did not form)')
+  assert.ok(defB.refusedRooms && defB.refusedRooms.length, 'the colliding second project reports refusedRooms IN THE REPLY (user-visible)')
+  assert.ok(defB.refusedRooms.some((r) => r.ownedBy === A.org), 'the refusal names the OWNING project (org A) so the human knows which to rename')
+  assert.match(defB.warning || '', /rename one project/i, 'a plain-language, actionable warning rides the reply — the human would SEE it')
+  for (const r of defB.refusedRooms) assert.ok(!defB.rooms.includes(r.roomId), 'a refused room is NOT listed among the formed rooms')
+
+  daemon.stop()
+})
+
+// #t12 — the BOOT RESTORE path (Pierre's catch): the restore loop calls engine.defineOrg DIRECTLY, not the wrapper,
+// so it must replicate the collision surfacing — and this is THE DEPLOY PATH (`mrc rooms restart` re-runs it) with NO
+// CLI/dashboard reply, so the surface must be the DESKTOP notify. Two slug-colliding PERSISTED orgs → on boot, the
+// second's colliding room is refused; the human must be told via notify, not left with a silently-broken team.
+test('#t12 boot restore: a slug-colliding persisted org surfaces via DESKTOP notify (the deploy path has no reply)', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-t12b-`)
+  const { saveOrgs } = await import('../src/rooms.js')
+  const mk = (org) => { const n = parseRoster({ org, repo: process.env.HOME, teams: [{ name: 'client', territory: 'client', members: [{ role: 'architect', backend: 'claude', name: 'roland', lead: true }] }] }, { rng: seededRng(1) }); return { org: n.org, repo: n.repo, members: n.members, rooms: n.rooms } }
+  const A = mk('release notes 1.55.1'), B = mk('release-notes-1.55.1')
+  saveOrgs([A, B])   // persisted; B loads AFTER A → B's colliding leads/team room is refused at boot
+
+  // capture the desktop notify (the daemon writes `mrc-room\n<msg>` to notifyPort at boot)
+  const notes = []
+  const notifySrv = net.createServer((c) => { let b = ''; c.on('data', (d) => { b += d }); c.on('end', () => notes.push(b)) })
+  const notifyPort = await findFreePort(19820)
+  await new Promise((r) => notifySrv.listen(notifyPort, '127.0.0.1', r))
+  try {
+    const port = await findFreePort(notifyPort + 1)
+    const controlPort = await findFreePort(port + 1)
+    startRoomDaemon({ port, controlPort, notifyPort, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })   // boot restore runs synchronously here; the notify is async → wait for it
+    const t0 = Date.now(); while (Date.now() - t0 < 1500 && !notes.some((m) => /rename one project/i.test(m))) await sleep(20)
+    assert.ok(notes.some((m) => /Room id collision/i.test(m) && /rename one project/i.test(m)),
+      `a boot-time collision must NOT be silent — the desktop notify should fire on the deploy restart; got ${JSON.stringify(notes)}`)
+  } finally { try { notifySrv.close() } catch {} }
 })

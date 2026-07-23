@@ -153,17 +153,36 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
   bugs hid in is now a red build, not a week of silent loss. **Owner directive that drove this: build automated
   container tests, never lean on a manual quit/resume/click when the path can be tested in code —
   [[prefer-automated-container-tests]].**
-- **TICKET (#t12-class, correctness — NO LONGER data-loss after `fde4895`) — a resumed session resolves to the
-  WRONG org / binds `rooms=[]`.** daemon.log showed `[register member BOUND] @pierre.claude-claude/claude →
-  rooms=[]` even right after `[consult-restore] re-seated @pierre… in resume test 4` — bindSession's
-  `r.org===orgId && r.members.has(h)` filter finding nothing because the sessionIndex resolves the pierre id to a
-  DIFFERENT org than the consult was re-seated in (the shared `claude/claude` handle across projects, #t12). With
-  the discard gone this no longer silently drops frames, but a session bound to the wrong project's rooms is still
-  wrong for routing/display/#t12 containment. Hunt: why does the consult-restore org and the sessionIndex org
-  disagree for a consult member? Likely the same collision as the launch-lock (`185a9fd`), a second surface.
-- **TICKET (tiny, next container rebuild) — strip the inert `!fr.discard` check** at mrc-channel-server.js:324.
-  No daemon stamps `discard` after `fde4895`, so it's always-true dead code. Harmless (why `fde4895` is
-  restart-not-rebuild), but remove it on the next rebuild so a future reader doesn't think `discard` is live.
+- ✅ **(was TICKET #t12-class, correctness) — CROSS-ORG roomId CLOBBER — FIXED (root-caused + reproduced).** The
+  `rooms=[]` bind was NOT a sessionId/org-resolution disagreement — it was a roomId COLLISION. `buildCagedConsult`
+  derived `consultId = consult-<summoner>-pierre` with NO org scoping, so two projects whose summoners share the
+  default `claude/claude` handle produced the IDENTICAL `consult-claude-claude-pierre`. The engine `rooms` Map is
+  keyed by BARE roomId (room-engine.js:259 AND defineOrg:206 both `existing.org = orgId` silently), so the second
+  org's `addTransientConsult`/`defineOrg` OVERWROTE the first's room object (flipping its `.org`) → the first org's
+  Pierre bound `rooms=[]`, its dismiss (filters `r.org===orgId`) couldn't clean up, and both projects shared ONE
+  on-disk `/rooms/consult-claude-claude-pierre/thread.log`. Pierre found the SAME defect on leads/team rooms —
+  `slug(org)` (roster.js:34) is lossy, so "release notes 1.55.1" and "release-notes-1.55.1" slug to the SAME
+  `--leads`/`--team` id (verified on the exact repro org names). FIX (3 parts, all host-side, `mrc rooms restart`
+  no rebuild): (1) org-scope `consultId` with an `md5(org)` suffix (prevention — consults coexist); (2) a SHARED
+  cross-org claim belt `roomClaimConflict(roomId, orgId)` at BOTH engine write sites — refuse-loud instead of
+  silent-hijack, same-org redefine still updates in place; (3) surface the refusal USER-VISIBLY at EVERY define
+  surface (Pierre refinement-2): the `mrc team up` CLI stderr, the dashboard Define + Launch replies (`warning` +
+  `refusedRooms`), the daemon log + broadcast, AND — Pierre's 6th-path catch — the **boot restore** (which calls
+  `engine.defineOrg` directly and is THE deploy path `mrc rooms restart` re-runs, with no reply channel) via the
+  **desktop notify**; all skip `ensureRoom` for a refused room so they never touch the other project's `/rooms`
+  dir; plus skip-AND-reap the stale old-id consult entries on restore (belt-assert :1070). Real
+  daemon.log evidence: `cast-diag-2026-07-14T22-12-11`. Reproduced RED (engine + daemon + boot-restore), now GREEN
+  (722 suite). Pierre-reviewed (turns 79/81/83) + concurred — he caught the boot-restore silent path. **NEXT (prioritized follow-up, PREVENTION half): leads/team ROBUST-KEY**
+  — the belt makes a slug-collision LOUD but BREAKS project B's team (its team room refuses to form); give
+  leads/team the same `md5(rawOrg)`-suffix uniqueness the consult got so BOTH projects' teams form. Bigger than the
+  consult change (team roomId is the `/rooms` dir + mount for REAL members, so it's a team-room migration — all
+  existing team rooms re-id + orphan their old dirs). Ship close behind, not someday.
+- **DISK-ORPHAN note (#t12 cleanup, non-blocking):** after the consultId rename, the old
+  `/rooms/consult-claude-claude-pierre/thread.log` (the cross-project-MIXED dir the bug created — two projects'
+  history frozen together) orphans on disk. A future disk sweep should not trust that dir as ONE project's.
+- ✅ **(was TICKET, tiny) — stripped the inert `!fr.discard` check** at mrc-channel-server.js:324 (`if (fr.text)`).
+  Dead code after `fde4895` (no daemon stamps `discard`); behaviorally identical. Container-side → lands on the
+  next rebuild.
 - ✅ **MERGED ROOT — socket-liveness ≠ delivery/binding — SHIPPED (`4c9ef15`, PUSH-READY; flap+restart
   metal-proven, seam unit-proven+deterministic — see the coverage verdict up in Recently-shipped).** Built as
   the per-session redelivery outbox + cumulative receipt-ack (NOT the
@@ -213,6 +232,12 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
 - **#54 manual-rooms** (live-Pierre §14 routing) · **#55 name-theme → Settings** (identity-coupled) ·
   **CONVERSATION-VIEW #49** (chat panel replaces the terminal — the big post-spec build) · **Telegram one-bot**
   (§6, `op://` token resolution) · guard-3 + 0700-dir assert (#24) · sha1/sockSlug collision (#26).
+- **Dashboard builder — restore per-agent RW/RO permission in Advanced mode (owner, 2026-07-23).** The
+  Phase-1 declutter moved per-member territory/mount controls behind Advanced; bring back an explicit
+  per-agent **read-only vs read-write** toggle there when creating a project. The underlying field exists
+  (`member.mount` = `'ro'`/`'rw'`, roster/persona/launch already consume it; territorial write-isolation is
+  the containment model) — this is the builder UI surfacing it per member, not new plumbing. Advanced-only so
+  the common path stays light. UX-side (host, `mrc rooms restart`); no rebuild.
 
 ### Hygiene
 - **Revert diagnostic aids** once the rooms work is fully settled: `[creds exit-sync]` daemonLog, consult-launch

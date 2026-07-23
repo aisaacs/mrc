@@ -520,7 +520,18 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
   }
   for (const o of loadOrgs()) {
     orgDefs.set(o.org, o)
-    try { engine.defineOrg(o); for (const r of (o.rooms || [])) ensureRoom(r.roomId, o.org || '', r.team || '') } catch {}
+    // #t12: the boot restore calls engine.defineOrg DIRECTLY (not the defineOrg wrapper), so it must replicate the
+    // wrapper's cross-org-collision handling — and this is THE DEPLOY PATH (`mrc rooms restart` re-runs this loop over
+    // every persisted org), with NO CLI/dashboard reply to carry a warning. So: (a) skip ensureRoom for a refused room
+    // (don't touch the OTHER project's /rooms/<id>/ dir), and (b) surface a boot-time collision via the DESKTOP notify
+    // (Pierre: the right surface when there's no reply channel) plus the log+broadcast — else a slug-collision that
+    // lands on the very restart that deploys this fix would be silent, violating the loud=user-visible invariant on the
+    // path most likely to hit it. Wrapped in the existing try/catch (a surfacing throw must not abort the restore).
+    try {
+      const _refused = engine.defineOrg(o)?.refusedRooms || []
+      for (const r of (o.rooms || [])) if (!_refused.some((x) => x.roomId === r.roomId)) ensureRoom(r.roomId, o.org || '', r.team || '')
+      if (_refused.length) { noteRefusedRooms(o.org, _refused); try { notify(roomCollisionWarning(_refused)) } catch {} }
+    } catch {}
   }
   rebuildSessionIndex()
   try { engine.restoreInbox(loadInbox()) } catch {}   // #16: restore the @user inbox AFTER orgs/rooms exist (sets inboxSeq past max id → no collision)
@@ -561,20 +572,22 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       try { mkdirSync(anchor, { recursive: true }); chmodSync(anchor, 0o700) } catch {}   // ensure the host-only anchor exists before any write to it (canonicalWriteTarget realpaths it → ENOENT otherwise). 0700 (Pierre): the anchor holds the project TG token .env (a SECRET) — un-mounted keeps it out of containers, 0700 keeps it out of cross-uid HOST processes. LOAD-BEARING for this dir (it holds a token, unlike the paths/booleans elsewhere).
       def = { ...def, anchor, repo: undefined }
       const _mbRes = engine.defineOrg(def)
-      for (const r of (def.rooms || [])) ensureRoom(r.roomId, def.org || '', r.team || '')
+      const _mbRefused = new Set((_mbRes?.refusedRooms || []).map((x) => x.roomId))   // #t12: a refused (cross-org-collided) room did NOT form for this org — do NOT ensureRoom its dir (it's the OTHER project's /rooms/<id>/)
+      for (const r of (def.rooms || [])) if (!_mbRefused.has(r.roomId)) ensureRoom(r.roomId, def.org || '', r.team || '')
       orgDefs.set(def.org, def); saveOrgs([...orgDefs.values()]); rebuildSessionIndex()
       reapTransientSessions(def.org, _mbRes?.reapedTransients)   // #56: engine orphan-reap pruned a consult whose anchor member left → reap the transient Pierre's index entry + caged container
       // Side effects run UNCONDITIONALLY under Model B (no pin/activation to defer past): the anchor is host-only.
       try { ensureTgForOrg(def) } catch (e) { daemonLog(`[tg] ensure ${def.org}: ${e?.message || e}`) }
       if (teamMod) { try { teamMod.writeTeamFile(anchor, teamMod.rosterFromDef(def)) } catch {} }   // team.json in the neutral anchor, not a repo
       broadcastEvent({ type: 'roster', org: def.org })
-      return (def.rooms || []).map((r) => r.roomId)
+      return { rooms: (_mbRes?.rooms || (def.rooms || []).map((r) => r.roomId)), refusedRooms: noteRefusedRooms(def.org, _mbRes?.refusedRooms) }
     }
     // LEGACY (unchanged) — write-once pin + activation gate + def.repo.
     const repo = resolveOrgRootForOrg(def.org, def.repo, { trusted })   // write-once; an untrusted first-pin THROWS before anything persists (the poisoned-define never lands)
     def = { ...def, repo }
     const _lgRes = engine.defineOrg(def)
-    for (const r of (def.rooms || [])) ensureRoom(r.roomId, def.org || '', r.team || '')
+    const _lgRefused = new Set((_lgRes?.refusedRooms || []).map((x) => x.roomId))   // #t12: skip ensureRoom for a refused cross-org-collided room (it's the OTHER project's dir)
+    for (const r of (def.rooms || [])) if (!_lgRefused.has(r.roomId)) ensureRoom(r.roomId, def.org || '', r.team || '')
     orgDefs.set(def.org, def); saveOrgs([...orgDefs.values()]); rebuildSessionIndex()
     reapTransientSessions(def.org, _lgRes?.reapedTransients)   // #56: engine orphan-reap pruned a consult whose anchor member left → reap the transient Pierre's index entry + caged container
     if (activate) recordActivatedRoot(def.org, repo)                    // returns null for a broad $HOME root → stays NOT activated (never auto-reads ~/.env)
@@ -584,7 +597,30 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
       if (teamMod && repo) { try { teamMod.writeTeamFile(repo, teamMod.rosterFromDef(def)) } catch {} }
     }
     broadcastEvent({ type: 'roster', org: def.org })   // #69-B: structure changed → the dashboard re-fetches the (rare) heavy /api/teams
-    return (def.rooms || []).map((r) => r.roomId)
+    return { rooms: (_lgRes?.rooms || (def.rooms || []).map((r) => r.roomId)), refusedRooms: noteRefusedRooms(def.org, _lgRes?.refusedRooms) }
+  }
+  // #t12: LOUD, USER-VISIBLE surfacing of a cross-org roomId collision (a slug-collision between two near-identically
+  // named projects — the engine belt refused to overwrite the other project's room, so THIS project's leads/team room
+  // did NOT form). daemonLog is not enough (nobody watches it); the returned list rides the `define` action reply so
+  // the CLI/dashboard shows a rename-one-project warning at the launch moment, AND a dashboard broadcast fires. Returns
+  // the same array so callers can thread it. No-op (→ []) on the common no-collision path.
+  function noteRefusedRooms(org, refusedRooms) {
+    const refused = refusedRooms || []
+    if (refused.length) {
+      for (const r of refused) daemonLog(`[room-collision REFUSED] project "${org}" room "${r.roomId}" already owned by project "${r.ownedBy}" — its team/leads room did NOT form (rename one project so room ids are distinct)`)
+      try { broadcastEvent({ type: 'roomcollision', org, refused }) } catch {}
+    }
+    return refused
+  }
+  // #t12: the human-facing collision message, shared by the `defineOrg` + `launchteam` replies AND the boot-restore
+  // notify so the CLI, both dashboard flows (Define, Launch), and an unattended `mrc rooms restart` all show the SAME
+  // actionable rename prompt. undefined when there's no collision. A hoisted `function` (not a const arrow) so the
+  // boot loop above (:521 — lexically BEFORE this line) can call it without hitting the temporal dead zone (which,
+  // inside that loop's `try{}catch{}`, would silently swallow into a broken restore).
+  function roomCollisionWarning(refused) {
+    return (refused && refused.length)
+      ? `Room id collision: ${refused.map((r) => `"${r.roomId}" is already owned by project "${r.ownedBy}"`).join('; ')}. This project's team/leads room did NOT form — rename one project so their room ids are distinct.`
+      : undefined
   }
 
   // --- Telegram transport (#12): per-org bot bridge + pairing/trust + persistence ----------------
@@ -991,7 +1027,15 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     }
     if (!repo) return { ok: false, error: `no repo on record for the summoner @${summonerHandle} — relaunch its team so its repo is on the org def` }
     const pierreHandle = `pierre.${sh.replace('/', '-')}/claude`        // "."-keyspace (SAFE_NAME-disjoint), unique+stable per summoner
-    const consultId = safeName(`consult-${sh.replace('/', '-')}-pierre`)  // human-readable, deterministic, traversal-clean (validated handle)
+    // #t12: ORG-SCOPE the consultId. The bare `consult-<summoner>-pierre` is only summoner-unique — two DIFFERENT
+    // projects whose summoners share the default `claude/claude` handle derived the IDENTICAL id, and the engine's
+    // roomId-keyed `rooms` Map (+ the on-disk /rooms/<id>/ dir + the caged mount) collided: the second summon
+    // hijacked the first's room and stranded its Pierre at rooms=[] (real daemon.log evidence, cast-diag 2026-07-14).
+    // Fold a short md5(org) so the id — hence the room, its dir, and the mount — is unique per (org, summoner). org
+    // is the same canonical identity memberSessionId/sessionIndex use, so this can't drift from the pierreSessionId.
+    // (Deterministic → re-derives identically on every restore; the belt in room-engine is the backstop if a
+    // colliding id ever reaches the engine anyway.)
+    const consultId = safeName(`consult-${sh.replace('/', '-')}-pierre-${createHash('md5').update(String(org)).digest('hex').slice(0, 8)}`)  // human-readable, deterministic, traversal-clean, ORG-UNIQUE
     const pierreSessionId = memberSessionId(org, pierreHandle)
     const pierre = { handle: pierreHandle, first: 'Pierre', role: 'adversary', backend: 'claude', cage: 'adversary', repo }   // for addTransientConsult (cage a CONSTANT)
     const pierreMember = { handle: pierreHandle, first: 'Pierre', role: 'adversary', roleLabel: 'Pierre', team: null, lead: false, backend: 'claude', tier: 'live', mount: 'ro', territory: '.', org: String(org), repo, cage: 'adversary', consultRooms: [consultId] }   // the launch blob
@@ -1046,7 +1090,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
         if (!orgDefs.has(e.org)) continue   // org deleted while down → leave the entry (removeorg/GC cleans; skip≠delete)
         const built = buildCagedConsult(e.org, e.summonerHandle)
         if (!built.ok) { daemonLog(`[consult-restore] skip ${e.org}/@${e.summonerHandle}: ${built.error}`); continue }
-        if (e.consultId && e.consultId !== built.consultId) { daemonLog(`[consult-restore] SKIP ${e.org}: consultId mismatch (stored ${e.consultId} != derived ${built.consultId})`); continue }   // Pierre #5 belt-assert
+        // Pierre #5 belt-assert: a stored consultId that doesn't match the re-derived one is stale/drifted — do NOT
+        // re-seat it blindly. SKIP-AND-REAP (#t12): also REMOVE the dead entry, don't skip-and-keep — else after the
+        // consultId org-scoping migration EVERY pre-migration entry (old bare id) re-skips on every restart, a growing
+        // pile. Reap is safe: a still-LIVE container is re-derived + recovered in THIS same pass by the label-scan
+        // below (:1075+, re-derives the new id, re-persists), so reap-then-recover doesn't strand it; a dead entry's
+        // removal is correct. Doesn't weaken the drift-catch — a mismatched id is still never re-seated.
+        if (e.consultId && e.consultId !== built.consultId) { daemonLog(`[consult-restore] SKIP+REAP ${e.org}: consultId mismatch (stored ${e.consultId} != derived ${built.consultId}) — dropping the stale entry (a live container is recovered by the label-scan)`); try { removeConsultEntry(e.org, e.pierreHandle) } catch {} ; continue }
         if (cagedContainerState(e.org, built.pierreHandle) === 'dead') continue   // KNOWN-dead → SKIP (not delete)
         if (reseatConsult(built)) { seen.add(`${e.org}\0${built.pierreHandle}`); daemonLog(`[consult-restore] re-seated @${built.pierreHandle} in ${e.org}`) }
       } catch (err) { daemonLog(`[consult-restore] entry ${e?.org}/@${e?.summonerHandle} threw: ${err?.message || err} — skipped, others continue`) }
@@ -1645,7 +1695,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
           const _authoritativeReap = f.authoritative === true && capOk(f)
           const _oldHandles = _authoritativeReap ? new Set((orgDefs.get(f.def.org)?.members || []).map((m) => String(m.handle).toLowerCase())) : null
           try {
-            const rooms = defineOrg(f.def, { trusted: f.trusted === true && capOk(f), activate: f.activate === true && capOk(f) }); if (f.roster) orgRoster.set(f.def.org, f.roster)
+            const { rooms, refusedRooms } = defineOrg(f.def, { trusted: f.trusted === true && capOk(f), activate: f.activate === true && capOk(f) }); if (f.roster) orgRoster.set(f.def.org, f.roster)
             if (_authoritativeReap) {
               const newHandles = new Set((f.def.members || []).map((m) => String(m.handle).toLowerCase()))
               for (const h of _oldHandles) if (!newHandles.has(h)) {
@@ -1659,7 +1709,11 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
                 try { reapSessionRecord(memberSessionId(f.def.org, `pierre.${h.replace('/', '-')}/claude`)) } catch {}
               }
             }
-            reply({ ok: true, rooms })
+            // #t12: a cross-org roomId collision does NOT fail the define (the org IS defined; the colliding room just
+            // didn't form) but MUST be loud + user-visible — carry it in the reply so the CLI/dashboard shows a
+            // rename-one-project warning at the launch moment, not a silently-broken team.
+            const warning = roomCollisionWarning(refusedRooms)
+            reply({ ok: true, rooms, ...(warning ? { refusedRooms, warning } : {}) })
           } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }   // guard-1: trusted/activate are CAPABILITIES — DERIVED from the host-only secret (capOk), never a bare wire flag. A cross-uid frame asserting trusted:true without the secret → downgraded → resolveOrgRootForOrg throws → no pin lands. And orgRoster.set runs ONLY after defineOrg succeeds (Pierre) — a rejected untrusted define must not leave its /victim roster in the cache for a later first-pin fallback to read.
           continue
         }
@@ -1843,7 +1897,7 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             // prediction, which the OUTER launchMembers asserts against before the dtach spawn.
             const modelB = predictModelB()
             const { norm, rosterPath } = teamMod.materializeRoster(roster, f.repo || _def?.repo, modelB)   // resume: thread the persisted def.repo (f.repo is absent on a tile-resume) so legacy orgs resolve their root
-            defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms }, { trusted: capOk(f), activate: true, modelB })   // guard-1 legacy: first-pins the human's PICKED repo + activates. Model B: identity is the neutral anchor (defineOrg ignores repo, uses orgAnchorDir), no pin/activation. trusted derived from capOk (the handler is already capOk-gated).
+            const { refusedRooms: _launchRefused } = defineOrg({ org: norm.org, repo: norm.repo, members: norm.members, rooms: norm.rooms }, { trusted: capOk(f), activate: true, modelB })   // guard-1 legacy: first-pins the human's PICKED repo + activates. Model B: identity is the neutral anchor (defineOrg ignores repo, uses orgAnchorDir), no pin/activation. trusted derived from capOk (the handler is already capOk-gated). #t12: capture a cross-org room-id collision to surface in the reply.
             orgRoster.set(norm.org, roster)   // guard-1 (Pierre): AFTER defineOrg succeeds — a THROWN define (existing-pin mismatch) must NOT persist its roster into orgRoster, or a rejected op would leave poison a later first-pin fallback (orgRoster.get) could read.
             // #49 (Pierre — the enumeration's daemon-side miss): the GUI-launch log is a repo-relative write,
             // so a symlinked `.mrc` would escape. Canonicalize it (best-effort: a rejected/symlinked .mrc just
@@ -1868,7 +1922,8 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             try { setTimeout(() => failLaunch('launch timed out — no member came up within 3 min (see <repo>/.mrc/launch.log)'), 3 * 60_000).unref() } catch {}   // honest backstop: the subprocess can exit 0 yet still bring up nothing
             child.unref()
             daemonLog(`launch ${norm.org}: spawned mrc team up (pid ${child.pid}); log ${logPath || '(skipped — non-canonical .mrc)'}`)
-            reply({ ok: true, launching: true })
+            const _launchWarning = roomCollisionWarning(_launchRefused)   // #t12: surface a cross-project room-id collision on the Launch flow too (not just Define)
+            reply({ ok: true, launching: true, ...(_launchWarning ? { refusedRooms: _launchRefused, warning: _launchWarning } : {}) })
           } catch (e) { reply({ ok: false, error: String(e?.message || e) }) }
           continue
         }

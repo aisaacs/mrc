@@ -1732,7 +1732,7 @@ function bPreview(){clearTimeout(bTimer);bTimer=setTimeout(async()=>{
 },250)}
 window.bSave=async()=>{const B=S.builder;const msg=$('#bMsg');if(!B.repo){msg.innerHTML='<span class="bad">set a repo path</span>';return}
   const r=await api('/api/team-save',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({repo:B.repo,roster:bRoster()})});msg.innerHTML=r.ok?`<span class="good">✓ ${esc(r.path)}</span>`:`<span class="bad">✗ ${esc(r.error)}</span>`; if(r.ok)markBuilderClean()}
-window.bDefine=async()=>{const msg=$('#bMsg'); const auth=await bAuthorizeAllRepos(); if(!auth.ok){ if(msg)msg.innerHTML=`<span class="bad">✗ ${esc(auth.error)}</span>`; return } const r=await api('/api/team-define',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})});$('#bMsg').innerHTML=r.ok?`<span class="good">◎ defined ${(r.rooms||[]).length} room(s)</span> <a href="#" onclick="closeBuilder();return false">view</a>`:`<span class="bad">✗ ${esc(r.error||'daemon down')}</span>`; if(r.ok){markBuilderClean(); S._builderReturn=null; S.org=bRoster().org||null; setOrgUrl(S.org); tick()}}   // #55: defining switches S.org to the new org → drop the now-stale pre-builder return so the "view" link (closeBuilder) lands on what was just defined, not the entry view
+window.bDefine=async()=>{const msg=$('#bMsg'); const auth=await bAuthorizeAllRepos(); if(!auth.ok){ if(msg)msg.innerHTML=`<span class="bad">✗ ${esc(auth.error)}</span>`; return } const r=await api('/api/team-define',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({roster:bRoster()})});$('#bMsg').innerHTML=r.ok?(r.warning?`<span class="bad">⚠ ${esc(r.warning)}</span>`:`<span class="good">◎ defined ${(r.rooms||[]).length} room(s)</span> <a href="#" onclick="closeBuilder();return false">view</a>`):`<span class="bad">✗ ${esc(r.error||'daemon down')}</span>`; if(r.ok){markBuilderClean(); S._builderReturn=null; S.org=bRoster().org||null; setOrgUrl(S.org); tick()}}   // #55: defining switches S.org to the new org → drop the now-stale pre-builder return so the "view" link (closeBuilder) lands on what was just defined, not the entry view. #t12: show the cross-project room-id collision warning (loud, non-fatal).
 
 // ---- actions ----
 // #55: a content signature of the builder for the discard-on-cancel guard. Covers what represents real
@@ -2384,7 +2384,9 @@ window.bLaunch = async ()=>{ const msg=$('#bMsg'); if(!msg)return
   const auth=await bAuthorizeAllRepos(); if(!auth.ok){ msg.innerHTML=`<span class="bad">✗ ${esc(auth.error)}</span>`; return }
   msg.innerHTML='<span class="muted">launching… first run builds the image (~minutes)</span>'
   const r=await postJSON('/api/team-launch',{roster:bRoster()})
-  if(r&&r.ok){ markBuilderClean(); S.org=bRoster().org||null; setOrgUrl(S.org); msg.innerHTML='<span class="good">🚀 launching…</span>'
+  if(r&&r.ok){ markBuilderClean(); S.org=bRoster().org||null; setOrgUrl(S.org)
+    // #t12: a cross-project room-id collision is loud but non-fatal (the org launched; a colliding room didn't form) → show the rename prompt, don't drop it.
+    msg.innerHTML = r.warning ? `<span class="bad">⚠ ${esc(r.warning)}</span>` : '<span class="good">🚀 launching…</span>'
     // §9: hand off from the builder to the live project view on the LAUNCH SIGNAL (the daemon writes launching:true
     // synchronously before replying), not a blind 700ms timer. tick's own reconcile loop keeps refreshing after.
     const org=S.org; let n=0

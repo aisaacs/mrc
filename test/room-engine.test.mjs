@@ -868,6 +868,48 @@ test('#56 addTransientConsult refuses a non-member consult target (host-verified
   const h = harness(TEAM)
   assert.equal(h.engine.addTransientConsult('shop', { pierre: PIERRE_T, withHandle: 'ghost/claude', roomId: 'shop--consult--x' }).ok, false)
 })
+// #t12 CROSS-ORG ROOM COLLISION (the caged-consult + slug variant of the launch-lock collision family, 185a9fd).
+// The engine `rooms` Map is keyed by BARE roomId, so before the fix a second org claiming the SAME roomId silently
+// OVERWROTE the first org's room object (flipping its .org) at BOTH write sites (addTransientConsult + defineOrg) —
+// stranding the first org's members at rooms=[], breaking its dismiss (filters r.org===orgId), and sharing one
+// on-disk /rooms/<id>/ dir across projects. Reproduced from the real daemon.log: two projects whose summoners share
+// the default `claude/claude` handle produced the IDENTICAL consultId; two projects whose names differ only by
+// spaces/dots/case produce IDENTICAL slug-derived leads/team roomIds. The shared belt refuses a cross-org claim LOUD.
+const PH12 = 'pierre.claude-claude/claude'
+const bareEngine = () => createRoomEngine({ send: () => {}, append: () => {}, notify: () => {} })
+const defineSolo = (e, org, roomId = leadsRoomId(org)) => e.defineOrg({
+  org, repo: '/tmp/' + org,
+  members: [{ handle: 'claude/claude', first: 'claude', backend: 'claude', role: 'solo', team: 't', lead: true, tier: 'live' }],
+  rooms: [{ roomId, kind: 'leads', team: null, members: ['claude/claude', '@user'] }],
+})
+test('#t12 addTransientConsult REFUSES a roomId owned by another org (no silent cross-project hijack)', () => {
+  const e = bareEngine()
+  defineSolo(e, 'meal optimizer rebuild')
+  defineSolo(e, 'release notes 1.55.1')
+  const CONSULT = 'consult-claude-claude-pierre'   // the collided (un-org-scoped) id, identical across the two orgs
+  const pierre = { handle: PH12, first: 'pierre', backend: 'claude', role: 'adversary' }
+  assert.equal(e.addTransientConsult('meal optimizer rebuild', { pierre, withHandle: 'claude/claude', roomId: CONSULT }).ok, true, 'first org gets the consult')
+  assert.equal(e.addTransientConsult('release notes 1.55.1', { pierre, withHandle: 'claude/claude', roomId: CONSULT }).ok, false, 'second org REFUSED — roomId owned by the first (no hijack)')
+  const bA = e.bindSession('meal optimizer rebuild', PH12, 'sidA')
+  assert.deepEqual(bA.rooms, [CONSULT], 'org A pierre keeps its consult room — NOT stranded at rooms=[] (the reproduced bug)')
+  assert.equal(e.getRoom(CONSULT).org, 'meal optimizer rebuild', 'the room object stays owned by org A')
+})
+test('#t12 defineOrg REFUSES a slug-colliding leads roomId owned by another org; reports refusedRooms; org A intact', () => {
+  const e = bareEngine()
+  const A = 'release notes 1.55.1', B = 'release-notes-1.55.1'   // distinct projects; slug() is lossy → same leads roomId
+  assert.equal(leadsRoomId(A), leadsRoomId(B), 'precondition: the two org names slug-collide on the leads roomId')
+  defineSolo(e, A)
+  const r = defineSolo(e, B)
+  assert.deepEqual(r.refusedRooms?.map((x) => x.roomId), [leadsRoomId(A)], 'the colliding leads room is REFUSED + reported, not silently hijacked')
+  assert.equal(e.getRoom(leadsRoomId(A)).org, A, 'the room object stays owned by org A (org B did not overwrite it)')
+})
+test('#t12 a SAME-org redefine/re-seat still updates the room in place (the belt fires only cross-org)', () => {
+  const e = bareEngine()
+  defineSolo(e, 'proj one')
+  const r = defineSolo(e, 'proj one')   // re-run `mrc team up` / daemon reload — same org, same roomId
+  assert.deepEqual(r.refusedRooms, [], 'a legit same-org redefine is NEVER refused')
+  assert.equal(e.getRoom(leadsRoomId('proj one')).org, 'proj one', 'still owned by its org, updated in place')
+})
 test('#56 (BONUS) a caged Pierre\'s message carries the CONTAINED ADVERSARY prefix (cage-keyed, TRUE); a normal member\'s does not', () => {
   const h = harness(TEAM)
   const engineer = h.handle('engineer')

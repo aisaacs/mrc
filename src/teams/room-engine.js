@@ -120,6 +120,21 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     return null
   }
   function senderOf(sessionId) { return bySession.get(sessionId) || null }   // { org, handle } | null
+
+  // #t12 CROSS-ORG ROOM-CLAIM GUARD. The `rooms` Map is keyed by BARE roomId, so a DIFFERENT org claiming a live
+  // roomId (a slug/consultId collision across projects — two project names differing only by spaces/dots/case slug
+  // to the SAME leads/team id; two summoners sharing the default `claude/claude` handle derived the SAME consultId)
+  // would SILENTLY OVERWRITE the first org's room object at its two write sites (defineOrg + addTransientConsult) —
+  // flipping its .org, stranding its members at rooms=[], breaking its dismiss (which filters r.org===orgId), and
+  // sharing ONE on-disk /rooms/<id>/ dir across projects. This is the actual root defect (an un-scoped id was just
+  // the first trigger). REFUSE loud at every write site instead. A SAME-org redefine/re-seat (existing.org===orgId)
+  // is legit (the normal `mrc team up` re-run / daemon reload) → null (allowed). Compares the engine's OWN stored
+  // org identity — the same key orgDefs/sessionIndex rely on — so no second normalization drifts against it. Returns
+  // the OWNING org string on conflict, else null.
+  function roomClaimConflict(roomId, orgId) {
+    const existing = rooms.get(roomId)
+    return existing && existing.org != null && existing.org !== String(orgId) ? existing.org : null
+  }
   // (d): the ★ (lead) handles on `handle`'s OWN team, excluding `handle` — the triage targets for a non-★'s
   // escalation. The per-team ≥1-★ floor guarantees ≥1 for a non-★ (it is not itself a ★).
   function teamLeadsFor(org, handle) {
@@ -195,7 +210,13 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
         sessionId: prev?.sessionId ?? null,   // keep an existing live binding across a re-define
       })
     }
+    const refusedRooms = []   // #t12: rooms this def could NOT claim because another org already owns the roomId
     for (const r of rms) {
+      // #t12: refuse (don't hijack) a roomId owned by ANOTHER org — a slug-collision between two near-identically
+      // named projects. The colliding room does NOT form for this org (its team/leads room is missing → the daemon
+      // surfaces it so the human renames one project); the OWNING org's room is left intact. Same-org → allowed.
+      const conflict = roomClaimConflict(r.roomId, orgId)
+      if (conflict) { refusedRooms.push({ roomId: r.roomId, ownedBy: conflict }); continue }
       const existing = rooms.get(r.roomId)
       const memberMap = new Map()
       for (const h of r.members) {
@@ -206,7 +227,7 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
       if (existing) { existing.members = memberMap; existing.kind = r.kind; existing.team = r.team; existing.org = orgId }
       else rooms.set(r.roomId, freshRoom(r.roomId, r.kind, r.team, orgId, memberMap))
     }
-    return { orgId, rooms: rms.map((r) => r.roomId), reapedTransients }
+    return { orgId, rooms: rms.filter((r) => !refusedRooms.some((x) => x.roomId === r.roomId)).map((r) => r.roomId), reapedTransients, refusedRooms }
   }
 
   function freshRoom(roomId, kind, team, orgId, memberMap) {
@@ -247,6 +268,14 @@ export function createRoomEngine({ send, append, notify, onInbox, now = () => Da
     if (!t || t.transient) return { ok: false, error: `consult target @${withHandle} is not a real member of ${orgId}` }
     const ph = lc(pierre.handle)
     if (omap.has(ph) && !omap.get(ph).transient) return { ok: false, error: `@${pierre.handle} collides with a real member of ${orgId}` }
+    // #t12: refuse (don't silently hijack) a consult roomId owned by ANOTHER org — BEFORE mutating omap, so a
+    // refusal leaves no orphaned Pierre member behind. Pre-fix, two projects whose summoners share the default
+    // `claude/claude` handle derived the SAME consultId → the second's addTransientConsult overwrote the first's
+    // room (flipping .org) and stranded the first's Pierre at rooms=[]. The consultId is now org-scoped host-side
+    // (buildCagedConsult) so this never fires in practice; it's the belt if a colliding id ever reaches here. A
+    // same-org re-seat (existing.org===orgId) still updates in place below.
+    const conflict = roomClaimConflict(roomId, orgId)
+    if (conflict) return { ok: false, error: `consult roomId "${roomId}" is already owned by project "${conflict}" — cross-project collision refused` }
     omap.set(ph, {
       handle: pierre.handle, first: pierre.first || pierre.handle, role: pierre.role || 'adversary', team: null,
       lead: false, backend: pierre.backend || 'claude', tier: 'live', territory: null, mount: 'ro', org: orgId,

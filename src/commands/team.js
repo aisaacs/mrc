@@ -234,7 +234,7 @@ export async function pushOrg(norm) {
   // Prove the capability with the host-only secret (read the 0600 file — same-uid; a cross-uid process can't) so a
   // raw wire frame can't assert trusted/activate. The daemon (up first via ensureRoomDaemon) has minted it.
   const r = await controlCall(daemon.controlPort, { action: 'defineOrg', def: orgDef(norm), trusted: true, activate: true, secret: controlSecret() })
-  return { ok: !!r?.ok, controlPort: daemon.controlPort, daemonPort: daemon.port, rooms: r?.rooms || [], error: r?.error }
+  return { ok: !!r?.ok, controlPort: daemon.controlPort, daemonPort: daemon.port, rooms: r?.rooms || [], refusedRooms: r?.refusedRooms || [], warning: r?.warning, error: r?.error }
 }
 
 // --- launching -------------------------------------------------------------
@@ -1046,6 +1046,7 @@ Roster (team.json in the repo, or --roster <file>, or --preset <name>):
       const res = await pushOrg(norm)
       if (!res.ok) { console.error(`  ✗ Could not define the org with the daemon: ${res.error || 'unreachable'}`); process.exit(1) }
       console.log(`  ◎ Org "${norm.org}" defined: ${res.rooms.length} room(s), ${norm.members.length} member(s).`)
+      if (res.warning) console.error(`  ⚠ ${res.warning}`)   // #t12: a cross-project room-id collision — LOUD (stderr), so the human renames one project rather than launching a silently-broken team
       const live = norm.members.filter((m) => m.tier === 'live')
       const workers = norm.members.filter((m) => m.tier !== 'live')
       if (workers.length) console.log(`  • ${workers.length} worker member(s) (${workers.map((m) => '@' + m.handle).join(', ')}) — invoked on demand, not launched.`)
