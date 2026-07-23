@@ -207,7 +207,19 @@ if (remaining[0] === 'gui' || remaining[0] === 'studio') {
 // MRC_SESSION_NAMING_ANTHROPIC_API_KEY is host-only (Haiku naming/summaries). Legacy
 // ANTHROPIC_API_KEY still works as a deprecated fallback (it collides with the key Claude Code
 // auto-detects). Neither is ever injected into the container — the session runs on Max/OAuth.
-loadEnv(SCRIPT_DIR, { skipOp: !!config.summonedBy })   // a summoned adversary needs no naming key — skip op:// (no Touch ID / hang)
+// A DETERMINISTICALLY-NAMED session needs no host naming key, so it must never trigger the 1Password biometric.
+// That was already true for a summoned adversary ("Pierre"); it is equally true for a TEAM MEMBER, whose name IS
+// its handle (`roland/claude`) and whose session id is memberSessionId(org, handle) — there is nothing for Haiku to
+// name. Without this, every member's dtach master ran its own `op run`, so an N-agent `mrc team up` cost N+1 Touch
+// ID prompts (the prompt says "dtach" because 1Password names the ancestor process it can see; the actual caller is
+// this file shelling out to `op`). Now: ONE prompt for the whole launch, from the parent `mrc team` dispatch.
+// SAFE for the other op://-resolved keys: a LIVE member launch is structurally Claude-only (roster.js LIVE_BACKENDS
+// = {'claude'}, and tier is DERIVED from backend — def.tier is deliberately not consulted), so it can never be the
+// `--agent codex` path that needs OPENAI_API_KEY; codex/qwen members are task-workers invoked through the `mrc team`
+// dispatch, which resolves op:// once; media-maker keys go through repoEnvKey, which ignores op:// values entirely.
+// SOLO is deliberately EXCLUDED (it sets config.member internally): it's the plain-session replacement, the human's
+// own working session where a context-aware name still earns its keep — and it's one prompt, not N.
+loadEnv(SCRIPT_DIR, { skipOp: !!config.summonedBy || (!!config.member && !config.solo) })
 const apiKey = process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY || process.env.ANTHROPIC_API_KEY || ''
 const legacyKeyVar = !process.env.MRC_SESSION_NAMING_ANTHROPIC_API_KEY && !!process.env.ANTHROPIC_API_KEY
 const openaiKey = process.env.OPENAI_API_KEY || ''
@@ -368,7 +380,10 @@ if (config.agent === 'codex' && !openaiKey) {
   process.exit(1)
 }
 
-if (config.agent === 'claude' && !apiKey && !config.summonedBy) {   // a summoned Pierre is named deterministically → no host naming key needed, don't exit
+// Deterministically-named sessions are EXEMPT from the no-key exit — they never asked for the key (loadEnv skipped
+// op:// for them above), so exiting here would turn a skipped biometric into a failed launch. Must stay in lockstep
+// with the skipOp condition: a summoned adversary, and a team member (solo excluded — it still resolves + names).
+if (config.agent === 'claude' && !apiKey && !config.summonedBy && !(config.member && !config.solo)) {
   console.log(`
   ⚠ The Schwartz is not with you... no session-naming key found!
 

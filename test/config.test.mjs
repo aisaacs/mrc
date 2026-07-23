@@ -4,7 +4,7 @@
 // path be tested without depending on live 1Password — the integration itself is exercised by normal `mrc` use.
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, chmodSync, rmSync, existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import os from 'node:os'
 import { loadEnv } from '../src/config.js'
@@ -88,4 +88,31 @@ test('loadEnv: op:// .env + op FAILS → degrades to null gracefully, never thro
 test('loadEnv: OP_ACCOUNT set → skips `op account list`, still resolves via that account', () => {
   const { result } = hermeticLoadEnv({ dotenv: OPKEY, opAccount: 'me.1password.com', opStub: OP_RESOLVING })
   assert.equal(result, 'STUB-NAMING-KEY')
+})
+
+// ── The MEMBER-launch biometric fix ────────────────────────────────────────────────────────────────
+// Every live member's dtach master runs its own `mrc … --member <handle>`, each of which called loadEnv →
+// `op run` → a Touch ID prompt. An N-agent `mrc team up` therefore cost N+1 prompts (1Password labels the
+// prompt "dtach" because it names the ancestor process it can see; the real caller is mrc shelling out to op).
+// A member is deterministically named — its name IS its handle — so, exactly like a summoned adversary, it
+// needs no host naming key and must skip op://. These two mrc.js conditions MUST stay in lockstep: skip the
+// resolve but forget the exit-exemption and a skipped biometric becomes a FAILED LAUNCH ("the Schwartz is not
+// with you"). Nothing in production couples them, so pin them here.
+const mrcSrc = () => readFileSync(new URL('../mrc.js', import.meta.url), 'utf8')
+
+test('mrc.js: a MEMBER launch skips op:// (no per-agent biometric), but SOLO still resolves', () => {
+  const line = mrcSrc().split('\n').find((l) => l.includes('loadEnv(SCRIPT_DIR'))
+  assert.ok(line, 'found the loadEnv call')
+  assert.match(line, /skipOp:/, 'still passes skipOp')
+  assert.match(line, /config\.summonedBy/, 'summoned adversary still exempt (the original case)')
+  assert.match(line, /config\.member/, 'a team member now skips op:// too — this is the N-prompt fix')
+  assert.match(line, /!config\.solo/, 'SOLO is EXCLUDED: it is the plain-session replacement and still earns a context-aware name')
+})
+
+test('mrc.js: the no-key exit guard EXEMPTS exactly what skipOp skips (lockstep — else a skip becomes a failed launch)', () => {
+  const line = mrcSrc().split('\n').find((l) => l.includes("config.agent === 'claude' && !apiKey"))
+  assert.ok(line, 'found the no-naming-key exit guard')
+  assert.match(line, /!config\.summonedBy/, 'summoned adversary exempt from the exit')
+  assert.match(line, /config\.member/, 'a member must ALSO be exempt — it never asked for the key, so it must not die for lacking it')
+  assert.match(line, /!config\.solo/, 'and solo is NOT exempt, matching skipOp — it resolves, so it may legitimately demand the key')
 })
