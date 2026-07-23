@@ -21,9 +21,17 @@ Deploy map (which change lands how):
   the real container. Proven reproduce-first: RED without roomStillLive (discard) AND RED without resume() (gap),
   GREEN with both. This is STRONGER than the manual caged-consult re-run (repeatable + red-without-fix), so the
   manual metal is no longer the gate. The owner ALSO confirmed live consults work post-rebuild (multi-round
-  volley). Push-eligible on the owner's call. (NOTE: the owner's own caged CONSULT delivery binds with `rooms=[]`
-  — likely legacy/no-`room`, so its cause was the fresh-gap not roomStillLive; a small `rooms=[]`-for-consults
-  question is open, see below.)
+  volley). Push-eligible on the owner's call.
+- ✅ **THIRD fix — FAIL-OPEN the redelivery discard (`fde4895`).** Pierre pushed on "is `rooms=[]` benign?" —
+  CONFIRM not ASSUME — and it wasn't: consult frames ARE room-tagged (deliverTo stamps `room`), and a resumed
+  session binding `rooms=[]` (the #t12 org-collision) makes the discard's `memberRooms.has(room)` ALWAYS false →
+  every room-tagged frame discarded on redelivery. A `size>0` fail-open gate is DEFEATED by the same collision
+  (it also makes memberRooms WRONG-populated `{otherProjectRoom}`, size 1, has(frameRoom)=false). So the discard
+  edge is REMOVED entirely — fail-open ALWAYS. The authority a frame belongs here is that it's in the outbox
+  (deliverTo gated on `room.members.has` AT SEND, room-engine.js:365); a resume-time room snapshot is a
+  corruptible redundant copy. Reproduce-first at the daemon-integration level, RED-without-fix for BOTH shapes
+  (empty + wrong-populated). Daemon-only (restart, no rebuild). The discard edge was Pierre's own seam-round (c)
+  nicety — it became the silent-loss mechanism TWICE (object→id, then the collision); killed.
 
 - **#t12 launch-lock fix — the CONCURRENT 2-project run (the decisive test).** `mrc rooms restart`, both
   projects up, a Pierre summoned in EACH, work **both simultaneously**. Pass = both stay usable, no forced
@@ -145,12 +153,17 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
   bugs hid in is now a red build, not a week of silent loss. **Owner directive that drove this: build automated
   container tests, never lean on a manual quit/resume/click when the path can be tested in code —
   [[prefer-automated-container-tests]].**
-- **TICKET (small, new) — caged CONSULT Pierre binds with `rooms=[]`.** daemon.log shows `[register member BOUND]
-  @pierre.claude-claude/claude → rooms=[]` for consult Pierres (vs a team member which lists its team room). Means
-  consult delivery likely doesn't carry a `room` (legacy-ish path) → roomStillLive never applied to consults, so
-  the owner's stuck-consult cause was the fresh-gap alone. Benign-looking but not understood; worth a look — is a
-  consult member supposed to have its consult room in roomsForSession, and does anything (catch-up, discard,
-  status) depend on it? Not blocking.
+- **TICKET (#t12-class, correctness — NO LONGER data-loss after `fde4895`) — a resumed session resolves to the
+  WRONG org / binds `rooms=[]`.** daemon.log showed `[register member BOUND] @pierre.claude-claude/claude →
+  rooms=[]` even right after `[consult-restore] re-seated @pierre… in resume test 4` — bindSession's
+  `r.org===orgId && r.members.has(h)` filter finding nothing because the sessionIndex resolves the pierre id to a
+  DIFFERENT org than the consult was re-seated in (the shared `claude/claude` handle across projects, #t12). With
+  the discard gone this no longer silently drops frames, but a session bound to the wrong project's rooms is still
+  wrong for routing/display/#t12 containment. Hunt: why does the consult-restore org and the sessionIndex org
+  disagree for a consult member? Likely the same collision as the launch-lock (`185a9fd`), a second surface.
+- **TICKET (tiny, next container rebuild) — strip the inert `!fr.discard` check** at mrc-channel-server.js:324.
+  No daemon stamps `discard` after `fde4895`, so it's always-true dead code. Harmless (why `fde4895` is
+  restart-not-rebuild), but remove it on the next rebuild so a future reader doesn't think `discard` is live.
 - ✅ **MERGED ROOT — socket-liveness ≠ delivery/binding — SHIPPED (`4c9ef15`, PUSH-READY; flap+restart
   metal-proven, seam unit-proven+deterministic — see the coverage verdict up in Recently-shipped).** Built as
   the per-session redelivery outbox + cumulative receipt-ack (NOT the
