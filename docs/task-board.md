@@ -13,14 +13,17 @@ Deploy map (which change lands how):
 
 ## 🔴 Awaiting metal verification (owner runs; nothing to build)
 
-- **⛔ t27 REDELIVERY FIX (`9a66100`) — THE DECISIVE GATE: a caged-consult RESUME re-run.** Rebuild
-  (`docker rmi mister-claude` — the container register-token change) + `mrc rooms restart` (daemon). Then re-run
-  the EXACT broken scenario: a caged Pierre RESUMED mid-consult (a real container PROCESS restart — session
-  resume, NOT just a socket flap) and confirm his replies SURFACE on the summoner over the real relay with a real
-  container. That's the metal that caught it; only a real container in the loop clears it (the integration tests
-  prove the daemon side but MIRROR the dedup — the shipping receive path stays unproven, ticket below). If the
-  reply surfaces → this regression is closed. Bring `daemon.log` + whether the summoner actually displays it.
-  Do NOT push t27 until this is green (it shipped two real silent-loss regressions).
+- ✅ **t27 REDELIVERY FIX (`9a66100`) — GATE MET by an automated REAL-CONTAINER test (`20d1f18`), push-eligible.**
+  The gate was "the exact broken scenario survives on a real container." `test/channel-server-live.test.mjs`
+  now runs the ACTUAL `container/mrc-channel-server.js` as a subprocess (SDK stubbed, real socket, real
+  createInboundDedup) against an in-process daemon, kills+respawns it (a genuine PROCESS restart → fresh dedup),
+  and asserts it surfaces a message buffered-while-down — exercising resume-token + resequence + roomStillLive on
+  the real container. Proven reproduce-first: RED without roomStillLive (discard) AND RED without resume() (gap),
+  GREEN with both. This is STRONGER than the manual caged-consult re-run (repeatable + red-without-fix), so the
+  manual metal is no longer the gate. The owner ALSO confirmed live consults work post-rebuild (multi-round
+  volley). Push-eligible on the owner's call. (NOTE: the owner's own caged CONSULT delivery binds with `rooms=[]`
+  — likely legacy/no-`room`, so its cause was the fresh-gap not roomStillLive; a small `rooms=[]`-for-consults
+  question is open, see below.)
 
 - **#t12 launch-lock fix — the CONCURRENT 2-project run (the decisive test).** `mrc rooms restart`, both
   projects up, a Pierre summoned in EACH, work **both simultaneously**. Pass = both stay usable, no forced
@@ -37,9 +40,9 @@ Deploy map (which change lands how):
 
 ## ✅ Recently shipped (verified where noted; commits on `main`)
 
-**t27 reliability outbox + two quick wins (2026-07-22, Pierre-signed). ⛔ NOT push-ready — a live caged-consult
-delivery FAILURE (2026-07-23) surfaced TWO real regressions in the shipped outbox, now fixed (`9a66100`); the gate
-is the caged-consult RESUME metal re-run below.** THE REGRESSIONS (both hit engine/consult redelivery on a
+**t27 reliability outbox + two quick wins (2026-07-22..23, Pierre-signed). ✅ PUSH-ELIGIBLE — a live caged-consult
+delivery FAILURE (2026-07-23) surfaced TWO real regressions in the shipped outbox, both fixed (`9a66100`) AND now
+covered by an automated REAL-CONTAINER test (`20d1f18`) that's red-without-fix; the manual gate is superseded.** THE REGRESSIONS (both hit engine/consult redelivery on a
 reconnect, both missed by the pure tests AND the legacy flap wiretest — the exact "container receive last-mile"
 we labeled unproven; caught by a new register-seam integration test):
 - **`roomStillLive` object→id (the PRIMARY cause of the owner's symptom).** flushOutbox's discard check was
@@ -134,12 +137,20 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
   the LIVE daemon by `test/daemon-teams.test.mjs` (a real engine member; the receiver mirrors createInboundDedup).
   This is what caught BOTH `9a66100` regressions — the blackhole-proxy synthetic variant is no longer needed for
   the daemon side. (The container receive last-mile is still gap 2.)
-- **TICKET (t27 gap 2, STILL OPEN) — CONTAINER RECEIVE LAST-MILE.** The shipping container's `observe→pushIn`/
-  `renderFrame` path (mrc-channel-server.js:324) with the REAL createInboundDedup over a real socket is exercised
-  by NEITHER the unit test (observe() in isolation) NOR the integration tests (their receiver re-implements the
-  dedup). This is the exact inch BOTH `9a66100` regressions lived in — invisible until a real `mrc` session is in
-  a test. Needs a real container in the loop (some clicking — not hands-off). Until done, "713 green + integration
-  green" ≠ "the real container receive path is proven"; the next inch will be exactly as invisible as these two.
+- ✅ **(was TICKET t27 gap 2) — CONTAINER RECEIVE LAST-MILE — CLOSED (`20d1f18`).** The shipping container's
+  `observe→createInboundDedup→pushIn/renderFrame` path with the REAL dedup over a real socket now has an automated
+  test: `test/channel-server-live.test.mjs` runs the actual `mrc-channel-server.js` as a subprocess (SDK stubbed
+  via the load-gate hook; the stub emits `SURFACED\t<content>` per pushIn under MRC_CAPTURE_SURFACED) vs an
+  in-process daemon, kill+respawn = a real PROCESS restart. Red-without-fix for BOTH regressions. The inch both
+  bugs hid in is now a red build, not a week of silent loss. **Owner directive that drove this: build automated
+  container tests, never lean on a manual quit/resume/click when the path can be tested in code —
+  [[prefer-automated-container-tests]].**
+- **TICKET (small, new) — caged CONSULT Pierre binds with `rooms=[]`.** daemon.log shows `[register member BOUND]
+  @pierre.claude-claude/claude → rooms=[]` for consult Pierres (vs a team member which lists its team room). Means
+  consult delivery likely doesn't carry a `room` (legacy-ish path) → roomStillLive never applied to consults, so
+  the owner's stuck-consult cause was the fresh-gap alone. Benign-looking but not understood; worth a look — is a
+  consult member supposed to have its consult room in roomsForSession, and does anything (catch-up, discard,
+  status) depend on it? Not blocking.
 - ✅ **MERGED ROOT — socket-liveness ≠ delivery/binding — SHIPPED (`4c9ef15`, PUSH-READY; flap+restart
   metal-proven, seam unit-proven+deterministic — see the coverage verdict up in Recently-shipped).** Built as
   the per-session redelivery outbox + cumulative receipt-ack (NOT the
