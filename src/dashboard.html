@@ -1646,10 +1646,10 @@ function bRenderTeams() {
           : `<select onchange="bSet(${ti},${mi},'backend',this.value)">${BACKENDS.map(o=>`<option ${o===m.backend?'selected':''}>${o}</option>`).join('')}</select>`}
         <label class="lead" title="★ — this agent can reach you directly (it joins the escalation room with @user). Non-★ agents escalate up to a ★ instead. Several ★ per team are fine; a team with none gets one automatically."><input type="checkbox" ${m.lead?'checked':''} onchange="bSet(${ti},${mi},'lead',this.checked)"> ★ reaches you</label>
         <input value="${esc(m.territory)}" placeholder="territory" oninput="bSet(${ti},${mi},'territory',this.value)">
-        <select onchange="bSet(${ti},${mi},'mount',this.value)" aria-label="file access for this agent" title="What this agent may CHANGE on disk — a real boundary at the mount, not a guideline.&#10;&#10;read-only: reads the whole repo, cannot edit anything.&#10;read-write: can edit files inside its own territory, and nowhere else.&#10;&#10;Leave on role default unless you have a reason: an architect or critic defaults to read-only, an engineer to read-write. (A caged agent is always read-only regardless of this.)">
+        <select onchange="bSet(${ti},${mi},'mount',this.value)" aria-label="file access for this agent" title="What this agent may CHANGE on disk — a real boundary at the mount, not a guideline.&#10;&#10;read-only: reads the whole repo, cannot edit anything.&#10;read-write: can edit its TERRITORY — the field just to the left.&#10;&#10;⚠ If no territory is set, the territory is the WHOLE REPO, so read-write grants write access to everything. Set a territory to narrow it. The preview below always shows what each agent actually resolved to.&#10;&#10;Leave on role default unless you have a reason: an architect or critic defaults to read-only, an engineer to read-write. (A caged agent is always read-only regardless of this.)">
           <option value=""${!m.mount?' selected':''}>— role default —</option>
           <option value="ro"${m.mount==='ro'?' selected':''}>read-only</option>
-          <option value="rw"${m.mount==='rw'?' selected':''}>read-write</option>
+          <option value="rw"${m.mount==='rw'?' selected':''}>read-write${(m.territory||'').trim() ? '' : ' (whole repo)'}</option>
         </select></div>`:''}</div>`}).join('')}
     <div style="margin-top:8px;display:flex;gap:6px;align-items:center;flex-wrap:wrap"><button class="btn tiny" onclick="bAddMem(${ti})">＋ agent</button><button class="btn tiny" data-ti="${ti}" onclick="openCastModal('builder',this.dataset.ti)">🎭 Add from cast</button></div></div>`).join('')
 }
@@ -1731,7 +1731,7 @@ function bPreview(){clearTimeout(bTimer);bTimer=setTimeout(async()=>{
   const el=$('#bPrev'); if(!el)return
   if(!r.ok){el.innerHTML=`<div class="bad">⚠ ${esc(r.error)}</div>`;return}
   const v=r.validation||{warnings:[],errors:[]}
-  el.innerHTML = r.members.map(m=>`<div class="pane" style="padding:7px 10px;margin-bottom:6px"><span class="h">@${esc(m.handle)}</span> <span class="muted">${esc(m.roleLabel)}${m.lead?' ★':''} · ${esc(m.team)} · ${m.tier==='worker'?'worker':'live'} · ${m.mount==='rw'?'✎ writes '+esc(m.territory||'.'):'read-only'}</span></div>`).join('')
+  el.innerHTML = r.members.map(m=>`<div class="pane" style="padding:7px 10px;margin-bottom:6px"><span class="h">@${esc(m.handle)}</span> <span class="muted">${esc(m.roleLabel)}${m.lead?' ★':''} · ${esc(m.team)} · ${m.tier==='worker'?'worker':'live'} · ${m.mount==='rw'?(m.territory==='.'?'<b>✎ writes the WHOLE repo</b>':'✎ writes '+esc(m.territory)):'read-only'}</span></div>`).join('')
     +`<h2>Rooms</h2>`+r.rooms.map(rm=>`<span class="roomtag">${esc(rm.team||rm.kind)}</span>`).join('')
     +(v.warnings.length?`<h2>Warnings</h2>`+v.warnings.map(w=>`<div class="warn" style="font-size:12px">⚠ ${esc(w)}</div>`).join(''):'')
 },250)}

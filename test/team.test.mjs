@@ -656,3 +656,30 @@ test('dashboard builder: bRoster EMITS a per-agent mount, and the dirty-guard si
   assert.ok(sig, 'found the builder signature')
   assert.match(sig, /mount:m\.mount\|\|''/, 'the dirty-guard signature must include mount, or a misclick discards it silently')
 })
+
+// WHY THE BUILDER'S rw COPY WARNS ABOUT THE WHOLE REPO (Pierre). Role defaults supply MOUNT (roster.js:240
+// `m.mount || def.mount`) but NOT territory: the chain is member -> team -> '.' (:241 / :196), with def.territory
+// absent. The builder emits teams with territory '.' and members with none, so EVERY GUI-built agent resolves to
+// '.', and team.js:72's `mount==='rw' && territory==='.'` branch mounts the repo root WRITABLE. So in a default
+// GUI project, "read-write" means the whole repo -- and nothing warns: validateRoster's rw-territory check
+// explicitly exempts '.', and the contention warning needs TWO overlapping writers. The UI copy carries that
+// warning instead, so pin the fact it describes: if this resolution ever narrows, the copy is stale and must change.
+test('roster: a default builder-shaped project resolves rw to the WHOLE repo (what the UI copy must warn about)', () => {
+  const norm = parseRoster({ project: 'p', teams: [{ name: 'team', territory: '.', members: [
+    { role: 'engineer', backend: 'claude', name: 'eng', lead: true, mount: 'rw' },   // no member territory — the builder's default
+  ] }] }, { repo: '/tmp/repo' })
+  const m = norm.members[0]
+  assert.equal(m.mount, 'rw')
+  assert.equal(m.territory, '.', 'no territory anywhere in the chain → "." → the repo ROOT is mounted writable')
+  const v = validateRoster(norm)
+  assert.equal(v.warnings.filter((w) => /territory|write/i.test(w)).length, 0,
+    'and NOTHING warns about it — a single rw member at "." passes validation silently, which is why the copy must say so')
+})
+
+test('dashboard builder: the read-write copy states the whole-repo consequence (it is the only thing that warns)', () => {
+  const html = fs.readFileSync(new URL('../src/dashboard.html', import.meta.url), 'utf8')
+  const sel = html.split('\n').find((l) => l.includes("aria-label=\"file access for this agent\""))
+  assert.ok(sel, 'found the mount control')
+  assert.match(sel, /WHOLE REPO/, 'the tooltip must say that an unset territory means the whole repo — validateRoster will not')
+  assert.match(sel, /territory/i, 'and must point at the territory field as the way to narrow it')
+})
