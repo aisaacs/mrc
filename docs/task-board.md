@@ -221,6 +221,36 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
 - **Stubbed-load SDK-rename caveat** — the load gate's SDK stub is a hand-maintained mirror; a real SDK export
   rename is caught only if the stub is updated (the pin makes that a deliberate, coupled moment).
 
+### Migration scope — the MISSING HOST-GLOBAL TIER (owner-raised 2026-07-23; surfaced by the leads/team room-key)
+- **TICKET (architectural, likely the real finding): migrations have only a SLICE tier; host-global state has NO safe
+  change path.** Owner: *"since we moved everything out of the repo, i wonder if the per repo migrate is the right
+  call here anymore."* Post-Model-B + #5 the DATA is off-repo and the LEDGER is already host-only
+  (`~/.local/share/mrc/migration-meta/<sliceId>/`); `registry.js`'s own header concedes identity is **per-SLICE, not
+  per-repo — "a repo is just a front door that resolves to a slice."** Only the INVOCATION (`mrc migrate [repo]`) is
+  still repo-shaped. There are now **two genuinely different scopes**, and only one is served:
+  - **SLICE-scoped** (per memory slice) — still correctly per-slice: slices legitimately sit at DIFFERENT levels
+    (migrate project A, not B; N repos share one slice). `#001` is this. **Keep.**
+  - **HOST-GLOBAL** (exactly one instance per install) — `rooms/<roomId>/` dirs, `room-orgs.json`, `room-inbox.json`,
+    `room-consults.json`, the launch/outbox-marker files. No per-slice variation is even possible. **Today these have
+    NO versioned change path**: any schema/layout change is an ad-hoc boot mutation — precisely the unledgered
+    silent-side-effect class the migration framework was built to replace.
+  Build: a host-global tier with the SAME discipline (ordered + idempotent + host-only ledger + guarded runner with
+  refuse-until-safe/preview/verify/rollback), one record per install. Then make **`mrc migrate` with no repo arg the
+  PRIMARY form** = migrate the whole host (every known slice + host-global); the repo front door becomes the narrow
+  legacy case, matching where the data actually lives now. **The leads/team room-key is just its first customer** —
+  that's what exposed the gap. Pierre-gated (design volley in flight).
+- **TICKET (downstream of the above) — leads/team ROBUST-KEY, the availability half.** Two options, NOT exclusive:
+  (1) **name-uniqueness at define** — refuse a project whose `slug(org)` collides with an existing project's
+  ("pick a different name"). ZERO migration, zero re-id, deterministic; direct precedent at `assertSafeProjectName`
+  (roster.js:71, "the single name chokepoint"), which ALREADY refuses the reserved `-solo-<hash>` suffix for the SAME
+  reason (a name collision "could silently steal that session's members"). Enforce in the defineOrg WRAPPER — it funnels
+  4 of the 5 define paths (define :1698, launchteam :1900, removemember :2024/:2243); the only raw-engine path is the
+  BOOT restore (:531), which loads ALREADY-ACCEPTED orgs so it isn't creating and needs only an audit. Must not
+  self-refuse a same-org redefine. (2) **org-unique room ids + a host-global migration** — no naming constraint, but
+  re-ids EVERY project's team/leads rooms and must reach every mirror (dirs, `orgDefs.rooms`, inbox `item.roomId`/
+  `pauseRoom`, worker queue, catchups). Lean: ship (1) as prevention now; (2) only if the naming freedom is wanted back.
+  Open: a one-time startup AUDIT reporting any PRE-EXISTING slug-collision loudly (owner currently has ZERO).
+
 ### SoT / lifecycle (owner-deferred to AFTER the spec work)
 - **#65 SoT census + make-it-structurally-impossible** — the owner suspects >2 sources of truth; sweep every
   session-meta reader/writer against the mirror-map (session-record.js header).
