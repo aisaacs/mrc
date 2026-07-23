@@ -273,7 +273,9 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
 - **#54 manual-rooms** (live-Pierre §14 routing) · **#55 name-theme → Settings** (identity-coupled) ·
   **CONVERSATION-VIEW #49** (chat panel replaces the terminal — the big post-spec build) · **Telegram one-bot**
   (§6, `op://` token resolution) · guard-3 + 0700-dir assert (#24) · sha1/sockSlug collision (#26).
-- ✅ **1Password biometric on EVERY agent launch — FIXED (owner-reported, 2026-07-23).** Each live member's dtach
+- ✅ **1Password biometric on EVERY agent launch — FIXED + METAL-VERIFIED (owner-reported + confirmed 2026-07-23:
+  closed a project in the dashboard, reopened it → NO biometric prompt AND the sessions came up, which also clears
+  the exit-guard half — a wrong exemption there would have failed the launch instead).** Each live member's dtach
   master ran its own `mrc … --member` → `loadEnv` → `op run` → a Touch ID prompt, so an N-agent `mrc team up` cost
   **N+1 prompts**. (The dialog says "Allow dtach to get CLI access" because 1Password names the ancestor process it
   can see; the real caller is mrc shelling out to `op` — dtach is innocent.) It was fetching only
