@@ -261,8 +261,7 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
   diagnosis: 'unknown' → "no host security record … run `mrc pick` to back-fill"; 'adversary' → "your summoner is
   away"; 'normal' → genuinely alone. Applied to `ask_peer` AND `list_peers` (an empty tool result reads as
   "nobody is here"), via a `notice` the container already renders → no rebuild.
-- 🔴 **ROOT still OPEN (Pierre design volley in flight): `pruneSessionRecords()` reaps the records of healthy,
-  running sessions.** Host probe over 8 live containers: SEVEN have no transcript at `<repoPath>/.mrc/<uuid>.jsonl`
+- ✅ **ROOT FIXED (`77bab45`, Pierre-designed): `pruneSessionRecords()` reaped the records of healthy, running sessions.** Host probe over 8 live containers: SEVEN have no transcript at `<repoPath>/.mrc/<uuid>.jsonl`
   where prune looks. Every survivor but one is saved by a carve-out (`r.adversary`, `r.member`); the two with NO
   carve-out — plain sessions, 3h and 24h uptime — were **REAPED via branch (2) (never-seen + >1h → "crashed before
   boot")**. `~/.local/share/mrc/store` exists full of uuid entries (#5 relocation), i.e. **transcripts moved and
@@ -283,6 +282,23 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
   signal) or whether a member/adversary record must genuinely outlive its container as the ▶Resume anchor; and
   whether to ship the narrow fix now vs fold into #63. **Also: nothing logs a reap** — a security-relevant state
   change that strips peer visibility took three host probes to see.
+  **FIX SHIPPED (`77bab45`): split Q1 (liveness ASSERTION, host-authoritative docker oracle, must fail toward
+  ALIVE) from Q2 (GC HEURISTIC, transcript check, may fail toward REAP), with both error budgets written into the
+  comment so the next reader cannot re-merge them.** Repo-granular and said so (no session-uuid label exists);
+  8s timeout and ANY docker failure ⇒ prune does nothing that pass; reaps now LOG the branch that fired.
+  Deliberately did NOT teach prune the new transcript location — post-split that only affects the GC half where
+  being wrong self-heals, so it would re-bless file-as-liveness-proxy that #63 must un-teach.
+- **TICKET (spun off, test-gated): RETIRE the `r.member` prune carve-out.** Post-split its stated reason ("the live
+  member becomes un-re-registerable after a daemon restart") is exactly what the Q1 oracle now covers, and a
+  member's ▶Resume is anchored by the ROSTER, not the record — so it is redundant. NOT retired inside the bug fix
+  (Pierre): **a guard whose failure mode is literally "#58 again" earns its own commit with its own test** — prove a
+  DEAD member's record GCs AND its resume still works. Retiring it is the "delete guards" signal that the model is
+  finally right. By contrast `r.adversary` is a genuine REQUIREMENT and stays: the record is the ▶Resume
+  recover-authority (consult-recover refuses without it), so it must outlive its container.
+- **NOTE (assumption made load-bearing, in code):** Q2's "wrong is cheap" rests on the per-launch record write being
+  UNCONDITIONAL (mrc.js:1171-1174). A wrongly-reaped record returns — but with a FRESH secret
+  (`existingSec.secret || randomBytes(24)`), so a wrong reap silently ROTATES the auth anchor. Nothing pins secret
+  stability across a resume today; if that write becomes conditional, Q2's budget is no longer cheap.
 
 ### SoT / lifecycle (owner-deferred to AFTER the spec work)
 - **#65 SoT census + make-it-structurally-impossible** — the owner suspects >2 sources of truth; sweep every
