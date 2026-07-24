@@ -251,6 +251,39 @@ end-to-end + `--web`-on-by-default for new projects (`091248a`/`4bb125a`); the s
   `pauseRoom`, worker queue, catchups). Lean: ship (1) as prevention now; (2) only if the naming freedom is wanted back.
   Open: a one-time startup AUDIT reporting any PRE-EXISTING slug-collision loudly (owner currently has ZERO).
 
+### 🔴 LIVE BUG — prune de-verifies healthy long-running sessions (owner-hit 2026-07-24; #63 SoT class)
+- ✅ **SYMPTOM half FIXED (`7a03d94`).** A live session's `ask_peer` said "No other room-enabled session is
+  connected" while EIGHT containers were connected. It was not peerless — it was **DE-VERIFIED**: its host
+  session-record was gone → `classifySession` 'unknown' → `peerList` refuses enumeration to a non-normal caller
+  (F1, working correctly) → empty list. The **message** was the defect: it asserted the least likely of three
+  causes, and the reader acted on it (the other session's agent concluded "Pierre dropped" and advised
+  relaunching — which cannot fix a record missing on the ASKING side). Now the caller's own classification IS the
+  diagnosis: 'unknown' → "no host security record … run `mrc pick` to back-fill"; 'adversary' → "your summoner is
+  away"; 'normal' → genuinely alone. Applied to `ask_peer` AND `list_peers` (an empty tool result reads as
+  "nobody is here"), via a `notice` the container already renders → no rebuild.
+- 🔴 **ROOT still OPEN (Pierre design volley in flight): `pruneSessionRecords()` reaps the records of healthy,
+  running sessions.** Host probe over 8 live containers: SEVEN have no transcript at `<repoPath>/.mrc/<uuid>.jsonl`
+  where prune looks. Every survivor but one is saved by a carve-out (`r.adversary`, `r.member`); the two with NO
+  carve-out — plain sessions, 3h and 24h uptime — were **REAPED via branch (2) (never-seen + >1h → "crashed before
+  boot")**. `~/.local/share/mrc/store` exists full of uuid entries (#5 relocation), i.e. **transcripts moved and
+  prune's reader didn't follow**. MECHANISM (mrc.js:1171): prune runs on EVERY launch and never touches the session
+  being launched, so **a SIBLING launch de-verifies a RUNNING session** — it scales with usage and looks like
+  flakiness. A resume rewrites the record (same block, secret reused), so the stopped-then-resumed window
+  self-heals; only continuously-running sessions are harmed.
+- **THIS IS #63 (owner's call): liveness is DERIVED, never stored — and never derived from the WRONG oracle.**
+  Two SoT failures stacked: (1) a LIVENESS question answered from a stored artifact's LOCATION instead of
+  host-authoritative state; (2) a relocated store with a stale reader (mirror-map). **The carve-outs are the
+  evidence, not the fix** — `adversary`, then `member` (#58 bug C), and a third was one step away; our own lesson
+  says a right model lets you DELETE guards, and we keep adding them. THE DEFECT IS THE CONFLATION: one heuristic
+  answers both *"is this session ALIVE?"* (an assertion — must be host-authoritative; wrong ⇒ a live session
+  silently loses its identity) and *"should I GC this DEAD session's record?"* (a heuristic — wrong is cheap and
+  self-heals). FIX = separate them: an explicit liveness oracle for the assertion, the transcript check demoted to
+  GC-only. While one heuristic answers both, every future storage change re-breaks the liveness half (#5 already
+  did it once). Open with Pierre: whether the existing carve-outs RETIRE under the split (the "delete guards"
+  signal) or whether a member/adversary record must genuinely outlive its container as the ▶Resume anchor; and
+  whether to ship the narrow fix now vs fold into #63. **Also: nothing logs a reap** — a security-relevant state
+  change that strips peer visibility took three host probes to see.
+
 ### SoT / lifecycle (owner-deferred to AFTER the spec work)
 - **#65 SoT census + make-it-structurally-impossible** — the owner suspects >2 sources of truth; sweep every
   session-meta reader/writer against the mirror-map (session-record.js header).
