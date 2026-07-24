@@ -1167,8 +1167,15 @@ if (roomsActive) {
   // written to the tamper-proof host record (never mounted → another container can't read it to impersonate)
   // AND injected so the channel authenticates this session at register. This runs for EVERY daemon-connected
   // launch (normal/member/summon/resume) in this always-runs spot, so the daemon can gate on the secret.
+  // Q1/Q2 SPLIT, ENFORCED AT THE CALL SITE (Pierre). prune and the record write must NEVER share a fate. They
+  // shared ONE `try`, so ANY prune throw was swallowed AND skipped saveSessionRecord — de-verifying the session
+  // being launched RIGHT NOW (no record → classify 'unknown' → peerList shows it NOTHING → "No other room-enabled
+  // session is connected"). That is the exact bug the Q1 liveness split fixes, reachable from a different cause,
+  // sitting in the fix's own call site — and for a caged adversary the shared catch escalates it to process.exit.
+  // The asymmetry is the whole point: a failed prune pass is FREE (the next launch prunes), while a skipped record
+  // write IS the bug. A GC concern must never be able to veto an auth-anchor write, so they get separate trys.
+  try { pruneSessionRecords() } catch (e) { dbg(`prune pass failed — harmless, the next launch prunes: ${e?.message || e}`) }
   try {
-    pruneSessionRecords()
     const existingSec = loadSessionRecord(roomInfo.sessionId)
     const roomSecret = existingSec.secret || randomBytes(24).toString('hex')
     saveSessionRecord(roomInfo.sessionId, {

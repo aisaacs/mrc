@@ -3,7 +3,7 @@
 // isolated HOME up front (UNconditionally) so it can never read/delete a real ~/.local/share/mrc record.
 //   node test/session-record.test.mjs
 import assert from 'node:assert'
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, existsSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, utimesSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -34,6 +34,32 @@ function backdateRecord(uuid, msAgo) {
 }
 // The prune-owned "transcript observed" sentinel — a FILE, not a record field (#64 containment).
 const seenSentinel = (uuid) => existsSync(join(metaDir(), `${uuid}.seen`))
+
+
+// --- the PRODUCTION call site (Pierre): the seam must stay test-only, and prune must not share a fate ---
+// `pruneSessionRecords({ liveRepos })` is a test-only injection seam. Two ways the call site can rot, both worse
+// than mis-pruning, so enforce rather than document:
+//   1. Someone passes a value in production. `null` short-circuits the whole pass and `new Set()` asserts nothing
+//      is live — one keystroke apart with OPPOSITE effects — and an ARRAY would make `liveRepos.has` throw.
+//   2. prune shares a `try` with the record write. It used to: any prune throw was swallowed AND skipped
+//      saveSessionRecord, de-verifying the session being launched right then (the very bug Q1 fixes), and for a
+//      caged adversary the shared catch escalated it to process.exit. A failed prune pass is free; a skipped
+//      record write is the bug — they must never share a fate.
+const mrcSrc = readFileSync(new URL('../mrc.js', import.meta.url), 'utf8')
+t('mrc.js calls pruneSessionRecords() with NO arguments (the seam is test-only)', () => {
+  const calls = [...mrcSrc.matchAll(/pruneSessionRecords\(([^)]*)\)/g)].map((m) => m[1].trim())
+  assert.ok(calls.length >= 1, 'found the production call')
+  for (const a of calls) assert.strictEqual(a, '', `pruneSessionRecords called with "${a}" — production must pass nothing and get the real docker oracle`)
+})
+t('mrc.js does NOT let a prune throw skip the record write (separate trys, not one)', () => {
+  const i = mrcSrc.indexOf('pruneSessionRecords(')
+  assert.ok(i > 0)
+  const line = mrcSrc.slice(mrcSrc.lastIndexOf('\n', i) + 1, mrcSrc.indexOf('\n', i))
+  assert.match(line, /try\s*\{\s*pruneSessionRecords\(\)\s*\}\s*catch/,
+    'prune must sit in its OWN try/catch — sharing one with saveSessionRecord lets a GC failure de-verify the launching session')
+  const after = mrcSrc.slice(i, i + 1200)
+  assert.ok(after.includes('saveSessionRecord'), 'sanity: the record write still follows')
+})
 
 console.log('\nsession-record — classification + transcript-coupled prune')
 
