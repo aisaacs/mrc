@@ -11,7 +11,8 @@
 // `adversary` is DERIVED from `summonedBy` (launch-time, from --summoned-by → the durable record), never
 // from a session's name/persona/behavior — the same launch-derived-containment rule the daemon's #30 fix
 // re-derives on register. This file is the durable source that survives a daemon restart AND a resume.
-import { mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, existsSync, rmSync, statSync } from 'node:fs'
+import { mkdirSync, writeFileSync, readFileSync, readdirSync, renameSync, existsSync, rmSync, statSync, appendFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -146,6 +147,59 @@ function markTranscriptSeen(uuid) { try { mkdirSync(recordDir(), { recursive: tr
 // transiently absent. One ordering turns a permanent leak into a self-healing one.
 function reapRecord(uuid) { try { rmSync(sentinelPath(uuid)) } catch {} ; try { rmSync(recordPath(uuid)) } catch {} }
 
+
+// ── THE TWO QUESTIONS (the #63 SoT split — read before touching prune) ────────────────────────────────────
+// prune used to answer BOTH of these with ONE heuristic ("is the transcript at <repo>/.mrc/<uuid>.jsonl?"),
+// and that conflation is the defect behind #58 (bug C, members) and its 2026-07-24 repeat (plain sessions):
+//
+//   Q1 "is this session ALIVE?"          — an ASSERTION. Its error budget must fail toward ALIVE: a wrong
+//                                          answer REAPS a running session's record, which silently strips its
+//                                          identity (classify → 'unknown' → peerList shows it NOTHING) until a
+//                                          relaunch. Security-relevant and un-self-healing while it runs.
+//   Q2 "should I GC this DEAD session's   — a HEURISTIC. Its error budget may fail toward REAP: a wrong answer
+//       record?"                            costs a record rewrite, because EVERY launch (normal/member/summon/
+//                                          resume) unconditionally rewrites the record (mrc.js:1171-1174).
+//
+// Opposite biases cannot ride one heuristic — which is why it was mis-tuned for at least one, and why each
+// carve-out below was an admission rather than a fix. Q1 now uses a host-authoritative oracle; the transcript
+// check is DEMOTED to Q2 only. Do not re-merge them.
+//
+// WHY Q2's self-heal is cheap — and the ONE thing that would make it expensive: the per-launch record write is
+// UNCONDITIONAL, so a wrongly-reaped record returns on the next launch. But it returns with a FRESH secret
+// (`existingSec.secret || randomBytes(24)`), so a wrong reap silently ROTATES the auth anchor. Nothing depends
+// on secret stability across a resume today. If that per-launch write ever becomes CONDITIONAL, or anything
+// starts pinning the secret across launches, Q2's error budget is no longer cheap and this split must be
+// revisited — the assumption is load-bearing, so it is written down rather than left implicit.
+//
+// GRANULARITY, STATED PLAINLY (Pierre): containers carry `mrc=1`, `mrc.repo`, `mrc.repo.name`, `mrc.web`,
+// `mrc.member` — there is NO session-uuid label (docker.js:395-403). So this oracle answers "does this record's
+// REPO have a live mrc container?", NEVER "is THIS session's container running". It therefore OVER-KEEPS: a dead
+// session in a repo that has a live sibling survives. That is the fail-safe direction and it still closes the
+// reported bug (a live session's own repo always has a live container). Do not read more precision into it.
+//
+// Returns a Set of live repoPaths, or NULL when docker could not be consulted — and null means KEEP EVERYTHING
+// (prune does nothing this pass), matching the existing bias (`!dirOk → keep`, unreadable → keep). Hard timeout
+// because prune runs on EVERY launch BEFORE the container starts, possibly while Colima is still coming up; a
+// hang here would stall every launch. One call per prune PASS, not per record (there can be hundreds).
+// A record vanishing silently strips a session's peer visibility, and diagnosing the 2026-07-24 instance took
+// THREE host probes because nothing recorded what prune did. So: REAPS always log (with the branch that fired),
+// and KEEPS log only under MRC_DEBUG (they are the common case; noisy by default, invaluable when the question is
+// "why is this record still here"). Post-split a reap-while-live should be IMPOSSIBLE — the daemon.log line is
+// how we would find out it is not, instead of assuming it away. Best-effort: never throw on the launch path.
+function pruneLog(msg, debugOnly = false) {
+  if (debugOnly && !process.env.MRC_DEBUG) return
+  try { appendFileSync(join(homedir(), '.local', 'share', 'mrc', 'daemon.log'), `${new Date().toISOString()} [prune] ${msg}\n`) } catch {}
+}
+
+const PRUNE_DOCKER_TIMEOUT_MS = 8_000
+function liveRepoPaths() {
+  try {
+    const out = execFileSync('docker', ['ps', '--filter', 'label=mrc=1', '--format', '{{.Label "mrc.repo"}}'],
+      { encoding: 'utf8', timeout: PRUNE_DOCKER_TIMEOUT_MS, stdio: ['ignore', 'pipe', 'ignore'] })
+    return new Set(out.split('\n').map((x) => x.trim()).filter(Boolean))
+  } catch { return null }   // docker absent / not ready / timed out → cannot assert liveness → keep everything
+}
+
 /** Transcript-coupled prune: the record dir grows one file per session, so drop a record when its
  *  transcript is provably DELETED — but NEVER an adversary record, and NEVER a session that is merely
  *  still booting. repoPath is mutable, so a moved/renamed repo empties the stored path and reads as
@@ -171,7 +225,14 @@ function reapRecord(uuid) { try { rmSync(sentinelPath(uuid)) } catch {} ; try { 
  *  a uuid BEFORE its transcript exists on disk on a resume (a warm/pre-seeded record, lazy transcript
  *  restore, a migration recreating records ahead of transcripts), that invariant breaks and the boot-window
  *  race reopens for resumes — gate any such path on the transcript existing first. */
-export function pruneSessionRecords() {
+// `liveRepos` is an INJECTION SEAM for tests only — production calls pruneSessionRecords() with no args and gets
+// the real docker oracle. Tests need it because the Q2 (GC) behaviours can only be exercised once Q1 has answered
+// "not live", and a test host has no mrc containers (often no docker at all, where the oracle correctly returns
+// null and prune does nothing). Pass `new Set()` for "nothing is live", or a Set of repoPaths to assert the Q1 keep.
+export function pruneSessionRecords({ liveRepos = liveRepoPaths() } = {}) {
+  // Q1 (liveness) FIRST and ONCE. null ⇒ docker unreachable ⇒ we cannot assert that anything is dead ⇒ prune
+  // nothing this pass. Skipping a pass is free (the next launch prunes); reaping blind is not.
+  if (!liveRepos) { pruneLog('pass SKIPPED — docker unreachable, cannot assert liveness (keeping every record)'); return }
   for (const uuid of Object.keys(allSessionRecords())) {
     // Re-read FRESH per uuid before deciding (Pierre #3/#4): the snapshot is a point-in-time copy, but this
     // is a DELETE path — a sibling may have been re-marked/resumed since. Decide on current truth. (Also
@@ -179,7 +240,11 @@ export function pruneSessionRecords() {
     // snapshot could read false → uncage on reap.)
     const r = loadSessionRecord(uuid)
     if (r.uuid === undefined) continue                        // vanished since the snapshot → nothing to do
-    if (r.adversary || r.summonedBy) continue                 // NEVER an adversary — keep forever
+    // ADVERSARY/summonedBy is a REQUIREMENT, not a carve-out for a bad heuristic (Pierre): the record must
+    // OUTLIVE its container because it is the ▶Resume RECOVER-AUTHORITY — room-daemon's consult-recover refuses
+    // without it ("no adversary host record (the label is a hint; the record is authority)"). It would survive
+    // the Q1/Q2 split on its own merits, so it stays and its reason is stated positively.
+    if (r.adversary || r.summonedBy) { pruneLog(`keep ${uuid.slice(0, 8)} — adversary/consult record is the ▶Resume recover-authority`, true); continue }
     // #56 bug C (Pierre t163): NEVER a team member. A member's record is a deterministic AUTH ANCHOR the daemon
     // re-registers against (R1 secret + #38 verified-member); its transcript lives in a territorial/config-vol
     // store, NOT repoPath/.mrc, so the transcript heuristic below never earns it `.seen` and the age backstop
@@ -188,8 +253,18 @@ export function pruneSessionRecords() {
     // here. `member` is host-set at launch (mrc.js, isMemberLaunch) and never mounted → unforgeable. Keep forever
     // for now; the exact lifecycle is an org-membership-scoped reap (drop when the member leaves the org def), the
     // authoritative source — NOT a transcript probe and NOT never. (Follow-up: task #58 / SoT pass.)
-    if (r.member) continue
+    // MEMBER is now REDUNDANT (Pierre): its stated reason — "the live member becomes un-re-registerable after a
+    // daemon restart" — is exactly what the Q1 oracle above now covers, and a member's ▶Resume is anchored by the
+    // ROSTER, not this record. It is deliberately NOT retired here: a guard whose failure mode is literally "#58
+    // again" earns its own commit with its own test (prove a DEAD member's record can be GC'd and its resume still
+    // works), rather than riding along inside a bug fix. Boarded as the follow-up that PROVES the model is right.
+    if (r.member) { pruneLog(`keep ${uuid.slice(0, 8)} — member carve-out (now redundant post-split; retirement is boarded + test-gated)`, true); continue }
     if (!r.repoPath) continue                                 // no path → ambiguous → keep
+    // Q1: the ASSERTION. A record whose repo has a live mrc container is NOT dead — never reap it, whatever the
+    // transcript says. This is the fix for #58's repeat: prune runs on every launch and never touches the session
+    // being launched, so before this gate a SIBLING launch would de-verify a RUNNING session (it scaled with usage
+    // and read as flakiness). Repo-granular, over-keeps, fail-safe — see liveRepoPaths().
+    if (liveRepos.has(r.repoPath)) { pruneLog(`keep ${uuid.slice(0, 8)} — repo has a LIVE container (${r.repoPath})`, true); continue }
     const mrcDir = join(r.repoPath, '.mrc')
     let dirOk, exists
     try { dirOk = existsSync(mrcDir); exists = existsSync(join(mrcDir, `${uuid}.jsonl`)) } catch { continue }   // unreadable → keep
@@ -202,11 +277,11 @@ export function pruneSessionRecords() {
       if (!transcriptSeen(uuid)) markTranscriptSeen(uuid)
       continue
     }
-    if (transcriptSeen(uuid)) { reapRecord(uuid) ; continue }   // sentinel present → HAD a transcript → provably DELETED → drop
+    if (transcriptSeen(uuid)) { pruneLog(`REAP ${uuid.slice(0, 8)} — branch(1) transcript provably deleted (sentinel present, .jsonl gone), repo has no live container`); reapRecord(uuid) ; continue }
     // Never-seen + absent: a booting session (KEEP — the #64 race fix) OR one that crashed before its first
     // transcript write. Reap only the latter, past the coarse age backstop; keep on stat ambiguity (mtime 0).
     const mt = sessionRecordMtime(uuid)
-    if (mt && Date.now() - mt > NEVER_BOOTED_REAP_MS) reapRecord(uuid)
+    if (mt && Date.now() - mt > NEVER_BOOTED_REAP_MS) { pruneLog(`REAP ${uuid.slice(0, 8)} — branch(2) never-booted backstop (>1h, no transcript ever seen), repo has no live container`); reapRecord(uuid) }
   }
 }
 
