@@ -851,3 +851,27 @@ test('#t12 boot restore: a slug-colliding persisted org surfaces via DESKTOP not
     assert.match(note, /punctuation, spacing, or capitalization/i, 'says HOW the name must differ')
   } finally { try { notifySrv.close() } catch {} }
 })
+
+// An UNVERIFIED caller (no host security record) is refused peer enumeration BY DESIGN (F1). The bug was the
+// MESSAGE: it said "No other room-enabled session is connected. Ask the human to launch one" — so a live session
+// whose record had been pruned out from under it was told nobody was there, while peers were in fact connected.
+// A wrong remedy in a diagnostic is worse than none: the reader acts on it (relaunch a peer) and concludes the
+// wrong thing about the system. Assert the caller is told the ACTUAL cause and the remedy that works.
+test('rooms: an UNVERIFIED caller with an empty peer list is told its RECORD is missing, not that nobody is connected', async () => {
+  process.env.HOME = fs.mkdtempSync(`${os.tmpdir()}/mrc-unver-`)
+  const port = await findFreePort(19880)
+  const controlPort = await findFreePort(port + 1)
+  const daemon = startRoomDaemon({ port, controlPort, notifyPort: 0, version: 'test', idleMs: 9e9, tickMs: 9e9, turnCap: 100, workerInvoke: async () => ({ text: '' }) })
+  const c = client(port); _testSocks.add(c.sock); await c.ready
+  // NO saveSessionRecord → classifySession is 'unknown' → peerList refuses enumeration
+  c.send({ type: 'register', sessionId: '11111111-2222-3333-4444-555555555555', repo: 'somerepo', label: 'unverified-one' })
+  c.send({ type: 'list' })
+  const pl = await c.waitFor((f) => f.type === 'peerlist')
+  assert.deepEqual(pl.peers, [], 'precondition: an unverified caller sees no peers (the F1 security behavior is unchanged)')
+  const note = await c.waitFor((f) => f.type === 'notice' && /security record/i.test(f.text || ''))
+  assert.match(note.text, /no host security record/i, 'names the real cause')
+  assert.match(note.text, /mrc pick/, 'gives the remedy that actually works')
+  assert.match(note.text, /other sessions may well be connected/i, 'corrects the false implication that nobody is there')
+  assert.ok(!/Ask the human to launch one/.test(note.text), 'must NOT give the old wrong remedy — relaunching a peer does not fix a missing record on THIS session')
+  daemon.stop()
+})

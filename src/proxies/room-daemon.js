@@ -1283,9 +1283,28 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
     }
   }
 
+  // An empty peer list has THREE very different causes, and the old message asserted the LEAST likely one
+  // ("nobody is connected"), which sent the human off to launch a session that was already running. peerList
+  // is gated on the CALLER's own classification, so the caller's class IS the diagnosis:
+  //   • 'unknown'  → no host security record. F1 refuses enumeration to an unverifiable caller BY DESIGN, so it
+  //     sees nothing even in a full house. This is the one that reads as "rooms are broken": the session works
+  //     fine, peers are connected, and it is told nobody is there. It happens when pruneSessionRecords() reaps
+  //     the record out from under a healthy long-running session, so the remedy is to back-fill it, NOT to
+  //     launch anything.
+  //   • 'adversary' → it can only ever see its summoner (containment); an empty list means the summoner is away.
+  //   • 'normal'   → genuinely alone; the original message is correct here and ONLY here.
+  // Naming the real cause matters more than usual: a wrong remedy in a diagnostic message is worse than no
+  // message, because the reader acts on it and concludes the wrong thing about the system.
+  function emptyPeerNotice(sessionId) {
+    const cls = classifySession(sessionId)
+    if (cls === 'adversary') return '[Your summoner is not connected right now, so there is no one to reach — you can only ever talk to the session that summoned you. Wait for them to come back.]'
+    if (cls !== 'normal') return '[This session has no host security record, so the room daemon cannot verify it and will not show it ANY peers — other sessions may well be connected right now. This happens when the record is pruned out from under a long-running session. Fix on the HOST: run `mrc pick` in this repo to back-fill the record, then try again. (Relaunching a peer will not help — the missing record is on THIS session.)]'
+    return '[No other room-enabled session is connected. Ask the human to launch one (mrc <repo>) and try again.]'
+  }
+
   function onAsk(askerId, question, hint) {
     const r = resolvePeer(askerId, hint)
-    if (r.none) return send(askerId, { type: 'notice', text: '[No other room-enabled session is connected. Ask the human to launch one (mrc <repo>) and try again.]' })
+    if (r.none) return send(askerId, { type: 'notice', text: emptyPeerNotice(askerId) })
     if (r.ambiguous) return send(askerId, {
       type: 'peers',
       text: `[Several sessions match "${hint}": ${r.ambiguous.map((o) => o.display || o.name).join(', ')}. Ask the human which one, then call ask_peer with that EXACT handle.]`,
@@ -1625,7 +1644,13 @@ export function startRoomDaemon({ port, controlPort, notifyPort, dashboardPort =
             if (resumeFresh) outboxResumeFresh.delete(sessionId)   // UNCONDITIONAL — survives a throw / early exit; a leaked flag would strand the session enqueue-only forever
           }
         } else if (f.type === 'list' && sessionId) {
-          send(sessionId, { type: 'peerlist', peers: peerList(sessionId) })
+          const _peers = peerList(sessionId)
+          send(sessionId, { type: 'peerlist', peers: _peers })
+          // list_peers hits the SAME empty-list ambiguity as ask_peer, and an empty tool result is read as
+          // "nobody is here" — the exact wrong conclusion for an unverified caller, which is refused
+          // enumeration by design. Follow the (bare) peerlist with the reason as a `notice`, which the
+          // container already renders, so this needs no image rebuild.
+          if (!_peers.length) send(sessionId, { type: 'notice', text: emptyPeerNotice(sessionId) })
         } else if (f.type === 'ask' && sessionId) { bumpActivity(sessionId); onAsk(sessionId, String(f.question ?? ''), f.peer) }   // #caffeine PRIMARY: a channel action IS an autonomous turn arriving directly — per-turn, reconnect-proof, no proxy latency
         else if (f.type === 'msg' && sessionId) { bumpActivity(sessionId); onMsg(sessionId, String(f.text ?? ''), f.id) }
         else if (f.type === 'note' && sessionId) { bumpActivity(sessionId); onNote(sessionId, String(f.text ?? ''), f.id) }
